@@ -1,0 +1,8 @@
+[package]
+name = "pomme-macho"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+goblin = "0.10.7"
+thiserror = "2.0.21"
