@@ -16,6 +16,8 @@ pub const TICKS_PER_SEC: u64 = pomme_cpu::TICKS_PER_SEC;
 #[derive(Default)]
 pub struct State {
     errno: u64,
+    /// `uselocale`'s current locale handle (0: the global one).
+    thread_locale: u64,
     /// Per-image thread-local storage blocks.
     tlv_blocks: HashMap<(usize, usize), u64>,
     /// Queued async work: (function, context). Blocks are queued as (invoke, block).
@@ -1256,6 +1258,21 @@ fn aligned_alloc(emu: &mut Emu) -> Result<()> {
 pub(crate) const MORE_FUNCS: &[(&str, HostFn)] = &[
     ("_newlocale", newlocale),
     ("_freelocale", ret_zero),
+    // pomme formats numbers in the C locale regardless, so a thread's locale is
+    // only a handle: uselocale returns the previous one (LC_GLOBAL_LOCALE = -1).
+    ("_uselocale", |e| {
+        let (new, old) = (e.arg(0), e.sys.thread_locale);
+        if new != 0 {
+            e.sys.thread_locale = new;
+        }
+        e.ret(if old == 0 { u64::MAX } else { old });
+        Ok(())
+    }),
+    ("_duplocale", |e| {
+        let l = e.arg(0);
+        e.ret(l);
+        Ok(())
+    }),
     ("_setlocale", setlocale),
     ("_localeconv_l", localeconv),
     ("____mb_cur_max_l", ret_one),

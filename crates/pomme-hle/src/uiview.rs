@@ -160,27 +160,69 @@ fn set_window_recursive(emu: &mut Emu, v: u64, w: u64) {
     }
 }
 
+/// Send `sel` (with `args`) if the view implements it.
+fn notify(emu: &mut Emu, v: u64, sel: &str, args: &[u64]) -> Result<()> {
+    let s = objc::intern(emu, sel)?;
+    if objc::responds(emu, v, s)? {
+        send(emu, v, sel, args)?;
+    }
+    Ok(())
+}
+
+/// `sel` to `v` and every view under it, parents first (the window callbacks).
+fn notify_tree(emu: &mut Emu, v: u64, sel: &str, args: &[u64]) -> Result<()> {
+    notify(emu, v, sel, args)?;
+    for s in view(emu, v).subviews {
+        notify_tree(emu, s, sel, args)?;
+    }
+    Ok(())
+}
+
+/// Move `child` under `parent` (0: out of the hierarchy) with UIKit's
+/// callbacks: willRemoveSubview: / willMoveToSuperview: / willMoveToWindow:
+/// (whole subtree, when the window changes) before, and the did… ones after.
+fn move_view(emu: &mut Emu, child: u64, parent: u64, index: Option<usize>) -> Result<()> {
+    let old_parent = view(emu, child).superview;
+    let old_window = view(emu, child).window;
+    let new_window = if parent == 0 { 0 } else if emu.ui.windows.contains(&parent) { parent } else { view(emu, parent).window };
+    let reparent = old_parent != parent;
+    let rewindow = old_window != new_window;
+    if reparent {
+        if old_parent != 0 {
+            notify(emu, old_parent, "willRemoveSubview:", &[child])?;
+        }
+        notify(emu, child, "willMoveToSuperview:", &[parent])?;
+    }
+    if rewindow {
+        notify_tree(emu, child, "willMoveToWindow:", &[new_window])?;
+    }
+    detach(emu, child);
+    if parent != 0 {
+        let p = view_mut(emu, parent);
+        let i = index.unwrap_or(p.subviews.len()).min(p.subviews.len());
+        p.subviews.insert(i, child);
+        p.needs_layout = true;
+        view_mut(emu, child).superview = parent;
+        view_mut(emu, child).needs_layout = true;
+    }
+    set_window_recursive(emu, child, new_window);
+    if reparent {
+        notify(emu, child, "didMoveToSuperview", &[])?;
+    }
+    if rewindow {
+        notify_tree(emu, child, "didMoveToWindow", &[])?;
+    }
+    if reparent && parent != 0 {
+        notify(emu, parent, "didAddSubview:", &[child])?;
+    }
+    Ok(())
+}
+
 fn insert_subview(emu: &mut Emu, parent: u64, child: u64, index: Option<usize>) -> Result<()> {
     if child == 0 || child == parent {
         return Ok(());
     }
-    detach(emu, child);
-    let p = view_mut(emu, parent);
-    let i = index.unwrap_or(p.subviews.len()).min(p.subviews.len());
-    p.subviews.insert(i, child);
-    p.needs_layout = true;
-    view_mut(emu, child).superview = parent;
-    view_mut(emu, child).needs_layout = true;
-    let w = view(emu, parent).window;
-    set_window_recursive(emu, child, w);
-    for (sel, arg) in [("didMoveToSuperview", None), ("didMoveToWindow", None), ("didAddSubview:", Some(child))] {
-        let target = if arg.is_some() { parent } else { child };
-        let s = objc::intern(emu, sel)?;
-        if objc::responds(emu, target, s)? {
-            send(emu, target, sel, &arg.into_iter().collect::<Vec<_>>())?;
-        }
-    }
-    Ok(())
+    move_view(emu, child, parent, index)
 }
 
 fn add_subview(emu: &mut Emu) -> Result<()> {
@@ -200,9 +242,10 @@ fn insert_subview_relative(emu: &mut Emu, above: bool) -> Result<()> {
 
 fn remove_from_superview(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
-    detach(emu, v);
-    set_window_recursive(emu, v, 0);
-    Ok(())
+    if view(emu, v).superview == 0 {
+        return Ok(());
+    }
+    move_view(emu, v, 0, None)
 }
 
 fn subviews(emu: &mut Emu) -> Result<()> {

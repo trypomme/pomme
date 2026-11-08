@@ -32,6 +32,8 @@ mod json;
 mod regex;
 pub mod navigation;
 pub mod system;
+mod coretext;
+pub mod metal;
 mod image;
 mod nstimer;
 pub mod net;
@@ -201,6 +203,7 @@ pub struct Emu {
     pub(crate) nav: navigation::State,
     /// The iOS version presented, and the app's linked SDK (see system.rs).
     pub system: system::System,
+    pub metal: metal::State,
     bundle: bundle::State,
 }
 
@@ -211,7 +214,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -263,6 +266,7 @@ impl Emu {
             regex: Default::default(),
             nav: Default::default(),
             system: Default::default(),
+            metal: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;

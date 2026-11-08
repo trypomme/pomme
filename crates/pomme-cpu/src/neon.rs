@@ -266,6 +266,18 @@ impl Cpu {
             self.q[rd as usize] &= u64::MAX as u128;
             return r;
         }
+        // Scalar x indexed element: FMLA / FMLS / FMUL / FMULX on one S or D element
+        if insn & 0xdf00_0400 == 0x5f00_0000 {
+            let opcode = bits(insn, 15, 12);
+            let fp = matches!((opcode, u), (0b0001, false) | (0b0101, false) | (0b1001, _));
+            if !fp || size >> 1 != 1 {
+                return unimpl;
+            }
+            let esize = if size & 1 == 1 { 64 } else { 32 };
+            self.neon_by_element(insn, false, u, size, rd, rn, vn, vd)?;
+            self.q[rd as usize] &= ones(esize) as u128;
+            return Ok(());
+        }
         // Scalar two-register misc
         if insn & 0xdf3e_0c00 == 0x5e20_0800 {
             return self.neon_two_misc(insn, false, u, size, rd, vn, vd, true);
@@ -527,6 +539,20 @@ impl Cpu {
         let esize = 8 << size;
         let n = if scalar { 1 } else { datasize / esize };
 
+        // SHLL / SHLL2: widen each element of a half of Rn and shift it left by its size.
+        if (opcode, u) == (0b10011, true) && !scalar {
+            if size == 3 {
+                return unimpl;
+            }
+            let src = if q { vn >> 64 } else { vn };
+            let wide = esize * 2;
+            let mut r = 0u128;
+            for i in 0..64 / esize {
+                r = put(r, wide, i, el(src, esize, i) << esize);
+            }
+            self.q[rd as usize] = r;
+            return Ok(());
+        }
         // XTN / SQXTN / UQXTN / SQXTUN: narrow 2*esize -> esize into a half of Rd
         if matches!((opcode, u), (0b10010, _) | (0b10100, _)) && !scalar {
             if size == 3 {

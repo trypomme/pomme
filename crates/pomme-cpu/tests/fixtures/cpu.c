@@ -179,3 +179,31 @@ double widen_sum(double a, double b) {
     for (int i = 0; i < 4; i++) s = s * 3 + out[i].h * 5 + out[i].v;
     return s;
 }
+
+// SHLL / SHLL2 (shift left long by the element size), as Skia's SkRecordCanvas
+// uses to pack rounded bounds: each lane widened, then moved to the top half.
+#include <arm_neon.h>
+uint64_t shll_mix(uint32_t a, uint32_t b, uint16_t c) {
+    int32x4_t v = {(int32_t)a, (int32_t)b, (int32_t)(a ^ b), -7};
+    int64x2_t lo = vshll_n_s32(vget_low_s32(v), 32);
+    int64x2_t hi = vshll_high_n_s32(v, 32);
+    uint16x8_t w = vdupq_n_u16(c);
+    w = vsetq_lane_u16((uint16_t)(c + 3), w, 5);
+    uint32x4_t wl = vshll_n_u16(vget_low_u16(w), 16);
+    uint32x4_t wh = vshll_high_n_u16(w, 16);
+    uint64_t s = 0;
+    s = s * 31 + (uint64_t)vgetq_lane_s64(lo, 0) + (uint64_t)vgetq_lane_s64(lo, 1);
+    s = s * 31 + (uint64_t)vgetq_lane_s64(hi, 0) + (uint64_t)vgetq_lane_s64(hi, 1);
+    s = s * 31 + vgetq_lane_u32(wl, 0) + vgetq_lane_u32(wh, 1);
+    return s;
+}
+
+// Scalar FMUL / FMLA by element (Skia's SkRRect::setRectXY): fmul s, s, v.s[i].
+float scale_by_lane(float a, float b, float c) {
+    float32x4_t v = {a, b, c, a + b};
+    float x = vmuls_laneq_f32(c, v, 1);   // c * b
+    x = vfmas_laneq_f32(x, a, v, 3);      // x + a * (a + b)
+    float64x2_t halves = {0.5, 4.0};
+    double y = vmuld_laneq_f64((double)x, halves, 1);
+    return (float)y;
+}

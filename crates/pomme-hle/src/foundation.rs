@@ -3312,6 +3312,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "dataUsingEncoding:allowLossyConversion:", string_data_using_encoding),
     ("NSString", false, "initWithData:encoding:", string_with_data),
     ("NSString", false, "initWithBytes:length:encoding:", string_with_bytes),
+    // The bytes are copied, so a buffer handed over (freeWhenDone) is freed now.
+    ("NSString", false, "initWithBytesNoCopy:length:encoding:freeWhenDone:", |e| {
+        let (bytes, free) = (e.arg(2), e.arg(5) & 0xff != 0);
+        string_with_bytes(e)?;
+        let s = e.cpu.x[0];
+        if free && bytes != 0 {
+            e.heap.free(&e.p.memory, bytes)?;
+        }
+        e.ret(s);
+        Ok(())
+    }),
     ("NSString", true, "stringWithContentsOfFile:encoding:error:", string_with_contents_of_file),
     ("NSString", false, "initWithContentsOfFile:encoding:error:", string_with_contents_of_file),
     ("NSFileManager", true, "defaultManager", file_manager),

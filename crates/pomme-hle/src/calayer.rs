@@ -495,6 +495,15 @@ f64_prop!(z_position, set_z_position, z);
 const L: &str = "CALayer";
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    // `+layer`: a new, initialized layer of the receiving class.
+    ("CALayer", true, "layer", |e| {
+        let cls = e.arg(0);
+        let l = objc::send(e, cls, "alloc", &[])?;
+        let l = objc::send(e, l, "init", &[])?;
+        objc::send(e, l, "autorelease", &[])?;
+        e.ret(l);
+        Ok(())
+    }),
     (L, true, "layer", layer_class_new),
     (L, false, "init", ret_self),
     (L, false, "bounds", get_bounds),

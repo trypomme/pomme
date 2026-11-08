@@ -360,6 +360,35 @@ fn float_to_double_widening() {
     }
 }
 
+#[test]
+fn shift_left_long() {
+    // Mirrors shll_mix in cpu.c: SHLL / SHLL2 on 32- and 16-bit lanes.
+    let reference = |a: u32, b: u32, c: u16| {
+        let v = [a as i32, b as i32, (a ^ b) as i32, -7];
+        let shl = |x: i32| ((x as i64) << 32) as u64;
+        let mut s: u64 = 0;
+        s = s.wrapping_mul(31).wrapping_add(shl(v[0])).wrapping_add(shl(v[1]));
+        s = s.wrapping_mul(31).wrapping_add(shl(v[2])).wrapping_add(shl(v[3]));
+        let w = |i: usize| if i == 5 { c.wrapping_add(3) } else { c } as u64;
+        s.wrapping_mul(31).wrapping_add(w(0) << 16).wrapping_add(w(5) << 16)
+    };
+    for (a, b, c) in [(1, 2, 3), (0xdead_beef, 0x1234_5678, 0xfff0), (0, u32::MAX, 0)] {
+        check_int("shll_mix", &[I(a as u64), I(b as u64), I(c as u64)], reference(a, b, c));
+    }
+}
+
+#[test]
+fn scalar_multiply_by_element() {
+    // Mirrors scale_by_lane in cpu.c (the C computes in float, then double).
+    let reference = |a: f32, b: f32, c: f32| {
+        let x = a.mul_add(a + b, c * b);
+        (x as f64 * 4.0) as f32
+    };
+    for (a, b, c) in [(1.5f32, 2.0f32, -3.0f32), (0.25, 100.0, 7.0)] {
+        check_f32("scale_by_lane", &[F(a), F(b), F(c)], reference(a, b, c));
+    }
+}
+
 /// The HLE loop in miniature: trap on a system-library stub, emulate it on the
 /// host, and resume the guest.
 #[test]
