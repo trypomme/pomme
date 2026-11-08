@@ -44,6 +44,18 @@ enum Cmd {
         /// Directory of pomme-built system libraries (see scripts/build-sysroot.sh).
         #[arg(long, default_value = "vendor/sysroot")]
         sysroot: PathBuf,
+        /// Run from a bundle made by `pomme bundle` instead of the disk (PATH is then ignored).
+        #[arg(long)]
+        bundle: Option<PathBuf>,
+    },
+    /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
+    Bundle {
+        path: PathBuf,
+        /// Where to write the bundle.
+        #[arg(short, long)]
+        out: PathBuf,
+        #[arg(long, default_value = "vendor/sysroot")]
+        sysroot: PathBuf,
     },
     /// Load and link a .app into guest memory, and report the result.
     Load {
@@ -58,8 +70,100 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot } => run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot),
+        Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle } => {
+            let (path, sysroot) = match bundle {
+                Some(b) => {
+                    let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
+                    pomme_loader::vfs::mount(&bytes).map_err(anyhow::Error::msg)?;
+                    let app = bundle_app_path(&bytes).context("the bundle has no .app")?;
+                    (PathBuf::from(app), PathBuf::from(BUNDLE_SYSROOT))
+                }
+                None => (path, sysroot),
+            };
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot)
+        }
     }
+}
+
+/// Where a bundle puts things.
+const BUNDLE_APP_DIR: &str = "/app";
+const BUNDLE_SYSROOT: &str = "/sysroot";
+
+/// The `.app` directory inside a bundle (first path under /app/).
+fn bundle_app_path(bytes: &[u8]) -> Option<String> {
+    let s = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into_owned();
+    let start = s.find("/app/")?;
+    let rest = &s[start..];
+    let end = rest.find(".app")? + 4;
+    Some(rest[..end].to_string())
+}
+
+/// Pack the app and the sysroot files it loads (plus fonts) into a vfs bundle.
+fn make_bundle(path: &Path, sysroot: &Path, out: &Path) -> Result<()> {
+    use pomme_loader::vfs::{Entry, write_bundle};
+    let sysroot = sysroot.canonicalize().context("no sysroot (run scripts/build-sysroot.sh)")?;
+    let (_, _, app_dir) = pomme_loader::locate_executable(path)?;
+    let app_dir = app_dir.canonicalize()?;
+    let app_name = app_dir.file_name().context("app path has no name")?.to_string_lossy().into_owned();
+    let app_root = format!("{BUNDLE_APP_DIR}/{app_name}");
+
+    // Which sysroot files the app actually loads.
+    let p = pomme_loader::load_with(&app_dir, &pomme_loader::LoadOptions { sysroot: Some(sysroot.clone()) })?;
+    let loaded: BTreeSet<PathBuf> = p.images.iter().filter(|i| i.path.starts_with(&sysroot)).map(|i| i.path.clone()).collect();
+
+    let map = |host: &Path| -> Option<String> {
+        if let Ok(r) = host.strip_prefix(&app_dir) {
+            return Some(format!("{app_root}/{}", r.display()));
+        }
+        host.strip_prefix(&sysroot).ok().map(|r| format!("{BUNDLE_SYSROOT}/{}", r.display()))
+    };
+    let mut entries: Vec<(String, Entry)> = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        let mut items: Vec<_> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).collect();
+        items.sort();
+        for p in items {
+            if p.symlink_metadata()?.is_dir() {
+                walk(&p, out)?;
+            } else {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut app_files = Vec::new();
+    walk(&app_dir, &mut app_files)?;
+    for f in app_files {
+        let v = map(&f).unwrap();
+        if f.symlink_metadata()?.file_type().is_symlink() {
+            match f.canonicalize().ok().and_then(|t| map(&t)) {
+                Some(t) => entries.push((v, Entry::Symlink(t))),
+                None => entries.push((v, Entry::File(std::fs::read(&f)?))),
+            }
+        } else {
+            entries.push((v, Entry::File(std::fs::read(&f)?)));
+        }
+    }
+    let mut sys_files = Vec::new();
+    walk(&sysroot, &mut sys_files)?;
+    let fonts = sysroot.join("System/Library/Fonts");
+    for f in sys_files {
+        let real = f.canonicalize()?;
+        let wanted = loaded.contains(&real) || f.starts_with(&fonts);
+        if !wanted {
+            continue;
+        }
+        let v = map(&f).unwrap();
+        if f.symlink_metadata()?.file_type().is_symlink() {
+            entries.push((v, Entry::Symlink(map(&real).unwrap())));
+        } else {
+            entries.push((v, Entry::File(std::fs::read(&f)?)));
+        }
+    }
+    let bytes = write_bundle(&entries);
+    std::fs::write(out, &bytes)?;
+    println!("{}: {} files, {:.1} MB ({} as {app_root})", out.display(), entries.len(), bytes.len() as f64 / 1e6, app_dir.display());
+    Ok(())
 }
 
 fn bundle_images(path: &Path) -> Result<(Option<String>, Vec<PathBuf>)> {
@@ -224,8 +328,8 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
-    let sysroot = &sysroot.canonicalize().unwrap_or_else(|_| sysroot.to_path_buf());
-    let opts = pomme_loader::LoadOptions { sysroot: sysroot.is_dir().then(|| sysroot.to_path_buf()) };
+    let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
+    let opts = pomme_loader::LoadOptions { sysroot: pomme_loader::vfs::is_dir(sysroot).then(|| sysroot.to_path_buf()) };
     let p = pomme_loader::load_with(path, &opts)?;
     let system: Vec<_> = p.images.iter().filter(|i| i.path.starts_with(sysroot)).map(|i| i.name.as_str()).collect();
     if !system.is_empty() {

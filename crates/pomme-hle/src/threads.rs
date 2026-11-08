@@ -320,6 +320,28 @@ fn fire_timers(emu: &mut Emu) {
 /// When nothing can run: skip virtual time to the earliest deadline. False if
 /// there is none; [`Stop::TimeLimit`] if it's past the run's time limit.
 fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
+    let next = next_deadline(emu, own);
+    let Some(target) = next else { return Ok(false) };
+    if let Some(limit) = emu.time_limit_ns
+        && target > limit
+    {
+        return Err(Stop::TimeLimit(limit));
+    }
+    advance_to(emu, target);
+    Ok(true)
+}
+
+/// Move virtual time forward to `target_ns` (never back) and fire due timers.
+pub fn advance_to(emu: &mut Emu, target_ns: u64) {
+    let now = now_ns(emu);
+    if target_ns > now {
+        emu.cpu.clock_offset += ns_to_ticks(target_ns - now);
+    }
+    fire_timers(emu);
+}
+
+/// The earliest deadline of any waiting thread or armed timer.
+fn next_deadline(emu: &Emu, own: Option<u64>) -> Option<u64> {
     let mut next = own;
     let mut consider = |d: Option<u64>| {
         if let Some(d) = d {
@@ -334,18 +356,7 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
     for p in emu.th.ports.values() {
         consider(p.timer);
     }
-    let Some(target) = next else { return Ok(false) };
-    if let Some(limit) = emu.time_limit_ns
-        && target > limit
-    {
-        return Err(Stop::TimeLimit(limit));
-    }
-    let now = now_ns(emu);
-    if target > now {
-        emu.cpu.clock_offset += ns_to_ticks(target - now);
-    }
-    fire_timers(emu);
-    Ok(true)
+    next
 }
 
 /// Block the current thread until `wait` completes; returns the call's result
@@ -366,6 +377,10 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
             break Ok(r);
         }
         if schedule_round(emu)? {
+            continue;
+        }
+        // A live host paces time on the wall clock and may deliver input.
+        if emu.live.host.is_some() && crate::host::idle(emu, next_deadline(emu, wait.deadline()))? {
             continue;
         }
         if !advance_time(emu, wait.deadline())? {

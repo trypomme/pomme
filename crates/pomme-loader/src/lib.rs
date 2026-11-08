@@ -8,6 +8,7 @@
 //!
 //! Not done yet: running initializers, ObjC/Swift runtime registration, TLS.
 
+pub mod vfs;
 use pomme_mem::{Memory, PAGE_SIZE, page_align_up};
 use pomme_macho::{Dylib, DylibKind, ExportKind, FileType, Fixup, Image, LibOrdinal};
 use std::collections::{HashMap, VecDeque};
@@ -242,7 +243,7 @@ pub fn load(path: &Path) -> Result<Process> {
 /// The sysroot copy of a system library, if there is one.
 fn sysroot_dylib(sysroot: Option<&Path>, install: &str) -> Option<PathBuf> {
     let file = sysroot?.join(install.trim_start_matches('/'));
-    file.is_file().then(|| file.canonicalize().unwrap_or(file))
+    vfs::is_file(&file).then(|| vfs::canonicalize(&file))
 }
 
 pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
@@ -464,7 +465,7 @@ impl Linker<'_> {
 }
 
 fn read(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|source| LoadError::Io { path: path.into(), source })
+    vfs::read(path).map_err(|source| LoadError::Io { path: path.into(), source })
 }
 
 fn parse<'a>(path: &Path, bytes: &'a [u8]) -> Result<Image<'a>> {
@@ -477,13 +478,13 @@ fn display_name(p: &Path) -> String {
 
 /// Returns (bundle id, executable path, app directory).
 pub fn locate_executable(path: &Path) -> Result<(Option<String>, PathBuf, PathBuf)> {
-    if path.is_file() {
+    if vfs::is_file(path) {
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         return Ok((None, path.to_path_buf(), dir));
     }
     let plist_path = path.join("Info.plist");
     let info: plist::Dictionary =
-        plist::from_file(&plist_path).map_err(|source| LoadError::Plist { path: plist_path.clone(), source })?;
+        plist::from_bytes(&read(&plist_path)?).map_err(|source| LoadError::Plist { path: plist_path.clone(), source })?;
     let exe = info
         .get("CFBundleExecutable")
         .and_then(|v| v.as_string())
@@ -515,5 +516,5 @@ fn resolve_dylib_path(install: &str, loader: &Path, app_dir: &Path, rpaths: &[St
     } else {
         vec![expand(install)]
     };
-    candidates.into_iter().find(|c| c.is_file()).map(|c| c.canonicalize().unwrap_or(c))
+    candidates.into_iter().find(|c| vfs::is_file(c)).map(|c| vfs::canonicalize(&c))
 }

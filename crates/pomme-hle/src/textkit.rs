@@ -46,7 +46,7 @@ pub(crate) fn font_bytes(emu: &mut Emu) -> Option<&[u8]> {
             .iter()
             .find(|i| i.path.ends_with("System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"))
             .and_then(|i| i.path.ancestors().nth(5).map(|root| root.join("System/Library/Fonts/Inter.ttf")));
-        emu.text.font = Some(path.and_then(|p| std::fs::read(p).ok()));
+        emu.text.font = Some(path.and_then(|p| pomme_loader::vfs::read(&p).ok()));
     }
     emu.text.font.as_ref().unwrap().as_deref()
 }

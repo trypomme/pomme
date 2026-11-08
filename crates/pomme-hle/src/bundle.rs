@@ -30,7 +30,8 @@ fn guest_bundle_path(emu: &Emu) -> String {
 
 /// The app's Info.plist, parsed on the host.
 pub(crate) fn host_info_plist(emu: &Emu) -> Option<plist::Value> {
-    plist::Value::from_file(host_app_dir(emu).join("Info.plist")).ok()
+    let bytes = pomme_loader::vfs::read(&host_app_dir(emu).join("Info.plist")).ok()?;
+    plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()
 }
 
 /// Convert a parsed plist value into Foundation objects in guest memory.
@@ -66,9 +67,9 @@ fn main_bundle(emu: &mut Emu) -> Result<u64> {
         let b = emu.alloc(16)?;
         emu.write_u64(b, cls)?;
         emu.bundle.main = b;
-        let info = match plist::Value::from_file(host_app_dir(emu).join("Info.plist")) {
-            Ok(v) => plist_to_guest(emu, &v)?,
-            Err(_) => foundation::new_dict_of(emu, &[])?,
+        let info = match host_info_plist(emu) {
+            Some(v) => plist_to_guest(emu, &v)?,
+            None => foundation::new_dict_of(emu, &[])?,
         };
         emu.bundle.info = info;
     }
@@ -135,7 +136,7 @@ fn resource_name(emu: &mut Emu, name: u64, ext: u64) -> Result<String> {
 /// `-pathForResource:ofType:` → guest path if the file is in the .app, else nil.
 fn path_for_resource(emu: &mut Emu) -> Result<()> {
     let file = resource_name(emu, emu.arg(2), emu.arg(3))?;
-    if file.is_empty() || !host_app_dir(emu).join(&file).exists() {
+    if file.is_empty() || !pomme_loader::vfs::exists(&host_app_dir(emu).join(&file)) {
         emu.ret(0);
         return Ok(());
     }
@@ -146,7 +147,7 @@ fn path_for_resource(emu: &mut Emu) -> Result<()> {
 /// `-URLForResource:withExtension:` → file URL if the file is in the .app, else nil.
 fn url_for_resource(emu: &mut Emu) -> Result<()> {
     let file = resource_name(emu, emu.arg(2), emu.arg(3))?;
-    if file.is_empty() || !host_app_dir(emu).join(&file).exists() {
+    if file.is_empty() || !pomme_loader::vfs::exists(&host_app_dir(emu).join(&file)) {
         emu.ret(0);
         return Ok(());
     }

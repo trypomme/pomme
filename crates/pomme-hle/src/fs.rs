@@ -7,6 +7,7 @@
 //! reads are deterministic even if the host file changes later.
 
 use crate::{Emu, HostFn, Result};
+use pomme_loader::vfs;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -55,10 +56,10 @@ pub fn host_path(emu: &Emu, guest: &str) -> Option<PathBuf> {
 /// Read a whole guest file.
 pub fn read_file(emu: &Emu, guest: &str) -> Option<Vec<u8>> {
     let p = host_path(emu, guest)?;
-    if !p.is_file() {
+    if !vfs::is_file(&p) {
         return None;
     }
-    std::fs::read(p).ok()
+    vfs::read(&p).ok()
 }
 
 fn fail(emu: &mut Emu, errno: u64) -> Result<()> {
@@ -177,8 +178,8 @@ fn fstat(emu: &mut Emu) -> Result<()> {
 fn stat(emu: &mut Emu) -> Result<()> {
     let (path, buf) = (emu.cstr(emu.arg(0))?, emu.arg(1));
     let Some(p) = host_path(emu, &path) else { return fail(emu, ENOENT) };
-    let Ok(meta) = std::fs::metadata(&p) else { return fail(emu, ENOENT) };
-    write_stat(emu, buf, meta.len(), meta.is_dir())?;
+    let Some(len) = vfs::len(&p) else { return fail(emu, ENOENT) };
+    write_stat(emu, buf, len, vfs::is_dir(&p))?;
     emu.ret(0);
     Ok(())
 }
@@ -188,11 +189,11 @@ fn access(emu: &mut Emu) -> Result<()> {
     let (path, mode) = (emu.cstr(emu.arg(0))?, emu.arg(1));
     const W_OK: u64 = 2;
     match host_path(emu, &path) {
-        Some(p) if p.exists() && mode & W_OK == 0 => {
+        Some(p) if vfs::exists(&p) && mode & W_OK == 0 => {
             emu.ret(0);
             Ok(())
         }
-        Some(p) if p.exists() => fail(emu, EACCES),
+        Some(p) if vfs::exists(&p) => fail(emu, EACCES),
         _ => fail(emu, ENOENT),
     }
 }

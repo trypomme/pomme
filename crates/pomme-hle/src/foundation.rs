@@ -2767,9 +2767,9 @@ fn file_exists(emu: &mut Emu) -> Result<()> {
     let (path, is_dir_out) = (emu.arg(2), emu.arg(3));
     let path = nsstring(emu, path)?;
     let host = crate::fs::host_path(emu, &path);
-    let exists = host.as_ref().is_some_and(|p| p.exists());
+    let exists = host.as_ref().is_some_and(|p| pomme_loader::vfs::exists(p));
     if exists && is_dir_out != 0 && objc::sel_name(emu, emu.arg(1)).contains("isDirectory") {
-        let dir = host.as_ref().is_some_and(|p| p.is_dir());
+        let dir = host.as_ref().is_some_and(|p| pomme_loader::vfs::is_dir(p));
         emu.p.memory.write_u8(is_dir_out, dir as u8)?;
     }
     ret_bool(emu, exists)

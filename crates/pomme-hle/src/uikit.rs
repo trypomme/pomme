@@ -118,12 +118,16 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     // Lay out dirty views whenever the loop is about to sleep, like CoreAnimation's commit observer.
     const BEFORE_WAITING: u64 = 1 << 5;
     const EXIT: u64 = 1 << 7;
-    let callout = emu.host_thunk(crate::uiview::layout_windows)?;
+    let callout = emu.host_thunk(|e| {
+        crate::uiview::layout_windows(e)?;
+        crate::host::maybe_frame(e)
+    })?;
     let observer = foundation::cf_call(emu, "_CFRunLoopObserverCreate", &[0, BEFORE_WAITING | EXIT, 1, 2_000_000, callout, 0])?;
     let rl = foundation::cf_call(emu, "_CFRunLoopGetMain", &[])?;
     let common = foundation::cf_data_pub(emu, "_kCFRunLoopCommonModes")?;
     foundation::cf_call(emu, "_CFRunLoopAddObserver", &[rl, observer, common])?;
     crate::touch::schedule_script(emu)?;
+    crate::host::install(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
         let r = foundation::cf_call(emu, "_CFRunLoopRunInMode", &[mode, 0])?;
