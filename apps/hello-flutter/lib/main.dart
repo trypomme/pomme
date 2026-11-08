@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 // The same scene as apps/hello-skia, so Flutter (Impeller on Metal) and React
 // Native Skia (Ganesh on Metal) can be compared with each other and with the
 // iOS Simulator: a dark slate rounded square with a rose → amber gradient
-// circle, plus a tap counter.
+// circle, a white stroked chevron under it, plus a tap counter.
 
 void main() => runApp(const HelloApp());
 
@@ -43,17 +43,23 @@ class _HelloPageState extends State<HelloPage> {
                 height: 300,
                 decoration: BoxDecoration(color: const Color(0xFF1E293B), borderRadius: BorderRadius.circular(32)),
                 alignment: Alignment.center,
-                child: Container(
-                  width: 140,
-                  height: 140,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Color(0xFFF43F5E), Color(0xFFF59E0B)],
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 140,
+                      height: 140,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFFF43F5E), Color(0xFFF59E0B)],
+                        ),
+                      ),
                     ),
-                  ),
+                    const CustomPaint(size: Size(300, 300), painter: ChevronPainter()),
+                  ],
                 ),
               ),
             ),
@@ -64,4 +70,27 @@ class _HelloPageState extends State<HelloPage> {
       ),
     );
   }
+}
+
+/// hello-skia's chevron (120×40, 8 pt round stroke), below the circle here.
+class ChevronPainter extends CustomPainter {
+  const ChevronPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..moveTo(90, 275)
+      ..lineTo(150, 235)
+      ..lineTo(210, 275);
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(ChevronPainter oldDelegate) => false;
 }

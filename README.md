@@ -69,8 +69,8 @@ What pomme aims to run, and the iOS graphics path each one takes.
 | Native UIKit / SwiftUI | UIKit, Core Animation, Metal | — | later |
 
 Flutter in pomme (left) and in the iOS Simulator on an iPhone 17 (right). Offset to the same
-center, the page, square and gradient circle differ by at most 3/255 (Impeller's gradient
-dithering). The text differs only in typeface: the system font is SF Pro on iOS, and pomme
+center, the page, square and stroked chevron are identical, and the gradient circle differs by at
+most 3/255 (Impeller's gradient dithering). The text differs only in typeface: the system font is SF Pro on iOS, and pomme
 draws it with Inter because SF Pro can't be redistributed.
 
 <img src="docs/hello-flutter.png" width="280" alt="hello-flutter rendered by pomme"> <img src="docs/hello-flutter-simulator.png" width="289" alt="hello-flutter in the iOS Simulator">

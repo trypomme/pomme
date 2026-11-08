@@ -36,8 +36,9 @@ fn engine_boots_and_builds_impeller_pipelines() {
 /// The first frame reaches the screen: the root view controller appears (so
 /// the framework enables frames), the display link drives a frame, Impeller
 /// renders it on the host GPU into FlutterMetalLayer's IOSurface, and the
-/// layer shows it: the white page and the slate rounded square (300 pt,
-/// centered at 3×).
+/// layer shows it: the white page, the slate rounded square (300 pt, centered
+/// at 3×), the gradient circle, the stroked chevron and the text. Pixels
+/// checked here match the iOS Simulator's.
 #[test]
 fn first_frame_renders() {
     let Some(mut emu) = boot() else { return };
@@ -67,6 +68,15 @@ fn first_frame_renders() {
     let (start, end) = (at(150.0, 377.0), at(240.0, 467.0));
     assert!(start.0 > 220 && start.1 < 110 && start.2 > 60, "gradient start: {start:?}");
     assert!(end.0 > 220 && end.1 > 120 && end.2 < 60, "gradient end: {end:?}");
+    // The chevron (an 8 pt round-capped stroke, (135, 547) → (195, 507) →
+    // (255, 547) pt, which Impeller tessellates into triangles): white on the
+    // stroke, and only there: under its apex is still the square.
+    assert!(near(at(165.0, 527.0), (255, 255, 255)), "stroke: {:?}", at(165.0, 527.0));
+    assert!(near(at(225.0, 527.0), (255, 255, 255)), "stroke: {:?}", at(225.0, 527.0));
+    assert!(near(at(195.0, 528.0), (0x1e, 0x29, 0x3b)), "under the chevron: {:?}", at(195.0, 528.0));
+    // The round caps reach past the ends: half the stroke width.
+    assert!(near(at(132.5, 547.0), (255, 255, 255)), "cap: {:?}", at(132.5, 547.0));
+    assert!(near(at(129.0, 547.0), (0x1e, 0x29, 0x3b)), "past the cap: {:?}", at(129.0, 547.0));
     // The text above and below the square (CoreText glyphs in Impeller's atlas):
     // dark ink in each line's band, none in the empty band between them.
     let ink = |y0: f64, y1: f64| {
