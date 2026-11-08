@@ -63,12 +63,17 @@ What pomme aims to run, and the iOS graphics path each one takes.
 |---|---|---|---|
 | Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
-| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders the full scene and counts taps (not yet compared with the simulator) |
+| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders and counts taps; matches the iOS Simulator to 3/255 except the font |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |
 | Defold | Vulkan → MoltenVK → Metal (older builds: OpenGL ES) | — | planned: needs MoltenVK's runtime MSL, maybe GLES |
 | Native UIKit / SwiftUI | UIKit, Core Animation, Metal | — | later |
 
-![hello-flutter rendered by pomme](docs/hello-flutter.png)
+Flutter in pomme (left) and in the iOS Simulator on an iPhone 17 (right). Offset to the same
+center, the page, square and gradient circle differ by at most 3/255 (Impeller's gradient
+dithering). The text differs only in typeface: the system font is SF Pro on iOS, and pomme
+draws it with Inter because SF Pro can't be redistributed.
+
+<img src="docs/hello-flutter.png" width="280" alt="hello-flutter rendered by pomme"> <img src="docs/hello-flutter-simulator.png" width="289" alt="hello-flutter in the iOS Simulator">
 
 ## Rough roadmap
 
