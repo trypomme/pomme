@@ -680,8 +680,9 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     if vw.layer != 0 {
         draw_sublayers(emu, p, vw.layer, a, &inner, m);
     }
-    if let Ok(Some((title, back))) = crate::navigation::bar_titles(emu, v) {
-        draw_bar(emu, p, &title, back.is_some(), w, h, a, &inner, m);
+    if let Ok(Some(look)) = crate::navigation::bar_look(emu, v) {
+        let above = crate::uiview::window_origin(emu, v)[1] as f32;
+        draw_bar(emu, p, &look, w, h, above, a, &inner, m);
     }
     for s in vw.subviews {
         draw_view(emu, p, s, a, &inner, m);
@@ -689,16 +690,35 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     draw_border(p, &ly, &emu.ui.views.colors, w, h, a, &vt, mask);
 }
 
-/// A navigation bar, iOS 26 style: no background, a centered semibold title,
-/// and a round back button with a chevron.
+/// A navigation bar. iOS 26: no background, a centered title and a round
+/// glass back button. Before: the configured background (reaching up under
+/// the status bar, `above` points), a hairline, and a tinted chevron + label.
 #[allow(clippy::too_many_arguments)]
-fn draw_bar(emu: &mut Emu, p: &mut Painter, title: &str, back: bool, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    const SIZE: f64 = 17.0;
-    let (glyphs, width) = crate::textkit::line_glyphs(emu, title, SIZE, 0.3, [0.0, 0.0, 0.0, 1.0], 0.0, 0.0);
-    let (x, baseline) = ((w as f64 - width) / 2.0, h as f64 / 2.0 + SIZE * 0.35);
-    let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, y: baseline, ..g }).collect();
+fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    use crate::navigation::{BACK_LABEL_X, TITLE_SIZE, TITLE_WEIGHT};
+    const TINT: [f64; 4] = [0.0, 0.478, 1.0, 1.0]; // systemBlue
+    let baseline = h as f64 / 2.0 + TITLE_SIZE * 0.35;
+    if let Some(bg) = look.background {
+        p.fill(&rect_els(0.0, -above, w, h + above), bg.map(|v| v as f32), alpha, false, t, mask);
+    }
+    if let Some(sh) = look.shadow {
+        // One device pixel (1/3 pt) along the bottom edge.
+        p.fill(&rect_els(0.0, h, w, 1.0 / 3.0), sh.map(|v| v as f32), alpha, false, t, mask);
+    }
+    let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
+    let x = (w as f64 - width) / 2.0;
+    let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
     p.glyphs(&placed, alpha, t, mask);
-    if back {
+    let Some(back) = &look.back else { return };
+    let round = Stroke { width: 2.6, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+    let chevron = |p: &mut Painter, cx: f32, cy: f32, half: f32, depth: f32, color: [f64; 4], width: f32| {
+        let els = [El::Move(cx + depth / 2.0, cy - half), El::Line(cx - depth / 2.0, cy), El::Line(cx + depth / 2.0, cy + half)];
+        let s = Stroke { width, ..round.clone() };
+        if let (Some(path), Some(paint)) = (build(&els), paint(color.map(|v| v as f32), alpha)) {
+            p.pix.stroke_path(&path, &paint, &s, ts(t), mask);
+        }
+    };
+    if look.glass {
         // A 44-pt glass circle 16 pt in, with a chevron.
         let (d, cx, cy) = (44.0f32, 16.0 + 22.0, h / 2.0);
         let mut circle = Vec::new();
@@ -706,10 +726,12 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, title: &str, back: bool, w: f32, h: 
         circle.push(El::Close);
         p.fill(&circle, [0.96, 0.96, 0.97, 1.0], alpha, false, t, mask);
         p.stroke(&circle, [0.0, 0.0, 0.0, 0.06], alpha, 0.5, t, mask);
-        let chevron = [El::Move(cx + 3.5, cy - 8.0), El::Line(cx - 4.5, cy), El::Line(cx + 3.5, cy + 8.0)];
-        let s = Stroke { width: 2.6, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
-        if let (Some(path), Some(paint)) = (build(&chevron), paint([0.0, 0.0, 0.0, 1.0], alpha)) {
-            p.pix.stroke_path(&path, &paint, &s, ts(t), mask);
+        chevron(p, cx - 0.5, cy, 8.0, 8.0, [0.0, 0.0, 0.0, 1.0], 2.6);
+    } else {
+        chevron(p, 8.0 + 6.0, h / 2.0, 10.5, 10.0, TINT, 3.0);
+        if let Some(label) = &back.label {
+            let (glyphs, _) = crate::textkit::line_glyphs(emu, label, TITLE_SIZE, 0.0, TINT, BACK_LABEL_X, baseline);
+            p.glyphs(&glyphs, alpha, t, mask);
         }
     }
 }

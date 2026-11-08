@@ -342,10 +342,131 @@ fn nc_pop_gesture(emu: &mut Emu) -> Result<()> {
     ret(emu, g)
 }
 
-// ---- UINavigationBar (what's on it, for drawing; its back button) ----
+// ---- UINavigationBar: what's on it, how it looks, its back button ----
 
-/// The back button's tap area in bar coordinates: the 44-pt circle 16 pt in, with slop.
-pub const BACK_BUTTON: [f64; 4] = [8.0, 0.0, 60.0, BAR_HEIGHT];
+/// What to draw for a navigation bar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BarLook {
+    pub title: String,
+    pub back: Option<Back>,
+    /// The iOS 26 design (glass back button, no bar background) or the one before.
+    pub glass: bool,
+    /// Fill behind the bar, extended up under the status bar (pre-26).
+    pub background: Option<[f64; 4]>,
+    /// The hairline along the bar's bottom edge (pre-26).
+    pub shadow: Option<[f64; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Back {
+    /// Text next to the chevron (pre-26 only; None: chevron alone).
+    pub label: Option<String>,
+    /// Tap area in bar coordinates (x, width).
+    pub hit: (f64, f64),
+}
+
+/// Font of bar titles and back labels.
+pub const TITLE_SIZE: f64 = 17.0;
+pub const TITLE_WEIGHT: f64 = 0.3; // semibold
+/// Pre-26 back button: chevron at x 8, label 26 pt further.
+pub const BACK_LABEL_X: f64 = 26.0;
+/// UIKit's default bar hairline: black at 30%.
+const DEFAULT_SHADOW: [f64; 4] = [0.0, 0.0, 0.0, 0.3];
+/// The default (blurred) bar material, flattened: pomme doesn't blur yet.
+const CHROME_MATERIAL: [f64; 4] = [0.976, 0.976, 0.976, 0.94];
+
+// UIBarAppearance background configurations.
+const DEFAULT_BACKGROUND: u64 = 0;
+const OPAQUE_BACKGROUND: u64 = 1;
+const TRANSPARENT_BACKGROUND: u64 = 2;
+
+/// `-configureWith…Background` (and a fresh appearance, which is the default
+/// configuration): UIKit's values for the background, blur and hairline.
+fn configure_appearance(emu: &mut Emu, a: u64, style: u64) -> Result<()> {
+    emu.nav.props.insert((a, "background"), style);
+    let bg = match style {
+        OPAQUE_BACKGROUND => crate::uiview::new_color(emu, [1.0, 1.0, 1.0, 1.0])?, // systemBackground
+        _ => 0,
+    };
+    let effect = if style == DEFAULT_BACKGROUND { new_object(emu, "UIBlurEffect")? } else { 0 };
+    let shadow = if style == TRANSPARENT_BACKGROUND { 0 } else { crate::uiview::new_color(emu, DEFAULT_SHADOW)? };
+    objc::bag_set(emu, a, "backgroundColor", bg);
+    objc::bag_set(emu, a, "backgroundEffect", effect);
+    objc::bag_set(emu, a, "shadowColor", shadow);
+    objc::bag_set(emu, a, "shadowImage", 0);
+    Ok(())
+}
+
+fn copy_appearance(emu: &mut Emu, from: u64, to: u64) {
+    objc::bag_copy(emu, from, to);
+    if let Some(&style) = emu.nav.props.get(&(from, "background")) {
+        emu.nav.props.insert((to, "background"), style);
+    }
+}
+
+fn color_of(emu: &Emu, c: u64) -> Option<[f64; 4]> {
+    emu.ui.views.colors.get(&c).copied().filter(|c| c[3] > 0.0)
+}
+
+/// Background and hairline from the top item's appearance (pre-26). Content
+/// that doesn't scroll sits at the scroll edge, so `scrollEdgeAppearance`
+/// applies; without one, UIKit uses the standard one made transparent.
+fn bar_background(emu: &mut Emu, item: u64) -> (Option<[f64; 4]>, Option<[f64; 4]>) {
+    let edge = objc::bag_get(emu, item, "scrollEdgeAppearance").unwrap_or(0);
+    if edge == 0 {
+        return (None, None);
+    }
+    let effect = objc::bag_get(emu, edge, "backgroundEffect").unwrap_or(0);
+    let bg = objc::bag_get(emu, edge, "backgroundColor").and_then(|c| color_of(emu, c));
+    let background = bg.or((effect != 0).then_some(CHROME_MATERIAL));
+    let shadow = objc::bag_get(emu, edge, "shadowColor").and_then(|c| color_of(emu, c));
+    (background, shadow)
+}
+
+fn text_width(emu: &mut Emu, text: &str, weight: f64) -> f64 {
+    crate::textkit::line_glyphs(emu, text, TITLE_SIZE, weight, [0.0; 4], 0.0, 0.0).1
+}
+
+/// How a navigation bar looks now, if it belongs to a navigation controller.
+pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
+    let Some(&nc) = emu.nav.bars.get(&bar) else { return Ok(None) };
+    let stack = nav(emu, nc).stack;
+    let Some(&top) = stack.last() else { return Ok(None) };
+    let glass = emu.system.liquid_glass();
+    let title = vc_title(emu, top)?;
+    let top_item = item_of(emu, top)?;
+    let mut back = None;
+    if stack.len() >= 2 && !item_state(emu, top_item).hides_back {
+        back = Some(if glass {
+            // A 44-pt glass circle 16 pt in (with a little slop).
+            Back { label: None, hit: (8.0, 60.0) }
+        } else {
+            let prev = stack[stack.len() - 2];
+            let prev_item = item_of(emu, prev)?;
+            let p = item_state(emu, prev_item);
+            // UINavigationItemBackButtonDisplayMode: default, generic ("Back"), minimal.
+            let mode = objc::bag_get(emu, prev_item, "backButtonDisplayMode").unwrap_or(0);
+            let own = if p.back_title != 0 { foundation::nsstring(emu, p.back_title)? } else { vc_title(emu, prev)? };
+            // The label gets what the centered title leaves; UIKit falls back
+            // from the previous title to "Back" to the chevron alone.
+            let room = (bar_width(emu, bar) - text_width(emu, &title, TITLE_WEIGHT)) / 2.0 - BACK_LABEL_X - 8.0;
+            let candidates: Vec<String> = match mode {
+                2 => vec![],
+                1 => vec!["Back".into()],
+                _ => [own, "Back".into()].into_iter().filter(|t| !t.is_empty()).collect(),
+            };
+            let label = candidates.into_iter().find(|t| text_width(emu, t, 0.0) <= room);
+            let w = BACK_LABEL_X + label.as_ref().map_or(0.0, |l| text_width(emu, l, 0.0)) + 8.0;
+            Back { label, hit: (0.0, w.max(44.0)) }
+        });
+    }
+    let (background, shadow) = if glass { (None, None) } else { bar_background(emu, top_item) };
+    Ok(Some(BarLook { title, back, glass, background, shadow }))
+}
+
+fn bar_width(emu: &mut Emu, bar: u64) -> f64 {
+    view(emu, bar).bounds[2]
+}
 
 /// A finger lifted on the bar: on the back button, pop (as UIKit's own button does).
 fn bar_touches_ended(emu: &mut Emu) -> Result<()> {
@@ -354,38 +475,11 @@ fn bar_touches_ended(emu: &mut Emu) -> Result<()> {
     let Some(p) = crate::touch::active_location(emu) else { return Ok(()) };
     let o = crate::uiview::window_origin(emu, bar);
     let (x, y) = (p[0] - o[0], p[1] - o[1]);
-    let [bx, by, bw, bh] = BACK_BUTTON;
-    let n = nav(emu, nc);
-    if n.stack.len() >= 2 && x >= bx && x < bx + bw && y >= by && y < by + bh {
-        let top = n.stack[n.stack.len() - 1];
-        if !vc_item(emu, top)?.hides_back {
-            send(emu, nc, "popViewControllerAnimated:", &[1])?;
-        }
+    let Some(Back { hit: (bx, bw), .. }) = bar_look(emu, bar)?.and_then(|l| l.back) else { return Ok(()) };
+    if x >= bx && x < bx + bw && (0.0..BAR_HEIGHT).contains(&y) {
+        send(emu, nc, "popViewControllerAnimated:", &[1])?;
     }
     Ok(())
-}
-
-/// The bar's title and back-button title, if it belongs to a navigation controller.
-pub fn bar_titles(emu: &mut Emu, bar: u64) -> Result<Option<(String, Option<String>)>> {
-    let Some(&nc) = emu.nav.bars.get(&bar) else { return Ok(None) };
-    let stack = nav(emu, nc).stack;
-    let Some(&top) = stack.last() else { return Ok(None) };
-    let title = vc_title(emu, top)?;
-    let back = if stack.len() >= 2 {
-        let prev = stack[stack.len() - 2];
-        let item = vc_item(emu, prev)?;
-        let top_item = vc_item(emu, top)?;
-        if top_item.hides_back {
-            None
-        } else if item.back_title != 0 {
-            Some(foundation::nsstring(emu, item.back_title)?)
-        } else {
-            Some(vc_title(emu, prev)?).filter(|t| !t.is_empty()).or(Some("Back".into()))
-        }
-    } else {
-        None
-    };
-    Ok(Some((title, back)))
 }
 
 fn vc_title(emu: &mut Emu, vc: u64) -> Result<String> {
@@ -645,6 +739,35 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // iOS 26: popping by swiping anywhere in the content (pomme has one recognizer for both).
     (NC, false, "interactiveContentPopGestureRecognizer", nc_pop_gesture),
     (NC, false, "toolbar", |e| ret(e, 0)),
+    ("UIBarAppearance", false, "init", |e| {
+        let a = e.arg(0);
+        configure_appearance(e, a, DEFAULT_BACKGROUND)?;
+        ret(e, a)
+    }),
+    ("UIBarAppearance", false, "initWithBarAppearance:", |e| {
+        let (a, from) = (e.arg(0), e.arg(2));
+        copy_appearance(e, from, a);
+        ret(e, a)
+    }),
+    ("UIBarAppearance", false, "copy", |e| {
+        let from = e.arg(0);
+        let cls = objc::class_of(e, from)?;
+        let a = objc::create_instance(e, cls, 0)?;
+        copy_appearance(e, from, a);
+        ret(e, a)
+    }),
+    ("UIBarAppearance", false, "configureWithDefaultBackground", |e| {
+        let a = e.arg(0);
+        configure_appearance(e, a, DEFAULT_BACKGROUND)
+    }),
+    ("UIBarAppearance", false, "configureWithOpaqueBackground", |e| {
+        let a = e.arg(0);
+        configure_appearance(e, a, OPAQUE_BACKGROUND)
+    }),
+    ("UIBarAppearance", false, "configureWithTransparentBackground", |e| {
+        let a = e.arg(0);
+        configure_appearance(e, a, TRANSPARENT_BACKGROUND)
+    }),
     (NB, false, "touchesBegan:withEvent:", |_| Ok(())),
     (NB, false, "touchesMoved:withEvent:", |_| Ok(())),
     (NB, false, "touchesCancelled:withEvent:", |_| Ok(())),

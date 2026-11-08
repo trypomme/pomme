@@ -53,6 +53,10 @@ enum Cmd {
         /// Answer requests for URL (or URL prefix ending in `*`) with FILE: `--fixture 'https://api.x/*=x.json'`.
         #[arg(long, value_parser = parse_fixture)]
         fixture: Vec<(String, PathBuf)>,
+        /// The iOS version to present (`18.6`, `26`, ...). The app's own SDK and Info.plist
+        /// decide the rest: e.g. Liquid Glass needs iOS 26 and an app linked against the 26 SDK.
+        #[arg(long, default_value_t = pomme_hle::system::LATEST)]
+        ios: pomme_hle::system::Version,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -77,7 +81,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -88,7 +92,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios)
         }
     }
 }
@@ -402,7 +406,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -414,6 +418,15 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
+    emu.system.os = ios;
+    let s = &emu.system;
+    println!(
+        "presenting iOS {}; the app is linked against the iOS {} SDK{}: {} design",
+        s.os,
+        s.sdk,
+        if s.requires_compatibility { " and asks for compatibility" } else { "" },
+        if s.liquid_glass() { "Liquid Glass" } else { "pre-iOS 26" }
+    );
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
     emu.net.client = net;
     for &(x, y, t) in taps {

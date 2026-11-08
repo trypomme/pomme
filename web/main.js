@@ -6,6 +6,7 @@ const SCALE = 2; // pixels per point
 const HEADER = 8, RING = 256;
 const params = new URLSearchParams(location.search);
 const bundle = params.get('app') || 'helloexpo.pfs';
+const ios = params.get('ios') || ''; // e.g. ?ios=18.6
 
 const canvas = document.getElementById('screen');
 const status = document.getElementById('status');
@@ -38,7 +39,7 @@ worker.onmessage = (e) => {
     console.warn('[pomme]', m.text);
   }
 };
-worker.postMessage({ type: 'start', bundle, input, scale: SCALE });
+worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios });
 
 // Pointer → touch phases (UITouchPhase: began 0, moved 1, ended 3, cancelled 4), in points.
 function send(phase, ev) {

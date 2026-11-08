@@ -349,8 +349,16 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
 /// Run `layoutSubviews` on every view in the tree that needs it, parents first.
 pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<()> {
     if std::mem::take(&mut view_mut(emu, v).needs_layout) {
+        // A view controller's view brackets its layout with the controller's callbacks.
+        let vc = emu.ui.views.vc_view.iter().find(|&(_, &view)| view == v).map(|(&vc, _)| vc);
+        if let Some(vc) = vc {
+            send(emu, vc, "viewWillLayoutSubviews", &[])?;
+        }
         crate::navigation::layout_container(emu, v)?;
         send(emu, v, "layoutSubviews", &[])?;
+        if let Some(vc) = vc {
+            send(emu, vc, "viewDidLayoutSubviews", &[])?;
+        }
     }
     for s in view(emu, v).subviews {
         layout_tree(emu, s)?;
@@ -525,7 +533,7 @@ fn vc_is_view_loaded(emu: &mut Emu) -> Result<()> {
 
 // ---- UIColor ----
 
-fn new_color(emu: &mut Emu, rgba: [f64; 4]) -> Result<u64> {
+pub(crate) fn new_color(emu: &mut Emu, rgba: [f64; 4]) -> Result<u64> {
     let cls = host_class(emu, "UIColor")?;
     let c = objc::create_instance(emu, cls, 0)?;
     emu.ui.views.colors.insert(c, rgba);

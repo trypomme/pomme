@@ -135,16 +135,17 @@ fn app_path(bytes: &[u8]) -> Option<String> {
     Some(rest[..rest.find(".app")? + 4].to_string())
 }
 
-/// Mount `bundle` (from `pomme bundle`) and run its app until it stops.
+/// Mount `bundle` (from `pomme bundle`) and run its app until it stops,
+/// presenting iOS `ios` ("18.6", "26"; empty for the default).
 /// Never returns while the app runs; returns a description of why it stopped.
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> String {
-    match run_inner(bundle, input, scale) {
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String) -> String {
+    match run_inner(bundle, input, scale, &ios) {
         Ok(s) | Err(s) => s,
     }
 }
 
-fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> Result<String, String> {
+fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str) -> Result<String, String> {
     let app = app_path(&bundle).ok_or("the bundle has no .app")?;
     pomme_loader::vfs::mount(&bundle)?;
     drop(bundle);
@@ -153,6 +154,10 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> Result<S
     let p = pomme_loader::load_with(app.as_ref(), &opts).map_err(|e| e.to_string())?;
     let mut emu = Emu::new(p).map_err(|e| e.to_string())?;
     emu.live.scale = scale;
+    if !ios.is_empty() {
+        emu.system.os = ios.parse()?;
+    }
+    pomme_log(&format!("presenting iOS {}", emu.system.os));
     emu.net.client = Some(Box::new(XhrNet));
     emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
     pomme_log("running");

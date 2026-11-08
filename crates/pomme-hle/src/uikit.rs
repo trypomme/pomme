@@ -539,7 +539,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIScreen", false, "maximumFramesPerSecond", screen_fps),
     ("UIDevice", true, "currentDevice", current_device),
     ("UIDevice", false, "systemName", |e| device_string(e, "iOS")),
-    ("UIDevice", false, "systemVersion", |e| device_string(e, "26.0")),
+    ("UIDevice", false, "systemVersion", |e| {
+        let v = e.system.os.short();
+        device_string(e, &v)
+    }),
     ("UIDevice", false, "model", |e| device_string(e, "iPhone")),
     ("UIDevice", false, "name", |e| device_string(e, "pomme")),
     ("UIDevice", false, "userInterfaceIdiom", ret_zero), // phone

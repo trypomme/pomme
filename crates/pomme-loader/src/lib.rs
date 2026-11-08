@@ -66,6 +66,8 @@ pub struct LoadedImage {
     pub sections: Vec<(String, pomme_macho::Section)>,
     /// Symbol-table symbols (locals too), slid and sorted by address.
     pub symbols: Vec<(u64, String)>,
+    /// `LC_BUILD_VERSION`: platform, minimum OS and the SDK it was linked against.
+    pub build: Option<pomme_macho::BuildVersion>,
 }
 
 impl LoadedImage {
@@ -346,6 +348,7 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
             deps: std::mem::take(&mut deps[i]),
             exports: img.exports.iter().map(|e| (e.name.clone(), e.kind.clone())).collect(),
             symbols: img.symbols.iter().map(|(a, n)| (a.wrapping_add(slide), n.clone())).collect(),
+            build: img.build.clone(),
             sections: img
                 .segments
                 .iter()

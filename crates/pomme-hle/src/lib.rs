@@ -31,6 +31,7 @@ mod nsvalue;
 mod json;
 mod regex;
 pub mod navigation;
+pub mod system;
 mod image;
 mod nstimer;
 pub mod net;
@@ -198,6 +199,8 @@ pub struct Emu {
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
+    /// The iOS version presented, and the app's linked SDK (see system.rs).
+    pub system: system::System,
     bundle: bundle::State,
 }
 
@@ -259,6 +262,7 @@ impl Emu {
             images: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
+            system: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
@@ -266,6 +270,7 @@ impl Emu {
             slot.copy_from_slice(&THUNK_INSN.to_le_bytes());
         }
         emu.p.memory.map(CODE_BASE, CODE_SIZE, Prot::RX, "[trampolines]")?;
+        system::init(&mut emu);
         threads::init(&mut emu);
         objc::init(&mut emu)?;
         // Report every C++ throw (type and what()) before unwinding is attempted.
@@ -274,6 +279,7 @@ impl Emu {
         }
         foundation::init(&mut emu)?;
         libsystem::init(&mut emu)?;
+        system::install(&mut emu)?;
         Ok(emu)
     }
 

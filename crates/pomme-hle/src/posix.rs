@@ -522,10 +522,13 @@ fn sscanf(_: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported("sscanf isn't implemented yet".into()))
 }
 
-/// `uname(struct utsname *)`: five 256-byte fields, as an iPhone on iOS 26 (Darwin 25).
+/// `uname(struct utsname *)`: five 256-byte fields, as an iPhone on the
+/// presented iOS (iOS 26 runs Darwin 25).
 fn uname(emu: &mut Emu) -> Result<()> {
     let buf = emu.arg(0);
-    for (i, v) in ["Darwin", "pomme", "25.0.0", "Darwin Kernel Version 25.0.0: pomme", "iPhone17,3"].iter().enumerate() {
+    let release = format!("{}.0.0", emu.system.os.darwin_major());
+    let version = format!("Darwin Kernel Version {release}: pomme");
+    for (i, v) in ["Darwin", "pomme", release.as_str(), version.as_str(), "iPhone17,3"].iter().enumerate() {
         let at = buf + i as u64 * 256;
         emu.p.memory.write(at, &[0u8; 256])?;
         emu.p.memory.write(at, v.as_bytes())?;

@@ -870,16 +870,31 @@ fn cxa_atexit(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `_availability_version_check(count, {platform, version}[])`: is the OS at
+/// least the version given for iOS? (What `@available` and `#available` call.)
+/// The answer depends on who asks: see `system::os_for_caller`.
 fn availability_version_check(emu: &mut Emu) -> Result<()> {
-    emu.ret(1); // we claim to be the newest iOS
+    const IOS: u32 = 2;
+    const IOS_SIMULATOR: u32 = 7;
+    let (count, list) = (emu.arg(0), emu.arg(1));
+    let mut ok = true;
+    for i in 0..count.min(16) {
+        let platform = emu.p.memory.read_u32(list + i * 8)?;
+        let version = emu.p.memory.read_u32(list + i * 8 + 4)?;
+        if platform == IOS || platform == IOS_SIMULATOR {
+            ok = crate::system::available_for_caller(emu, emu.cpu.x[30], crate::system::Version(version));
+        }
+    }
+    emu.ret(ok as u64);
     Ok(())
 }
 
 fn os_system_version(emu: &mut Emu) -> Result<()> {
     // Returns a struct { major, minor, patch } of i64 in x0..x2.
-    emu.cpu.x[0] = 26;
-    emu.cpu.x[1] = 0;
-    emu.cpu.x[2] = 0;
+    let v = emu.system.os;
+    emu.cpu.x[0] = v.major() as u64;
+    emu.cpu.x[1] = v.minor() as u64;
+    emu.cpu.x[2] = v.patch() as u64;
     Ok(())
 }
 

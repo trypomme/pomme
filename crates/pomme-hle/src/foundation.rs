@@ -3120,7 +3120,11 @@ fn dict_get_any(emu: &mut Emu, d: u64, key: u64) -> Result<u64> {
 
 // ---- NSProcessInfo: an iPhone on iOS 26.0 ----
 
-const OS_VERSION: (u64, u64, u64) = (26, 0, 0);
+/// The presented iOS version as NSOperatingSystemVersion's fields.
+fn os_version_triple(emu: &Emu) -> (u64, u64, u64) {
+    let v = emu.system.os;
+    (v.major() as u64, v.minor() as u64, v.patch() as u64)
+}
 
 fn process_info(emu: &mut Emu) -> Result<()> {
     if emu.fnd.process_info == 0 {
@@ -3134,9 +3138,10 @@ fn process_info(emu: &mut Emu) -> Result<()> {
 /// `-operatingSystemVersion` → NSOperatingSystemVersion {major, minor, patch}: 24 bytes, returned through x8.
 fn os_version(emu: &mut Emu) -> Result<()> {
     let out = emu.cpu.x[8];
-    emu.write_u64(out, OS_VERSION.0)?;
-    emu.write_u64(out + 8, OS_VERSION.1)?;
-    emu.write_u64(out + 16, OS_VERSION.2)?;
+    let v = os_version_triple(emu);
+    emu.write_u64(out, v.0)?;
+    emu.write_u64(out + 8, v.1)?;
+    emu.write_u64(out + 16, v.2)?;
     Ok(())
 }
 
@@ -3144,7 +3149,7 @@ fn os_version(emu: &mut Emu) -> Result<()> {
 fn os_at_least(emu: &mut Emu) -> Result<()> {
     let p = emu.arg(2);
     let want = (emu.read_u64(p)?, emu.read_u64(p + 8)?, emu.read_u64(p + 16)?);
-    ret_bool(emu, OS_VERSION >= want)
+    ret_bool(emu, os_version_triple(emu) >= want)
 }
 
 fn process_arguments(emu: &mut Emu) -> Result<()> {
@@ -3171,7 +3176,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSProcessInfo", true, "processInfo", process_info),
     ("NSProcessInfo", false, "operatingSystemVersion", os_version),
     ("NSProcessInfo", false, "isOperatingSystemAtLeastVersion:", os_at_least),
-    ("NSProcessInfo", false, "operatingSystemVersionString", |e| ret_string(e, "Version 26.0 (Build pomme)")),
+    ("NSProcessInfo", false, "operatingSystemVersionString", |e| {
+        let v = format!("Version {} (Build pomme)", e.system.os.short());
+        ret_string(e, &v)
+    }),
     ("NSProcessInfo", false, "arguments", process_arguments),
     ("NSProcessInfo", false, "environment", process_environment),
     ("NSProcessInfo", false, "processName", |e| {

@@ -166,6 +166,50 @@ fn expo_router_pushes_and_goes_back() {
     assert!(dark > 30, "no title in the navigation bar ({dark} dark pixels)");
 }
 
+/// The same app presented as iOS 18.6: pre-iOS 26 behaviour throughout. The
+/// screen is laid out below the opaque bar, the bar is white with a hairline,
+/// and the back button is a blue chevron with the previous screen's title.
+#[test]
+fn ios_18_has_the_pre_26_navigation_bar() {
+    let Some(mut emu) = boot() else { return };
+    emu.system.os = "18.6".parse().unwrap();
+    assert!(!emu.system.liquid_glass());
+    emu.net.client = Some(Box::new(repos()));
+    // Below the 91-pt bar, the content is re-centered in 753 pt: Details sits lower.
+    tap(&mut emu, (240.0, 554.0), 5.0);
+    let views = run_for(&mut emu, 6.5);
+    assert!(views.contains("RNSScreenView (0.0, 91.0, 390.0×753.0)"), "{views}");
+    assert!(views.contains("\"★ 48,000 stars\""), "{views}");
+
+    let pix = pomme_hle::render::render(&mut emu, 1.0).unwrap();
+    let px = |x: u32, y: u32| pix.pixel(x, y).unwrap();
+    // Opaque white bar up under the status bar, hairline at its bottom edge.
+    assert_eq!((px(200, 20).red(), px(200, 20).green(), px(200, 20).blue()), (255, 255, 255));
+    // The hairline is one device pixel: row 273 at 3×.
+    let hi = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let line = hi.pixel(600, 273).unwrap();
+    assert!(line.red() < 200 && hi.pixel(600, 276).unwrap().red() == 255, "no hairline under the bar ({line:?})");
+    // "‹ pomme" in system blue on the left of the bar.
+    let blue = (55..85)
+        .flat_map(|y| (5..90).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let c = px(x, y);
+            c.blue() > 200 && c.red() < 80
+        })
+        .count();
+    assert!(blue > 40, "no blue back button ({blue} pixels)");
+
+    // Back, by the label.
+    let mut emu = boot().unwrap();
+    emu.system.os = "18.6".parse().unwrap();
+    emu.net.client = Some(Box::new(repos()));
+    tap(&mut emu, (240.0, 554.0), 5.0);
+    tap(&mut emu, (40.0, 69.0), 6.5);
+    let views = run_for(&mut emu, 7.5);
+    assert!(!views.contains("stars"), "{views}");
+    assert!(views.contains("\"Hello from pomme 🍎\""), "{views}");
+}
+
 static HITS: AtomicUsize = AtomicUsize::new(0);
 
 fn count_hit(emu: &mut Emu) -> pomme_hle::Result<()> {

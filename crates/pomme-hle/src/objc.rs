@@ -128,6 +128,24 @@ fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
     false
 }
 
+/// A property stored on a permissive object (`setFoo:`), if it was set.
+pub(crate) fn bag_get(emu: &Emu, obj: u64, key: &str) -> Option<u64> {
+    emu.objc.bag.get(&(obj, key.to_string())).map(|&(x, _)| x)
+}
+
+/// Copy every stored property of `from` onto `to` (copy initializers).
+pub(crate) fn bag_copy(emu: &mut Emu, from: u64, to: u64) {
+    let entries: Vec<_> = emu.objc.bag.iter().filter(|((o, _), _)| *o == from).map(|((_, k), v)| (k.clone(), *v)).collect();
+    for (k, v) in entries {
+        emu.objc.bag.insert((to, k), v);
+    }
+}
+
+/// Store a property on a permissive object, as `setFoo:` would.
+pub(crate) fn bag_set(emu: &mut Emu, obj: u64, key: &str, value: u64) {
+    emu.objc.bag.insert((obj, key.to_string()), (value, 0));
+}
+
 /// Answer a missing message on a permissive class.
 fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
     let meta = emu.objc.classes.get(&cls).is_some_and(|c| c.meta);
@@ -2126,6 +2144,11 @@ fn objc_set_hook_lazy_class_namer(emu: &mut Emu) -> Result<()> {
 /// Look a class up by name, asking the guest's `getClass` hook (Swift) on a miss.
 pub fn class_by_name(emu: &mut Emu, name: &str) -> Result<u64> {
     if let Some(&c) = emu.objc.by_name.get(name) {
+        // System classes newer than the OS pomme presents don't exist yet.
+        let host = emu.objc.classes.get(&c).is_some_and(|k| k.host);
+        if host && !crate::system::class_available(&emu.system, name) {
+            return Ok(0);
+        }
         return Ok(c);
     }
     let Some(&hook) = emu.objc.hooks.get("getClass") else { return Ok(0) };
