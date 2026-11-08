@@ -119,3 +119,63 @@ int64_t many_args(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t
 
 // Calls into a system library: should trap on the HLE stub for _puts.
 int calls_puts(void) { return puts("hello from the guest") + 1; }
+
+// React Native's RCTGetCornerInsets: pairs of doubles, fmax against zero.
+// Clang vectorizes it into FSUB.2D / INS / MOVI / FMAXNM.2D.
+#include <math.h>
+typedef struct { double tlh, tlv, trh, trv, blh, blv, brh, brv; } radii;
+typedef struct { double w, h; } size2;
+typedef struct { size2 tl, tr, bl, br; } corners;
+typedef struct { double top, left, bottom, right; } insets;
+__attribute__((noinline)) corners corner_insets(radii r, insets e) {
+    return (corners){{fmax(0, r.tlh - e.left), fmax(0, r.tlv - e.top)},
+                     {fmax(0, r.trh - e.right), fmax(0, r.trv - e.top)},
+                     {fmax(0, r.blh - e.left), fmax(0, r.blv - e.bottom)},
+                     {fmax(0, r.brh - e.right), fmax(0, r.brv - e.bottom)}};
+}
+double corner_insets_sum(double radius, double border) {
+    radii r = {radius, radius + 1, radius + 2, radius + 3, radius + 4, radius + 5, radius + 6, radius + 7};
+    insets e = {border, border * 2, border * 3, border * 4};
+    corners c = corner_insets(r, e);
+    // Weight every field so a swapped or zeroed lane shows.
+    return c.tl.w + 2 * c.tl.h + 4 * c.tr.w + 8 * c.tr.h + 16 * c.bl.w + 32 * c.bl.h + 64 * c.br.w + 128 * c.br.h;
+}
+
+// React Native Fabric's ensureNoOverlap: float radii scaled by edge sums,
+// against a double size (vectorizes into FCVTN/FCMGT-zero/BSL/FMIN on floats).
+typedef struct { float v, h; } cradius;
+typedef struct { cradius tl, tr, bl, br; } bradii;
+static inline float fminf_(float a, float b) { return a < b ? a : b; }
+__attribute__((noinline)) bradii no_overlap(bradii r, double width, double height) {
+    float left = r.tl.v + r.bl.v, top = r.tl.h + r.tr.h, right = r.tr.v + r.br.v, bottom = r.bl.h + r.br.h;
+    float ls = left > 0 ? fminf_(height / left, 1) : 0;
+    float ts = top > 0 ? fminf_(width / top, 1) : 0;
+    float rs = right > 0 ? fminf_(height / right, 1) : 0;
+    float bs = bottom > 0 ? fminf_(width / bottom, 1) : 0;
+    return (bradii){{r.tl.v * fminf_(ts, ls), r.tl.h * fminf_(ts, ls)},
+                    {r.tr.v * fminf_(ts, rs), r.tr.h * fminf_(ts, rs)},
+                    {r.bl.v * fminf_(bs, ls), r.bl.h * fminf_(bs, ls)},
+                    {r.br.v * fminf_(bs, rs), r.br.h * fminf_(bs, rs)}};
+}
+double no_overlap_sum(double radius, double width, double height) {
+    float x = (float)radius;
+    bradii r = {{x, x}, {x, x}, {x, x}, {x, x}};
+    bradii o = no_overlap(r, width, height);
+    return o.tl.v + 2 * o.tl.h + 4 * o.tr.v + 8 * o.tr.h + 16 * o.bl.v + 32 * o.bl.h + 64 * o.br.v + 128 * o.br.h;
+}
+
+// Float pairs widened to doubles and swapped (React Native's
+// RCTCornerRadiiFromBorderRadii): FCVTL + EXT.
+typedef struct { float v, h; } fpair;
+typedef struct { double h, v; } dpair;
+__attribute__((noinline)) void widen_pairs(const fpair *in, dpair *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = (dpair){in[i].h, in[i].v};
+}
+double widen_sum(double a, double b) {
+    fpair in[4] = {{a, b}, {b, a}, {a + 1, b + 1}, {b - 1, a - 1}};
+    dpair out[4];
+    widen_pairs(in, out, 4);
+    double s = 0;
+    for (int i = 0; i < 4; i++) s = s * 3 + out[i].h * 5 + out[i].v;
+    return s;
+}

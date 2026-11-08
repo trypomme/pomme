@@ -512,7 +512,15 @@ impl Cpu {
             _ => None,
         };
         if let Some(r) = fp_result {
-            self.q[rd as usize] = if scalar { r & ones(fp_esize) as u128 } else { mask_q(r, q) };
+            // FCVTL always writes all 128 bits (Q only picks the source half).
+            let widening = opcode == 0b10111 && !u && size >> 1 == 0;
+            self.q[rd as usize] = if scalar {
+                r & ones(fp_esize) as u128
+            } else if widening {
+                r
+            } else {
+                mask_q(r, q)
+            };
             return Ok(());
         }
 

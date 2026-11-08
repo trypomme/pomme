@@ -131,7 +131,7 @@ pub(crate) fn init(emu: &mut Emu) {
 // ---- time ----
 
 pub fn now_ticks(emu: &Emu) -> u64 {
-    emu.cpu.steps + emu.cpu.clock_offset
+    emu.cpu.ticks()
 }
 
 pub fn now_ns(emu: &Emu) -> u64 {
@@ -218,8 +218,18 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
             },
         }
     };
-    switch_to(emu, me);
+    // A fatal stop leaves the failing thread current, so the report shows its
+    // registers and backtrace (the run is over anyway).
+    if result.is_ok() {
+        switch_to(emu, me);
+    }
     result
+}
+
+/// The running thread's index and name (for reports).
+pub fn current_thread(emu: &Emu) -> (usize, String) {
+    let t = emu.th.current;
+    (t, emu.th.threads[t].name.clone())
 }
 
 /// Can thread `tid` stop waiting? If so, perform the wait's effects on its
@@ -734,7 +744,28 @@ fn sched_yield(emu: &mut Emu) -> Result<()> {
     ret(emu, 0)
 }
 
+/// `thread_info(thread, flavor, info, count*)`: THREAD_BASIC_INFO (3), with
+/// the CPU time being virtual time (deterministic; a busy thread, roughly).
+fn thread_info(emu: &mut Emu) -> Result<()> {
+    let (flavor, info, count) = (emu.arg(1), emu.arg(2), emu.arg(3));
+    const THREAD_BASIC_INFO: u64 = 3;
+    const WORDS: u64 = 10; // sizeof(thread_basic_info) / sizeof(natural_t)
+    if flavor != THREAD_BASIC_INFO || info == 0 {
+        return ret(emu, 4); // KERN_INVALID_ARGUMENT
+    }
+    let ns = now_ns(emu);
+    let words = [(ns / 1_000_000_000) as u32, ((ns / 1000) % 1_000_000) as u32, 0, 0, 0, 0, 1, 0, 0, 0];
+    for (i, w) in words.iter().enumerate() {
+        emu.p.memory.write_u32(info + i as u64 * 4, *w)?;
+    }
+    if count != 0 {
+        emu.p.memory.write_u32(count, WORDS as u32)?;
+    }
+    ret(emu, 0)
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_thread_info", thread_info),
     ("_mach_port_allocate", mach_port_allocate),
     ("_mach_port_construct", mach_port_construct),
     ("_mach_port_insert_member", mach_port_insert_member),

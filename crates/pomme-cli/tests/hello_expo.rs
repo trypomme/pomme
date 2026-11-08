@@ -14,10 +14,10 @@ const APP: &str = "../../apps/hello-expo/ios/build/Build/Products/Release-iphone
 const SYSROOT: &str = "../../vendor/sysroot";
 const API: &str = "https://api.github.com/repos/";
 
-// Where the app's buttons are (points).
-const TAP_BUTTON: (f64, f64) = (195.0, 296.0);
-const SWR_REFRESH: (f64, f64) = (195.0, 414.0);
-const QUERY_REFRESH: (f64, f64) = (195.0, 540.0);
+// Where the app's buttons are (points; from `pomme run --views`).
+const TAP_BUTTON: (f64, f64) = (195.0, 265.0);
+const SWR_REFRESH: (f64, f64) = (195.0, 383.0);
+const QUERY_REFRESH: (f64, f64) = (195.0, 508.0);
 
 fn boot() -> Option<Emu> {
     let (app, sysroot) = (Path::new(APP), Path::new(SYSROOT));
@@ -94,6 +94,18 @@ fn fetches_with_swr_query_and_promise_all() {
     assert!(count("vercel/swr") >= 3, "{log:?}");
     assert!(count("TanStack/query") >= 3, "{log:?}");
     assert_eq!(count("facebook/react"), 1, "{log:?}");
+}
+
+/// MSW, and the `expo` package's APIs (text encoding, URL, structuredClone, streams,
+/// EventEmitter, CodedError, Platform, uuid, native modules, expo/fetch streaming).
+#[test]
+fn expo_sdk_and_msw() {
+    let Some(mut emu) = boot() else { return };
+    emu.net.client = Some(Box::new(repos()));
+    let views = run_for(&mut emu, 8.0);
+    assert!(views.contains("\"Expo SDK: 11/11 passed\""), "{views}");
+    // MSW mocks https://pomme.test in JS: no request reaches the network for it.
+    assert!(views.contains("\"MSW: hello from MSW\""), "{views}");
 }
 
 #[test]

@@ -85,6 +85,12 @@ fn draw(emu: &mut Emu, renderer: u64, block: u64) -> Result<Image> {
     emu.images.contexts.remove(&rc);
     result?;
     let pix = render::rasterize(emu, &ops, r.size, r.scale)?;
+    // Debugging aid: POMME_DUMP_IMAGES=dir writes every rendered image as a PNG.
+    if let Ok(dir) = std::env::var("POMME_DUMP_IMAGES") {
+        let n = emu.images.renderers.len() + emu.render.images.len();
+        let _ = std::fs::write(format!("{dir}/image-{n}-{}x{}.png", pix.width(), pix.height()), pix.encode_png().unwrap_or_default());
+        println!("[image] {n}: {:?} pt at {}x, {} ops: {ops:?}", r.size, r.scale, ops.len());
+    }
     Ok(Image { pix: std::rc::Rc::new(pix), size: r.size, scale: r.scale, caps: [0.0; 4] })
 }
 

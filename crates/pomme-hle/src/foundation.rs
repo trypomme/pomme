@@ -41,7 +41,7 @@ pub struct State {
     const_string_class: u64,
     true_obj: u64,
     false_obj: u64,
-    null_obj: u64,
+    pub(crate) null_obj: u64,
     /// NSRunLoop object for each CFRunLoop.
     run_loops: HashMap<u64, u64>,
     center: u64,
@@ -884,7 +884,7 @@ fn constant_dict_pairs(emu: &Emu, d: u64) -> Result<Vec<(u64, u64)>> {
     Ok(keys.into_iter().zip(vals).collect())
 }
 
-fn array_values(emu: &mut Emu, arr: u64) -> Result<Vec<u64>> {
+pub(crate) fn array_values(emu: &mut Emu, arr: u64) -> Result<Vec<u64>> {
     if constant_kind(emu, arr) == Some(Constant::Array) {
         return constant_array_values(emu, arr);
     }
@@ -1020,9 +1020,30 @@ fn array_remove_all(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn array_replace(emu: &mut Emu) -> Result<()> {
-    cf(emu, "_CFArraySetValueAtIndex", &[emu.arg(0), emu.arg(2), emu.arg(3)])?;
+/// Put `obj` at `index` (appending when `index` is the count, as subscripting allows).
+fn array_set_at(emu: &mut Emu, a: u64, index: u64, obj: u64) -> Result<()> {
+    let n = cf(emu, "_CFArrayGetCount", &[a])?;
+    if index > n {
+        return Err(Stop::Unsupported(format!("NSRangeException: index {index} beyond bounds [0 .. {n}]")));
+    }
+    if index == n {
+        cf(emu, "_CFArrayAppendValue", &[a, obj])?;
+    } else {
+        cf(emu, "_CFArraySetValueAtIndex", &[a, index, obj])?;
+    }
     Ok(())
+}
+
+/// `-replaceObjectAtIndex:withObject:`
+fn array_replace(emu: &mut Emu) -> Result<()> {
+    let (a, index, obj) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    array_set_at(emu, a, index, obj)
+}
+
+/// `-setObject:atIndexedSubscript:` (object first).
+fn array_set_subscript(emu: &mut Emu) -> Result<()> {
+    let (a, obj, index) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    array_set_at(emu, a, index, obj)
 }
 
 fn index_of(emu: &mut Emu, a: u64, obj: u64) -> Result<Option<u64>> {
@@ -1453,7 +1474,7 @@ fn number_bool(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn is_boolean(emu: &Emu, n: u64) -> bool {
+pub(crate) fn is_boolean(emu: &Emu, n: u64) -> bool {
     n == emu.fnd.true_obj || n == emu.fnd.false_obj
 }
 
@@ -1496,7 +1517,7 @@ fn number_value(emu: &mut Emu, n: u64) -> Result<(i64, f64)> {
     Ok(r)
 }
 
-fn number_is_float(emu: &mut Emu, n: u64) -> Result<bool> {
+pub(crate) fn number_is_float(emu: &mut Emu, n: u64) -> Result<bool> {
     match constant_kind(emu, n) {
         Some(Constant::Double | Constant::Float) => Ok(true),
         Some(_) => Ok(false),
@@ -3527,7 +3548,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableArray", false, "removeAllObjects", array_remove_all),
     ("NSMutableArray", false, "removeObject:", array_remove_object),
     ("NSMutableArray", false, "replaceObjectAtIndex:withObject:", array_replace),
-    ("NSMutableArray", false, "setObject:atIndexedSubscript:", array_replace),
+    ("NSMutableArray", false, "setObject:atIndexedSubscript:", array_set_subscript),
     // NSDictionary
     ("NSDictionary", true, "dictionary", dict_empty),
     ("NSDictionary", true, "new", dict_empty),

@@ -138,7 +138,7 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
 }
 
 /// Instance sizes of host classes that store fields in the object (isa + fields).
-const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16), ("NSError", 32), ("NSMethodSignature", 16), ("NSInvocation", 32), ("UIFont", 32), ("NSCache", 16), ("NSTextStorage", 24), ("NSLayoutManager", 24), ("NSTextContainer", 56)];
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16), ("NSError", 32), ("NSMethodSignature", 16), ("NSInvocation", 32), ("UIFont", 32), ("NSCache", 16), ("NSException", 32), ("NSValue", 48), ("NSTextStorage", 24), ("NSLayoutManager", 24), ("NSTextContainer", 56)];
 
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
@@ -317,6 +317,9 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::nstimer::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::image::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::regex::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::json::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(EXCEPTION_METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::nsvalue::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -354,7 +357,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -1327,13 +1330,53 @@ fn objc_copy_struct(emu: &mut Emu) -> Result<()> {
 
 fn objc_exception_throw(emu: &mut Emu) -> Result<()> {
     let exc = emu.cpu.x[0];
-    let reason = send(emu, exc, "reason", &[]).ok().and_then(|s| crate::foundation::nsstring(emu, s).ok());
-    Err(Stop::Unsupported(format!("Objective-C exception thrown: {}", reason.unwrap_or_default())))
+    let mut text = |sel: &str| send(emu, exc, sel, &[]).ok().filter(|&s| s != 0).and_then(|s| crate::foundation::nsstring(emu, s).ok());
+    let (name, reason) = (text("name"), text("reason"));
+    Err(Stop::Unsupported(format!("uncaught Objective-C exception {}: {}", name.unwrap_or_default(), reason.unwrap_or_default())))
+}
+
+/// NSException {isa, name, reason, userInfo}: enough to describe what was thrown.
+fn exception_init(emu: &mut Emu, class_method: bool) -> Result<()> {
+    let e = if class_method {
+        let cls = emu.arg(0);
+        create_instance(emu, cls, 0)?
+    } else {
+        emu.arg(0)
+    };
+    for (i, reg) in [2, 3, 4].into_iter().enumerate() {
+        let v = emu.arg(reg);
+        if v != 0 {
+            objc_retain_obj(emu, v)?;
+        }
+        emu.write_u64(e + 8 + i as u64 * 8, v)?;
+    }
+    emu.ret(e);
+    Ok(())
+}
+
+fn exception_field(emu: &mut Emu, off: u64) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + off)?;
+    emu.ret(v);
+    Ok(())
 }
 
 fn objc_enumeration_mutation(_: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported("collection mutated while being enumerated".into()))
 }
+
+pub(crate) const EXCEPTION_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSException", true, "exceptionWithName:reason:userInfo:", |e| exception_init(e, true)),
+    ("NSException", false, "initWithName:reason:userInfo:", |e| exception_init(e, false)),
+    ("NSException", false, "name", |e| exception_field(e, 8)),
+    ("NSException", false, "reason", |e| exception_field(e, 16)),
+    ("NSException", false, "userInfo", |e| exception_field(e, 24)),
+    ("NSException", false, "raise", objc_exception_throw),
+    ("NSException", false, "callStackSymbols", |e| {
+        let a = crate::foundation::new_array_of(e, &[])?;
+        e.ret(a);
+        Ok(())
+    }),
+];
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_objc_msgSend", msg_send),

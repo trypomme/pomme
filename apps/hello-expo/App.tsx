@@ -1,18 +1,22 @@
+import { nativeFetch } from './mocks';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import useSWR from 'swr';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { CodedError, EventEmitter, Platform, requireOptionalNativeModule, uuid } from 'expo';
+import { fetch as expoFetch } from 'expo/fetch';
 
-// pomme's test app: a tap counter, and data fetching three ways (SWR,
-// TanStack Query, plain Promise.all) against the GitHub API.
+// pomme's test app: a tap counter, data fetching three ways (SWR, TanStack
+// Query, plain Promise.all) against the GitHub API, a request mocked with MSW,
+// and checks of the `expo` package's APIs.
 
 type Repo = { full_name: string; stargazers_count: number };
 
 const API = 'https://api.github.com/repos/';
 
 const fetchRepo = async (url: string): Promise<Repo> => {
-  const res = await fetch(url);
+  const res = await nativeFetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 };
@@ -65,6 +69,91 @@ function AllStars() {
   return <Text testID="all-status">{text}</Text>;
 }
 
+// The `expo` package's web-standard and core APIs, one check each.
+const checks: [string, () => boolean | Promise<boolean>][] = [
+  ['TextEncoder', () => {
+    const bytes = new TextEncoder().encode('pomme 🍎');
+    return bytes.length === 10 && new TextDecoder().decode(bytes) === 'pomme 🍎';
+  }],
+  ['URL', () => {
+    const u = new URL('https://example.com/a/b?x=1&y=two#h');
+    return u.pathname === '/a/b' && u.searchParams.get('y') === 'two' && u.hash === '#h';
+  }],
+  ['URLSearchParams', () => new URLSearchParams({ a: '1', b: 'x y' }).toString() === 'a=1&b=x+y'],
+  ['structuredClone', () => {
+    const a = { m: new Map([[1, { deep: [1, 2] }]]), d: new Date(0) };
+    const b = structuredClone(a);
+    return b !== a && b.m.get(1)?.deep[1] === 2 && b.m.get(1) !== a.m.get(1) && b.d.getTime() === 0;
+  }],
+  ['ReadableStream', async () => {
+    const stream = new ReadableStream<string>({
+      start(c) { c.enqueue('po'); c.enqueue('mme'); c.close(); },
+    });
+    const reader = stream.getReader();
+    let out = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += value;
+    }
+    return out === 'pomme';
+  }],
+  ['EventEmitter', () => {
+    const e = new EventEmitter<{ ping: (n: number) => void }>();
+    let got = 0;
+    const sub = e.addListener('ping', (n) => { got += n; });
+    e.emit('ping', 2);
+    sub.remove();
+    e.emit('ping', 5);
+    return got === 2;
+  }],
+  ['CodedError', () => new CodedError('ERR_POMME', 'x').code === 'ERR_POMME'],
+  ['Platform', () => Platform.OS === 'ios'],
+  ['uuid', () => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid.v4())],
+  ['native module', () => requireOptionalNativeModule('ExpoFetchModule') != null],
+  ['expo/fetch stream', async () => {
+    const res = await expoFetch('https://api.github.com/repos/vercel/swr');
+    const reader = res.body!.getReader();
+    let n = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.length;
+    }
+    return res.ok && n > 0;
+  }],
+];
+
+function SdkChecks() {
+  const [text, setText] = useState('Expo SDK: checking…');
+  useEffect(() => {
+    (async () => {
+      const failed: string[] = [];
+      for (const [name, check] of checks) {
+        try {
+          if (!(await check())) failed.push(name);
+        } catch (e: any) {
+          failed.push(`${name} (${e?.message ?? e})`);
+        }
+      }
+      const passed = checks.length - failed.length;
+      setText(`Expo SDK: ${passed}/${checks.length} passed${failed.length ? ` — failed: ${failed.join(', ')}` : ''}`);
+    })();
+  }, []);
+  return <Text testID="sdk-status" style={styles.small}>{text}</Text>;
+}
+
+function MswGreeting() {
+  const [text, setText] = useState('MSW: loading…');
+  useEffect(() => {
+    fetch('https://pomme.test/hello')
+      .then((r) => r.json())
+      .then((j) => setText(`MSW: ${j.greeting}`))
+      .catch((e) => setText(`MSW failed: ${e?.message ?? e}`));
+  }, []);
+  return <Text testID="msw-status" style={styles.small}>{text}</Text>;
+}
+
 const queryClient = new QueryClient();
 
 export default function App() {
@@ -83,6 +172,8 @@ export default function App() {
         <SwrStars />
         <QueryStars />
         <AllStars />
+        <MswGreeting />
+        <SdkChecks />
         <StatusBar style="auto" />
       </View>
     </QueryClientProvider>
@@ -137,5 +228,11 @@ const styles = StyleSheet.create({
   refreshLabel: {
     color: '#007aff',
     fontSize: 15,
+  },
+  small: {
+    fontSize: 13,
+    color: '#3a3a3c',
+    maxWidth: 340,
+    textAlign: 'center',
   },
 });

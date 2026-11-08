@@ -62,7 +62,7 @@ pub struct Cpu {
     /// Thread pointers. iOS keeps the TLS base in TPIDRRO_EL0.
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
-    /// Instructions retired. The guest's only clock.
+    /// Instructions retired. The guest's only clock (see [`Cpu::ticks`]).
     pub steps: u64,
     /// Ticks added to the clock when every thread was idle (virtual time skipped ahead).
     pub clock_offset: u64,
@@ -72,7 +72,18 @@ pub struct Cpu {
     next_pc: u64,
 }
 
+/// The virtual clock: mach ticks run at 24 MHz (as on iOS devices) and each
+/// instruction takes 1 ns, a 1 GHz phone. Deterministic: only instructions
+/// retired (plus idle time skipped) move it.
+pub const TICKS_PER_SEC: u64 = 24_000_000;
+pub const STEPS_PER_SEC: u64 = 1_000_000_000;
+
 impl Cpu {
+    /// Mach ticks since boot: instructions retired at [`STEPS_PER_SEC`], plus idle time skipped.
+    pub fn ticks(&self) -> u64 {
+        (self.steps as u128 * TICKS_PER_SEC as u128 / STEPS_PER_SEC as u128) as u64 + self.clock_offset
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

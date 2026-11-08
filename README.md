@@ -48,7 +48,10 @@ Debugging:
   local (non-exported) ones too, by name or by the address `nm` prints.
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
-- Every stop prints a backtrace; C++ exceptions are reported with their type and `what()`.
+- `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`
+  dumps memory at a register. Breakpoints can sit mid-function (`Image:0xaddr`).
+- `POMME_DUMP_IMAGES=dir` writes every image the app renders (`UIGraphicsImageRenderer`) as PNG.
+- Every stop prints the failing thread, its registers and a backtrace; C++ exceptions are reported with their type and `what()`.
 
 ![hello-expo rendered by pomme](docs/hello-expo.png)
 
@@ -111,7 +114,15 @@ Debugging:
      `URLRequest`, `URLError`, NSError bridging) and `_StringProcessing`/`RegexBuilder` built from
      source, hello-expo loads data with **SWR, TanStack Query and `Promise.all`**, live or from
      fixtures, natively and in the browser
-   - Next: a native window host; a faster virtual CPU clock (startup takes ~2 s
+   - Expo SDK ✅: the `expo` package's APIs check out in the app — TextEncoder, URL,
+     URLSearchParams, structuredClone, ReadableStream, EventEmitter, CodedError, Platform, uuid,
+     native modules, `expo/fetch` streaming (11/11) — and MSW mocking `fetch` in JS. Checked
+     against the iOS Simulator: same screen, including MSW's real-iOS bug (requests it passes
+     through lose their bodies). Along the way: NSJSONSerialization, NSValue, NSException,
+     `thread_info`, and a CPU fix (FCVTL dropped its upper double: square "rounded" corners)
+   - Virtual time: one instruction is 1 ns (a 1 GHz phone) on a 24 MHz mach clock
+   - Next: Expo Router, React Native Skia (and through it, the Metal/raster path Flutter needs);
+     a native window host; a faster virtual CPU clock (startup takes ~2 s
      of virtual time: one instruction is one 24 MHz tick)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)

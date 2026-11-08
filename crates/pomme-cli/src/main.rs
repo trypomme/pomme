@@ -310,15 +310,40 @@ fn load(path: &Path, show_stubs: bool) -> Result<()> {
 fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     let c = &emu.cpu;
     println!(
-        "[break] {} from {}  x0={:#x} x1={:#x} x2={:#x} x3={:#x} d0={}",
+        "[break] {} from {}  x0={:#x} x1={:#x} x2={:#x} x3={:#x} d0={} d1={} d2={} d3={}",
         emu.symbolize(emu.hook_target()),
         emu.symbolize(c.x[30].wrapping_sub(4)),
         c.x[0],
         c.x[1],
         c.x[2],
         c.x[3],
-        f64::from_bits(c.q[0] as u64)
+        f64::from_bits(c.q[0] as u64),
+        f64::from_bits(c.q[1] as u64),
+        f64::from_bits(c.q[2] as u64),
+        f64::from_bits(c.q[3] as u64)
     );
+    // POMME_BREAK_VREGS=1: also print the vector registers that hold anything.
+    if std::env::var_os("POMME_BREAK_VREGS").is_some() {
+        let xs: Vec<String> = (4..18).map(|i| format!("x{i}={:#x}", c.x[i])).collect();
+        println!("        {}", xs.join(" "));
+        for (i, v) in c.q.iter().enumerate() {
+            if *v != 0 {
+                let lanes: Vec<String> = (0..4).map(|k| format!("{}", f32::from_bits((*v >> (k * 32)) as u32))).collect();
+                println!("        v{i:<2} {v:#034x}  f32 [{}]", lanes.join(", "));
+            }
+        }
+    }
+    // POMME_BREAK_MEM=x1:8 (or just 8, for x0): also dump that many 8-byte words at the register.
+    if let Ok(spec) = std::env::var("POMME_BREAK_MEM") {
+        let (reg, n) = spec.split_once(':').map_or(("x0", spec.as_str()), |(r, n)| (r, n));
+        let r = reg.trim_start_matches('x').parse::<usize>().unwrap_or(0).min(30);
+        let base = c.x[r];
+        for i in 0..n.parse::<u64>().unwrap_or(0) {
+            if let Ok(w) = emu.p.memory.read_u64(base + i * 8) {
+                println!("        [x{r}+{:#04x}] {w:#018x}  {}", i * 8, f64::from_bits(w));
+            }
+        }
+    }
     emu.continue_original();
     Ok(())
 }
@@ -441,6 +466,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
                 Stop::Cpu { pc, .. } => println!("  at {}", emu.symbolize(*pc)),
                 _ => {}
             }
+            let (tid, tname) = pomme_hle::threads::current_thread(&emu);
+            println!("  on thread {tid} ({tname})");
             let c = &emu.cpu;
             println!("  pc {:#x}  lr {:#x} ({})  sp {:#x}", c.pc, c.x[30], emu.symbolize(c.x[30]), c.sp);
             // Backtrace: arm64 Darwin code keeps a frame-pointer chain of (fp, lr) pairs.

@@ -155,9 +155,9 @@ fn c_application_main(emu: &mut Emu) -> Result<()> {
     application_main(emu, principal, delegate)
 }
 
-/// `CACurrentMediaTime()`: seconds since boot, from the instruction clock.
+/// `CACurrentMediaTime()`: seconds since boot, on the virtual clock.
 fn ca_current_media_time(emu: &mut Emu) -> Result<()> {
-    let t = emu.cpu.steps as f64 / crate::libsystem::TICKS_PER_SEC as f64;
+    let t = crate::threads::now_ns(emu) as f64 / 1e9;
     ret_f64(emu, t);
     Ok(())
 }
@@ -365,7 +365,7 @@ fn display_link_fire(emu: &mut Emu) -> Result<()> {
     if emu.read_u64(link + 24)? != 0 {
         return Ok(()); // paused
     }
-    let now = emu.cpu.steps as f64 / crate::libsystem::TICKS_PER_SEC as f64;
+    let now = crate::threads::now_ns(emu) as f64 / 1e9;
     emu.write_u64(link + 40, now.to_bits())?;
     let (target, sel) = (emu.read_u64(link + 8)?, emu.read_u64(link + 16)?);
     let name = objc::sel_name(emu, sel);

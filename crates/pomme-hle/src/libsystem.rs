@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 
 /// Wall-clock time at boot: 2026-01-01T00:00:00Z. Guest time = this + steps / 24 MHz.
 pub const EPOCH_BASE_SECS: u64 = 1_767_225_600;
-pub const TICKS_PER_SEC: u64 = 24_000_000;
+pub const TICKS_PER_SEC: u64 = pomme_cpu::TICKS_PER_SEC;
 
 #[derive(Default)]
 pub struct State {

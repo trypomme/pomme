@@ -27,6 +27,8 @@ mod printf;
 pub mod render;
 mod swift;
 mod textkit;
+mod nsvalue;
+mod json;
 mod regex;
 mod image;
 mod nstimer;

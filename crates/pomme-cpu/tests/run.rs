@@ -316,6 +316,50 @@ fn atomics_and_calling_convention() {
     check_int("many_args", &args.iter().map(|&v| I(v as u64)).collect::<Vec<_>>(), want as u64);
 }
 
+#[test]
+fn vectorized_struct_math() {
+    // Mirrors corner_insets_sum in cpu.c (React Native's RCTGetCornerInsets).
+    let reference = |r: f64, b: f64| {
+        let (top, left, bottom, right) = (b, b * 2.0, b * 3.0, b * 4.0);
+        let m = |x: f64| x.max(0.0);
+        m(r - left) + 2.0 * m(r + 1.0 - top) + 4.0 * m(r + 2.0 - right) + 8.0 * m(r + 3.0 - top)
+            + 16.0 * m(r + 4.0 - left) + 32.0 * m(r + 5.0 - bottom) + 64.0 * m(r + 6.0 - right) + 128.0 * m(r + 7.0 - bottom)
+    };
+    for (r, b) in [(12.0, 1.0), (0.0, 0.0), (3.0, 2.5), (100.0, 9.0)] {
+        check_f64("corner_insets_sum", &[D(r), D(b)], reference(r, b));
+    }
+}
+
+#[test]
+fn vectorized_float_radii() {
+    // Mirrors no_overlap_sum in cpu.c (React Native Fabric's ensureNoOverlap).
+    let reference = |radius: f64, w: f64, h: f64| {
+        let x = radius as f32;
+        let edge = x + x;
+        let s = |len: f64| if edge > 0.0 { ((len / edge as f64) as f32).min(1.0) } else { 0.0 };
+        let (ls, ts) = (s(h), s(w));
+        let k = ts.min(ls);
+        // The C sums in float, left to right.
+        (0..8).fold(0f32, |acc, i| acc + (x * k) * (1u32 << i) as f32) as f64
+    };
+    for (r, w, h) in [(12.0, 300.0, 109.67), (100.0, 50.0, 30.0), (0.0, 10.0, 10.0)] {
+        check_f64("no_overlap_sum", &[D(r), D(w), D(h)], reference(r, w, h));
+    }
+}
+
+#[test]
+fn float_to_double_widening() {
+    // Mirrors widen_sum in cpu.c: FCVTL must fill both doubles.
+    let reference = |a: f64, b: f64| {
+        let (a32, b32) = (a as f32, b as f32);
+        let pairs = [(a32, b32), (b32, a32), ((a + 1.0) as f32, (b + 1.0) as f32), ((b - 1.0) as f32, (a - 1.0) as f32)];
+        pairs.iter().fold(0.0, |s, &(v, h)| s * 3.0 + h as f64 * 5.0 + v as f64)
+    };
+    for (a, b) in [(12.0, 7.5), (0.0, 3.0), (-2.25, 100.0)] {
+        check_f64("widen_sum", &[D(a), D(b)], reference(a, b));
+    }
+}
+
 /// The HLE loop in miniature: trap on a system-library stub, emulate it on the
 /// host, and resume the guest.
 #[test]
