@@ -26,6 +26,7 @@ scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation +
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --tap 195,438@3 --views --screenshot hello.png
+scripts/build-web.sh && scripts/serve-web.py   # the same app in the browser: http://127.0.0.1:8787
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
@@ -94,7 +95,12 @@ Debugging:
      scripted at virtual times, so runs repeat exactly:
      `pomme run … --tap 195,438@3 --tap 195,438@4 --screenshot out.png` → **"Tapped 2 times"**.
      `cargo test` boots hello-expo, taps twice and checks the screen (when the app is built)
-   - Next: the hosts (a window, the browser); a faster virtual CPU clock (startup takes ~2 s
+   - Browser host ✅: the emulator compiled to WebAssembly runs in a Web Worker; the app and the
+     sysroot files it loads come as one in-memory bundle (`pomme bundle`, ~90 MB for hello-expo);
+     taps go through a SharedArrayBuffer and frames come back to a canvas. Virtual time follows
+     the wall clock while the app idles. `scripts/build-web.sh && scripts/serve-web.py`, then open
+     http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps
+   - Next: a native window host; a faster virtual CPU clock (startup takes ~2 s
      of virtual time: one instruction is one 24 MHz tick)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)

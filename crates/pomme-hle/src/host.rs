@@ -40,6 +40,8 @@ pub struct State {
     pub scale: f32,
     /// Virtual time of the last frame (ns).
     last_frame: Option<u64>,
+    /// A layout pass happened since the last frame (it was too soon to draw).
+    frame_pending: bool,
     /// The input run-loop source and the main run loop.
     source: u64,
     run_loop: u64,
@@ -50,6 +52,13 @@ const FRAME_NS: u64 = 1_000_000_000 / 30;
 
 /// Called from the scheduler when nothing can run. Ok(true): input was delivered, look again.
 pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
+    if emu.live.host.is_none() {
+        return Ok(false);
+    }
+    // Nothing is running: draw whatever the last layout pass left undrawn.
+    if emu.live.frame_pending {
+        draw(emu)?;
+    }
     let Some(mut host) = emu.live.host.take() else { return Ok(false) };
     let now = crate::threads::now_ns(emu);
     let r = host.idle(now, next_ns);
@@ -106,9 +115,15 @@ pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
     }
     let now = crate::threads::now_ns(emu);
     if emu.live.last_frame.is_some_and(|t| now < t + FRAME_NS) {
+        emu.live.frame_pending = true;
         return Ok(());
     }
-    emu.live.last_frame = Some(now);
+    draw(emu)
+}
+
+fn draw(emu: &mut Emu) -> Result<()> {
+    emu.live.last_frame = Some(crate::threads::now_ns(emu));
+    emu.live.frame_pending = false;
     let pix = crate::render::render(emu, emu.live.scale)?;
     if let Some(mut host) = emu.live.host.take() {
         host.frame(pix.data(), pix.width(), pix.height());

@@ -1,0 +1,133 @@
+//! pomme in the browser. The emulator runs in a Web Worker: it blocks the
+//! way it does natively, and the page talks to it through:
+//!
+//! - **input**: a SharedArrayBuffer viewed as an `Int32Array`. Slot 0 counts
+//!   events written; events are 4 ints each (phase, x×100, y×100, 0) in a
+//!   ring of [`RING`] starting at slot [`HEADER`]. The page writes an event,
+//!   bumps the count and `Atomics.notify`s; the worker reads them when the app
+//!   is idle, sleeping in `Atomics.wait` until the next deadline otherwise.
+//! - **frames**: the worker calls the global `pommeFrame(rgba, width, height)`
+//!   (defined by the worker script), which posts the pixels to the page.
+//!
+//! Virtual time follows the wall clock while the app is idle; when the guest
+//! is busy it simply falls behind and catches up, as a slow phone would.
+
+use pomme_hle::host::{Host, Idle};
+use pomme_hle::touch::Input;
+use pomme_hle::{Emu, Stop};
+use std::path::PathBuf;
+use wasm_bindgen::prelude::*;
+
+const HEADER: u32 = 8;
+const RING: u32 = 256;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = pommeFrame)]
+    fn pomme_frame(rgba: &[u8], width: u32, height: u32);
+    #[wasm_bindgen(js_name = pommeLog)]
+    fn pomme_log(s: &str);
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn now_ms() -> f64;
+}
+
+struct WebHost {
+    input: js_sys::Int32Array,
+    read: i32,
+    /// wall ms − virtual ms, fixed when the app first idles.
+    base: Option<f64>,
+    /// Wall time of the last progress line in the console.
+    last_log: f64,
+}
+
+impl WebHost {
+    fn take_events(&mut self) -> Vec<Input> {
+        let written = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
+        let mut out = Vec::new();
+        while self.read < written {
+            let at = HEADER + (self.read as u32 % RING) * 4;
+            let get = |i: u32| self.input.get_index(at + i);
+            out.push(Input { at_ns: 0, phase: get(0) as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 });
+            self.read += 1;
+        }
+        out
+    }
+}
+
+impl Host for WebHost {
+    fn idle(&mut self, now_ns: u64, next_ns: Option<u64>) -> Idle {
+        let virt_ms = now_ns as f64 / 1e6;
+        let base = *self.base.get_or_insert_with(|| now_ms() - virt_ms);
+        if now_ms() - self.last_log > 5000.0 {
+            self.last_log = now_ms();
+            pomme_log(&format!("virtual time {:.1} s", virt_ms / 1e3));
+        }
+        loop {
+            let events = self.take_events();
+            let wall_virt_ms = now_ms() - base;
+            if !events.is_empty() {
+                let at = (wall_virt_ms.max(virt_ms) * 1e6) as u64;
+                return Idle::Input { at_ns: at, events };
+            }
+            let wait_ms = match next_ns {
+                Some(n) => n as f64 / 1e6 - wall_virt_ms,
+                None => 1000.0,
+            };
+            if wait_ms <= 0.0 {
+                if wait_ms < -250.0 {
+                    // Far behind (the guest was busy): don't fast-forward through the backlog.
+                    self.base = Some(now_ms() - virt_ms);
+                }
+                return Idle::Advance;
+            }
+            let seen = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
+            let _ = js_sys::Atomics::wait_with_timeout(&self.input, 0, seen, wait_ms.min(1000.0));
+        }
+    }
+
+    fn frame(&mut self, rgba: &[u8], width: u32, height: u32) {
+        pomme_frame(rgba, width, height);
+    }
+}
+
+/// The `.app` directory inside a bundle (its first path under /app/).
+fn app_path(bytes: &[u8]) -> Option<String> {
+    let s = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into_owned();
+    let rest = &s[s.find("/app/")?..];
+    Some(rest[..rest.find(".app")? + 4].to_string())
+}
+
+/// Mount `bundle` (from `pomme bundle`) and run its app until it stops.
+/// Never returns while the app runs; returns a description of why it stopped.
+#[wasm_bindgen]
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> String {
+    match run_inner(bundle, input, scale) {
+        Ok(s) | Err(s) => s,
+    }
+}
+
+fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> Result<String, String> {
+    let app = app_path(&bundle).ok_or("the bundle has no .app")?;
+    pomme_loader::vfs::mount(&bundle)?;
+    drop(bundle);
+    pomme_log(&format!("loading {app}"));
+    let opts = pomme_loader::LoadOptions { sysroot: Some(PathBuf::from("/sysroot")) };
+    let p = pomme_loader::load_with(app.as_ref(), &opts).map_err(|e| e.to_string())?;
+    let mut emu = Emu::new(p).map_err(|e| e.to_string())?;
+    emu.live.scale = scale;
+    emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
+    pomme_log("running");
+    let r = emu.run_main();
+    let steps = emu.cpu.steps;
+    Ok(match r {
+        Ok(code) => format!("exit({code}) after {steps} instructions"),
+        Err(stop) => {
+            let at = match &stop {
+                Stop::MissingFunction { caller, .. } | Stop::MissingMethod { caller, .. } => format!(" (called from {})", emu.symbolize(caller.wrapping_sub(4))),
+                Stop::Cpu { pc, .. } => format!(" (at {})", emu.symbolize(*pc)),
+                _ => String::new(),
+            };
+            format!("stopped after {steps} instructions: {stop}{at}")
+        }
+    })
+}

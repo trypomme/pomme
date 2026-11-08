@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pomme</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f2f2f4; --fg: #1c1c1e; --muted: #6e6e73; --bezel: #111; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161618; --fg: #f2f2f4; --muted: #98989d; --bezel: #000; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+         display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 16px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  #device { background: var(--bezel); padding: 12px; border-radius: 56px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+  #screen { display: block; width: min(390px, calc(100vw - 56px)); aspect-ratio: 390 / 844;
+            border-radius: 44px; background: #000; touch-action: none; cursor: pointer; }
+  #status { color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; max-width: 520px; min-height: 2.8em; }
+</style>
+</head>
+<body>
+  <h1>pomme</h1>
+  <div id="device"><canvas id="screen" width="780" height="1688"></canvas></div>
+  <div id="status">Loading…</div>
+  <script src="main.js"></script>
+</body>
+</html>
