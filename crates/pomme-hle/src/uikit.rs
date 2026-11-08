@@ -36,6 +36,32 @@ pub struct State {
     pub rgb_space: u64,
     /// `performSelector:withObject:afterDelay:` requests not yet run: {target, sel, arg}.
     pub delayed_performs: Vec<u64>,
+    /// The URL the app is launched with (a deep link), as iOS passes it.
+    pub launch_url: Option<String>,
+}
+
+/// The launch URL as an NSURL, if there is one.
+fn launch_nsurl(emu: &mut Emu) -> Result<u64> {
+    let Some(url) = emu.ui.launch_url.clone() else { return Ok(0) };
+    let s = foundation::new_nsstring(emu, &url)?;
+    let cls = host_class(emu, "NSURL")?;
+    send(emu, cls, "URLWithString:", &[s])
+}
+
+/// `connectionOptions.URLContexts`: the launch URL, as a UIOpenURLContext.
+fn url_contexts(emu: &mut Emu) -> Result<()> {
+    let url = launch_nsurl(emu)?;
+    if url == 0 {
+        return empty_set(emu);
+    }
+    let ctx = new_object(emu, "UIOpenURLContext")?;
+    let options = new_object(emu, "UISceneOpenURLOptions")?;
+    objc::bag_set(emu, ctx, "URL", url);
+    objc::bag_set(emu, ctx, "options", options);
+    let nsset = host_class(emu, "NSSet")?;
+    let set = send(emu, nsset, "setWithObject:", &[ctx])?;
+    emu.ret(set);
+    Ok(())
 }
 
 fn class_named(emu: &mut Emu, name: &str) -> Result<u64> {
@@ -66,8 +92,20 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
         send(emu, app, "setDelegate:", &[d])?;
     }
     let d = emu.ui.delegate;
+    // A deep link: in the launch options, and (without scenes) application:openURL:options:.
+    let url = launch_nsurl(emu)?;
+    let launch_options = if url != 0 {
+        let k = foundation::new_nsstring(emu, "UIApplicationLaunchOptionsURLKey")?;
+        foundation::new_dict_of(emu, &[(k, url)])?
+    } else {
+        0
+    };
     for sel in ["application:willFinishLaunchingWithOptions:", "application:didFinishLaunchingWithOptions:"] {
-        call_if_implemented(emu, d, sel, &[app, 0])?;
+        call_if_implemented(emu, d, sel, &[app, launch_options])?;
+    }
+    if url != 0 && scene_delegate_class(emu).is_none() {
+        let empty = foundation::new_dict_of(emu, &[])?;
+        call_if_implemented(emu, d, "application:openURL:options:", &[app, url, empty])?;
     }
     emu.ui.launched = true;
     foundation::post_named(emu, "UIApplicationDidFinishLaunchingNotification", app)?;
@@ -175,8 +213,16 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     // Lay out dirty views whenever the loop is about to sleep, like CoreAnimation's commit observer.
     const BEFORE_WAITING: u64 = 1 << 5;
     const EXIT: u64 = 1 << 7;
+    // A layout pass can queue work for the loop's other observers (React Native
+    // sends events from layoutSubviews and delivers them on its own
+    // before-waiting observer, which runs earlier). UIKit's display-driven update
+    // cycle comes round again after a frame with layout; here the loop wakes once
+    // more so those observers run.
     let callout = emu.host_thunk(|e| {
-        crate::uiview::layout_windows(e)?;
+        if crate::uiview::layout_windows(e)? {
+            let main = foundation::cf_call(e, "_CFRunLoopGetMain", &[])?;
+            foundation::cf_call(e, "_CFRunLoopWakeUp", &[main])?;
+        }
         crate::host::maybe_frame(e)
     })?;
     let observer = foundation::cf_call(emu, "_CFRunLoopObserverCreate", &[0, BEFORE_WAITING | EXIT, 1, 2_000_000, callout, 0])?;
@@ -658,7 +704,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         e.ret(e.ui.scene);
         Ok(())
     }),
-    ("UISceneConnectionOptions", false, "URLContexts", empty_set),
+    ("UISceneConnectionOptions", false, "URLContexts", url_contexts),
     ("UISceneConnectionOptions", false, "userActivities", empty_set),
     ("UISceneConnectionOptions", false, "shortcutItem", ret_zero),
     ("UISceneConnectionOptions", false, "notificationResponse", ret_zero),

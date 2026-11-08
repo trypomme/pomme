@@ -9,6 +9,7 @@ export default function RootLayout() {
       <Stack>
         <Stack.Screen name="index" options={{ title: 'pomme' }} />
         <Stack.Screen name="repo/[owner]/[name]" options={{ title: 'Repository' }} />
+        <Stack.Screen name="keyboard" options={{ title: 'Keyboard' }} />
       </Stack>
     </QueryClientProvider>
   );

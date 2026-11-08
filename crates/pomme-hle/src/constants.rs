@@ -18,6 +18,8 @@ const STRING_SUFFIXES: &[&str] = &[
 const STRING_PREFIXES: &[&str] = &[
     "NSLocale",
     "kIOSurface",
+    "UIApplicationLaunchOptions",
+    "UIApplicationOpenURLOptions",
     "UIContentSizeCategory",
     "UIFontTextStyle",
     "UIFontDescriptorSystemDesign",

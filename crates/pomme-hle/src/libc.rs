@@ -16,6 +16,22 @@ fn calloc(emu: &mut Emu) -> Result<()> {
 
 fn free(emu: &mut Emu) -> Result<()> {
     let p = emu.arg(0);
+    if emu.watch.contains(&p) {
+        let mut bt = String::new();
+        let mut fp = emu.cpu.x[29];
+        for _ in 0..8 {
+            let (Ok(next), Ok(ret)) = (emu.p.memory.read_u64(fp), emu.p.memory.read_u64(fp + 8)) else { break };
+            if ret == 0 {
+                break;
+            }
+            bt += &format!("\n    {}", emu.symbolize(ret.wrapping_sub(4)));
+            if next <= fp {
+                break;
+            }
+            fp = next;
+        }
+        println!("[watch] {p:#x} freed, called from {}{bt}", emu.symbolize(emu.cpu.x[30].wrapping_sub(4)));
+    }
     Ok(emu.heap.free(&emu.p.memory, p)?)
 }
 

@@ -60,6 +60,9 @@ enum Cmd {
         /// List the system functions the app binds that pomme doesn't implement yet, and exit.
         #[arg(long)]
         missing: bool,
+        /// Launch the app with this URL (a deep link), as iOS does: `--url 'myapp:///settings'`.
+        #[arg(long)]
+        url: Option<String>,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -84,7 +87,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing, url } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -95,7 +98,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing, url)
         }
     }
 }
@@ -409,7 +412,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -420,6 +423,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
+    emu.ui.launch_url = url;
     if missing {
         let list = emu.missing_functions();
         println!("{} system functions bound without an implementation:", list.len());
@@ -508,7 +512,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
                 }
                 fp = next;
             }
-            for r in (0..8).step_by(4) {
+            let shown = if trace || std::env::var_os("POMME_THREADS").is_some() { 28 } else { 8 };
+            for r in (0..shown).step_by(4) {
                 println!(
                     "  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}",
                     r, c.x[r], r + 1, c.x[r + 1], r + 2, c.x[r + 2], r + 3, c.x[r + 3]

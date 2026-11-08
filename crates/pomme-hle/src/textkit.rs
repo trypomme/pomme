@@ -266,6 +266,28 @@ pub fn cf_attributed(emu: &mut Emu, obj: u64) -> Result<u64> {
     Ok(obj)
 }
 
+/// The font in an attributes dictionary (`NSFontAttributeName`), or 0.
+pub(crate) fn font_in_attributes(emu: &mut Emu, attrs: u64) -> Result<u64> {
+    if attrs == 0 {
+        return Ok(0);
+    }
+    let key = foundation::new_nsstring(emu, "NSFontAttributeName")?;
+    crate::objc::send(emu, attrs, "objectForKey:", &[key])
+}
+
+/// `-[NSString sizeWithAttributes:]`: one line, unwrapped, in the attributes' font.
+fn size_with_attributes(emu: &mut Emu) -> Result<()> {
+    let (string, attrs) = (emu.arg(0), emu.arg(2));
+    let text = foundation::nsstring(emu, string)?;
+    let font = font_in_attributes(emu, attrs)?;
+    let (size, weight) = font_info(emu, font)?;
+    let width: f64 = text.chars().map(|ch| advance(emu, ch, size, weight)).sum();
+    let height = if text.is_empty() { 0.0 } else { (size * LINE_HEIGHT).ceil() };
+    emu.cpu.q[0] = width.to_bits() as u128;
+    emu.cpu.q[1] = height.to_bits() as u128;
+    Ok(())
+}
+
 /// Font size and weight of a UIFont (other fonts: TextKit's default).
 fn font_info(emu: &mut Emu, font: u64) -> Result<(f64, f64)> {
     if font == 0 || foundation::is_cf(emu, font) || class_name_of(emu, font) != "UIFont" {
@@ -679,6 +701,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (TC, false, "init", tc_init),
     (TC, false, "initWithSize:", tc_init_with_size),
     (TC, false, "size", tc_size),
+    ("NSString", false, "sizeWithAttributes:", size_with_attributes),
     (TC, false, "setSize:", tc_set_size),
     (TC, false, "lineFragmentPadding", tc_padding),
     (TC, false, "setLineFragmentPadding:", tc_set_padding),

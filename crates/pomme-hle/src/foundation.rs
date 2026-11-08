@@ -977,6 +977,26 @@ fn array_with_objects_varargs(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `-isEqualToDictionary:`: the same keys, each with an equal value.
+fn dict_is_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    let eq = a == b || (b != 0 && {
+        let (x, y) = (as_cf_dict(emu, a)?, as_cf_dict(emu, b)?);
+        let (px, py) = (dict_pairs(emu, x)?, dict_pairs(emu, y)?);
+        let mut same = px.len() == py.len();
+        for (k, v) in px {
+            if !same {
+                break;
+            }
+            let other = send(emu, b, "objectForKey:", &[k])?;
+            same = other != 0 && (other == v || send(emu, v, "isEqual:", &[other])? & 0xff != 0);
+        }
+        same
+    });
+    emu.ret(eq as u64);
+    Ok(())
+}
+
 /// `-isEqualToArray:` / `-isEqual:`: same length, elements equal pairwise.
 fn array_is_equal(emu: &mut Emu) -> Result<()> {
     let (a, b) = (emu.arg(0), emu.arg(2));
@@ -3594,6 +3614,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSDictionary", false, "getObjects:andKeys:count:", dict_get_objects_and_keys),
     ("NSDictionary", false, "getObjects:andKeys:", dict_get_objects_and_keys),
     ("NSDictionary", false, "keyEnumerator", dict_key_enumerator),
+    ("NSDictionary", false, "isEqualToDictionary:", dict_is_equal),
     ("NSDictionary", false, "objectEnumerator", dict_object_enumerator),
     ("NSSet", false, "getObjects:", set_get_objects),
     ("NSSet", false, "getObjects:count:", set_get_objects),

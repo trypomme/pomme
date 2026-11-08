@@ -107,6 +107,9 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
+    // A deep link's context (URL, options) and its options (all nil / NO).
+    "UIOpenURLContext",
+    "UISceneOpenURLOptions",
     // Interactions (scribble, pointer, edit menus…): configured, never triggered.
     "UIIndirectScribbleInteraction",
     "UIScribbleInteraction",
@@ -1146,7 +1149,8 @@ fn ret_zero(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// Is `obj` an instance of a native Swift class (root `Swift._SwiftObject`)?
+/// Is `obj` an instance of a native Swift class (root `Swift._SwiftObject`, or one
+/// of Swift's bridging bases that count references the Swift way)?
 /// Those are reference-counted by the Swift runtime, which frees them.
 fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
     if obj == 0 || obj >> 63 != 0 {
@@ -1156,16 +1160,31 @@ fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
     if let Some(&b) = emu.objc.native_swift.get(&cls) {
         return b;
     }
+    // Swift's own NSObject subclasses whose retain/release are swift_retain /
+    // swift_release (STANDARD_OBJC_METHOD_IMPLS_FOR_SWIFT_OBJECTS): the bases of
+    // native strings, arrays, dictionaries, sets and enumerators bridged to
+    // Objective-C, and SwiftNativeNSObject.
+    const SWIFT_REFCOUNTED_BASES: &[&str] = &[
+        "__SwiftNativeNSArrayBase",
+        "__SwiftNativeNSMutableArrayBase",
+        "__SwiftNativeNSDictionaryBase",
+        "__SwiftNativeNSSetBase",
+        "__SwiftNativeNSStringBase",
+        "__SwiftNativeNSEnumeratorBase",
+        "SwiftNativeNSObject",
+    ];
     let mut c = cls;
     let mut root = String::new();
+    let mut swift_base = false;
     while let Some(k) = emu.objc.classes.get(&c) {
         if k.meta {
             break;
         }
+        swift_base |= SWIFT_REFCOUNTED_BASES.contains(&k.name.as_str());
         root = k.name.clone();
         c = k.superclass;
     }
-    let native = root == "_TtCs12_SwiftObject" || root == "Swift._SwiftObject";
+    let native = swift_base || root == "_TtCs12_SwiftObject" || root == "Swift._SwiftObject";
     emu.objc.native_swift.insert(cls, native);
     native
 }
