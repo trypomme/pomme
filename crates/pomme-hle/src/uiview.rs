@@ -751,7 +751,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "tintColor", ret_zero),
     ("UIView", false, "isExclusiveTouch", ret_zero),
     ("UIView", false, "isMultipleTouchEnabled", ret_zero),
-    ("UIView", false, "gestureRecognizers", ret_zero),
     ("UIView", false, "layoutSubviewsIfNeeded", noop),
     ("UIFont", true, "systemFontOfSize:", |e| {
         let s = f(e, 0);
@@ -881,8 +880,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "setMultipleTouchEnabled:", noop),
     ("UIView", false, "setExclusiveTouch:", noop),
     ("UIView", false, "setTintColor:", noop),
-    ("UIView", false, "addGestureRecognizer:", noop),
-    ("UIView", false, "removeGestureRecognizer:", noop),
     ("UIView", true, "areAnimationsEnabled", ret_one),
     ("UIView", true, "setAnimationsEnabled:", noop),
     ("UIView", true, "userInterfaceLayoutDirectionForSemanticContentAttribute:", ret_zero),

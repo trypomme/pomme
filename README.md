@@ -25,7 +25,7 @@ scripts/build-hello-expo.sh            # needs the iOS platform installed in Xco
 scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation + ICU from source (~600 MB, ~10 min)
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
-cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --views --screenshot hello.png
+cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --tap 195,438@3 --views --screenshot hello.png
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
@@ -88,9 +88,14 @@ Debugging:
      then idles on its 60 Hz frame timer (~51M instructions, about a second)
    - Rendering ✅: a recording `CGContext`/`CGPath` for views' `drawRect:`, and a software
      compositor (tiny-skia) for views, layers, rounded corners, borders, clipping and text from
-     Inter's glyph outlines — `pomme run … --screenshot out.png` gives **hello-expo's first frame**
-     (below). Not yet: images, shadows, gradients, emoji, the status bar
-   - Next: touch input; then the hosts (a window, the browser)
+     Inter's glyph outlines — `pomme run … --screenshot out.png` gives **hello-expo's first frame**. Not yet: images, shadows, gradients, emoji, the status bar
+   - Touch input ✅: `UITouch`, `UIEvent`, hit testing through apps' own `hitTest:` overrides,
+     gesture recognizers (React Native's touch handler is one), the responder chain. Input is
+     scripted at virtual times, so runs repeat exactly:
+     `pomme run … --tap 195,438@3 --tap 195,438@4 --screenshot out.png` → **"Tapped 2 times"**.
+     `cargo test` boots hello-expo, taps twice and checks the screen (when the app is built)
+   - Next: the hosts (a window, the browser); a faster virtual CPU clock (startup takes ~2 s
+     of virtual time: one instruction is one 24 MHz tick)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,

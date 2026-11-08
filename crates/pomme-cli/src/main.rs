@@ -32,6 +32,9 @@ enum Cmd {
         /// Print the view hierarchy when the run stops.
         #[arg(long)]
         views: bool,
+        /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
+        #[arg(long, value_parser = parse_tap)]
+        tap: Vec<(f64, f64, f64)>,
         /// Write a PNG of the screen (3 px per point) when the run stops.
         #[arg(long)]
         screenshot: Option<PathBuf>,
@@ -55,7 +58,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Run { path, steps, seconds, views, screenshot, trace, sysroot } => run(&path, steps, seconds, views, screenshot.as_deref(), trace, &sysroot),
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot } => run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot),
     }
 }
 
@@ -209,7 +212,16 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, screenshot: Option<&Path>, trace: bool, sysroot: &Path) -> Result<()> {
+/// `x,y@seconds`
+fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
+    let (xy, t) = s.split_once('@').ok_or("expected x,y@seconds")?;
+    let (x, y) = xy.split_once(',').ok_or("expected x,y@seconds")?;
+    let num = |v: &str| v.trim().parse::<f64>().map_err(|e| format!("{v}: {e}"));
+    Ok((num(x)?, num(y)?, num(t)?))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &sysroot.canonicalize().unwrap_or_else(|_| sysroot.to_path_buf());
@@ -222,6 +234,12 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, screenshot: Optio
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
+    for &(x, y, t) in taps {
+        // A tap: down, then up 80 ms later.
+        let at = (t * 1e9) as u64;
+        emu.touch.script.push(pomme_hle::touch::Input { at_ns: at, phase: pomme_hle::touch::BEGAN, x, y });
+        emu.touch.script.push(pomme_hle::touch::Input { at_ns: at + 80_000_000, phase: pomme_hle::touch::ENDED, x, y });
+    }
     emu.trace = trace;
     // Debugging aid: POMME_BREAK=_sym1,_sym2 prints the arguments of every call to those guest functions.
     if let Ok(list) = std::env::var("POMME_BREAK") {

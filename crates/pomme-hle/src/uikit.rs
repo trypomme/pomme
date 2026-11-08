@@ -123,6 +123,7 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     let rl = foundation::cf_call(emu, "_CFRunLoopGetMain", &[])?;
     let common = foundation::cf_data_pub(emu, "_kCFRunLoopCommonModes")?;
     foundation::cf_call(emu, "_CFRunLoopAddObserver", &[rl, observer, common])?;
+    crate::touch::schedule_script(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
         let r = foundation::cf_call(emu, "_CFRunLoopRunInMode", &[mode, 0])?;

@@ -27,6 +27,7 @@ mod printf;
 pub mod render;
 mod swift;
 mod textkit;
+pub mod touch;
 mod uikit;
 mod uiview;
 
@@ -176,6 +177,8 @@ pub struct Emu {
     text: textkit::State,
     /// Drawing contexts, paths and what views drew.
     render: render::State,
+    /// Touches, gesture recognizers and the input script.
+    pub touch: touch::State,
     bundle: bundle::State,
 }
 
@@ -230,6 +233,7 @@ impl Emu {
             fs: Default::default(),
             text: Default::default(),
             render: Default::default(),
+            touch: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;

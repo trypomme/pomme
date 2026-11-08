@@ -1737,6 +1737,79 @@ fn sorted_using_descriptors(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Stable bottom-up merge sort with a guest comparator (NSComparisonResult: −1, 0, 1).
+fn merge_sort(emu: &mut Emu, mut v: Vec<u64>, cmp: &mut dyn FnMut(&mut Emu, u64, u64) -> Result<i64>) -> Result<Vec<u64>> {
+    let mut width = 1;
+    while width < v.len() {
+        let mut out = Vec::with_capacity(v.len());
+        for chunk in (0..v.len()).step_by(2 * width) {
+            let mid = (chunk + width).min(v.len());
+            let end = (chunk + 2 * width).min(v.len());
+            let (mut i, mut j) = (chunk, mid);
+            while i < mid && j < end {
+                if cmp(emu, v[j], v[i])? < 0 {
+                    out.push(v[j]);
+                    j += 1;
+                } else {
+                    out.push(v[i]);
+                    i += 1;
+                }
+            }
+            out.extend_from_slice(&v[i..mid]);
+            out.extend_from_slice(&v[j..end]);
+        }
+        v = out;
+        width *= 2;
+    }
+    Ok(v)
+}
+
+/// Sort the receiver's elements with a comparator block (`block_reg`) or a selector sent to each element.
+fn sort_with(emu: &mut Emu, block_reg: Option<usize>, sel_reg: Option<usize>, in_place: bool) -> Result<()> {
+    let a = emu.arg(0);
+    let objs = array_values(emu, a)?;
+    let sorted = match (block_reg, sel_reg) {
+        (Some(r), _) => {
+            let block = emu.arg(r);
+            merge_sort(emu, objs, &mut |e, x, y| Ok(call_block(e, block, &[x, y])? as i64))?
+        }
+        (_, Some(r)) => {
+            let sel = objc::sel_name(emu, emu.arg(r));
+            merge_sort(emu, objs, &mut |e, x, y| Ok(send(e, x, &sel, &[y])? as i64))?
+        }
+        _ => objs,
+    };
+    if in_place {
+        for (i, o) in sorted.into_iter().enumerate() {
+            cf(emu, "_CFArraySetValueAtIndex", &[a, i as u64, o])?;
+        }
+    } else {
+        let r = array_from(emu, &sorted)?;
+        emu.ret(r);
+    }
+    Ok(())
+}
+
+/// `-[NSArray valueForKey:]`: each element's value (nil → NSNull); `@count` is the count.
+fn array_value_for_key(emu: &mut Emu) -> Result<()> {
+    let (a, key) = (emu.arg(0), emu.arg(2));
+    let objs = array_values(emu, a)?;
+    if nsstring(emu, key)? == "@count" {
+        let cls = host_class(emu, "NSNumber")?;
+        let r = send(emu, cls, "numberWithUnsignedInteger:", &[objs.len() as u64])?;
+        emu.ret(r);
+        return Ok(());
+    }
+    let mut out = Vec::with_capacity(objs.len());
+    for o in objs {
+        let v = send(emu, o, "valueForKey:", &[key])?;
+        out.push(if v == 0 { emu.fnd.null_obj } else { v });
+    }
+    let r = array_from(emu, &out)?;
+    emu.ret(r);
+    Ok(())
+}
+
 // ---- the primitives the Swift standard library uses on Cocoa collections ----
 
 fn write_ptrs(emu: &mut Emu, at: u64, v: &[u64]) -> Result<()> {
@@ -1807,6 +1880,14 @@ fn set_object_enumerator(emu: &mut Emu) -> Result<()> {
 
 fn array_object_enumerator(emu: &mut Emu) -> Result<()> {
     let v = array_values(emu, emu.arg(0))?;
+    let e = new_enumerator(emu, &v)?;
+    emu.ret(e);
+    Ok(())
+}
+
+fn array_reverse_enumerator(emu: &mut Emu) -> Result<()> {
+    let mut v = array_values(emu, emu.arg(0))?;
+    v.reverse();
     let e = new_enumerator(emu, &v)?;
     emu.ret(e);
     Ok(())
@@ -2108,6 +2189,19 @@ fn date_interval_since_date(emu: &mut Emu) -> Result<()> {
     let a = date_value(emu, emu.arg(0))?;
     let b = date_value(emu, emu.arg(2))?;
     ret_double(emu, a - b);
+    Ok(())
+}
+
+/// `-earlierDate:` / `-laterDate:` (nil counts as the other date losing).
+fn date_pick(emu: &mut Emu, earlier: bool) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    if b == 0 {
+        emu.ret(a);
+        return Ok(());
+    }
+    let (va, vb) = (date_value(emu, a)?, date_value(emu, b)?);
+    let pick_a = if earlier { va <= vb } else { va >= vb };
+    emu.ret(if pick_a { a } else { b });
     Ok(())
 }
 
@@ -3227,6 +3321,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSDate", false, "timeIntervalSinceReferenceDate", date_interval_since_reference),
     ("NSDate", false, "timeIntervalSinceDate:", date_interval_since_date),
     ("NSDate", false, "compare:", date_compare),
+    ("NSDate", false, "earlierDate:", |e| date_pick(e, true)),
+    ("NSDate", false, "laterDate:", |e| date_pick(e, false)),
+    ("NSDate", false, "isEqualToDate:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let eq = b != 0 && date_value(e, a)? == date_value(e, b)?;
+        e.ret(eq as u64);
+        Ok(())
+    }),
     ("NSDate", false, "dateByAddingTimeInterval:", date_adding),
     ("NSDate", false, "copy", ret_self),
     ("NSDate", false, "copyWithZone:", ret_self),
@@ -3303,6 +3405,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSURL", false, "copyWithZone:", ret_self),
     ("NSArray", false, "getObjects:range:", array_get_objects_range),
     ("NSArray", false, "objectEnumerator", array_object_enumerator),
+    ("NSArray", false, "reverseObjectEnumerator", array_reverse_enumerator),
     ("NSDictionary", false, "getObjects:andKeys:count:", dict_get_objects_and_keys),
     ("NSDictionary", false, "getObjects:andKeys:", dict_get_objects_and_keys),
     ("NSDictionary", false, "keyEnumerator", dict_key_enumerator),
@@ -3316,6 +3419,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSNumber", false, "objCType", number_objc_type),
     ("NSMutableArray", false, "sortUsingDescriptors:", sort_using_descriptors),
     ("NSArray", false, "sortedArrayUsingDescriptors:", sorted_using_descriptors),
+    ("NSArray", false, "valueForKey:", array_value_for_key),
+    ("NSArray", false, "sortedArrayUsingComparator:", |e| sort_with(e, Some(2), None, false)),
+    ("NSArray", false, "sortedArrayWithOptions:usingComparator:", |e| sort_with(e, Some(3), None, false)),
+    ("NSArray", false, "sortedArrayUsingSelector:", |e| sort_with(e, None, Some(2), false)),
+    ("NSMutableArray", false, "sortUsingComparator:", |e| sort_with(e, Some(2), None, true)),
+    ("NSMutableArray", false, "sortWithOptions:usingComparator:", |e| sort_with(e, Some(3), None, true)),
+    ("NSMutableArray", false, "sortUsingSelector:", |e| sort_with(e, None, Some(2), true)),
     ("NSSortDescriptor", false, "initWithKey:ascending:", sort_descriptor_init),
     ("NSSortDescriptor", false, "initWithKey:ascending:selector:", sort_descriptor_init_selector),
     ("NSSortDescriptor", true, "sortDescriptorWithKey:ascending:", sort_descriptor_new),
