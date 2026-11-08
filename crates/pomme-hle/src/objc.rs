@@ -37,6 +37,8 @@ pub struct Class {
     pub initialized: bool,
     /// Names of protocols this class adopts directly (including inherited protocols).
     pub protocols: Vec<String>,
+    /// Instance variables: (name, address of its offset variable, type encoding).
+    pub ivars: Vec<(String, u64, String)>,
 }
 
 #[derive(Default)]
@@ -65,8 +67,49 @@ const FAST_DATA_MASK: u64 = 0x0000_7fff_ffff_fff8;
 const SMALL_METHOD_LIST: u32 = 0x8000_0000;
 const DIRECT_SELECTORS: u32 = 0x4000_0000;
 
+/// System classes pomme doesn't implement yet whose missing methods may be
+/// answered generically: setters are accepted and ignored, everything else
+/// returns nil/0/NO, and class methods returning an instance get a fresh one.
+/// These are configuration-style objects that don't affect what's on screen.
+/// `--trace` shows every message answered this way.
+const PERMISSIVE: &[&str] = &[
+    "NSURLSessionConfiguration",
+    "NSURLSession",
+    "NSURLCache",
+    "NSHTTPCookieStorage",
+    "NSOperationQueue",
+];
+
+fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
+    while let Some(c) = emu.objc.classes.get(&cls) {
+        if c.host && PERMISSIVE.contains(&c.name.as_str()) {
+            return true;
+        }
+        cls = c.superclass;
+    }
+    false
+}
+
+/// Answer a missing message on a permissive class.
+fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
+    let meta = emu.objc.classes.get(&cls).is_some_and(|c| c.meta);
+    if emu.trace {
+        println!("{:>10}   (permissive: {}[{} {sel}] answered generically)", emu.cpu.steps, if meta { '+' } else { '-' }, emu.objc.class_name(cls));
+    }
+    let r = if meta && !sel.starts_with("set") {
+        // Factory methods (+defaultSessionConfiguration, +sharedSession, ...): a fresh instance.
+        let k = emu.cpu.x[0];
+        create_instance(emu, k, 0)?
+    } else {
+        0
+    };
+    emu.ret(r);
+    emu.cpu.q[0] = 0;
+    Ok(())
+}
+
 /// Instance sizes of host classes that store fields in the object (isa + fields).
-const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32)];
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24)];
 
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
@@ -97,6 +140,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSAttributedString", "NSObject"),
     ("NSMutableAttributedString", "NSAttributedString"),
     ("NSBlock", "NSObject"),
+    ("__NSFastEnumerationEnumerator", "NSEnumerator"),
     ("__NSGlobalBlock__", "NSBlock"),
     ("__NSStackBlock__", "NSBlock"),
     ("__NSMallocBlock__", "NSBlock"),
@@ -225,6 +269,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::foundation::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::uikit::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::bundle::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::uiview::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -253,7 +298,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     }
 
     // 2. Host method implementations.
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -353,6 +398,7 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
                 host: true,
                 initialized: false,
                 protocols: Vec::new(),
+                ivars: Vec::new(),
             },
         );
     }
@@ -400,9 +446,10 @@ fn guest_class(emu: &mut Emu, cls: u64) -> Result<()> {
         if !meta_flag {
             emu.objc.by_name.insert(name.clone(), c);
         }
+        let ivars = read_ivars(emu, emu.read_u64(ro + 48)?)?;
         emu.objc.classes.insert(
             c,
-            Class { name, meta: meta_flag, isa, superclass, methods, instance_size, host: false, initialized: false, protocols },
+            Class { name, meta: meta_flag, isa, superclass, methods, instance_size, host: false, initialized: false, protocols, ivars },
         );
     }
     Ok(())
@@ -445,6 +492,38 @@ fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, instance_size: u64) -> R
         }
     }
     Ok(instance_size + diff)
+}
+
+/// `ivar_list_t`: entries are {int32_t *offset; const char *name; const char *type; uint32 alignment; uint32 size}.
+fn read_ivars(emu: &Emu, list: u64) -> Result<Vec<(String, u64, String)>> {
+    if list == 0 {
+        return Ok(Vec::new());
+    }
+    let entsize = emu.p.memory.read_u32(list)? as u64;
+    let count = emu.p.memory.read_u32(list + 4)? as u64;
+    let mut out = Vec::new();
+    for i in 0..count {
+        let e = list + 8 + i * entsize;
+        let offset_var = emu.read_u64(e)?;
+        let name = emu.read_u64(e + 8)?;
+        let ty = emu.read_u64(e + 16)?;
+        if offset_var == 0 || name == 0 {
+            continue;
+        }
+        out.push((emu.cstr(name)?, offset_var, if ty == 0 { String::new() } else { emu.cstr(ty)? }));
+    }
+    Ok(out)
+}
+
+/// Find an ivar by name on a class or its superclasses: (offset, type encoding).
+pub fn find_ivar(emu: &Emu, mut cls: u64, name: &str) -> Result<Option<(u64, String)>> {
+    while let Some(c) = emu.objc.classes.get(&cls) {
+        if let Some((_, var, ty)) = c.ivars.iter().find(|(n, _, _)| n == name) {
+            return Ok(Some((emu.p.memory.read_u32(*var)? as u64, ty.clone())));
+        }
+        cls = c.superclass;
+    }
+    Ok(None)
 }
 
 fn read_methods(emu: &mut Emu, list: u64, out: &mut HashMap<Sel, Imp>) -> Result<()> {
@@ -636,6 +715,10 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
             Ok(())
         }
         Some(Imp::Host(f)) => f(emu),
+        None if permissive_class(emu, cls) => {
+            let name = sel_name(emu, sel);
+            permissive_answer(emu, cls, &name)
+        }
         None => Err(Stop::MissingMethod {
             class: emu.objc.class_name(k),
             selector: sel_name(emu, sel),
@@ -1171,13 +1254,31 @@ fn nsobject_value_for_key(emu: &mut Emu) -> Result<()> {
     let (obj, key) = (emu.cpu.x[0], emu.cpu.x[2]);
     let name = crate::foundation::nsstring(emu, key)?;
     let sel = intern(emu, &name)?;
-    if !responds(emu, obj, sel)? {
-        let k = instance_class(emu, obj)?;
-        return Err(Stop::Unsupported(format!("valueForKey: {} has no getter `{name}` (KVC beyond getters isn't implemented)", emu.objc.class_name(k))));
+    if responds(emu, obj, sel)? {
+        let r = send(emu, obj, &name, &[])?;
+        emu.ret(r);
+        return Ok(());
     }
-    let r = send(emu, obj, &name, &[])?;
-    emu.ret(r);
-    Ok(())
+    // No getter: an instance variable named _key, _isKey, key or isKey.
+    let k = instance_class(emu, obj)?;
+    let cap = name[..1].to_uppercase() + &name[1..];
+    for candidate in [format!("_{name}"), format!("_is{cap}"), name.clone(), format!("is{cap}")] {
+        if let Some((offset, ty)) = find_ivar(emu, k, &candidate)? {
+            let v = emu.read_u64(obj + offset)?;
+            let r = match ty.chars().next() {
+                Some('@' | '#') | None => v,
+                Some('c' | 'B') => crate::foundation::boolean(emu, v & 0xff != 0),
+                Some('d') => crate::foundation::new_number_f64(emu, f64::from_bits(v))?,
+                Some('f') => crate::foundation::new_number_f64(emu, f32::from_bits(v as u32) as f64)?,
+                Some('i' | 'I') => crate::foundation::new_number_i64(emu, v as u32 as i32 as i64)?,
+                Some('s' | 'S') => crate::foundation::new_number_i64(emu, v as u16 as i16 as i64)?,
+                _ => crate::foundation::new_number_i64(emu, v as i64)?,
+            };
+            emu.ret(r);
+            return Ok(());
+        }
+    }
+    Err(Stop::Unsupported(format!("valueForKey: {} has no getter or ivar for `{name}`", emu.objc.class_name(k))))
 }
 
 pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
@@ -1484,6 +1585,18 @@ fn class_set_superclass(emu: &mut Emu) -> Result<()> {
     if let Some(c) = emu.objc.classes.get_mut(&cls) {
         c.superclass = sup;
     }
+    // The metaclass follows: class methods inherit from the new superclass too.
+    let meta = emu.read_u64(cls)?;
+    let sup_meta = if sup == 0 { cls } else { emu.read_u64(sup)? };
+    if meta != 0 && meta != cls {
+        if !emu.objc.classes.contains_key(&meta) {
+            guest_class(emu, cls)?;
+        }
+        emu.write_u64(meta + 8, sup_meta)?;
+        if let Some(m) = emu.objc.classes.get_mut(&meta) {
+            m.superclass = sup_meta;
+        }
+    }
     emu.objc.cache.clear();
     emu.ret(old);
     Ok(())
@@ -1692,6 +1805,7 @@ pub fn alias_class(emu: &mut Emu, at: u64, base: u64) -> Result<()> {
             host: true,
             initialized: false,
             protocols: Vec::new(),
+            ivars: Vec::new(),
         },
     );
     Ok(())

@@ -1,18 +1,49 @@
-//! UIKit: the application object and `UIApplicationMain`.
+//! UIKit: the application, scenes, the screen, and the main run loop.
+//!
+//! `UIApplicationMain` does what iOS's does for a scene-based app: create the
+//! app and its delegate, deliver the launch callbacks, connect one window
+//! scene from the Info.plist scene manifest (its delegate creates the window),
+//! deliver the foreground/active callbacks, then run the main loop.
+//!
+//! Views live in `uiview.rs`.
 
-use crate::objc::{self, send};
+use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result, Stop, foundation, swift};
 
-#[derive(Debug, Default)]
+/// The device we pretend to be: an iPhone with a 390×844 pt screen at 3×.
+pub const SCREEN_W: f64 = 390.0;
+pub const SCREEN_H: f64 = 844.0;
+pub const SCREEN_SCALE: f64 = 3.0;
+
+#[derive(Default)]
 pub struct State {
     pub app: u64,
     pub delegate: u64,
     /// Set once `application:didFinishLaunchingWithOptions:` returns.
     pub launched: bool,
+    pub screen: u64,
+    pub scene: u64,
+    pub scene_delegate: u64,
+    pub session: u64,
+    pub key_window: u64,
+    pub windows: Vec<u64>,
+    pub views: crate::uiview::Views,
 }
 
-/// The body of `UIApplicationMain`: create the app and its delegate, deliver
-/// the launch callbacks, then (eventually) run the event loop.
+fn class_named(emu: &mut Emu, name: &str) -> Result<u64> {
+    let c = objc::class_by_name(emu, name)?;
+    if c == 0 {
+        return Err(Stop::Unsupported(format!("no class named {name}")));
+    }
+    Ok(c)
+}
+
+fn new_object(emu: &mut Emu, class: &str) -> Result<u64> {
+    let cls = host_class(emu, class)?;
+    objc::create_instance(emu, cls, 0)
+}
+
+/// The body of `UIApplicationMain`.
 fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<String>) -> Result<()> {
     let principal = principal.unwrap_or_else(|| "UIApplication".into());
     let app_cls = class_named(emu, &principal)?;
@@ -28,19 +59,61 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     }
     let d = emu.ui.delegate;
     for sel in ["application:willFinishLaunchingWithOptions:", "application:didFinishLaunchingWithOptions:"] {
-        let s = objc::intern(emu, sel)?;
-        if objc::responds(emu, d, s)? {
-            send(emu, d, sel, &[app, 0])?;
-        }
+        call_if_implemented(emu, d, sel, &[app, 0])?;
     }
     emu.ui.launched = true;
-    Err(Stop::Unsupported(
-        "UIApplicationMain: launch finished (didFinishLaunchingWithOptions returned); scene connection and the event loop aren't implemented yet".into(),
-    ))
+
+    if let Some(delegate_class) = scene_delegate_class(emu) {
+        connect_scene(emu, &delegate_class)?;
+    }
+    call_if_implemented(emu, d, "applicationDidBecomeActive:", &[app])?;
+    run_loop(emu)
 }
 
-fn class_named(emu: &Emu, name: &str) -> Result<u64> {
-    emu.objc.by_name.get(name).copied().ok_or_else(|| Stop::Unsupported(format!("no class named {name}")))
+fn call_if_implemented(emu: &mut Emu, obj: u64, sel: &str, args: &[u64]) -> Result<Option<u64>> {
+    if obj == 0 {
+        return Ok(None);
+    }
+    let s = objc::intern(emu, sel)?;
+    if objc::responds(emu, obj, s)? { send(emu, obj, sel, args).map(Some) } else { Ok(None) }
+}
+
+/// `UIApplicationSceneManifest` → the application-role scene's delegate class name.
+fn scene_delegate_class(emu: &Emu) -> Option<String> {
+    let info = crate::bundle::host_info_plist(emu)?;
+    let configs = info.as_dictionary()?.get("UIApplicationSceneManifest")?.as_dictionary()?.get("UISceneConfigurations")?.as_dictionary()?;
+    let app_role = configs.get("UIWindowSceneSessionRoleApplication")?.as_array()?;
+    let first = app_role.first()?.as_dictionary()?;
+    first.get("UISceneDelegateClassName")?.as_string().map(str::to_string)
+}
+
+/// Connect the app's one window scene: what UIKit does after launch.
+fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
+    let session = new_object(emu, "UISceneSession")?;
+    let scene = new_object(emu, "UIWindowScene")?;
+    let options = new_object(emu, "UISceneConnectionOptions")?;
+    emu.ui.session = session;
+    emu.ui.scene = scene;
+
+    let cls = class_named(emu, delegate_class)?;
+    let d = send(emu, cls, "alloc", &[])?;
+    let d = send(emu, d, "init", &[])?;
+    emu.ui.scene_delegate = d;
+
+    call_if_implemented(emu, d, "scene:willConnectToSession:options:", &[scene, session, options])?;
+    call_if_implemented(emu, d, "sceneWillEnterForeground:", &[scene])?;
+    call_if_implemented(emu, d, "sceneDidBecomeActive:", &[scene])?;
+    Ok(())
+}
+
+/// The main run loop. For now: drain queued main-queue work until idle.
+fn run_loop(emu: &mut Emu) -> Result<()> {
+    let ran = crate::libsystem::drain_queue(emu)?;
+    let windows = emu.ui.windows.len();
+    let views = emu.ui.views.count();
+    Err(Stop::Unsupported(format!(
+        "main run loop is idle after {ran} queued blocks ({windows} window(s), {views} view(s)); timers, run-loop sources and rendering aren't implemented yet"
+    )))
 }
 
 /// Swift overlay: `UIApplicationMain(_ argc: Int32, _ argv: …, _ principalClassName: String?, _ delegateClassName: String?) -> Int32`
@@ -58,7 +131,15 @@ fn c_application_main(emu: &mut Emu) -> Result<()> {
     application_main(emu, principal, delegate)
 }
 
+/// `CACurrentMediaTime()`: seconds since boot, from the instruction clock.
+fn ca_current_media_time(emu: &mut Emu) -> Result<()> {
+    let t = emu.cpu.steps as f64 / crate::libsystem::TICKS_PER_SEC as f64;
+    ret_f64(emu, t);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_CACurrentMediaTime", ca_current_media_time),
     ("_$s5UIKit17UIApplicationMainys5Int32VAD_SpySpys4Int8VGGSgSSSgAJtF", swift_application_main),
     ("_UIApplicationMain", c_application_main),
 ];
@@ -70,18 +151,228 @@ fn shared_application(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn delegate(emu: &mut Emu) -> Result<()> {
+fn app_delegate(emu: &mut Emu) -> Result<()> {
     emu.ret(emu.ui.delegate);
     Ok(())
 }
 
-fn set_delegate(emu: &mut Emu) -> Result<()> {
+fn set_app_delegate(emu: &mut Emu) -> Result<()> {
     emu.ui.delegate = emu.arg(2);
+    Ok(())
+}
+
+fn ret_zero(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+fn ret_one(emu: &mut Emu) -> Result<()> {
+    emu.ret(1);
+    Ok(())
+}
+
+fn noop(_: &mut Emu) -> Result<()> {
+    Ok(())
+}
+
+fn ret_self(_: &mut Emu) -> Result<()> {
+    Ok(())
+}
+
+fn key_window(emu: &mut Emu) -> Result<()> {
+    emu.ret(emu.ui.key_window);
+    Ok(())
+}
+
+fn windows(emu: &mut Emu) -> Result<()> {
+    let w = emu.ui.windows.clone();
+    let a = foundation::new_array_of(emu, &w)?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn connected_scenes(emu: &mut Emu) -> Result<()> {
+    let s = emu.ui.scene;
+    let arr = if s == 0 { Vec::new() } else { vec![s] };
+    let nsset = host_class(emu, "NSSet")?;
+    let set = send(emu, nsset, "set", &[])?;
+    for o in arr {
+        send(emu, set, "addObject:", &[o])?;
+    }
+    emu.ret(set);
+    Ok(())
+}
+
+/// `UIApplicationState`: active (0).
+fn application_state(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+// ---- UIScene / UIWindowScene ----
+
+fn scene_session(emu: &mut Emu) -> Result<()> {
+    emu.ret(emu.ui.session);
+    Ok(())
+}
+
+fn scene_delegate(emu: &mut Emu) -> Result<()> {
+    emu.ret(emu.ui.scene_delegate);
+    Ok(())
+}
+
+fn set_scene_delegate(emu: &mut Emu) -> Result<()> {
+    emu.ui.scene_delegate = emu.arg(2);
+    Ok(())
+}
+
+/// `UISceneActivationState`: foreground active (0).
+fn activation_state(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+fn scene_screen(emu: &mut Emu) -> Result<()> {
+    let s = main_screen_obj(emu)?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn scene_windows(emu: &mut Emu) -> Result<()> {
+    windows(emu)
+}
+
+fn session_role(emu: &mut Emu) -> Result<()> {
+    let s = foundation::new_nsstring(emu, "UIWindowSceneSessionRoleApplication")?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn empty_set(emu: &mut Emu) -> Result<()> {
+    let nsset = host_class(emu, "NSSet")?;
+    let set = send(emu, nsset, "set", &[])?;
+    emu.ret(set);
+    Ok(())
+}
+
+fn interface_orientation(emu: &mut Emu) -> Result<()> {
+    emu.ret(1); // UIInterfaceOrientationPortrait
+    Ok(())
+}
+
+// ---- UIScreen ----
+
+pub fn main_screen_obj(emu: &mut Emu) -> Result<u64> {
+    if emu.ui.screen == 0 {
+        emu.ui.screen = new_object(emu, "UIScreen")?;
+    }
+    Ok(emu.ui.screen)
+}
+
+fn main_screen(emu: &mut Emu) -> Result<()> {
+    let s = main_screen_obj(emu)?;
+    emu.ret(s);
+    Ok(())
+}
+
+/// Return a CGRect in d0–d3.
+pub fn ret_rect(emu: &mut Emu, r: [f64; 4]) {
+    for (i, v) in r.iter().enumerate() {
+        emu.cpu.q[i] = v.to_bits() as u128;
+    }
+}
+
+pub fn ret_f64(emu: &mut Emu, v: f64) {
+    emu.cpu.q[0] = v.to_bits() as u128;
+}
+
+fn screen_bounds(emu: &mut Emu) -> Result<()> {
+    ret_rect(emu, [0.0, 0.0, SCREEN_W, SCREEN_H]);
+    Ok(())
+}
+
+fn screen_native_bounds(emu: &mut Emu) -> Result<()> {
+    ret_rect(emu, [0.0, 0.0, SCREEN_W * SCREEN_SCALE, SCREEN_H * SCREEN_SCALE]);
+    Ok(())
+}
+
+fn screen_scale(emu: &mut Emu) -> Result<()> {
+    ret_f64(emu, SCREEN_SCALE);
+    Ok(())
+}
+
+fn screen_fps(emu: &mut Emu) -> Result<()> {
+    emu.ret(60);
+    Ok(())
+}
+
+// ---- UIDevice ----
+
+fn current_device(emu: &mut Emu) -> Result<()> {
+    if emu.ui.views.device == 0 {
+        emu.ui.views.device = new_object(emu, "UIDevice")?;
+    }
+    emu.ret(emu.ui.views.device);
+    Ok(())
+}
+
+fn device_string(emu: &mut Emu, s: &str) -> Result<()> {
+    let r = foundation::new_nsstring(emu, s)?;
+    emu.ret(r);
     Ok(())
 }
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", true, "sharedApplication", shared_application),
-    ("UIApplication", false, "delegate", delegate),
-    ("UIApplication", false, "setDelegate:", set_delegate),
+    ("UIApplication", false, "delegate", app_delegate),
+    ("UIApplication", false, "setDelegate:", set_app_delegate),
+    ("UIApplication", false, "keyWindow", key_window),
+    ("UIApplication", false, "windows", windows),
+    ("UIApplication", false, "connectedScenes", connected_scenes),
+    ("UIApplication", false, "applicationState", application_state),
+    ("UIApplication", false, "isIdleTimerDisabled", ret_zero),
+    ("UIApplication", false, "setIdleTimerDisabled:", noop),
+    ("UIApplication", false, "applicationIconBadgeNumber", ret_zero),
+    ("UIApplication", false, "isRegisteredForRemoteNotifications", ret_zero),
+    ("UIApplication", false, "supportsMultipleScenes", ret_zero),
+    ("UIApplication", false, "userInterfaceLayoutDirection", ret_zero),
+    ("UIApplication", false, "statusBarOrientation", interface_orientation),
+    ("UIApplication", false, "beginIgnoringInteractionEvents", noop),
+    ("UIApplication", false, "endIgnoringInteractionEvents", noop),
+    ("UIScene", false, "session", scene_session),
+    ("UIScene", false, "delegate", scene_delegate),
+    ("UIScene", false, "setDelegate:", set_scene_delegate),
+    ("UIScene", false, "activationState", activation_state),
+    ("UIWindowScene", false, "screen", scene_screen),
+    ("UIWindowScene", false, "windows", scene_windows),
+    ("UIWindowScene", false, "interfaceOrientation", interface_orientation),
+    ("UIWindowScene", false, "keyWindow", key_window),
+    ("UISceneSession", false, "role", session_role),
+    ("UISceneSession", false, "scene", |e| {
+        e.ret(e.ui.scene);
+        Ok(())
+    }),
+    ("UISceneConnectionOptions", false, "URLContexts", empty_set),
+    ("UISceneConnectionOptions", false, "userActivities", empty_set),
+    ("UISceneConnectionOptions", false, "shortcutItem", ret_zero),
+    ("UISceneConnectionOptions", false, "notificationResponse", ret_zero),
+    ("UISceneConnectionOptions", false, "sourceApplication", ret_zero),
+    ("UIScreen", true, "mainScreen", main_screen),
+    ("UIScreen", false, "bounds", screen_bounds),
+    ("UIScreen", false, "applicationFrame", screen_bounds),
+    ("UIScreen", false, "nativeBounds", screen_native_bounds),
+    ("UIScreen", false, "scale", screen_scale),
+    ("UIScreen", false, "nativeScale", screen_scale),
+    ("UIScreen", false, "maximumFramesPerSecond", screen_fps),
+    ("UIDevice", true, "currentDevice", current_device),
+    ("UIDevice", false, "systemName", |e| device_string(e, "iOS")),
+    ("UIDevice", false, "systemVersion", |e| device_string(e, "26.0")),
+    ("UIDevice", false, "model", |e| device_string(e, "iPhone")),
+    ("UIDevice", false, "name", |e| device_string(e, "pomme")),
+    ("UIDevice", false, "userInterfaceIdiom", ret_zero), // phone
+    ("UIDevice", false, "orientation", ret_one), // portrait
+    ("UIDevice", false, "isBatteryMonitoringEnabled", ret_zero),
+    ("UIDevice", false, "beginGeneratingDeviceOrientationNotifications", noop),
+    ("UIDevice", false, "identifierForVendor", ret_zero),
+    ("UIDevice", false, "self", ret_self),
 ];

@@ -19,6 +19,7 @@ mod posix;
 mod printf;
 mod swift;
 mod uikit;
+mod uiview;
 
 use heap::Heap;
 use objc::Objc;

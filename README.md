@@ -57,8 +57,15 @@ every stop prints a backtrace.
    - Swift Foundation from source, with Swift ↔ Objective-C bridging ✅ — **hello-expo finishes
      launching**: ~1.6M instructions through initializers, Expo, React Native setup and
      `application:didFinishLaunchingWithOptions:`
-   - UIKit: scene connection (the app's `SceneDelegate` creates the window and starts React
-     Native), then the event loop ← *next*
+   - UIKit, first pass ✅: scene connection from the Info.plist manifest, `UIScreen`, `UIWindow`,
+     `UIView` (state kept host-side, keyed by object), `UIViewController`, `UIColor` — hello-expo's
+     `SceneDelegate` creates its window and React Native starts creating the Hermes runtime
+     (~2.0M instructions)
+   - Threads ← *next*: React Native starts its JS thread (`NSThread`). Plan: guest threads with
+     their own register state, switched cooperatively at blocking points (run-loop waits,
+     semaphores, condition variables), so scheduling stays deterministic on one host thread
+   - Then: the run loop (timers, sources, Mach-port wakeups), loading the JS bundle from a virtual
+     filesystem, and rendering the view tree
    - UIKit, rendering to a host canvas
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,

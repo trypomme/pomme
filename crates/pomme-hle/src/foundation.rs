@@ -1538,7 +1538,336 @@ fn sorted_using_descriptors(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+// ---- the primitives the Swift standard library uses on Cocoa collections ----
+
+fn write_ptrs(emu: &mut Emu, at: u64, v: &[u64]) -> Result<()> {
+    for (i, o) in v.iter().enumerate() {
+        emu.write_u64(at + i as u64 * 8, *o)?;
+    }
+    Ok(())
+}
+
+/// `-[NSArray getObjects:range:]` (buffer, NSRange in x3/x4)
+fn array_get_objects_range(emu: &mut Emu) -> Result<()> {
+    let (a, buf, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
+    let v = array_values(emu, a)?;
+    let end = (loc + len).min(v.len() as u64) as usize;
+    write_ptrs(emu, buf, &v[loc.min(end as u64) as usize..end])
+}
+
+/// `-[NSDictionary getObjects:andKeys:count:]` / `getObjects:andKeys:`
+fn dict_get_objects_and_keys(emu: &mut Emu) -> Result<()> {
+    let (d, objs, keys) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let pairs = dict_pairs(emu, d)?;
+    if keys != 0 {
+        write_ptrs(emu, keys, &pairs.iter().map(|p| p.0).collect::<Vec<_>>())?;
+    }
+    if objs != 0 {
+        write_ptrs(emu, objs, &pairs.iter().map(|p| p.1).collect::<Vec<_>>())?;
+    }
+    Ok(())
+}
+
+/// `-[NSSet getObjects:]` / `getObjects:count:`
+fn set_get_objects(emu: &mut Emu) -> Result<()> {
+    let (s, buf) = (emu.arg(0), emu.arg(2));
+    let v = set_values(emu, s)?;
+    write_ptrs(emu, buf, &v)
+}
+
+/// An NSEnumerator over a snapshot: {isa, NSArray, next index}.
+fn new_enumerator(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
+    let cls = host_class(emu, "__NSFastEnumerationEnumerator")?;
+    let e = objc::create_instance(emu, cls, 0)?;
+    let a = array_from(emu, objs)?;
+    emu.write_u64(e + 8, a)?;
+    emu.write_u64(e + 16, 0)?;
+    Ok(e)
+}
+
+fn dict_key_enumerator(emu: &mut Emu) -> Result<()> {
+    let keys: Vec<u64> = dict_pairs(emu, emu.arg(0))?.into_iter().map(|p| p.0).collect();
+    let e = new_enumerator(emu, &keys)?;
+    emu.ret(e);
+    Ok(())
+}
+
+fn dict_object_enumerator(emu: &mut Emu) -> Result<()> {
+    let vals: Vec<u64> = dict_pairs(emu, emu.arg(0))?.into_iter().map(|p| p.1).collect();
+    let e = new_enumerator(emu, &vals)?;
+    emu.ret(e);
+    Ok(())
+}
+
+fn set_object_enumerator(emu: &mut Emu) -> Result<()> {
+    let v = set_values(emu, emu.arg(0))?;
+    let e = new_enumerator(emu, &v)?;
+    emu.ret(e);
+    Ok(())
+}
+
+fn array_object_enumerator(emu: &mut Emu) -> Result<()> {
+    let v = array_values(emu, emu.arg(0))?;
+    let e = new_enumerator(emu, &v)?;
+    emu.ret(e);
+    Ok(())
+}
+
+fn enumerator_remaining(emu: &mut Emu, e: u64) -> Result<Vec<u64>> {
+    let a = emu.read_u64(e + 8)?;
+    let i = emu.read_u64(e + 16)? as usize;
+    let v = array_values(emu, a)?;
+    Ok(v[i.min(v.len())..].to_vec())
+}
+
+fn enumerator_next(emu: &mut Emu) -> Result<()> {
+    let e = emu.arg(0);
+    let a = emu.read_u64(e + 8)?;
+    let i = emu.read_u64(e + 16)?;
+    let n = cf(emu, "_CFArrayGetCount", &[a])?;
+    let v = if i < n {
+        emu.write_u64(e + 16, i + 1)?;
+        cf(emu, "_CFArrayGetValueAtIndex", &[a, i])?
+    } else {
+        0
+    };
+    emu.ret(v);
+    Ok(())
+}
+
+fn enumerator_all_objects(emu: &mut Emu) -> Result<()> {
+    let e = emu.arg(0);
+    let rest = enumerator_remaining(emu, e)?;
+    let n = cf(emu, "_CFArrayGetCount", &[emu.read_u64(e + 8)?])?;
+    emu.write_u64(e + 16, n)?;
+    let a = array_from(emu, &rest)?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn enumerator_fast_enumerate(emu: &mut Emu) -> Result<()> {
+    let e = emu.arg(0);
+    fast_enumerate(emu, |emu| enumerator_remaining(emu, e))
+}
+
+/// `-[NSNumber objCType]`: "c" for booleans, "d" for floats, "q" otherwise.
+fn number_objc_type(emu: &mut Emu) -> Result<()> {
+    let n = emu.arg(0);
+    let t = if is_boolean(emu, n) {
+        "c"
+    } else if cf(emu, "_CFNumberIsFloatType", &[n])? & 0xff != 0 {
+        "d"
+    } else {
+        "q"
+    };
+    let p = emu.alloc_cstr(t)?;
+    emu.ret(p);
+    Ok(())
+}
+
+// ---- NSURL (CFURL) ----
+
+const POSIX_PATH_STYLE: u64 = 0; // kCFURLPOSIXPathStyle
+
+/// A file URL for a guest path.
+pub fn new_file_url(emu: &mut Emu, path: &str, is_dir: bool) -> Result<u64> {
+    let p = new_nsstring(emu, path)?;
+    cf(emu, "_CFURLCreateWithFileSystemPath", &[0, p, POSIX_PATH_STYLE, is_dir as u64])
+}
+
+fn url_with_string(emu: &mut Emu) -> Result<()> {
+    let s = emu.arg(2);
+    let u = if s == 0 { 0 } else { cf(emu, "_CFURLCreateWithString", &[0, s, 0])? };
+    emu.ret(u);
+    Ok(())
+}
+
+fn url_with_string_relative(emu: &mut Emu) -> Result<()> {
+    let (s, base) = (emu.arg(2), emu.arg(3));
+    let u = if s == 0 { 0 } else { cf(emu, "_CFURLCreateWithString", &[0, s, base])? };
+    emu.ret(u);
+    Ok(())
+}
+
+fn file_url_with_path(emu: &mut Emu) -> Result<()> {
+    let path = nsstring(emu, emu.arg(2))?;
+    let dir = path.ends_with('/');
+    let u = new_file_url(emu, &path, dir)?;
+    emu.ret(u);
+    Ok(())
+}
+
+fn file_url_with_path_is_dir(emu: &mut Emu) -> Result<()> {
+    let path = nsstring(emu, emu.arg(2))?;
+    let u = new_file_url(emu, &path, emu.arg(3) & 0xff != 0)?;
+    emu.ret(u);
+    Ok(())
+}
+
+fn url_absolute_string(emu: &mut Emu) -> Result<()> {
+    let u = emu.arg(0);
+    let abs = cf(emu, "_CFURLCopyAbsoluteURL", &[u])?;
+    let s = cf(emu, "_CFURLGetString", &[abs])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_path(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyFileSystemPath", &[emu.arg(0), POSIX_PATH_STYLE])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_scheme(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyScheme", &[emu.arg(0)])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_host(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyHostName", &[emu.arg(0)])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_last_path_component(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyLastPathComponent", &[emu.arg(0)])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_path_extension(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyPathExtension", &[emu.arg(0)])?;
+    let s = if s == 0 { new_nsstring(emu, "")? } else { s };
+    emu.ret(s);
+    Ok(())
+}
+
+fn url_is_file(emu: &mut Emu) -> Result<()> {
+    let scheme = cf(emu, "_CFURLCopyScheme", &[emu.arg(0)])?;
+    let is_file = scheme != 0 && nsstring(emu, scheme)? == "file";
+    ret_bool(emu, is_file)
+}
+
+fn url_appending_component(emu: &mut Emu) -> Result<()> {
+    let u = cf(emu, "_CFURLCreateCopyAppendingPathComponent", &[0, emu.arg(0), emu.arg(2), 0])?;
+    emu.ret(u);
+    Ok(())
+}
+
+fn url_deleting_last_component(emu: &mut Emu) -> Result<()> {
+    let u = cf(emu, "_CFURLCreateCopyDeletingLastPathComponent", &[0, emu.arg(0)])?;
+    emu.ret(u);
+    Ok(())
+}
+
+fn url_is_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    let r = b != 0 && is_cf(emu, b) && cf(emu, "_CFEqual", &[a, b])? & 0xff != 0;
+    ret_bool(emu, r)
+}
+
+fn url_hash(emu: &mut Emu) -> Result<()> {
+    let h = cf(emu, "_CFHash", &[emu.arg(0)])?;
+    emu.ret(h);
+    Ok(())
+}
+
+fn url_description(emu: &mut Emu) -> Result<()> {
+    url_absolute_string(emu)
+}
+
+fn noop(_: &mut Emu) -> Result<()> {
+    Ok(())
+}
+
+/// NSHashTable / NSMapTable: since pomme never frees objects, weak and strong
+/// references behave the same, so these are plain CF sets and dictionaries
+/// (which already answer every NSSet / NSDictionary-style method they need).
+fn hash_table_new(emu: &mut Emu) -> Result<()> {
+    set_empty(emu)
+}
+
+fn map_table_new(emu: &mut Emu) -> Result<()> {
+    dict_empty(emu)
+}
+
+fn map_table_dictionary(emu: &mut Emu) -> Result<()> {
+    dict_copy(emu)
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSHashTable", true, "alloc", cluster_alloc),
+    ("NSHashTable", true, "weakObjectsHashTable", hash_table_new),
+    ("NSHashTable", true, "hashTableWithOptions:", hash_table_new),
+    ("NSHashTable", true, "hashTableWithWeakObjects", hash_table_new),
+    ("NSHashTable", false, "initWithOptions:capacity:", hash_table_new),
+    ("NSHashTable", false, "init", hash_table_new),
+    ("NSMapTable", true, "alloc", cluster_alloc),
+    ("NSMapTable", true, "strongToStrongObjectsMapTable", map_table_new),
+    ("NSMapTable", true, "strongToWeakObjectsMapTable", map_table_new),
+    ("NSMapTable", true, "weakToStrongObjectsMapTable", map_table_new),
+    ("NSMapTable", true, "weakToWeakObjectsMapTable", map_table_new),
+    ("NSMapTable", true, "mapTableWithKeyOptions:valueOptions:", map_table_new),
+    ("NSMapTable", false, "initWithKeyOptions:valueOptions:capacity:", map_table_new),
+    ("NSMapTable", false, "init", map_table_new),
+    ("NSDictionary", false, "dictionaryRepresentation", map_table_dictionary),
+    // Locks: one thread, so they always succeed immediately.
+    ("NSLock", false, "lock", noop),
+    ("NSLock", false, "unlock", noop),
+    ("NSLock", false, "tryLock", ret_yes),
+    ("NSLock", false, "lockBeforeDate:", ret_yes),
+    ("NSLock", false, "setName:", noop),
+    ("NSRecursiveLock", false, "lock", noop),
+    ("NSRecursiveLock", false, "unlock", noop),
+    ("NSRecursiveLock", false, "tryLock", ret_yes),
+    ("NSRecursiveLock", false, "setName:", noop),
+    ("NSCondition", false, "lock", noop),
+    ("NSCondition", false, "unlock", noop),
+    ("NSCondition", false, "signal", noop),
+    ("NSCondition", false, "broadcast", noop),
+    ("NSCondition", false, "setName:", noop),
+    ("NSURL", true, "URLWithString:", url_with_string),
+    ("NSURL", false, "initWithString:", url_with_string),
+    ("NSURL", true, "URLWithString:relativeToURL:", url_with_string_relative),
+    ("NSURL", false, "initWithString:relativeToURL:", url_with_string_relative),
+    ("NSURL", true, "fileURLWithPath:", file_url_with_path),
+    ("NSURL", false, "initFileURLWithPath:", file_url_with_path),
+    ("NSURL", true, "fileURLWithPath:isDirectory:", file_url_with_path_is_dir),
+    ("NSURL", false, "initFileURLWithPath:isDirectory:", file_url_with_path_is_dir),
+    ("NSURL", true, "alloc", cluster_alloc),
+    ("NSURL", false, "absoluteString", url_absolute_string),
+    ("NSURL", false, "absoluteURL", |e| {
+        let u = cf(e, "_CFURLCopyAbsoluteURL", &[e.arg(0)])?;
+        e.ret(u);
+        Ok(())
+    }),
+    ("NSURL", false, "path", url_path),
+    ("NSURL", false, "scheme", url_scheme),
+    ("NSURL", false, "host", url_host),
+    ("NSURL", false, "lastPathComponent", url_last_path_component),
+    ("NSURL", false, "pathExtension", url_path_extension),
+    ("NSURL", false, "isFileURL", url_is_file),
+    ("NSURL", false, "URLByAppendingPathComponent:", url_appending_component),
+    ("NSURL", false, "URLByDeletingLastPathComponent", url_deleting_last_component),
+    ("NSURL", false, "isEqual:", url_is_equal),
+    ("NSURL", false, "hash", url_hash),
+    ("NSURL", false, "description", url_description),
+    ("NSURL", false, "copy", ret_self),
+    ("NSURL", false, "copyWithZone:", ret_self),
+    ("NSArray", false, "getObjects:range:", array_get_objects_range),
+    ("NSArray", false, "objectEnumerator", array_object_enumerator),
+    ("NSDictionary", false, "getObjects:andKeys:count:", dict_get_objects_and_keys),
+    ("NSDictionary", false, "getObjects:andKeys:", dict_get_objects_and_keys),
+    ("NSDictionary", false, "keyEnumerator", dict_key_enumerator),
+    ("NSDictionary", false, "objectEnumerator", dict_object_enumerator),
+    ("NSSet", false, "getObjects:", set_get_objects),
+    ("NSSet", false, "getObjects:count:", set_get_objects),
+    ("NSSet", false, "objectEnumerator", set_object_enumerator),
+    ("__NSFastEnumerationEnumerator", false, "nextObject", enumerator_next),
+    ("__NSFastEnumerationEnumerator", false, "allObjects", enumerator_all_objects),
+    ("__NSFastEnumerationEnumerator", false, "countByEnumeratingWithState:objects:count:", enumerator_fast_enumerate),
+    ("NSNumber", false, "objCType", number_objc_type),
     ("NSMutableArray", false, "sortUsingDescriptors:", sort_using_descriptors),
     ("NSArray", false, "sortedArrayUsingDescriptors:", sorted_using_descriptors),
     ("NSSortDescriptor", false, "initWithKey:ascending:", sort_descriptor_init),

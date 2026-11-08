@@ -28,6 +28,11 @@ fn guest_bundle_path(emu: &Emu) -> String {
     format!("{CONTAINER}/{name}")
 }
 
+/// The app's Info.plist, parsed on the host.
+pub(crate) fn host_info_plist(emu: &Emu) -> Option<plist::Value> {
+    plist::Value::from_file(host_app_dir(emu).join("Info.plist")).ok()
+}
+
 /// Convert a parsed plist value into Foundation objects in guest memory.
 fn plist_to_guest(emu: &mut Emu, v: &plist::Value) -> Result<u64> {
     Ok(match v {
@@ -138,6 +143,26 @@ fn path_for_resource(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &p)
 }
 
+/// `-URLForResource:withExtension:` → file URL if the file is in the .app, else nil.
+fn url_for_resource(emu: &mut Emu) -> Result<()> {
+    let file = resource_name(emu, emu.arg(2), emu.arg(3))?;
+    if file.is_empty() || !host_app_dir(emu).join(&file).exists() {
+        emu.ret(0);
+        return Ok(());
+    }
+    let p = format!("{}/{file}", guest_bundle_path(emu));
+    let u = foundation::new_file_url(emu, &p, false)?;
+    emu.ret(u);
+    Ok(())
+}
+
+fn bundle_url(emu: &mut Emu) -> Result<()> {
+    let p = guest_bundle_path(emu);
+    let u = foundation::new_file_url(emu, &p, true)?;
+    emu.ret(u);
+    Ok(())
+}
+
 fn localized_string(emu: &mut Emu) -> Result<()> {
     // No .strings tables yet: the value if given, else the key.
     let (key, value) = (emu.arg(2), emu.arg(3));
@@ -185,6 +210,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSBundle", false, "executablePath", executable_path),
     ("NSBundle", false, "pathForResource:ofType:", path_for_resource),
     ("NSBundle", false, "pathForResource:ofType:inDirectory:", path_for_resource),
+    ("NSBundle", false, "URLForResource:withExtension:", url_for_resource),
+    ("NSBundle", false, "URLForResource:withExtension:subdirectory:", url_for_resource),
+    ("NSBundle", false, "bundleURL", bundle_url),
+    ("NSBundle", false, "resourceURL", bundle_url),
     ("NSBundle", false, "localizedStringForKey:value:table:", localized_string),
     ("NSBundle", false, "preferredLocalizations", localizations),
     ("NSBundle", false, "localizations", localizations),

@@ -221,3 +221,26 @@ extension Float: _ObjectiveCBridgeable {
     }
     public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Float { source?.floatValue ?? 0 }
 }
+
+// MARK: URL
+
+extension URL: _ObjectiveCBridgeable {
+    public func _bridgeToObjectiveC() -> NSURL {
+        NSURL(string: absoluteString._bridgeToObjectiveC())!
+    }
+
+    public static func _forceBridgeFromObjectiveC(_ source: NSURL, result: inout URL?) {
+        result = URL(string: String._unconditionallyBridgeFromObjectiveC(source.absoluteString))
+    }
+
+    public static func _conditionallyBridgeFromObjectiveC(_ source: NSURL, result: inout URL?) -> Bool {
+        result = URL(string: String._unconditionallyBridgeFromObjectiveC(source.absoluteString))
+        return result != nil
+    }
+
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSURL?) -> URL {
+        var result: URL?
+        _forceBridgeFromObjectiveC(source!, result: &result)
+        return result!
+    }
+}

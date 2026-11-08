@@ -38,6 +38,8 @@
 @end
 
 @interface NSURL : NSObject
+- (nullable instancetype)initWithString:(NSString *)string;
+@property (readonly) NSString *absoluteString;
 @end
 
 @interface NSData : NSObject
