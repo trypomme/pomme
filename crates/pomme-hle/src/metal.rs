@@ -671,7 +671,8 @@ fn drawable_texture(emu: &mut Emu) -> Result<()> {
 
 fn texture_dims(emu: &mut Emu, which: usize) -> Result<()> {
     let v = match obj(emu, emu.arg(0)) {
-        Some(Obj::Texture(t)) => [t.width, t.height, t.format, t.usage][which],
+        // MTLTextureType: 2D (2), or 2D multisample (4).
+        Some(Obj::Texture(t)) => [t.width, t.height, t.format, t.usage, t.samples, if t.samples > 1 { 4 } else { 2 }][which],
         _ => 0,
     };
     ret(emu, v)
@@ -1005,8 +1006,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("MTLPommeTexture", false, "depth", |e| ret(e, 1)),
     ("MTLPommeTexture", false, "mipmapLevelCount", |e| ret(e, 1)),
     ("MTLPommeTexture", false, "arrayLength", |e| ret(e, 1)),
-    ("MTLPommeTexture", false, "sampleCount", |e| ret(e, 1)),
-    ("MTLPommeTexture", false, "textureType", |e| ret(e, 2)), // 2D
+    ("MTLPommeTexture", false, "sampleCount", |e| texture_dims(e, 4)),
+    ("MTLPommeTexture", false, "textureType", |e| texture_dims(e, 5)),
     ("MTLPommeTexture", false, "isFramebufferOnly", |e| ret(e, 0)),
     ("MTLPommeTexture", false, "storageMode", |e| ret(e, 2)), // private
     ("MTLPommeLibrary", false, "newFunctionWithName:", new_function),

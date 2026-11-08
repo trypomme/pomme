@@ -37,8 +37,8 @@ fn skia_draws_through_metal() {
 }
 
 /// Skia's frame runs on the host GPU (Metal → wgpu, shaders MSL → WGSL) and
-/// shows in the canvas: the dark rounded rectangle, and the circle's gradient
-/// from rose (top left) to amber (bottom right).
+/// shows in the canvas: the dark rounded rectangle, the circle's gradient
+/// from rose (top left) to amber (bottom right), and the stroked chevron.
 #[test]
 fn skia_frame_renders_on_the_gpu() {
     let Some(mut emu) = boot() else { return };
@@ -63,4 +63,10 @@ fn skia_frame_renders_on_the_gpu() {
     let (start, end) = (at(110.0, 85.0), at(190.0, 165.0));
     assert!(start.0 > 220 && start.1 < 110 && start.2 > 60, "gradient start: {start:?}");
     assert!(end.0 > 220 && end.1 > 120 && end.2 < 60, "gradient end: {end:?}");
+    // The chevron (M 90 245 L 150 205 L 210 245, 8 pt stroke), drawn through
+    // Skia's MSAA atlas with stencil-then-cover: white on the stroke…
+    assert!(near(at(120.0, 225.0), (255, 255, 255)), "stroke: {:?}", at(120.0, 225.0));
+    assert!(near(at(180.0, 225.0), (255, 255, 255)), "stroke: {:?}", at(180.0, 225.0));
+    // …and only there: inside its bounds but off the stroke is still the rect.
+    assert!(near(at(150.0, 240.0), (0x1e, 0x29, 0x3b)), "under the chevron: {:?}", at(150.0, 240.0));
 }
