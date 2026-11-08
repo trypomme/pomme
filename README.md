@@ -25,7 +25,7 @@ scripts/build-hello-expo.sh            # needs the iOS platform installed in Xco
 scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation + ICU from source (~600 MB, ~10 min)
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
-cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --views
+cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --views --screenshot hello.png
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
@@ -46,6 +46,8 @@ Debugging:
 - `POMME_BREAK=_sym1,_sym2 pomme run …` prints every call to those guest functions.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - Every stop prints a backtrace; C++ exceptions are reported with their type and `what()`.
+
+![hello-expo rendered by pomme](docs/hello-expo.png)
 
 ## Rough roadmap
 
@@ -84,7 +86,11 @@ Debugging:
    - Mounting ✅: `CALayer` state, CoreGraphics geometry, a layout pass before each frame —
      **hello-expo mounts its React tree**: "Hello from pomme 🍎" centred in a white root view,
      then idles on its 60 Hz frame timer (~51M instructions, about a second)
-   - Next: rendering the view and layer tree to pixels, then touch input
+   - Rendering ✅: a recording `CGContext`/`CGPath` for views' `drawRect:`, and a software
+     compositor (tiny-skia) for views, layers, rounded corners, borders, clipping and text from
+     Inter's glyph outlines — `pomme run … --screenshot out.png` gives **hello-expo's first frame**
+     (below). Not yet: images, shadows, gradients, emoji, the status bar
+   - Next: touch input; then the hosts (a window, the browser)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,

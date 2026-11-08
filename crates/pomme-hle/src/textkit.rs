@@ -38,7 +38,7 @@ pub struct State {
 }
 
 /// The sysroot, found from where CoreFoundation was loaded.
-fn font_bytes(emu: &mut Emu) -> Option<&[u8]> {
+pub(crate) fn font_bytes(emu: &mut Emu) -> Option<&[u8]> {
     if emu.text.font.is_none() {
         let path = emu
             .p
@@ -52,7 +52,7 @@ fn font_bytes(emu: &mut Emu) -> Option<&[u8]> {
 }
 
 /// UIFontWeight (-0.8 … 0.62) → OpenType `wght` (100 … 900).
-fn ot_weight(w: f64) -> f64 {
+pub(crate) fn ot_weight(w: f64) -> f64 {
     const STOPS: [(f64, f64); 9] = [(-0.8, 100.0), (-0.6, 200.0), (-0.4, 300.0), (0.0, 400.0), (0.23, 500.0), (0.3, 600.0), (0.4, 700.0), (0.56, 800.0), (0.62, 900.0)];
     if w <= STOPS[0].0 {
         return STOPS[0].1;
@@ -240,6 +240,9 @@ struct Laid {
     lines: Vec<Line>,
     padding: f64,
     len: usize,
+    /// Per run: (start, end, size, weight, rgba) for drawing.
+    styles: Vec<(usize, usize, f64, f64, [f64; 4])>,
+    text: Vec<u16>,
 }
 
 /// Lay out a layout manager's text storage in its container.
@@ -252,11 +255,13 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
         max_lines = emu.read_u64(tc + 32)? as usize;
     }
     if s == 0 {
-        return Ok(Laid { lines: Vec::new(), padding, len: 0 });
+        return Ok(Laid { lines: Vec::new(), padding, len: 0, styles: Vec::new(), text: Vec::new() });
     }
     let string = cf(emu, "_CFAttributedStringGetString", &[s])?;
     let text: Vec<u16> = foundation::nsstring(emu, string)?.encode_utf16().collect();
     let font_key = foundation::new_nsstring(emu, "NSFontAttributeName")?;
+    let color_key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
+    let mut styles = Vec::new();
     let range = emu.alloc(16)?;
     let mut runs = Vec::new();
     let mut i = 0;
@@ -265,8 +270,11 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
         let (loc, n) = (emu.read_u64(range)? as usize, emu.read_u64(range + 8)? as usize);
         let font = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, font_key])? };
         let (size, weight) = font_info(emu, font)?;
+        let color = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, color_key])? };
+        let rgba = emu.ui.views.colors.get(&color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let end = (loc + n).max(i + 1).min(text.len());
         runs.push(Run { len: end - i, size, weight });
+        styles.push((i, end, size, weight, rgba));
         i = end;
     }
     emu.heap.free(&emu.p.memory, range)?;
@@ -281,7 +289,7 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
         a
     };
     let lines = layout(&text, &runs, &mut measure, width, h, max_lines);
-    Ok(Laid { lines, padding, len: text.len() })
+    Ok(Laid { lines, padding, len: text.len(), styles, text })
 }
 
 impl Laid {
@@ -539,6 +547,33 @@ fn lm_glyph_at_point(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `-drawGlyphsForGlyphRange:atPoint:` (range x2/x3, origin d0/d1): into the current CGContext.
+fn lm_draw_glyphs(emu: &mut Emu) -> Result<()> {
+    let (lm, loc, len) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3) as usize);
+    let (ox, oy) = (d(emu, 0), d(emu, 1));
+    let l = laid_out(emu, lm)?;
+    let mut glyphs = Vec::new();
+    for line in &l.lines {
+        let mut k = line.start.max(loc);
+        while k < (line.start + line.len).min(loc + len) {
+            let unit = l.text[k];
+            let (ch, units) = match char::decode_utf16([unit, l.text.get(k + 1).copied().unwrap_or(0)]).next() {
+                Some(Ok(c)) => (c, c.len_utf16()),
+                _ => ('\u{fffd}', 1),
+            };
+            if !ch.is_whitespace() {
+                let &(_, _, size, weight, color) = l.styles.iter().find(|s| k >= s.0 && k < s.1).unwrap_or(&(0, 0, DEFAULT_SIZE, 0.0, [0.0, 0.0, 0.0, 1.0]));
+                let x = ox + l.padding + line.xs[k - line.start];
+                let y = oy + line.y + line.ascent;
+                glyphs.push(crate::render::Glyph { ch, x, y, size, weight, color });
+            }
+            k += units;
+        }
+    }
+    crate::render::draw_glyphs(emu, glyphs);
+    Ok(())
+}
+
 fn lm_truncated(emu: &mut Emu) -> Result<()> {
     ret_range(emu, NOT_FOUND, 0);
     Ok(())
@@ -641,7 +676,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         lm_glyph_at_point(e)
     }),
     (LM, false, "truncatedGlyphRangeInLineFragmentForGlyphAtIndex:", lm_truncated),
-    (LM, false, "drawGlyphsForGlyphRange:atPoint:", nothing),
+    (LM, false, "drawGlyphsForGlyphRange:atPoint:", lm_draw_glyphs),
     (LM, false, "drawBackgroundForGlyphRange:atPoint:", nothing),
     (TS, false, "init", |e| ts_init_with(e, 0, 0, 0)),
     (TS, false, "initWithString:", |e| {

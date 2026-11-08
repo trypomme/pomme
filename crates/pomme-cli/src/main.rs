@@ -32,6 +32,9 @@ enum Cmd {
         /// Print the view hierarchy when the run stops.
         #[arg(long)]
         views: bool,
+        /// Write a PNG of the screen (3 px per point) when the run stops.
+        #[arg(long)]
+        screenshot: Option<PathBuf>,
         /// Print every system call and Objective-C message as it happens.
         #[arg(long)]
         trace: bool,
@@ -52,7 +55,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Run { path, steps, seconds, views, trace, sysroot } => run(&path, steps, seconds, views, trace, &sysroot),
+        Cmd::Run { path, steps, seconds, views, screenshot, trace, sysroot } => run(&path, steps, seconds, views, screenshot.as_deref(), trace, &sysroot),
     }
 }
 
@@ -206,7 +209,7 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, trace: bool, sysroot: &Path) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, screenshot: Option<&Path>, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &sysroot.canonicalize().unwrap_or_else(|_| sysroot.to_path_buf());
@@ -283,11 +286,20 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, trace: bool, sysr
     for (name, n) in calls.iter().take(15) {
         println!("  {n:>7}  {name}");
     }
+    // Lift the limits: describing and drawing the views runs guest code.
+    emu.max_steps = u64::MAX;
+    emu.time_limit_ns = None;
     if views {
-        // Lift the limits so describing the views can message guest code.
-        emu.max_steps = u64::MAX;
-        emu.time_limit_ns = None;
         println!("\nviews:\n{}", emu.describe_views());
+    }
+    if let Some(out) = screenshot {
+        match emu.screenshot_png(3.0) {
+            Ok(png) => {
+                std::fs::write(out, png)?;
+                println!("\nscreenshot: {}", out.display());
+            }
+            Err(e) => println!("\nscreenshot failed: {e}"),
+        }
     }
     Ok(())
 }

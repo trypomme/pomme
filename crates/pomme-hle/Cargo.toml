@@ -10,3 +10,4 @@ pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 pomme-mem = { version = "0.1.0", path = "../pomme-mem" }
 plist = "1.10.3"
 ttf-parser = "0.25.1"
+tiny-skia = "0.12.0"

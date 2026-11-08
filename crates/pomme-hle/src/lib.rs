@@ -24,6 +24,7 @@ pub mod libsystem;
 pub mod threads;
 mod posix;
 mod printf;
+pub mod render;
 mod swift;
 mod textkit;
 mod uikit;
@@ -173,6 +174,8 @@ pub struct Emu {
     pub fs: fs::State,
     /// Text layout (font data and advance cache).
     text: textkit::State,
+    /// Drawing contexts, paths and what views drew.
+    render: render::State,
     bundle: bundle::State,
 }
 
@@ -183,7 +186,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -226,6 +229,7 @@ impl Emu {
             th: Default::default(),
             fs: Default::default(),
             text: Default::default(),
+            render: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
@@ -242,6 +246,11 @@ impl Emu {
         foundation::init(&mut emu)?;
         libsystem::init(&mut emu)?;
         Ok(emu)
+    }
+
+    /// PNG screenshot of the windows at `scale` pixels per point.
+    pub fn screenshot_png(&mut self, scale: f32) -> Result<Vec<u8>> {
+        render::screenshot_png(self, scale)
     }
 
     /// The UIKit window hierarchy as indented text (for reports and tests).
