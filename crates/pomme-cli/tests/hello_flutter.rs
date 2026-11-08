@@ -62,4 +62,20 @@ fn first_frame_renders() {
     // Outside it: the page; and just outside its rounded corner.
     assert!(near(at(195.0, 100.0), (255, 255, 255)), "page: {:?}", at(195.0, 100.0));
     assert!(near(at(47.0, 274.0), (255, 255, 255)), "corner: {:?}", at(47.0, 274.0));
+    // The text above and below the square (CoreText glyphs in Impeller's atlas):
+    // dark ink in each line's band, none in the empty band between them.
+    let ink = |y0: f64, y1: f64| {
+        let mut n = 0;
+        for y in (y0 * 3.0) as u32..(y1 * 3.0) as u32 {
+            for x in (100 * 3)..(290 * 3) {
+                if pix.pixel(x, y).unwrap().red() < 100 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    assert!(ink(232.0, 256.0) > 500, "\"Hello from Flutter\": {} dark pixels", ink(232.0, 256.0));
+    assert!(ink(588.0, 612.0) > 500, "\"Tapped 0 times\": {} dark pixels", ink(588.0, 612.0));
+    assert_eq!(ink(150.0, 200.0), 0);
 }

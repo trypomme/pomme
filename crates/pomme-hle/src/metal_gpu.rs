@@ -134,7 +134,10 @@ fn gpu(emu: &mut Emu) -> R<Gpu> {
 fn texture_format(f: u64) -> R<wgpu::TextureFormat> {
     use wgpu::TextureFormat as F;
     Ok(match f {
-        1 | 10 => F::R8Unorm, // A8 too: Skia reads coverage from .x
+        // A8 is stored as RGBA with the coverage in every channel (see `write`):
+        // Metal samples it as (0, 0, 0, a); Impeller reads .w, Skia reads .x.
+        1 => F::Rgba8Unorm,
+        10 => F::R8Unorm,
         13 => F::R8Uint,
         25 => F::R16Float,
         30 => F::Rg8Unorm,
@@ -599,7 +602,7 @@ fn run_pass(g: &mut Gpu, emu: &Emu, encoder: &mut wgpu::CommandEncoder, pass: &P
                 }
                 upload.resize(at + size as usize, 0);
                 if std::env::var("POMME_TRACE_METAL").is_ok() {
-                    let f: Vec<f32> = upload[at..at + 16].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                    let f: Vec<f32> = upload[at..at + (size as usize).min(48)].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
                     println!("[metal]     stage {stage} buffer {}: {f:?}…", b.index);
                 }
                 prep.uniforms[stage].push((b.binding, at as u64, size));
@@ -827,7 +830,16 @@ fn run(g: &mut Gpu, emu: &mut Emu, cmds: &[Cmd], present: &[u64]) -> R<()> {
     for c in cmds {
         if std::env::var("POMME_TRACE_METAL").is_ok() {
             match c {
-                Cmd::Pass(p) => println!("[metal]  cmd: pass, {} draws", p.draws.len()),
+                Cmd::Pass(p) => {
+                    println!("[metal]  cmd: pass, {} draws", p.draws.len());
+                    for d in &p.draws {
+                        let name = match emu.metal.objects.get(&d.state.pipeline) {
+                            Some(Obj::Pipeline(pd)) => format!("{} / {}", pd.vertex.as_ref().map_or("-", |v| v.1.as_str()), pd.fragment.as_ref().map_or("-", |f| f.1.as_str())),
+                            _ => "?".into(),
+                        };
+                        println!("[metal]    draw {name}: {:?} textures {:?}", d.call, d.state.textures[1]);
+                    }
+                }
                 Cmd::CopyBuffer { src, src_offset, dst, dst_offset, size } => println!("[metal]  cmd: copy {size} bytes {src:#x}+{src_offset} → {dst:#x}+{dst_offset}"),
                 other => println!("[metal]  cmd: {other:?}"),
             }
@@ -923,6 +935,14 @@ fn dump(g: &mut Gpu, emu: &Emu, t: u64, path: &str) -> R<()> {
 fn write(g: &mut Gpu, emu: &Emu, t: u64, origin: [u64; 2], size: [u64; 2], bytes_per_row: u64, data: &[u8]) -> R<()> {
     texture(g, emu, t)?;
     let tex = &g.textures[&t];
+    let a8 = matches!(emu.metal.objects.get(&t), Some(Obj::Texture(m)) if m.format == 1);
+    let widened;
+    let (data, bytes_per_row) = if a8 {
+        widened = expand_a8(data, size, bytes_per_row);
+        (&widened[..], size[0] * 4)
+    } else {
+        (data, bytes_per_row)
+    };
     g.queue.write_texture(
         wgpu::TexelCopyTextureInfo { texture: &tex.texture, mip_level: 0, origin: wgpu::Origin3d { x: origin[0] as u32, y: origin[1] as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
         data,
@@ -930,6 +950,20 @@ fn write(g: &mut Gpu, emu: &Emu, t: u64, origin: [u64; 2], size: [u64; 2], bytes
         wgpu::Extent3d { width: size[0] as u32, height: size[1] as u32, depth_or_array_layers: 1 },
     );
     Ok(())
+}
+
+/// A8 rows → RGBA rows with the coverage in all four channels.
+fn expand_a8(data: &[u8], size: [u64; 2], bytes_per_row: u64) -> Vec<u8> {
+    let (w, h) = (size[0] as usize, size[1] as usize);
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        let row = data.get(y * bytes_per_row as usize..).unwrap_or(&[]);
+        for x in 0..w {
+            let a = row.get(x).copied().unwrap_or(0);
+            out.extend_from_slice(&[a, a, a, a]);
+        }
+    }
+    out
 }
 
 /// `replaceRegion:…`: a CPU write to a texture, applied now.

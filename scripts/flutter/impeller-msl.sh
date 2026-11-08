@@ -34,7 +34,10 @@ compile() {
     *) return 0 ;;
   esac
   local name="imp_${base%.*}_${stage}_main"
+  # iOS builds define IMPELLER_TARGET_METAL(_IOS) (impeller/tools/shaders_mtl.gni):
+  # f16 types stay halves, so the uniform layouts match the engine's.
   "$IC" --metal-ios --metal-version=1.2 --entry-point-prefix=imp_ \
+    --define=IMPELLER_TARGET_METAL --define=IMPELLER_TARGET_METAL_IOS \
     --include="$E/compiler/shader_lib" --include="$(dirname "$src")" \
     --input="$src" --sl="$OUT/$name.metal" --spirv="$TMP/$name.spirv" "$@" \
     || echo "  (skipped $src)" >&2

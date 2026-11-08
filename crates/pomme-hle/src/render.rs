@@ -151,6 +151,7 @@ pub struct State {
     stack: Vec<u64>,
     paths: HashMap<u64, Vec<El>>,
     bitmaps: HashMap<u64, Bitmap>,
+    glyph_dumps: usize,
     /// What each view drew in its last `drawRect:`.
     content: HashMap<u64, Vec<Op>>,
 }
@@ -410,7 +411,28 @@ pub(crate) fn draw_font_glyphs(emu: &mut Emu, c: u64, face: &crate::coretext::Fa
     let glyph = [m[0] * s, m[1] * s, m[2] * s, m[3] * s, m[4], m[5]];
     let list = glyphs.iter().map(|&(g, x, y)| (g, concat(&concat(&glyph, &[1.0, 0.0, 0.0, 1.0, x as f32, y as f32]), &ctx.gs.ctm))).collect();
     ctx.ops.push(Op::FontGlyphs { font: fr, glyphs: list, color: ctx.gs.fill, clip: ctx.gs.clip.clone() });
-    flush_bitmap(emu, c)
+    flush_bitmap(emu, c)?;
+    // Debugging aid: POMME_DUMP_GLYPHS=dir writes each bitmap context after glyphs land.
+    if let (Ok(dir), Some(b)) = (std::env::var("POMME_DUMP_GLYPHS"), emu.render.bitmaps.get(&c).copied()) {
+        let mut rgba = Vec::new();
+        for y in 0..b.h {
+            let row = emu.p.memory.read(b.data + y as u64 * b.bpr, (b.w * b.bpp) as usize)?.to_vec();
+            for x in 0..b.w as usize {
+                if b.bpp == 1 {
+                    rgba.extend_from_slice(&[row[x], row[x], row[x], 255]);
+                } else {
+                    rgba.extend_from_slice(&[row[x * 4], row[x * 4 + 1], row[x * 4 + 2], 255]);
+                }
+            }
+        }
+        let n = emu.render.glyph_dumps;
+        emu.render.glyph_dumps += 1;
+        if let Some(pix) = tiny_skia::IntSize::from_wh(b.w, b.h).and_then(|s| Pixmap::from_vec(rgba, s)) {
+            let _ = pix.save_png(format!("{dir}/glyph-{n:03}.png"));
+        }
+        println!("[glyphs] {n}: {:?} in {}×{} ctx, ctm {:?}", glyphs, b.w, b.h, ctx_mut(emu, c).map(|x| x.gs.ctm));
+    }
+    Ok(())
 }
 
 /// `CGPathApply(path, info, function)`: the function gets each CGPathElement {type, points}.
