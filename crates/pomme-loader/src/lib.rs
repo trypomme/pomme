@@ -187,6 +187,8 @@ pub struct Process {
     /// Imports from bundled libraries that no image exports. Bound to stubs so
     /// that calling them traps with a useful name instead of jumping to 0.
     pub unresolved: Vec<Unresolved>,
+    /// The sysroot the system libraries came from (LoadOptions::sysroot).
+    pub sysroot: Option<PathBuf>,
 }
 
 impl Process {
@@ -275,7 +277,25 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
     let mut queue = VecDeque::from([0usize]);
     let mut by_path: HashMap<PathBuf, usize> = HashMap::from([(paths[0].clone(), 0)]);
 
-    while let Some(i) = queue.pop_front() {
+    // Frameworks the app ships but doesn't link (it dlopens them, as Flutter
+    // does App.framework): load them up front, after everything linked, so
+    // dlopen can hand out the already-loaded image.
+    let mut unlinked = bundled_frameworks(&app_dir);
+    loop {
+        let Some(i) = queue.pop_front() else {
+            // Everything linked is in; add the next unlinked framework, if any.
+            match unlinked.iter().position(|f| !by_path.contains_key(f)) {
+                Some(k) => {
+                    let f = unlinked.remove(k);
+                    let next = paths.len();
+                    by_path.insert(f.clone(), next);
+                    paths.push(f);
+                    queue.push_back(next);
+                    continue;
+                }
+                None => break,
+            }
+        };
         let bytes = read(&paths[i])?;
         let image = parse(&paths[i], &bytes)?;
         let mut img_deps = Vec::new();
@@ -412,7 +432,7 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
         }
     }
 
-    Ok(Process { bundle_id, memory, images, stubs, stats, unresolved })
+    Ok(Process { bundle_id, memory, images, stubs, stats, unresolved, sysroot: opts.sysroot.clone() })
 }
 
 struct Linker<'i> {
@@ -512,6 +532,30 @@ pub fn locate_executable(path: &Path) -> Result<(Option<String>, PathBuf, PathBu
         .ok_or_else(|| LoadError::Bundle(format!("{} has no CFBundleExecutable", plist_path.display())))?;
     let id = info.get("CFBundleIdentifier").and_then(|v| v.as_string()).map(String::from);
     Ok((id, path.join(exe), path.to_path_buf()))
+}
+
+/// The binaries of `<app>/Frameworks/*.framework` (and loose `*.dylib`s), sorted.
+fn bundled_frameworks(app_dir: &Path) -> Vec<PathBuf> {
+    let dir = app_dir.join("Frameworks");
+    let Some(entries) = vfs::read_dir(&dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (name, is_dir) in entries {
+        let p = dir.join(&name);
+        if is_dir && let Some(stem) = name.strip_suffix(".framework") {
+            let exe = read(&p.join("Info.plist"))
+                .ok()
+                .and_then(|b| plist::from_bytes::<plist::Dictionary>(&b).ok())
+                .and_then(|d| d.get("CFBundleExecutable").and_then(|v| v.as_string()).map(str::to_string))
+                .unwrap_or(stem.to_string());
+            let bin = p.join(exe);
+            if vfs::is_file(&bin) {
+                out.push(vfs::canonicalize(&bin));
+            }
+        } else if !is_dir && name.ends_with(".dylib") {
+            out.push(vfs::canonicalize(&p));
+        }
+    }
+    out
 }
 
 /// Turn an install name like `@rpath/React.framework/React` into a file in the bundle.

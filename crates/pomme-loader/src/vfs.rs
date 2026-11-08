@@ -159,6 +159,32 @@ pub fn exists(path: &Path) -> bool {
     is_file(path) || is_dir(path)
 }
 
+/// A directory's entries: (name, is a directory), sorted by name.
+pub fn read_dir(path: &Path) -> Option<Vec<(String, bool)>> {
+    let mut out: Vec<(String, bool)> = match memory() {
+        Some(m) => {
+            let dir = resolve(m, path);
+            if !m.dirs.contains(&dir) {
+                return None;
+            }
+            let prefix = if dir == "/" { "/".to_string() } else { format!("{dir}/") };
+            let direct = |p: &String| p.strip_prefix(&prefix).filter(|rest| !rest.is_empty() && !rest.contains('/')).map(str::to_string);
+            let mut v: Vec<(String, bool)> = m.files.keys().filter_map(direct).map(|n| (n, false)).collect();
+            v.extend(m.dirs.iter().filter_map(direct).map(|n| (n, true)));
+            v.extend(m.links.keys().filter_map(direct).map(|n| {
+                let full = format!("{prefix}{n}");
+                let target = resolve(m, Path::new(&full));
+                (n, m.dirs.contains(&target))
+            }));
+            v
+        }
+        None => std::fs::read_dir(path).ok()?.filter_map(|e| e.ok()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir())).collect(),
+    };
+    out.sort();
+    out.dedup();
+    Some(out)
+}
+
 /// File size (directories: 0).
 pub fn len(path: &Path) -> Option<u64> {
     match memory() {

@@ -29,6 +29,8 @@ pub struct Gpu {
     modules: HashMap<u64, Arc<R<Module>>>,
     pipelines: HashMap<PipelineKey, Arc<R<Pipeline>>>,
     samplers: HashMap<u64, wgpu::Sampler>,
+    /// A 1×1 transparent texture (stand-in for unemulated framebuffer fetch).
+    blank: (wgpu::Texture, wgpu::TextureView),
     /// Render passes run so far.
     passes: u64,
     /// Errors already printed (each once).
@@ -93,7 +95,18 @@ impl Gpu {
         let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = errors.clone();
         device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| sink.lock().unwrap().push(e.to_string())));
-        Ok(Gpu { device, queue, adapter_name, passes: 0, reported: Default::default(), textures: HashMap::new(), modules: HashMap::new(), pipelines: HashMap::new(), samplers: HashMap::new(), errors })
+        let blank_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("blank"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let blank = (blank_tex.clone(), blank_tex.create_view(&Default::default()));
+        Ok(Gpu { device, queue, adapter_name, blank, passes: 0, reported: Default::default(), textures: HashMap::new(), modules: HashMap::new(), pipelines: HashMap::new(), samplers: HashMap::new(), errors })
     }
 
     fn take_errors(&self) -> Vec<String> {
@@ -333,8 +346,8 @@ fn module(g: &mut Gpu, emu: &Emu, library: u64) -> Arc<R<Module>> {
         return m.clone();
     }
     let m = (|| {
-        let Some(Obj::Library { source }) = emu.metal.objects.get(&library) else { return Err("not a library".to_string()) };
-        let t = pomme_msl::translate(source)?;
+        let Some(Obj::Library { source, constants }) = emu.metal.objects.get(&library) else { return Err("not a library".to_string()) };
+        let t = pomme_msl::translate_specialized(source, &constants.iter().copied().collect())?;
         if let Ok(dir) = std::env::var("POMME_DUMP_MSL") {
             let _ = std::fs::write(format!("{dir}/library-{library:x}.wgsl"), &t.wgsl);
         }
@@ -367,6 +380,14 @@ fn bind_layout(g: &Gpu, ep: Option<&EntryPoint>, visibility: wgpu::ShaderStages)
         }
         for s in &ep.samplers {
             entries.push(wgpu::BindGroupLayoutEntry { binding: s.binding, visibility, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None });
+        }
+        for &n in &ep.framebuffer_inputs {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: pomme_msl::FRAMEBUFFER_BASE + n,
+                visibility,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            });
         }
     }
     g.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries })
@@ -656,6 +677,11 @@ fn run_pass(g: &mut Gpu, emu: &Emu, encoder: &mut wgpu::CommandEncoder, pass: &P
                 for s in &ep.samplers {
                     let Some(smp) = d.state.samplers[stage].get(&s.index).and_then(|sid| g.samplers.get(sid)) else { return Err(format!("sampler slot {} unbound", s.index)) };
                     entries.push(wgpu::BindGroupEntry { binding: s.binding, resource: wgpu::BindingResource::Sampler(smp) });
+                }
+                // Framebuffer fetch isn't emulated yet (it needs a copy of the attachment
+                // mid-pass): those inputs read a transparent texel.
+                for &n in &ep.framebuffer_inputs {
+                    entries.push(wgpu::BindGroupEntry { binding: pomme_msl::FRAMEBUFFER_BASE + n, resource: wgpu::BindingResource::TextureView(&g.blank.1) });
                 }
             }
             made.push(g.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &pl.groups[stage], entries: &entries }));

@@ -51,14 +51,18 @@ pub enum Wait {
     Sleep { deadline: u64 },
     /// Until a 32-bit flag in guest memory becomes non-zero.
     Flag { addr: u64 },
+    /// A blocking read from an empty pipe.
+    PipeRead { fd: u64, buf: u64, n: u64 },
+    /// kevent() until an event is ready (or the deadline).
+    Kevent { kq: u64, list: u64, n: u64, deadline: Option<u64> },
 }
 
 impl Wait {
     fn deadline(&self) -> Option<u64> {
         match *self {
-            Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } => deadline,
+            Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } | Wait::Kevent { deadline, .. } => deadline,
             Wait::Sleep { deadline } => Some(deadline),
-            Wait::Join { .. } | Wait::Flag { .. } => None,
+            Wait::Join { .. } | Wait::Flag { .. } | Wait::PipeRead { .. } => None,
         }
     }
 }
@@ -281,6 +285,12 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
         },
         Wait::Sleep { deadline } => (now >= deadline).then_some(0),
         Wait::Flag { addr } => (emu.p.memory.read_u32(addr)? != 0).then_some(0),
+        Wait::PipeRead { fd, buf, n } => crate::fs::pipe_try_read(emu, fd, buf, n)?,
+        Wait::Kevent { kq, list, n, deadline } => match crate::fs::kevent_try(emu, kq, list, n)? {
+            Some(k) => Some(k),
+            None if timed_out(deadline) => Some(0),
+            None => None,
+        },
     })
 }
 
@@ -690,6 +700,27 @@ fn pthread_cond_timedwait(emu: &mut Emu) -> Result<()> {
     ret(emu, r)
 }
 
+/// `pthread_cond_timedwait_relative_np(cond, mutex, const struct timespec *rel)`.
+fn pthread_cond_timedwait_relative(emu: &mut Emu) -> Result<()> {
+    let (cond, ts) = (emu.arg(0), emu.arg(2));
+    let rel = emu.read_u64(ts)? * 1_000_000_000 + emu.read_u64(ts + 8)?;
+    let deadline = now_ns(emu) + rel;
+    let generation = emu.th.conds.get(&cond).copied().unwrap_or(0);
+    let r = block(emu, Wait::Cond { cond, generation, deadline: Some(deadline) })?;
+    ret(emu, r)
+}
+
+/// `pthread_once(once, init)`: pthread_once_t is {long sig; char opaque[8]};
+/// the first opaque byte marks it done.
+fn pthread_once(emu: &mut Emu) -> Result<()> {
+    let (once, init) = (emu.arg(0), emu.arg(1));
+    if emu.p.memory.read_u8(once + 8)? == 0 {
+        emu.p.memory.write_u8(once + 8, 1)?;
+        emu.call(init, &[])?;
+    }
+    ret(emu, 0)
+}
+
 /// Spurious wakeups are allowed, so signal wakes every waiter, like broadcast.
 fn pthread_cond_signal(emu: &mut Emu) -> Result<()> {
     *emu.th.conds.entry(emu.arg(0)).or_default() += 1;
@@ -791,6 +822,11 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_getname_np", pthread_getname_np),
     ("_pthread_cond_wait", pthread_cond_wait),
     ("_pthread_cond_timedwait", pthread_cond_timedwait),
+    ("_pthread_cond_timedwait_relative_np", pthread_cond_timedwait_relative),
+    ("_pthread_once", pthread_once),
+    ("_pthread_condattr_init", |e| ret(e, 0)),
+    ("_pthread_condattr_destroy", |e| ret(e, 0)),
+    ("_pthread_condattr_setclock", |e| ret(e, 0)),
     ("_pthread_cond_signal", pthread_cond_signal),
     ("_pthread_cond_broadcast", pthread_cond_signal),
     ("_dispatch_semaphore_wait", dispatch_semaphore_wait),

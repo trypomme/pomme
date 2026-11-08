@@ -374,7 +374,14 @@ impl<'a> Image<'a> {
 
         let exports = match export_trie {
             Some(t) => exports::parse(t, header_vmaddr)?,
-            None => Vec::new(),
+            // No export trie (minimal writers such as Dart's AOT snapshots): like
+            // dyld, use the symbol table's external definitions.
+            None => m
+                .symbols()
+                .flatten()
+                .filter(|(name, n)| !n.is_stab() && n.is_global() && n.get_type() == goblin::mach::symbols::N_SECT && !name.is_empty())
+                .map(|(name, n)| Export { name: name.to_string(), kind: ExportKind::Regular { addr: n.n_value }, weak: false })
+                .collect(),
         };
 
         let mut symbols: Vec<(u64, String)> = m

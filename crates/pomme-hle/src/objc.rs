@@ -116,6 +116,8 @@ const PERMISSIVE: &[&str] = &[
     "UIBarButtonItemAppearance",
     "UIBarButtonItemStateAppearance",
     "UIBlurEffect",
+    // The storyboard coder: every key is absent (see storyboard.rs).
+    "UINibDecoder",
     // Metal (see metal.rs): descriptors are property bags; objects answer
     // queries pomme doesn't model yet with 0 while Metal is brought up.
     "MTLPommeDevice",
@@ -321,6 +323,9 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UINavigationItem", "NSObject"),
     ("UIViewLayoutRegion", "NSObject"),
     ("UIScrollEdgeEffectStyle", "NSObject"),
+    ("UIStoryboard", "NSObject"),
+    ("NSCoder", "NSObject"),
+    ("UINibDecoder", "NSCoder"),
     ("UIBarAppearance", "NSObject"),
     ("UINavigationBarAppearance", "UIBarAppearance"),
     ("UIToolbarAppearance", "UIBarAppearance"),
@@ -421,6 +426,9 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::nsvalue::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::metal::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::pointer_array::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::storyboard::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::locale::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -460,7 +468,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         }
     }
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, EXCEPTION_METHODS] {
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {

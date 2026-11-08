@@ -33,6 +33,9 @@ mod regex;
 pub mod navigation;
 pub mod system;
 mod coretext;
+mod pointer_array;
+pub mod storyboard;
+mod locale;
 pub mod metal;
 #[cfg(feature = "gpu")]
 mod metal_gpu;
@@ -147,6 +150,8 @@ pub struct Emu {
     pub objc: Objc,
     /// Host function for each stub, indexed like `p.stubs`.
     handlers: Vec<Option<HostFn>>,
+    /// Every system function pomme implements, by symbol (dlsym finds them here).
+    pub(crate) functions: HashMap<&'static str, HostFn>,
     /// Instruction budget for the whole run.
     pub max_steps: u64,
     /// Stop once virtual time passes this while every thread waits (ns since boot).
@@ -206,6 +211,8 @@ pub struct Emu {
     /// The iOS version presented, and the app's linked SDK (see system.rs).
     pub system: system::System,
     pub metal: metal::State,
+    pub(crate) pointer_arrays: pointer_array::State,
+    pub(crate) locales: locale::State,
     bundle: bundle::State,
 }
 
@@ -234,6 +241,7 @@ impl Emu {
             heap: Heap::new(),
             objc: Objc::default(),
             handlers,
+            functions: registry,
             max_steps: u64::MAX,
             time_limit_ns: None,
             trace: false,
@@ -269,6 +277,8 @@ impl Emu {
             nav: Default::default(),
             system: Default::default(),
             metal: Default::default(),
+            pointer_arrays: Default::default(),
+            locales: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
@@ -287,6 +297,21 @@ impl Emu {
         libsystem::init(&mut emu)?;
         system::install(&mut emu)?;
         Ok(emu)
+    }
+
+    /// System functions the app binds that pomme doesn't implement yet:
+    /// (library, symbol), skipping data symbols and Objective-C classes.
+    pub fn missing_functions(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .p
+            .stubs
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, s))| self.handlers.get(*i).is_some_and(Option::is_none) && !s.symbol.starts_with("_OBJC_") && !s.symbol.starts_with("_k") && !s.symbol.starts_with("__OBJC"))
+            .map(|(_, (_, s))| (s.library.clone(), s.symbol.clone()))
+            .collect();
+        out.sort();
+        out
     }
 
     /// PNG screenshot of the windows at `scale` pixels per point.

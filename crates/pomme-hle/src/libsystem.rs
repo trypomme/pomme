@@ -16,6 +16,18 @@ pub const TICKS_PER_SEC: u64 = pomme_cpu::TICKS_PER_SEC;
 #[derive(Default)]
 pub struct State {
     errno: u64,
+    /// dispatch_data objects → (bytes in guest memory, length).
+    dispatch_data: HashMap<u64, (u64, u64)>,
+    /// strtok's saved position (a guest pointer to a char *).
+    strtok_save: u64,
+    /// sigaction() records: signal → the 16-byte struct sigaction.
+    signal_actions: HashMap<i32, Vec<u8>>,
+    /// dlerror's pending message (a guest C string), or 0.
+    dlerror: u64,
+    /// The environment (made on first use: see `default_env`).
+    env: Option<Vec<(String, String)>>,
+    /// Guest copies of values handed out by getenv.
+    env_strings: HashMap<(String, String), u64>,
     /// `uselocale`'s current locale handle (0: the global one).
     thread_locale: u64,
     /// Per-image thread-local storage blocks.
@@ -53,6 +65,8 @@ const DATA: &[(&str, u64)] = &[
     ("__DefaultRuneLocale", 0x1000),
     ("__dispatch_main_q", 128),
     ("__dispatch_data_empty", 64),
+    ("__dispatch_data_destructor_free", 8),
+    ("__dispatch_data_destructor_munmap", 8),
     ("__dispatch_queue_attr_concurrent", 64),
     ("__dispatch_source_type_timer", 64),
     ("_vm_page_size", 8),
@@ -156,6 +170,106 @@ pub fn host_block(emu: &mut Emu, f: HostFn) -> Result<u64> {
     emu.write_u64(b + 24, b + 32)?;
     emu.write_u64(b + 40, 32)?;
     Ok(b)
+}
+
+// ---- dispatch_data: immutable byte buffers, held contiguously in guest memory ----
+
+fn data_bytes_of(emu: &Emu, d: u64) -> (u64, u64) {
+    if d == emu.sys.data.get("__dispatch_data_empty").copied().unwrap_or(0) {
+        return (0, 0);
+    }
+    emu.sys.dispatch_data.get(&d).copied().unwrap_or((0, 0))
+}
+
+/// A new data object holding a copy of `bytes`.
+fn new_dispatch_data(emu: &mut Emu, bytes: &[u8]) -> Result<u64> {
+    let cls = crate::objc::host_class(emu, "OS_dispatch_data")?;
+    let d = crate::objc::create_instance(emu, cls, 0)?;
+    let p = emu.alloc(bytes.len().max(1) as u64)?;
+    emu.p.memory.write(p, bytes)?;
+    emu.sys.dispatch_data.insert(d, (p, bytes.len() as u64));
+    Ok(d)
+}
+
+/// A dispatch_data object's bytes.
+pub(crate) fn dispatch_data_bytes(emu: &Emu, d: u64) -> Result<Vec<u8>> {
+    read_data(emu, d)
+}
+
+fn read_data(emu: &Emu, d: u64) -> Result<Vec<u8>> {
+    let (p, n) = data_bytes_of(emu, d);
+    Ok(if n == 0 { Vec::new() } else { emu.p.memory.read(p, n as usize)?.to_vec() })
+}
+
+/// `dispatch_data_create(buffer, size, queue, destructor)`: copies the bytes; a
+/// free/munmap destructor or a block releases the caller's buffer right away.
+fn dispatch_data_create(emu: &mut Emu) -> Result<()> {
+    let (buf, n, destructor) = (emu.arg(0), emu.arg(1), emu.arg(3));
+    let bytes = if n == 0 { Vec::new() } else { emu.p.memory.read(buf, n as usize)?.to_vec() };
+    let d = new_dispatch_data(emu, &bytes)?;
+    let free_sym = emu.sys.data.get("__dispatch_data_destructor_free").copied().unwrap_or(0);
+    let munmap_sym = emu.sys.data.get("__dispatch_data_destructor_munmap").copied().unwrap_or(0);
+    if destructor == free_sym && destructor != 0 {
+        emu.heap.free(&emu.p.memory, buf)?;
+    } else if destructor != 0 && destructor != munmap_sym {
+        call_block(emu, destructor, &[])?;
+    }
+    emu.ret(d);
+    Ok(())
+}
+
+/// `dispatch_data_create_map(data, const void **buffer, size_t *size)`.
+fn dispatch_data_create_map(emu: &mut Emu) -> Result<()> {
+    let (d, bp, sp) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (p, n) = data_bytes_of(emu, d);
+    if bp != 0 {
+        emu.write_u64(bp, p)?;
+    }
+    if sp != 0 {
+        emu.write_u64(sp, n)?;
+    }
+    crate::objc::send(emu, d, "retain", &[])?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn dispatch_data_create_subrange(emu: &mut Emu) -> Result<()> {
+    let (d, off, len) = (emu.arg(0), emu.arg(1) as usize, emu.arg(2) as usize);
+    let all = read_data(emu, d)?;
+    let start = off.min(all.len());
+    let end = (start + len).min(all.len());
+    let s = new_dispatch_data(emu, &all[start..end])?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn dispatch_data_create_concat(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(1));
+    let mut v = read_data(emu, a)?;
+    v.extend(read_data(emu, b)?);
+    let d = new_dispatch_data(emu, &v)?;
+    emu.ret(d);
+    Ok(())
+}
+
+/// `dispatch_data_apply(data, applier(region, offset, buffer, size) -> bool)`: one region.
+fn dispatch_data_apply(emu: &mut Emu) -> Result<()> {
+    let (d, block) = (emu.arg(0), emu.arg(1));
+    let (p, n) = data_bytes_of(emu, d);
+    let r = if n == 0 { 1 } else { call_block(emu, block, &[d, 0, p, n])? & 0xff };
+    emu.ret((r != 0) as u64);
+    Ok(())
+}
+
+/// `dispatch_data_copy_region(data, location, size_t *offset)`: the whole buffer is one region.
+fn dispatch_data_copy_region(emu: &mut Emu) -> Result<()> {
+    let (d, off) = (emu.arg(0), emu.arg(2));
+    if off != 0 {
+        emu.write_u64(off, 0)?;
+    }
+    crate::objc::send(emu, d, "retain", &[])?;
+    emu.ret(d);
+    Ok(())
 }
 
 pub fn call_block(emu: &mut Emu, block: u64, args: &[u64]) -> Result<u64> {
@@ -470,6 +584,116 @@ libmf! {
     m_logf: f32::ln; m_log2f: f32::log2; m_log10f: f32::log10;
 }
 
+libm! {
+    m_round: f64::round; m_logb: |x| if x == 0.0 { f64::NEG_INFINITY } else { x.abs().log2().floor() };
+}
+
+/// Two-argument float functions.
+fn libmf2(emu: &mut Emu, f: fn(f32, f32) -> f32) -> Result<()> {
+    let v = f(f32_arg(emu, 0), f32_arg(emu, 1));
+    ret_f32(emu, v);
+    Ok(())
+}
+
+/// `modff(x, float *ip)` / `modf(x, double *ip)`: the fraction, the integer part through ip.
+fn m_modff(emu: &mut Emu) -> Result<()> {
+    let x = f32_arg(emu, 0);
+    let ip = emu.arg(0);
+    if ip != 0 {
+        emu.p.memory.write_u32(ip, x.trunc().to_bits())?;
+    }
+    ret_f32(emu, x - x.trunc());
+    Ok(())
+}
+
+// ---- strings: tokens and spans ----
+
+/// `strspn(s, accept)` / `strcspn(s, reject)`.
+fn span(emu: &mut Emu, accept: bool) -> Result<()> {
+    let (s, set) = (cbytes(emu, emu.arg(0))?, cbytes(emu, emu.arg(1))?);
+    let n = s.iter().take_while(|c| set.contains(c) == accept).count();
+    emu.ret(n as u64);
+    Ok(())
+}
+
+/// `strtok_r(str, sep, char **save)`: cut the next token in place.
+fn strtok_at(emu: &mut Emu, s: u64, sep: u64, save: u64) -> Result<u64> {
+    let mut p = if s != 0 { s } else { emu.read_u64(save)? };
+    if p == 0 {
+        return Ok(0);
+    }
+    let seps = cbytes(emu, sep)?;
+    // Skip leading separators.
+    loop {
+        let c = emu.p.memory.read_u8(p)?;
+        if c == 0 {
+            emu.write_u64(save, 0)?;
+            return Ok(0);
+        }
+        if !seps.contains(&c) {
+            break;
+        }
+        p += 1;
+    }
+    let start = p;
+    loop {
+        let c = emu.p.memory.read_u8(p)?;
+        if c == 0 {
+            emu.write_u64(save, 0)?;
+            break;
+        }
+        if seps.contains(&c) {
+            emu.p.memory.write_u8(p, 0)?;
+            emu.write_u64(save, p + 1)?;
+            break;
+        }
+        p += 1;
+    }
+    Ok(start)
+}
+
+fn strtok_r(emu: &mut Emu) -> Result<()> {
+    let (s, sep, save) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let t = strtok_at(emu, s, sep, save)?;
+    emu.ret(t);
+    Ok(())
+}
+
+/// `strtok(str, sep)`: strtok_r with a hidden save pointer.
+fn strtok(emu: &mut Emu) -> Result<()> {
+    if emu.sys.strtok_save == 0 {
+        emu.sys.strtok_save = emu.alloc(8)?;
+    }
+    let (s, sep, save) = (emu.arg(0), emu.arg(1), emu.sys.strtok_save);
+    let t = strtok_at(emu, s, sep, save)?;
+    emu.ret(t);
+    Ok(())
+}
+
+/// `strerror_r(errnum, buf, len)`.
+fn strerror_r(emu: &mut Emu) -> Result<()> {
+    let (n, buf, len) = (emu.arg(0) as i32, emu.arg(1), emu.arg(2) as usize);
+    let msg = format!("{}", std::io::Error::from_raw_os_error(n));
+    let msg = msg.split(" (os error").next().unwrap_or("Unknown error").to_string();
+    let mut bytes = msg.into_bytes();
+    bytes.truncate(len.saturating_sub(1));
+    bytes.push(0);
+    emu.p.memory.write(buf, &bytes)?;
+    emu.ret(0);
+    Ok(())
+}
+
+/// `getrusage(who, struct rusage *)`: the user time the guest has run (virtual), nothing else.
+fn getrusage(emu: &mut Emu) -> Result<()> {
+    let out = emu.arg(1);
+    emu.p.memory.write(out, &[0u8; 144])?;
+    let ns = crate::threads::now_ns(emu);
+    emu.write_u64(out, ns / 1_000_000_000)?;
+    emu.p.memory.write_u32(out + 8, ((ns % 1_000_000_000) / 1000) as u32)?;
+    emu.ret(0);
+    Ok(())
+}
+
 fn m_fmodf(emu: &mut Emu) -> Result<()> {
     let v = f32_arg(emu, 0) % f32_arg(emu, 1);
     ret_f32(emu, v);
@@ -642,8 +866,60 @@ fn time(emu: &mut Emu) -> Result<()> {
 
 // ---- process, environment, pthread ----
 
+/// The process environment iOS gives an app: HOME is its data container.
+fn default_env() -> Vec<(String, String)> {
+    let home = crate::foundation::DATA_CONTAINER;
+    vec![
+        ("HOME".into(), home.into()),
+        ("TMPDIR".into(), format!("{home}/tmp/")),
+        ("CFFIXED_USER_HOME".into(), home.into()),
+        ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+        ("USER".into(), "mobile".into()),
+        ("LOGNAME".into(), "mobile".into()),
+        ("SHELL".into(), "/bin/sh".into()),
+    ]
+}
+
+fn env(emu: &mut Emu) -> &mut Vec<(String, String)> {
+    emu.sys.env.get_or_insert_with(default_env)
+}
+
+/// `getenv(name)`: a pointer that stays valid until the variable changes.
 fn getenv(emu: &mut Emu) -> Result<()> {
-    emu.ret(0); // empty environment
+    let name = emu.cstr(emu.arg(0))?;
+    let Some(value) = env(emu).iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone()) else {
+        emu.ret(0);
+        return Ok(());
+    };
+    let p = match emu.sys.env_strings.get(&(name.clone(), value.clone())) {
+        Some(&p) => p,
+        None => {
+            let p = emu.alloc_cstr(&value)?;
+            emu.sys.env_strings.insert((name, value), p);
+            p
+        }
+    };
+    emu.ret(p);
+    Ok(())
+}
+
+/// `setenv(name, value, overwrite)`.
+fn setenv(emu: &mut Emu) -> Result<()> {
+    let (name, value, overwrite) = (emu.cstr(emu.arg(0))?, emu.cstr(emu.arg(1))?, emu.arg(2) as u32 != 0);
+    let e = env(emu);
+    match e.iter_mut().find(|(k, _)| *k == name) {
+        Some(kv) if overwrite => kv.1 = value,
+        Some(_) => {}
+        None => e.push((name, value)),
+    }
+    emu.ret(0);
+    Ok(())
+}
+
+fn unsetenv(emu: &mut Emu) -> Result<()> {
+    let name = emu.cstr(emu.arg(0))?;
+    env(emu).retain(|(k, _)| *k != name);
+    emu.ret(0);
     Ok(())
 }
 
@@ -972,11 +1248,92 @@ fn malloc_good_size(_: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+// ---- dlopen ----
+//
+// Every image an app can dlopen (its own frameworks) was loaded at launch
+// (see pomme-loader's bundled_frameworks), so dlopen finds it; a handle is
+// the image's header address.
+
+const RTLD_NEXT: u64 = -1i64 as u64;
+const RTLD_DEFAULT: u64 = -2i64 as u64;
+const RTLD_SELF: u64 = -3i64 as u64;
+const RTLD_MAIN_ONLY: u64 = -5i64 as u64;
+
+fn set_dlerror(emu: &mut Emu, msg: Option<String>) -> Result<()> {
+    emu.sys.dlerror = match msg {
+        Some(m) => emu.alloc_cstr(&m)?,
+        None => 0,
+    };
+    Ok(())
+}
+
+/// `dlopen(path, mode)`: NULL is the main executable; otherwise a loaded image by path.
+fn dlopen(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(0);
+    if p == 0 {
+        let h = emu.p.main().header;
+        emu.ret(h);
+        return Ok(());
+    }
+    let path = emu.cstr(p)?;
+    let host = crate::fs::host_path(emu, &path).map(|h| pomme_loader::vfs::canonicalize(&h));
+    let file = std::path::Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned());
+    let found = emu.p.images.iter().find(|i| {
+        host.as_ref().is_some_and(|h| *h == i.path)
+            || i.install_name.as_deref() == Some(path.as_str())
+            || (path.contains(".framework/") && file.as_deref() == i.path.file_name().and_then(|f| f.to_str()) && i.path.to_string_lossy().ends_with(path.trim_start_matches("@rpath/").trim_start_matches("@executable_path/")))
+    });
+    match found.map(|i| i.header) {
+        Some(h) => {
+            set_dlerror(emu, None)?;
+            emu.ret(h);
+        }
+        None => {
+            set_dlerror(emu, Some(format!("dlopen({path}): image not found")))?;
+            emu.ret(0);
+        }
+    }
+    Ok(())
+}
+
+/// `dlsym(handle, name)`: in that image, or (RTLD_DEFAULT and friends) in every image.
 fn dlsym(emu: &mut Emu) -> Result<()> {
-    // Search loaded images' exports.
-    let name = format!("_{}", emu.cstr(emu.arg(1))?);
-    let addr = emu.p.images.iter().find_map(|i| i.symbol(&name)).unwrap_or(0);
-    emu.ret(addr);
+    let (handle, raw) = (emu.arg(0), emu.cstr(emu.arg(1))?);
+    let name = format!("_{raw}");
+    let addr = match handle {
+        RTLD_DEFAULT | RTLD_NEXT | RTLD_SELF => emu.p.images.iter().find_map(|i| i.symbol(&name)),
+        RTLD_MAIN_ONLY => emu.p.main().symbol(&name),
+        h => emu.p.images.iter().find(|i| i.header == h).and_then(|i| i.symbol(&name)),
+    };
+    // Not in a guest image: a system function pomme implements (libSystem and friends).
+    let addr = match addr {
+        Some(a) => Some(a),
+        None if matches!(handle, RTLD_DEFAULT | RTLD_NEXT | RTLD_SELF) || !emu.p.images.iter().any(|i| i.header == handle) => match emu.functions.get(name.as_str()).copied() {
+            Some(f) => Some(emu.host_thunk(f)?),
+            None => None,
+        },
+        None => None,
+    };
+    if emu.trace {
+        println!("[dlsym] {handle:#x} {raw} → {addr:#x?}");
+    }
+    match addr {
+        Some(a) => {
+            set_dlerror(emu, None)?;
+            emu.ret(a);
+        }
+        None => {
+            set_dlerror(emu, Some(format!("dlsym({handle:#x}, {raw}): symbol not found")))?;
+            emu.ret(0);
+        }
+    }
+    Ok(())
+}
+
+/// `dlerror()`: the last failure, once.
+fn dlerror(emu: &mut Emu) -> Result<()> {
+    let e = std::mem::take(&mut emu.sys.dlerror);
+    emu.ret(e);
     Ok(())
 }
 
@@ -1046,6 +1403,33 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_remainder", m_remainder),
     ("_nextafter", m_nextafter),
     ("_sinf", m_sinf),
+    ("_round", m_round),
+    ("_logb", m_logb),
+    ("_powf", |e| libmf2(e, f32::powf)),
+    ("_atan2f", |e| libmf2(e, f32::atan2)),
+    ("_hypotf", |e| libmf2(e, f32::hypot)),
+    ("_fdim", |e| {
+        let (a, b) = (f64_arg(e, 0), f64_arg(e, 1));
+        ret_f64(e, if a > b { a - b } else { 0.0 });
+        Ok(())
+    }),
+    ("_acosf", |e| {
+        let v = f32_arg(e, 0).acos();
+        ret_f32(e, v);
+        Ok(())
+    }),
+    ("_asinf", |e| {
+        let v = f32_arg(e, 0).asin();
+        ret_f32(e, v);
+        Ok(())
+    }),
+    ("_modff", m_modff),
+    ("_strspn", |e| span(e, true)),
+    ("_strcspn", |e| span(e, false)),
+    ("_strtok", strtok),
+    ("_strtok_r", strtok_r),
+    ("_strerror_r", strerror_r),
+    ("_getrusage", getrusage),
     ("_cosf", m_cosf),
     ("_tanf", m_tanf),
     ("_expf", m_expf),
@@ -1073,6 +1457,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_gettimeofday", gettimeofday),
     ("_time", time),
     ("_getenv", getenv),
+    ("_setenv", setenv),
+    ("_unsetenv", unsetenv),
     ("___error", errno_location),
     ("_getpid", getpid),
     ("_getpagesize", pagesize),
@@ -1094,6 +1480,59 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_attr_init", ret_zero),
     ("_pthread_attr_setstacksize", ret_zero),
     ("_pthread_sigmask", ret_zero),
+    // Signals: handlers are recorded (and reported back as the previous action)
+    // but pomme never delivers signals.
+    ("_sigaction", |e| {
+        // struct sigaction (Darwin): handler (8), mask (4), flags (4) = 16 bytes.
+        let (sig, act, old) = (e.arg(0) as i32, e.arg(1), e.arg(2));
+        let prev = e.sys.signal_actions.get(&sig).cloned().unwrap_or([0u8; 16].to_vec());
+        if old != 0 {
+            e.p.memory.write(old, &prev)?;
+        }
+        if act != 0 {
+            let new = e.p.memory.read(act, 16)?.to_vec();
+            e.sys.signal_actions.insert(sig, new);
+        }
+        e.ret(0);
+        Ok(())
+    }),
+    ("_signal", |e| {
+        let (sig, handler) = (e.arg(0) as i32, e.arg(1));
+        let prev = e.sys.signal_actions.get(&sig).map_or(0, |a| u64::from_le_bytes(a[..8].try_into().unwrap()));
+        let mut act = vec![0u8; 16];
+        act[..8].copy_from_slice(&handler.to_le_bytes());
+        e.sys.signal_actions.insert(sig, act);
+        e.ret(prev);
+        Ok(())
+    }),
+    ("_sigemptyset", |e| {
+        let set = e.arg(0);
+        e.p.memory.write_u32(set, 0)?;
+        e.ret(0);
+        Ok(())
+    }),
+    ("_sigfillset", |e| {
+        let set = e.arg(0);
+        e.p.memory.write_u32(set, u32::MAX)?;
+        e.ret(0);
+        Ok(())
+    }),
+    ("_sigaddset", |e| {
+        let (set, sig) = (e.arg(0), e.arg(1) as u32);
+        let v = e.p.memory.read_u32(set)? | 1u32.checked_shl(sig.wrapping_sub(1)).unwrap_or(0);
+        e.p.memory.write_u32(set, v)?;
+        e.ret(0);
+        Ok(())
+    }),
+    ("_sigdelset", |e| {
+        let (set, sig) = (e.arg(0), e.arg(1) as u32);
+        let v = e.p.memory.read_u32(set)? & !1u32.checked_shl(sig.wrapping_sub(1)).unwrap_or(0);
+        e.p.memory.write_u32(set, v)?;
+        e.ret(0);
+        Ok(())
+    }),
+    ("_sigprocmask", ret_zero),
+    ("_sigaltstack", ret_zero),
     ("_os_unfair_lock_lock", noop),
     ("_os_unfair_lock_unlock", noop),
     ("_os_unfair_recursive_lock_lock_with_options", noop),
@@ -1125,9 +1564,83 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_group_leave", noop),
     ("_dispatch_group_wait", dispatch_group_wait),
     ("_dispatch_release", noop),
+    ("_dispatch_data_create", dispatch_data_create),
+    ("_dispatch_data_create_map", dispatch_data_create_map),
+    ("_dispatch_data_create_subrange", dispatch_data_create_subrange),
+    ("_dispatch_data_create_concat", dispatch_data_create_concat),
+    ("_dispatch_data_apply", dispatch_data_apply),
+    ("_dispatch_data_copy_region", dispatch_data_copy_region),
+    ("_dispatch_data_get_size", |e| {
+        let n = data_bytes_of(e, e.arg(0)).1;
+        e.ret(n);
+        Ok(())
+    }),
     ("_dispatch_activate", noop),
     ("_dispatch_set_context", noop),
     ("_dispatch_assert_queue$V2", noop),
+    // Thread QoS and priorities: pomme's scheduler doesn't weigh them, so setting succeeds.
+    ("_pthread_set_qos_class_self_np", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_pthread_attr_set_qos_class_np", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_pthread_attr_get_qos_class_np", |e| {
+        let (cls, rel) = (e.arg(1), e.arg(2));
+        if cls != 0 {
+            e.p.memory.write_u32(cls, 0x21)?; // QOS_CLASS_USER_INTERACTIVE
+        }
+        if rel != 0 {
+            e.p.memory.write_u32(rel, 0)?;
+        }
+        e.ret(0);
+        Ok(())
+    }),
+    // Scheduling parameters: SCHED_OTHER (1) at Darwin's default priority 31.
+    ("_pthread_getschedparam", |e| {
+        let (policy, param) = (e.arg(1), e.arg(2));
+        if policy != 0 {
+            e.p.memory.write_u32(policy, 1)?;
+        }
+        if param != 0 {
+            e.p.memory.write_u32(param, 31)?;
+        }
+        e.ret(0);
+        Ok(())
+    }),
+    ("_pthread_setschedparam", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_pthread_attr_setschedparam", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_pthread_attr_setschedpolicy", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_sched_get_priority_min", |e| {
+        e.ret(15);
+        Ok(())
+    }),
+    ("_sched_get_priority_max", |e| {
+        e.ret(47);
+        Ok(())
+    }),
+    ("_pthread_get_qos_class_np", |e| {
+        let (cls, rel) = (e.arg(1), e.arg(2));
+        if cls != 0 {
+            e.p.memory.write_u32(cls, 0x21)?;
+        }
+        if rel != 0 {
+            e.p.memory.write_u32(rel, 0)?;
+        }
+        e.ret(0);
+        Ok(())
+    }),
     ("_qos_class_self", |e| {
         e.ret(0x21); // QOS_CLASS_USER_INTERACTIVE
         Ok(())
@@ -1145,10 +1658,26 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("__NSGetMachExecuteHeader", nsget_mach_header),
     ("_arc4random_uniform", arc4random_uniform),
     ("_arc4random_buf", arc4random_buf),
+    // SecRandomCopyBytes(rnd, count, bytes) / CCRandomGenerateBytes(bytes, count): the same
+    // deterministic stream as arc4random_buf; both report success (0).
+    ("_SecRandomCopyBytes", |e| {
+        let (n, p) = (e.arg(1), e.arg(2));
+        e.cpu.x[0] = p;
+        e.cpu.x[1] = n;
+        arc4random_buf(e)?;
+        e.ret(0);
+        Ok(())
+    }),
+    ("_CCRandomGenerateBytes", |e| {
+        arc4random_buf(e)?;
+        e.ret(0);
+        Ok(())
+    }),
     ("_posix_memalign", posix_memalign),
     ("_malloc_good_size", malloc_good_size),
     ("_dlsym", dlsym),
-    ("_dlopen", ret_zero),
+    ("_dlopen", dlopen),
+    ("_dlerror", dlerror),
     ("_dlclose", ret_zero),
     ("_write", write_fd),
     ("_isatty", ret_zero),
@@ -1158,7 +1687,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("__os_signpost_emit_with_name_impl", noop),
     ("_os_release", noop),
     ("_openlog", noop),
-    ("_syslog", noop),
+    // syslog(priority, format, ...): printed, like asl_log (Flutter's engine logs here).
+    ("_syslog", |e| {
+        let fmt = e.cstr(e.arg(1))?.into_bytes();
+        let msg = crate::printf::format(e, &fmt, &mut crate::printf::Args::new(e.cpu.sp))?;
+        println!("[syslog] {}", String::from_utf8_lossy(&msg).trim_end());
+        Ok(())
+    }),
     ("_closelog", noop),
     ("__dyld_is_objc_constant", ret_zero),
 ];

@@ -51,7 +51,11 @@ pub struct Func {
 pub enum Item {
     Struct { name: String, fields: Vec<Field> },
     Const { ty: TypeName, name: String, array: Option<u32>, init: Expr },
+    /// `constant T name [[function_constant(n)]];`: set when the function is specialized.
+    FunctionConstant { ty: TypeName, name: String, index: u32 },
     Func(Func),
+    /// `template<typename A, …> T f(params) { return expr; }`: inlined at each call.
+    Template { name: String, params: Vec<String>, body: Expr },
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +212,30 @@ impl Parser {
                 items.push(Item::Struct { name, fields });
                 continue;
             }
+            // Function qualifiers that change nothing for translation.
+            loop {
+                if self.is_ident("inline") || (self.is_ident("static") && matches!(self.peek_at(1), Tok::Ident(n) if n == "inline" || n == "__attribute__")) {
+                    self.next();
+                } else if self.is_ident("__attribute__") {
+                    self.next();
+                    self.expect("(")?;
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.next() {
+                            Tok::Punct("(") => depth += 1,
+                            Tok::Punct(")") => depth -= 1,
+                            Tok::Eof => return Err("unterminated __attribute__".into()),
+                            _ => {}
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+            if self.is_ident("template") {
+                items.push(self.template()?);
+                continue;
+            }
             let stage = match self.peek() {
                 Tok::Ident(s) if s == "vertex" || s == "fragment" || s == "kernel" => {
                     let s = s.clone();
@@ -229,6 +257,13 @@ impl Parser {
                 items.push(Item::Func(Func { stage, ret: ty, name, params, body }));
             } else {
                 let array = self.array_suffix()?;
+                let attrs = self.attrs()?;
+                if let Some(fc) = attrs.iter().find(|a| a.name == "function_constant") {
+                    let index = fc.args.first().and_then(|a| a.parse().ok()).ok_or("function_constant needs an index")?;
+                    self.expect(";")?;
+                    items.push(Item::FunctionConstant { ty, name, index });
+                    continue;
+                }
                 self.expect("=")?;
                 let init = self.initializer()?;
                 self.expect(";")?;
@@ -236,6 +271,36 @@ impl Parser {
             }
         }
         Ok(items)
+    }
+
+    /// A template function whose body is a single `return expr;` (SPIRV-Cross's helpers).
+    fn template(&mut self) -> Result<Item, String> {
+        self.next(); // template
+        self.expect("<")?;
+        while !self.eat(">") {
+            self.next();
+        }
+        while self.is_ident("inline") || self.is_ident("static") {
+            self.next();
+        }
+        self.ident()?; // return type (a type parameter)
+        let name = self.ident()?;
+        self.expect("(")?;
+        let mut params = Vec::new();
+        while !self.eat(")") {
+            self.ident()?; // parameter type
+            params.push(self.ident()?);
+            self.eat(",");
+        }
+        self.expect("{")?;
+        if !self.is_ident("return") {
+            return Err(format!("template {name}: only single-return bodies are supported"));
+        }
+        self.next();
+        let body = self.expr()?;
+        self.expect(";")?;
+        self.expect("}")?;
+        Ok(Item::Template { name, params, body })
     }
 
     /// `[[a, b(c)]] [[d]]` …

@@ -9,13 +9,19 @@ mod lexer;
 mod parser;
 mod translate;
 
-pub use translate::{Binding, EntryPoint, SAMPLER_BASE, Scalar, Stage, TEXTURE_BASE, Translation, VertexInput, group_for};
+pub use translate::{Binding, EntryPoint, FRAMEBUFFER_BASE, SAMPLER_BASE, Scalar, Stage, TEXTURE_BASE, Translation, VertexInput, group_for};
 
 /// Translate an MSL library's source to a WGSL module plus where each Metal
 /// binding ended up.
 pub fn translate(msl: &str) -> Result<Translation, String> {
+    translate_specialized(msl, &Default::default())
+}
+
+/// Translate with function constants (`[[function_constant(n)]]`) set: index → value.
+/// Constants without a value are undefined (`is_function_constant_defined` is false).
+pub fn translate_specialized(msl: &str, constants: &std::collections::HashMap<u32, f64>) -> Result<Translation, String> {
     let items = parser::parse(msl)?;
-    translate::translate(&items)
+    translate::translate(&items, constants)
 }
 
 #[cfg(test)]

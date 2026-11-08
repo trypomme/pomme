@@ -678,6 +678,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (VC, false, "tabBarController", |e| ret(e, 0)),
     (VC, false, "splitViewController", |e| ret(e, 0)),
     (VC, false, "beginAppearanceTransition:animated:", |_| Ok(())),
+    (VC, false, "nibName", |e| ret(e, 0)),
+    (VC, false, "nibBundle", |e| ret(e, 0)),
     (VC, false, "presentationController", |e| ret(e, 0)),
     (VC, false, "sheetPresentationController", |e| ret(e, 0)),
     (VC, false, "popoverPresentationController", |e| ret(e, 0)),

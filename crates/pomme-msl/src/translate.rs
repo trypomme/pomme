@@ -187,6 +187,8 @@ pub struct EntryPoint {
     pub samplers: Vec<Binding>,
     pub inputs: Vec<VertexInput>,
     pub color_outputs: Vec<u32>,
+    /// Color attachments read through framebuffer fetch (bound at FRAMEBUFFER_BASE + n).
+    pub framebuffer_inputs: Vec<u32>,
 }
 
 /// Where Metal slots land: one bind group per stage (Metal binds stages
@@ -199,6 +201,8 @@ pub fn group_for(stage: Stage) -> u32 {
 }
 pub const TEXTURE_BASE: u32 = 32;
 pub const SAMPLER_BASE: u32 = 64;
+/// Framebuffer fetch (`[[color(n)]]` inputs) reads a copy of color attachment n bound here (+n).
+pub const FRAMEBUFFER_BASE: u32 = 96;
 
 pub struct Translation {
     pub wgsl: String,
@@ -242,11 +246,15 @@ struct Tr {
     out: String,
     /// Entry-point parameters waiting for the body's scope.
     pending: Vec<(String, Ty)>,
+    /// Function constants given a value by the specialization.
+    defined_constants: Vec<String>,
+    /// Template functions: name → (parameters, returned expression).
+    templates: HashMap<String, (Vec<String>, Expr)>,
 }
 
 type R<T> = Result<T, String>;
 
-pub fn translate(items: &[Item]) -> R<Translation> {
+pub fn translate(items: &[Item], constants: &HashMap<u32, f64>) -> R<Translation> {
     let mut t = Tr {
         structs: HashMap::new(),
         resource_structs: Vec::new(),
@@ -261,6 +269,8 @@ pub fn translate(items: &[Item]) -> R<Translation> {
         ret: Ty::Void,
         out: String::new(),
         pending: Vec::new(),
+        defined_constants: Vec::new(),
+        templates: HashMap::new(),
     };
     for item in items {
         if let Item::Struct { name, fields } = item
@@ -305,6 +315,25 @@ pub fn translate(items: &[Item]) -> R<Translation> {
             }
             // SkSL's `sample(sampler2D, …)` overloads: calls to them are mapped directly.
             Item::Func(f) if f.params.iter().any(|p| t.combined_structs.contains(&p.ty.name)) => {}
+            Item::Template { name, params, body } => {
+                t.templates.insert(name.clone(), (params.clone(), body.clone()));
+            }
+            Item::FunctionConstant { ty, name, index } => {
+                let ty = t.ty(ty, None)?;
+                let value = constants.get(index).copied();
+                if value.is_some() {
+                    t.defined_constants.push(name.clone());
+                }
+                let v = value.unwrap_or(0.0);
+                let lit = match ty {
+                    Ty::Scalar(Scalar::B) => (v != 0.0).to_string(),
+                    Ty::Scalar(Scalar::I) => format!("{}i", v as i64),
+                    Ty::Scalar(Scalar::U) => format!("{}u", v as u64),
+                    _ => float_lit(v),
+                };
+                t.consts.insert(name.clone(), ty.clone());
+                writeln!(body, "const {}: {} = {lit};", ident(name), ty.wgsl()).unwrap();
+            }
             Item::Func(f) if f.stage.is_none() => {
                 let s = t.function(f, &f.name)?;
                 body += &s;
@@ -462,7 +491,7 @@ impl Tr {
             other => return Err(format!("unsupported entry point stage {other:?}")),
         };
         let group = group_for(stage);
-        let mut ep = EntryPoint { name: f.name.clone(), stage, buffers: Vec::new(), textures: Vec::new(), samplers: Vec::new(), inputs: Vec::new(), color_outputs: Vec::new() };
+        let mut ep = EntryPoint { name: f.name.clone(), stage, buffers: Vec::new(), textures: Vec::new(), samplers: Vec::new(), inputs: Vec::new(), color_outputs: Vec::new(), framebuffer_inputs: Vec::new() };
         let mut wrapper_params = Vec::new();
         let mut body_params = Vec::new();
         let mut body_args = Vec::new();
@@ -521,6 +550,21 @@ impl Tr {
                     self.resources.insert(p.name.clone(), Ty::Sampler);
                     ep.samplers.push(Binding { index, group, binding: SAMPLER_BASE + index, size: 0 });
                 }
+                // Framebuffer fetch: the attachment's current pixel, from a copy at this fragment.
+                Some(("color", Some(n))) if stage == Stage::Fragment => {
+                    let declared = self.ty(&p.ty, None)?;
+                    let binding = FRAMEBUFFER_BASE + n;
+                    writeln!(module, "@group({group}) @binding({binding}) var _framebuffer{n}: texture_2d<f32>;").unwrap();
+                    if !wrapper_params.iter().any(|w| w.contains("@builtin(position)")) {
+                        wrapper_params.push("@builtin(position) _fb_position: vec4<f32>".into());
+                    }
+                    let pos = wrapper_params.iter().find(|w| w.contains("@builtin(position)")).and_then(|w| w.split_whitespace().nth(1)).unwrap_or("_fb_position").trim_end_matches(':').to_string();
+                    let load = format!("textureLoad(_framebuffer{n}, vec2<i32>({pos}.xy), 0)");
+                    body_params.push(format!("_p_{}: {}", ident(&p.name), declared.wgsl()));
+                    body_args.push(self.convert(load, &Ty::Vec(Scalar::F, 4), &declared, None));
+                    self.pending_param(&p.name, declared);
+                    ep.framebuffer_inputs.push(n);
+                }
                 Some((builtin_name, _)) => {
                     let (wgsl_builtin, ty) = match builtin_name {
                         "vertex_id" => ("vertex_index", Ty::Scalar(Scalar::U)),
@@ -558,6 +602,14 @@ impl Tr {
         s += "}\n\n";
         self.scopes.pop();
 
+        let stage_attr = if stage == Stage::Vertex { "@vertex" } else { "@fragment" };
+        // An entry point with no outputs (a fragment that only writes depth/stencil).
+        if ret == Ty::Void {
+            writeln!(module, "\n{stage_attr}\nfn {}({}) {{", ident(&f.name), wrapper_params.join(", ")).unwrap();
+            module += &prologue;
+            writeln!(module, "    {}({});\n}}\n", ident(&body_name), body_args.join(", ")).unwrap();
+            return Ok((s.replacen(" -> void {", " {", 1) + &module, ep));
+        }
         // The output I/O struct.
         let Ty::Struct(rname) = &ret else { return Err("entry points must return a struct".into()) };
         let fields = self.structs[rname].clone();
@@ -587,7 +639,6 @@ impl Tr {
         io += "}\n";
         module += &io;
 
-        let stage_attr = if stage == Stage::Vertex { "@vertex" } else { "@fragment" };
         writeln!(module, "\n{stage_attr}\nfn {}({}) -> {}_io {{", ident(&f.name), wrapper_params.join(", "), ident(rname)).unwrap();
         module += &prologue;
         writeln!(module, "    let _r = {}({});", ident(&body_name), body_args.join(", ")).unwrap();
@@ -993,6 +1044,12 @@ impl Tr {
                 let t = common(&at, &bt);
                 let ac = self.convert(ac, &at, &t, Some(a));
                 let bc = self.convert(bc, &bt, &t, Some(b));
+                if let Ty::Mat(c, r) = at {
+                    // select() takes scalars and vectors: choose each column.
+                    let cols: Vec<String> = (0..c).map(|i| format!("select(({bc})[{i}], ({ac})[{i}], {cond})")).collect();
+                    let _ = r;
+                    return Ok((format!("{}({})", at.wgsl(), cols.join(", ")), at));
+                }
                 (format!("select({bc}, {ac}, {cond})"), t)
             }
             Expr::Assign(..) => return Err("assignment used as a value".into()),
@@ -1144,6 +1201,11 @@ impl Tr {
         if self.structs.contains_key(name) && !self.resource_structs.contains(name) {
             return self.construct_list(args, &Ty::Struct(name.clone()));
         }
+        // Templates are inlined: the body with the arguments substituted (parenthesized).
+        if let Some((params, body)) = self.templates.get(name).cloned() {
+            let map: HashMap<String, Expr> = params.into_iter().zip(args.iter().cloned()).collect();
+            return self.expr(&substitute(&body, &map));
+        }
         if let Some(sig) = self.funcs.get(name).cloned() {
             let mut out = Vec::new();
             // Omitted trailing arguments take the parameters' defaults.
@@ -1266,6 +1328,9 @@ impl Tr {
     }
 
     fn builtin_call(&mut self, name: &str, args: &[Expr]) -> R<(String, Ty)> {
+        // `fast::` / `precise::` variants are the same functions here; powr is pow for x >= 0.
+        let name = name.rsplit("::").next().unwrap_or(name);
+        let name = if name == "powr" { "pow" } else { name };
         let typed: Vec<(String, Ty)> = args.iter().map(|a| self.expr(a)).collect::<R<_>>()?;
         let tys: Vec<Ty> = typed.iter().map(|(_, t)| t.clone()).collect();
         let n = tys.iter().filter_map(Ty::width).max().unwrap_or(1);
@@ -1335,6 +1400,10 @@ impl Tr {
                 (format!("{fname}({a})"), bt)
             }
             "any" | "all" => (format!("{name}({})", typed[0].0), Ty::Scalar(Scalar::B)),
+            "is_function_constant_defined" => {
+                let defined = matches!(&args[0], Expr::Ident(n) if self.defined_constants.contains(n));
+                (defined.to_string(), Ty::Scalar(Scalar::B))
+            }
             "not" => (format!("!({})", typed[0].0), tys[0].clone()),
             "select" => {
                 let t = common(&tys[0], &tys[1]);
@@ -1358,6 +1427,27 @@ impl Tr {
             }
             other => return Err(format!("unsupported function {other}")),
         })
+    }
+}
+
+/// `e` with identifiers replaced by expressions (template inlining).
+fn substitute(e: &Expr, map: &HashMap<String, Expr>) -> Expr {
+    let s = |x: &Expr| Box::new(substitute(x, map));
+    match e {
+        Expr::Ident(n) => map.get(n).cloned().unwrap_or_else(|| e.clone()),
+        Expr::Unary(op, x) => Expr::Unary(op, s(x)),
+        Expr::Postfix(op, x) => Expr::Postfix(op, s(x)),
+        Expr::Binary(op, a, b) => Expr::Binary(op, s(a), s(b)),
+        Expr::Assign(op, a, b) => Expr::Assign(op, s(a), s(b)),
+        Expr::Ternary(c, a, b) => Expr::Ternary(s(c), s(a), s(b)),
+        Expr::Call(c, args) => Expr::Call(s(c), args.iter().map(|a| substitute(a, map)).collect()),
+        Expr::TemplateCall(t, args) => Expr::TemplateCall(t.clone(), args.iter().map(|a| substitute(a, map)).collect()),
+        Expr::Member(b, f) => Expr::Member(s(b), f.clone()),
+        Expr::Arrow(b, f) => Expr::Arrow(s(b), f.clone()),
+        Expr::Index(b, i) => Expr::Index(s(b), s(i)),
+        Expr::Cast(t, x) => Expr::Cast(t.clone(), s(x)),
+        Expr::InitList(items) => Expr::InitList(items.iter().map(|a| substitute(a, map)).collect()),
+        other => other.clone(),
     }
 }
 

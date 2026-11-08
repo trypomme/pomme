@@ -57,6 +57,9 @@ enum Cmd {
         /// decide the rest: e.g. Liquid Glass needs iOS 26 and an app linked against the 26 SDK.
         #[arg(long, default_value_t = pomme_hle::system::LATEST)]
         ios: pomme_hle::system::Version,
+        /// List the system functions the app binds that pomme doesn't implement yet, and exit.
+        #[arg(long)]
+        missing: bool,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -81,7 +84,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -92,7 +95,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing)
         }
     }
 }
@@ -406,7 +409,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -417,6 +420,14 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
+    if missing {
+        let list = emu.missing_functions();
+        println!("{} system functions bound without an implementation:", list.len());
+        for (lib, sym) in list {
+            println!("  {sym}  ({lib})");
+        }
+        return Ok(());
+    }
     emu.max_steps = max_steps;
     emu.system.os = ios;
     let s = &emu.system;

@@ -382,6 +382,9 @@ fn fputc(emu: &mut Emu) -> Result<()> {
 }
 
 fn fwrite(emu: &mut Emu) -> Result<()> {
+    if let Some(r) = crate::fs::fwrite_stream(emu) {
+        return r;
+    }
     let (p, size, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
     let b = emu.p.memory.read(p, (size * n) as usize)?.to_vec();
     guest_print(&b);

@@ -138,4 +138,8 @@ mkdir -p "$FONTS"
 [ -f "$FONTS/NotoColorEmoji-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoColorEmoji-OFL.txt" \
   'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/OFL.txt'
 
+# libswiftFoundation is a shim on iOS 13+ (its symbols live in Foundation, which
+# here is swift-foundation): point it at Foundation, as one image.
+ln -sf ../../../System/Library/Frameworks/Foundation.framework/Foundation "$VENDOR/sysroot/usr/lib/swift/libswiftFoundation.dylib"
+
 echo "installed into $VENDOR/sysroot"

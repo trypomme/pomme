@@ -2811,7 +2811,7 @@ fn string_with_contents_of_file(emu: &mut Emu) -> Result<()> {
 
 // ---- NSFileManager and standard directories ----
 
-const DATA_CONTAINER: &str = "/private/var/mobile/Containers/Data/Application/pomme";
+pub(crate) const DATA_CONTAINER: &str = "/private/var/mobile/Containers/Data/Application/pomme";
 
 fn search_dir(kind: u64) -> String {
     match kind {
@@ -2834,13 +2834,34 @@ fn file_manager(emu: &mut Emu) -> Result<()> {
 fn file_exists(emu: &mut Emu) -> Result<()> {
     let (path, is_dir_out) = (emu.arg(2), emu.arg(3));
     let path = nsstring(emu, path)?;
-    let host = crate::fs::host_path(emu, &path);
-    let exists = host.as_ref().is_some_and(|p| pomme_loader::vfs::exists(p));
-    if exists && is_dir_out != 0 && objc::sel_name(emu, emu.arg(1)).contains("isDirectory") {
-        let dir = host.as_ref().is_some_and(|p| pomme_loader::vfs::is_dir(p));
+    let found = crate::fs::exists(emu, &path);
+    if let Some(dir) = found
+        && is_dir_out != 0
+        && objc::sel_name(emu, emu.arg(1)).contains("isDirectory")
+    {
         emu.p.memory.write_u8(is_dir_out, dir as u8)?;
     }
-    ret_bool(emu, exists)
+    ret_bool(emu, found.is_some())
+}
+
+/// File URLs for a directory's entries, depth first when `recursive`; nil if it isn't one.
+fn dir_urls(emu: &mut Emu, path: &str, recursive: bool) -> Result<u64> {
+    fn walk(emu: &mut Emu, path: &str, recursive: bool, out: &mut Vec<u64>) -> Result<bool> {
+        let Some(entries) = crate::fs::list_dir(emu, path) else { return Ok(false) };
+        for (name, dir) in entries {
+            let child = format!("{}/{name}", path.trim_end_matches('/'));
+            out.push(new_file_url(emu, &child, dir)?);
+            if dir && recursive {
+                walk(emu, &child, true, out)?;
+            }
+        }
+        Ok(true)
+    }
+    let mut urls = Vec::new();
+    if !walk(emu, path, recursive, &mut urls)? {
+        return Ok(0);
+    }
+    new_array_of(emu, &urls)
 }
 
 fn file_contents(emu: &mut Emu) -> Result<()> {
@@ -3337,8 +3358,69 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     // No writable storage yet: pretend directory creation works, refuse other writes.
-    ("NSFileManager", false, "createDirectoryAtPath:withIntermediateDirectories:attributes:error:", ret_yes),
-    ("NSFileManager", false, "createDirectoryAtURL:withIntermediateDirectories:attributes:error:", ret_yes),
+    ("NSFileManager", false, "createDirectoryAtPath:withIntermediateDirectories:attributes:error:", |e| {
+        let (path, inter) = (nsstring(e, e.arg(2))?, e.arg(3) & 0xff != 0);
+        let ok = crate::fs::make_dirs(e, &path, inter) || crate::fs::exists(e, &path) == Some(true);
+        ret_bool(e, ok)
+    }),
+    ("NSFileManager", false, "createDirectoryAtURL:withIntermediateDirectories:attributes:error:", |e| {
+        let (url, inter) = (e.arg(2), e.arg(3) & 0xff != 0);
+        let p = send(e, url, "path", &[])?;
+        let path = nsstring(e, p)?;
+        let ok = crate::fs::make_dirs(e, &path, inter) || crate::fs::exists(e, &path) == Some(true);
+        ret_bool(e, ok)
+    }),
+    // Resource values (excluded-from-backup and the like) don't change anything pomme models.
+    ("NSURL", false, "setResourceValue:forKey:error:", ret_yes),
+    ("NSURL", false, "setResourceValues:error:", ret_yes),
+    ("NSFileManager", false, "contentsOfDirectoryAtPath:error:", |e| {
+        let path = nsstring(e, e.arg(2))?;
+        let Some(entries) = crate::fs::list_dir(e, &path) else {
+            e.ret(0);
+            return Ok(());
+        };
+        let mut names = Vec::new();
+        for (n, _) in entries {
+            names.push(new_nsstring(e, &n)?);
+        }
+        let a = new_array_of(e, &names)?;
+        e.ret(a);
+        Ok(())
+    }),
+    ("NSFileManager", false, "contentsOfDirectoryAtURL:includingPropertiesForKeys:options:error:", |e| {
+        let p = send(e, e.arg(2), "path", &[])?;
+        let path = nsstring(e, p)?;
+        let urls = dir_urls(e, &path, false)?;
+        e.ret(urls);
+        Ok(())
+    }),
+    ("NSFileManager", false, "enumeratorAtURL:includingPropertiesForKeys:options:errorHandler:", |e| {
+        // NSDirectoryEnumerationSkipsSubdirectoryDescendants = 1.
+        let (url, options) = (e.arg(2), e.arg(4));
+        let p = send(e, url, "path", &[])?;
+        let path = nsstring(e, p)?;
+        let urls = dir_urls(e, &path, options & 1 == 0)?;
+        let en = send(e, urls, "objectEnumerator", &[])?;
+        e.ret(en);
+        Ok(())
+    }),
+    ("NSFileManager", false, "createFileAtPath:contents:attributes:", |e| {
+        let (path, data) = (nsstring(e, e.arg(2))?, e.arg(3));
+        let bytes = if data == 0 { Vec::new() } else { data_bytes(e, data)? };
+        let ok = crate::fs::write_data_file(e, &path, &bytes);
+        ret_bool(e, ok)
+    }),
+    ("NSFileManager", false, "removeItemAtPath:error:", |e| {
+        let path = nsstring(e, e.arg(2))?;
+        let ok = crate::fs::remove(e, &path);
+        ret_bool(e, ok)
+    }),
+    ("NSFileManager", false, "removeItemAtURL:error:", |e| {
+        let p = send(e, e.arg(2), "path", &[])?;
+        let path = nsstring(e, p)?;
+        let ok = crate::fs::remove(e, &path);
+        ret_bool(e, ok)
+    }),
     ("NSString", false, "pathExtension", |e| string_map(e, path_extension)),
     ("NSString", false, "lastPathComponent", |e| string_map(e, |p| last_component(p).to_string())),
     ("NSString", false, "stringByDeletingLastPathComponent", |e| string_map(e, deleting_last_component)),
@@ -3588,6 +3670,24 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSArray", true, "arrayWithObject:", array_with_object),
     ("NSArray", true, "arrayWithObjects:", array_with_objects_varargs),
     ("NSArray", false, "isEqualToArray:", array_is_equal),
+    ("NSArray", false, "arrayByAddingObject:", |e| {
+        let (a, o) = (e.arg(0), e.arg(2));
+        let mut v = array_values(e, a)?;
+        v.push(o);
+        let r = array_from(e, &v)?;
+        e.ret(r);
+        Ok(())
+    }),
+    ("NSArray", false, "arrayByAddingObjectsFromArray:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let mut v = array_values(e, a)?;
+        if b != 0 {
+            v.extend(array_values(e, b)?);
+        }
+        let r = array_from(e, &v)?;
+        e.ret(r);
+        Ok(())
+    }),
     ("NSDictionary", true, "dictionaryWithObjectsAndKeys:", dict_with_objects_and_keys),
     ("NSArray", false, "isEqual:", array_is_equal),
     ("NSArray", true, "arrayWithArray:", array_with_array),

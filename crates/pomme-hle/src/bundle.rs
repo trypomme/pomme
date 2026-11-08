@@ -239,6 +239,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSBundle", false, "URLForResource:withExtension:", url_for_resource),
     ("NSBundle", false, "URLForResource:withExtension:subdirectory:", url_for_resource),
     ("NSBundle", false, "bundleURL", bundle_url),
+    ("NSBundle", false, "privateFrameworksPath", |e| {
+        let p = format!("{}/Frameworks", guest_bundle_path(e));
+        ret_string(e, &p)
+    }),
+    ("NSBundle", false, "privateFrameworksURL", |e| {
+        let p = format!("{}/Frameworks", guest_bundle_path(e));
+        let u = foundation::new_file_url(e, &p, true)?;
+        e.ret(u);
+        Ok(())
+    }),
     ("NSBundle", false, "resourceURL", bundle_url),
     ("NSBundle", false, "localizedStringForKey:value:table:", localized_string),
     ("NSBundle", false, "preferredLocalizations", localizations),

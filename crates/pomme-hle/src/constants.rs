@@ -16,6 +16,7 @@ const STRING_SUFFIXES: &[&str] = &[
     "Notification", "Key", "Name", "Category", "Attribute", "Identifier", "Option", "Type", "Domain", "Exception", "Mode",
 ];
 const STRING_PREFIXES: &[&str] = &[
+    "NSLocale",
     "UIContentSizeCategory",
     "UIFontTextStyle",
     "UIFontDescriptorSystemDesign",

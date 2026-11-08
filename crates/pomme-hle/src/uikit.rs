@@ -24,6 +24,8 @@ pub struct State {
     pub screen: u64,
     pub scene: u64,
     pub scene_delegate: u64,
+    /// UIStoryboard objects → their compiled directory (guest path).
+    pub storyboards: std::collections::HashMap<u64, String>,
     pub session: u64,
     pub key_window: u64,
     pub windows: Vec<u64>,
@@ -104,7 +106,23 @@ fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
     let d = send(emu, d, "init", &[])?;
     emu.ui.scene_delegate = d;
 
+    // A scene configuration with a storyboard: UIKit makes the window, with the
+    // storyboard's initial view controller, and gives it to the delegate first.
+    let mut window = 0;
+    if let Some(dir) = crate::storyboard::scene_storyboard(emu) {
+        let vc = crate::storyboard::instantiate(emu, &dir, None)?;
+        if vc != 0 {
+            let wcls = host_class(emu, "UIWindow")?;
+            let w = send(emu, wcls, "alloc", &[])?;
+            window = send(emu, w, "initWithWindowScene:", &[scene])?;
+            send(emu, window, "setRootViewController:", &[vc])?;
+            call_if_implemented(emu, d, "setWindow:", &[window])?;
+        }
+    }
     call_if_implemented(emu, d, "scene:willConnectToSession:options:", &[scene, session, options])?;
+    if window != 0 {
+        send(emu, window, "makeKeyAndVisible", &[])?;
+    }
     call_if_implemented(emu, d, "sceneWillEnterForeground:", &[scene])?;
     call_if_implemented(emu, d, "sceneDidBecomeActive:", &[scene])?;
     Ok(())
@@ -166,6 +184,28 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CACurrentMediaTime", ca_current_media_time),
     // CAFrameRateRange is three floats in, the same three out (s0-s2).
     ("_CAFrameRateRangeMake", |_| Ok(())),
+    // Swift's AccessibilitySettings (default settings): animated images on, no
+    // preference for non-blinking cursors; change notifications are their names.
+    ("_$sSo21AccessibilitySettingsV0A0E21animatedImagesEnabledSbvgZ", |e| {
+        e.ret(1);
+        Ok(())
+    }),
+    ("_$sSo21AccessibilitySettingsV0A0E40prefersNonBlinkingTextInsertionIndicatorSbvgZ", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_$sSo21AccessibilitySettingsV0A0E42animatedImagesEnabledDidChangeNotificationSo18NSNotificationNameavgZ", |e| {
+        let n = foundation::new_nsstring(e, "AXAnimatedImagesEnabledDidChangeNotification")?;
+        e.ret(n);
+        Ok(())
+    }),
+    // Swift's CAFrameRateRange(minimum:maximum:preferred: Float?): min/max in s0/s1;
+    // the optional's payload in w0 and its nil tag in w1. Returns the three floats.
+    ("_$sSo16CAFrameRateRangeV10QuartzCoreE7minimum7maximum9preferredABSf_S2fSgtcfC", |e| {
+        let preferred = if e.cpu.x[1] & 1 == 0 { e.cpu.x[0] as u32 } else { 0 };
+        e.cpu.q[2] = preferred as u128;
+        Ok(())
+    }),
     ("_$s5UIKit17UIApplicationMainys5Int32VAD_SpySpys4Int8VGGSgSSSgAJtF", swift_application_main),
     ("_UIApplicationMain", c_application_main),
 ];
@@ -456,6 +496,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("CADisplayLink", false, "setPreferredFramesPerSecond:", noop),
+    // 0: "the display's maximum", what an untouched link reports.
+    ("CADisplayLink", false, "preferredFramesPerSecond", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("CADisplayLink", false, "preferredFrameRateRange", |e| {
+        for i in 0..3 {
+            e.cpu.q[i] = 0;
+        }
+        Ok(())
+    }),
     ("CADisplayLink", false, "setPreferredFrameRateRange:", noop),
     ("UIApplication", true, "sharedApplication", shared_application),
     ("UIApplication", false, "delegate", app_delegate),
