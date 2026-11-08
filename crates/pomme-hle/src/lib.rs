@@ -11,6 +11,7 @@
 pub mod heap;
 mod bundle;
 mod constants;
+mod invocation;
 pub mod fs;
 pub mod objc;
 
@@ -137,6 +138,9 @@ pub struct Emu {
     pub depth: usize,
     /// q0 as the last [`call`](Self::call) returned it (float results).
     pub last_q0: u128,
+    /// x0–x1 and v0–v3 as the last [`call_abi`](Self::call_abi) returned them.
+    pub last_x01: [u64; 2],
+    pub last_v03: [u128; 4],
     /// The most recent C++ exception thrown (type: what).
     pub last_exception: Option<String>,
     /// Debugging aid: heap addresses to report allocations of (POMME_WATCH=0x...,0x...).
@@ -193,6 +197,8 @@ impl Emu {
             argv: 0,
             depth: 0,
             last_q0: 0,
+            last_x01: [0; 2],
+            last_v03: [0; 4],
             last_exception: None,
             watch: std::env::var("POMME_WATCH")
                 .map(|v| v.split(',').filter_map(|a| u64::from_str_radix(a.trim().trim_start_matches("0x"), 16).ok()).collect())
@@ -348,6 +354,47 @@ impl Emu {
         self.cpu.pc = pc;
         self.cpu.x[30] = lr;
         Ok(result)
+    }
+
+    /// Call guest code with a full AAPCS64 argument layout: integer registers,
+    /// vector registers, stack words, and x8 (indirect result). Like
+    /// [`call`](Self::call) the caller's registers are preserved; the results
+    /// are in [`last_x01`](Self::last_x01) and [`last_v03`](Self::last_v03).
+    pub fn call_abi(&mut self, addr: u64, x: &[u64], v: &[u128], stack: &[u64], x8: Option<u64>) -> Result<()> {
+        let (pc, lr, sp) = (self.cpu.pc, self.cpu.x[30], self.cpu.sp);
+        let mut saved_x = [0u64; 18];
+        saved_x.copy_from_slice(&self.cpu.x[..18]);
+        let mut saved_q = [0u128; 8];
+        saved_q.copy_from_slice(&self.cpu.q[..8]);
+        for (i, a) in x.iter().take(8).enumerate() {
+            self.cpu.x[i] = *a;
+        }
+        for (i, a) in v.iter().take(8).enumerate() {
+            self.cpu.q[i] = *a;
+        }
+        if let Some(r) = x8 {
+            self.cpu.x[8] = r;
+        }
+        // Stack arguments at the new sp, 16-byte aligned.
+        let new_sp = (sp - (stack.len() as u64 * 8).div_ceil(16) * 16 - 16) & !0xf;
+        for (i, w) in stack.iter().enumerate() {
+            self.write_u64(new_sp + i as u64 * 8, *w)?;
+        }
+        self.cpu.sp = new_sp;
+        self.cpu.x[30] = HOST_RETURN;
+        self.cpu.pc = addr;
+        self.depth += 1;
+        let r = self.run_until_return();
+        self.depth -= 1;
+        r?;
+        self.last_x01 = [self.cpu.x[0], self.cpu.x[1]];
+        self.last_v03 = [self.cpu.q[0], self.cpu.q[1], self.cpu.q[2], self.cpu.q[3]];
+        self.cpu.x[..18].copy_from_slice(&saved_x);
+        self.cpu.q[..8].copy_from_slice(&saved_q);
+        self.cpu.sp = sp;
+        self.cpu.pc = pc;
+        self.cpu.x[30] = lr;
+        Ok(())
     }
 
     /// Execute guest code until it returns to the host, servicing stub calls.

@@ -5,7 +5,7 @@
 //! lookups check the `.app` directory on the host.
 
 use crate::foundation::{self, nsstring};
-use crate::objc::host_class;
+use crate::objc::{host_class, send};
 use crate::{Emu, HostFn, Result};
 use std::path::PathBuf;
 
@@ -189,6 +189,26 @@ fn bundle_for_identifier(emu: &mut Emu) -> Result<()> {
     if want == have { ret_main(emu) } else { emu.ret(0); Ok(()) }
 }
 
+/// `-initWithPath:` / `+bundleWithPath:` — the main bundle if it's the app's path, else nil.
+fn bundle_with_path(emu: &mut Emu) -> Result<()> {
+    let p = nsstring(emu, emu.arg(2))?;
+    if p.trim_end_matches('/') == guest_bundle_path(emu) { ret_main(emu) } else { nil(emu) }
+}
+
+fn bundle_with_url(emu: &mut Emu) -> Result<()> {
+    let u = emu.arg(2);
+    let path = send(emu, u, "path", &[])?;
+    emu.cpu.x[2] = path;
+    bundle_with_path(emu)
+}
+
+fn main_only(emu: &mut Emu) -> Result<()> {
+    let b = main_bundle(emu)?;
+    let a = foundation::new_array_of(emu, &[b])?;
+    emu.ret(a);
+    Ok(())
+}
+
 fn nil(emu: &mut Emu) -> Result<()> {
     emu.ret(0);
     Ok(())
@@ -196,11 +216,16 @@ fn nil(emu: &mut Emu) -> Result<()> {
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSBundle", true, "mainBundle", ret_main),
+    // Frameworks don't get bundles of their own yet: everything is the main bundle.
+    ("NSBundle", true, "allBundles", main_only),
+    ("NSBundle", true, "allFrameworks", main_only),
     // Framework bundles share the main bundle for now.
     ("NSBundle", true, "bundleForClass:", ret_main),
     ("NSBundle", true, "bundleWithIdentifier:", bundle_for_identifier),
-    ("NSBundle", true, "bundleWithPath:", nil),
-    ("NSBundle", true, "bundleWithURL:", nil),
+    ("NSBundle", true, "bundleWithPath:", bundle_with_path),
+    ("NSBundle", false, "initWithPath:", bundle_with_path),
+    ("NSBundle", true, "bundleWithURL:", bundle_with_url),
+    ("NSBundle", false, "initWithURL:", bundle_with_url),
     ("NSBundle", false, "infoDictionary", info_dictionary),
     ("NSBundle", false, "localizedInfoDictionary", info_dictionary),
     ("NSBundle", false, "objectForInfoDictionaryKey:", object_for_info_key),

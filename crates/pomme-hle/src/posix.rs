@@ -522,7 +522,84 @@ fn sscanf(_: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported("sscanf isn't implemented yet".into()))
 }
 
+/// `uname(struct utsname *)`: five 256-byte fields, as an iPhone on iOS 26 (Darwin 25).
+fn uname(emu: &mut Emu) -> Result<()> {
+    let buf = emu.arg(0);
+    for (i, v) in ["Darwin", "pomme", "25.0.0", "Darwin Kernel Version 25.0.0: pomme", "iPhone17,3"].iter().enumerate() {
+        let at = buf + i as u64 * 256;
+        emu.p.memory.write(at, &[0u8; 256])?;
+        emu.p.memory.write(at, v.as_bytes())?;
+    }
+    ret_zero(emu)
+}
+
+/// `syscall(number, ...)`: the few apps use directly.
+fn syscall(emu: &mut Emu) -> Result<()> {
+    const SYS_KDEBUG_TRACE: u64 = 180;
+    const SYS_KDEBUG_TRACE64: u64 = 179;
+    const SYS_THREAD_SELFID: u64 = 372;
+    match emu.arg(0) {
+        SYS_THREAD_SELFID => ret(emu, emu.th.current as u64 + 1),
+        SYS_KDEBUG_TRACE | SYS_KDEBUG_TRACE64 => ret_zero(emu),
+        n => {
+            println!("[syscall] {n} isn't implemented (returning ENOSYS)");
+            crate::libsystem::set_errno(emu, 78)?; // ENOSYS
+            fail(emu)
+        }
+    }
+}
+
+/// `asl_log(client, msg, level, format, ...)`: print it (the Swift runtime reports fatal errors here).
+fn asl_log(emu: &mut Emu) -> Result<()> {
+    let fmt = emu.cstr(emu.arg(3))?.into_bytes();
+    let s = crate::printf::format(emu, &fmt, &mut crate::printf::Args::new(emu.cpu.sp))?;
+    println!("[asl] {}", String::from_utf8_lossy(&s).trim_end());
+    ret_zero(emu)
+}
+
+/// `uuid_generate_random(uuid_t out)`: a version-4 UUID from a seeded generator,
+/// so runs stay reproducible.
+fn uuid_generate_random(emu: &mut Emu) -> Result<()> {
+    let out = emu.arg(0);
+    let mut bytes = [0u8; 16];
+    for b in bytes.iter_mut() {
+        // xorshift64*
+        let mut x = emu.sys.rng_state();
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        emu.sys.set_rng_state(x);
+        *b = (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 56) as u8;
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+    emu.p.memory.write(out, &bytes)?;
+    Ok(())
+}
+
+/// `uuid_unparse_upper(const uuid_t uu, char *out)` (and lower): 36 chars + NUL.
+fn uuid_unparse(emu: &mut Emu, upper: bool) -> Result<()> {
+    let (uu, out) = (emu.arg(0), emu.arg(1));
+    let b = emu.p.memory.read(uu, 16)?.to_vec();
+    let hex: Vec<String> = b.iter().map(|x| if upper { format!("{x:02X}") } else { format!("{x:02x}") }).collect();
+    let s = format!("{}-{}-{}-{}-{}", hex[0..4].concat(), hex[4..6].concat(), hex[6..8].concat(), hex[8..10].concat(), hex[10..16].concat());
+    emu.p.memory.write(out, s.as_bytes())?;
+    emu.p.memory.write_u8(out + 36, 0)?;
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_uuid_unparse_upper", |e| uuid_unparse(e, true)),
+    ("_uuid_unparse_lower", |e| uuid_unparse(e, false)),
+    ("_uuid_unparse", |e| uuid_unparse(e, false)),
+    ("_uuid_generate_random", uuid_generate_random),
+    ("_uuid_generate", uuid_generate_random),
+    ("_asl_log", asl_log),
+    // No native backtraces for the guest (pomme prints its own on a stop).
+    ("_backtrace", ret_zero),
+    ("_backtrace_symbols", ret_zero),
+    ("_uname", uname),
+    ("_syscall", syscall),
     ("_getuid", uid),
     ("_geteuid", uid),
     ("_getgid", gid),

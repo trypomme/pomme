@@ -483,6 +483,10 @@ impl Cpu {
             (false, false, 0b11001) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.floor())),
             (false, true, 0b11000) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.ceil())),
             (false, true, 0b11001) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.trunc())),
+            // FRINTA (ties away), FRINTX / FRINTI (current mode: nearest-even, the default FPCR)
+            (true, false, 0b11000) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.round())),
+            (true, false, 0b11001) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.round_ties_even())),
+            (true, true, 0b11001) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.round_ties_even())),
             (false, true, 0b01100) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a > 0.0)),
             (false, true, 0b01101) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a == 0.0)),
             (false, true, 0b01110) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a < 0.0)),

@@ -427,6 +427,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "windows", windows),
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
+    ("UIApplication", false, "statusBarFrame", |e| {
+        ret_rect(e, [0.0, 0.0, SCREEN_W, crate::uiview::SAFE_AREA[0]]);
+        Ok(())
+    }),
+    ("UIApplication", false, "isStatusBarHidden", ret_zero),
+    ("UIApplication", false, "statusBarStyle", ret_zero),
+    ("UIApplication", false, "setStatusBarStyle:", noop),
+    ("UIApplication", false, "setStatusBarStyle:animated:", noop),
+    ("UIApplication", false, "setStatusBarHidden:", noop),
+    ("UIApplication", false, "setStatusBarHidden:withAnimation:", noop),
     ("UIApplication", false, "preferredContentSizeCategory", |e| {
         // The same string pomme binds to UIContentSizeCategoryLarge (see constants.rs).
         let s = foundation::new_nsstring(e, "UIContentSizeCategoryLarge")?;
@@ -447,6 +457,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIScene", false, "setDelegate:", set_scene_delegate),
     ("UIScene", false, "activationState", activation_state),
     ("UIWindowScene", false, "screen", scene_screen),
+    ("UIWindowScene", false, "statusBarManager", |e| {
+        let m = new_object(e, "UIStatusBarManager")?;
+        e.ret(m);
+        Ok(())
+    }),
+    ("UIStatusBarManager", false, "statusBarFrame", |e| {
+        ret_rect(e, [0.0, 0.0, SCREEN_W, crate::uiview::SAFE_AREA[0]]);
+        Ok(())
+    }),
+    ("UIStatusBarManager", false, "isStatusBarHidden", ret_zero),
+    ("UIStatusBarManager", false, "statusBarStyle", ret_zero),
     ("UIWindowScene", false, "windows", scene_windows),
     ("UIWindowScene", false, "interfaceOrientation", interface_orientation),
     ("UIWindowScene", false, "keyWindow", key_window),

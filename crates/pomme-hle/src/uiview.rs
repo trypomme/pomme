@@ -542,7 +542,228 @@ fn layer_delegate(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The device's safe-area insets (top, left, bottom, right) for a 390×844 pt iPhone.
+pub const SAFE_AREA: [f64; 4] = [47.0, 0.0, 34.0, 0.0];
+
+/// `-safeAreaInsets` (UIEdgeInsets, in d0–d3): the device insets for windows
+/// and views that cover the screen; zero for views inside the safe area.
+fn safe_area_insets(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    let f = frame_of(emu, v);
+    let full = emu.ui.windows.contains(&v) || (f[2] >= SCREEN_W && f[3] >= SCREEN_H);
+    ret_rect(emu, if full { SAFE_AREA } else { [0.0; 4] });
+    Ok(())
+}
+
+fn layout_margins(emu: &mut Emu) -> Result<()> {
+    ret_rect(emu, [8.0, 8.0, 8.0, 8.0]);
+    Ok(())
+}
+
+// ---- UIFont {isa, name (NSString), point size (f64 bits), weight (f64 bits)} ----
+// No font files yet: every font is "the system font" with SF Pro's proportions.
+
+fn new_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<u64> {
+    let cls = host_class(emu, "UIFont")?;
+    let font = objc::create_instance(emu, cls, 0)?;
+    let n = foundation::new_nsstring(emu, name)?;
+    emu.write_u64(font + 8, n)?;
+    emu.write_u64(font + 16, size.to_bits())?;
+    emu.write_u64(font + 24, weight.to_bits())?;
+    Ok(font)
+}
+
+fn font_size(emu: &Emu, font: u64) -> Result<f64> {
+    Ok(f64::from_bits(emu.read_u64(font + 16)?))
+}
+
+fn ret_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<()> {
+    let f = new_font(emu, name, size, weight)?;
+    emu.ret(f);
+    Ok(())
+}
+
+fn font_metric(emu: &mut Emu, factor: f64) -> Result<()> {
+    let s = font_size(emu, emu.arg(0))?;
+    ret_f64(emu, s * factor);
+    Ok(())
+}
+
+/// The view's origin in window coordinates (frame offsets up the tree; no transforms yet).
+fn window_origin(emu: &mut Emu, mut v: u64) -> [f64; 2] {
+    let mut p = [0.0, 0.0];
+    while v != 0 {
+        let vw = view(emu, v);
+        let f = frame_of(emu, v);
+        let sup = vw.superview;
+        if sup == 0 {
+            break; // the window: its frame is the screen
+        }
+        let sb = view(emu, sup).bounds;
+        p[0] += f[0] - sb[0];
+        p[1] += f[1] - sb[1];
+        v = sup;
+    }
+    p
+}
+
+/// `-convertPoint:toView:` / `fromView:` (point in d0, d1; view in x2; nil = window)
+fn convert_point(emu: &mut Emu, to: bool) -> Result<()> {
+    let (v, other, x, y) = (emu.arg(0), emu.arg(2), f(emu, 0), f(emu, 1));
+    let a = window_origin(emu, v);
+    let b = if other == 0 { [0.0, 0.0] } else { window_origin(emu, other) };
+    let (dx, dy) = if to { (a[0] - b[0], a[1] - b[1]) } else { (b[0] - a[0], b[1] - a[1]) };
+    emu.cpu.q[0] = (x + dx).to_bits() as u128;
+    emu.cpu.q[1] = (y + dy).to_bits() as u128;
+    Ok(())
+}
+
+/// `-convertRect:toView:` / `fromView:` (rect in d0–d3)
+fn convert_rect(emu: &mut Emu, to: bool) -> Result<()> {
+    let (w, h) = (f(emu, 2), f(emu, 3));
+    convert_point(emu, to)?;
+    emu.cpu.q[2] = w.to_bits() as u128;
+    emu.cpu.q[3] = h.to_bits() as u128;
+    Ok(())
+}
+
+fn is_descendant(emu: &mut Emu) -> Result<()> {
+    let (mut v, other) = (emu.arg(0), emu.arg(2));
+    while v != 0 && v != other {
+        v = view(emu, v).superview;
+    }
+    emu.ret((v != 0) as u64);
+    Ok(())
+}
+
+fn view_with_tag(emu: &mut Emu) -> Result<()> {
+    fn find(emu: &mut Emu, v: u64, tag: u64) -> u64 {
+        if view(emu, v).tag == tag {
+            return v;
+        }
+        for s in view(emu, v).subviews {
+            let r = find(emu, s, tag);
+            if r != 0 {
+                return r;
+            }
+        }
+        0
+    }
+    let r = find(emu, emu.arg(0), emu.arg(2));
+    emu.ret(r);
+    Ok(())
+}
+
+/// `-sizeToFit`: keeps the current size until there's real text and image measurement.
+fn size_to_fit(_: &mut Emu) -> Result<()> {
+    Ok(())
+}
+
+fn point_inside(emu: &mut Emu) -> Result<()> {
+    let (v, x, y) = (emu.arg(0), f(emu, 0), f(emu, 1));
+    let b = view(emu, v).bounds;
+    let inside = x >= b[0] && y >= b[1] && x < b[0] + b[2] && y < b[1] + b[3];
+    emu.ret(inside as u64);
+    Ok(())
+}
+
+fn content_scale(emu: &mut Emu) -> Result<()> {
+    ret_f64(emu, crate::uikit::SCREEN_SCALE);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("UIView", false, "convertPoint:toView:", |e| convert_point(e, true)),
+    ("UIView", false, "convertPoint:fromView:", |e| convert_point(e, false)),
+    ("UIView", false, "convertRect:toView:", |e| convert_rect(e, true)),
+    ("UIView", false, "convertRect:fromView:", |e| convert_rect(e, false)),
+    ("UIView", false, "isDescendantOfView:", is_descendant),
+    ("UIView", false, "viewWithTag:", view_with_tag),
+    ("UIView", false, "sizeToFit", size_to_fit),
+    ("UIView", false, "pointInside:withEvent:", point_inside),
+    ("UIView", false, "contentScaleFactor", content_scale),
+    ("UIView", false, "setContentScaleFactor:", noop),
+    ("UIView", false, "invalidateIntrinsicContentSize", noop),
+    ("UIView", false, "setNeedsUpdateConstraints", noop),
+    ("UIView", false, "updateConstraintsIfNeeded", noop),
+    ("UIView", false, "setTransform:", noop),
+    ("UIView", false, "setSemanticContentAttribute:", noop),
+    ("UIView", false, "semanticContentAttribute", ret_zero),
+    ("UIView", false, "setInsetsLayoutMarginsFromSafeArea:", noop),
+    ("UIView", false, "setPreservesSuperviewLayoutMargins:", noop),
+    ("UIView", false, "setAccessibilityElementsHidden:", noop),
+    ("UIView", false, "setAccessibilityTraits:", noop),
+    ("UIView", false, "setAccessibilityViewIsModal:", noop),
+    ("UIView", false, "setAccessibilityIgnoresInvertColors:", noop),
+    ("UIView", false, "setShouldGroupAccessibilityChildren:", noop),
+    ("UIView", false, "tintColor", ret_zero),
+    ("UIView", false, "isExclusiveTouch", ret_zero),
+    ("UIView", false, "isMultipleTouchEnabled", ret_zero),
+    ("UIView", false, "gestureRecognizers", ret_zero),
+    ("UIView", false, "layoutSubviewsIfNeeded", noop),
+    ("UIFont", true, "systemFontOfSize:", |e| {
+        let s = f(e, 0);
+        ret_font(e, ".SFUI-Regular", s, 0.0)
+    }),
+    ("UIFont", true, "systemFontOfSize:weight:", |e| {
+        let (s, w) = (f(e, 0), f(e, 1));
+        ret_font(e, ".SFUI-Regular", s, w)
+    }),
+    ("UIFont", true, "boldSystemFontOfSize:", |e| {
+        let s = f(e, 0);
+        ret_font(e, ".SFUI-Bold", s, 0.4)
+    }),
+    ("UIFont", true, "italicSystemFontOfSize:", |e| {
+        let s = f(e, 0);
+        ret_font(e, ".SFUI-Italic", s, 0.0)
+    }),
+    ("UIFont", true, "monospacedDigitSystemFontOfSize:weight:", |e| {
+        let (s, w) = (f(e, 0), f(e, 1));
+        ret_font(e, ".SFUI-Regular", s, w)
+    }),
+    ("UIFont", true, "fontWithName:size:", |e| {
+        let name = foundation::nsstring(e, e.arg(2))?;
+        let s = f(e, 0);
+        ret_font(e, &name, s, 0.0)
+    }),
+    ("UIFont", true, "preferredFontForTextStyle:", |e| ret_font(e, ".SFUI-Regular", 17.0, 0.0)),
+    ("UIFont", true, "familyNames", |e| {
+        let a = foundation::new_array_of(e, &[])?;
+        e.ret(a);
+        Ok(())
+    }),
+    ("UIFont", true, "fontNamesForFamilyName:", |e| {
+        let a = foundation::new_array_of(e, &[])?;
+        e.ret(a);
+        Ok(())
+    }),
+    ("UIFont", false, "fontWithSize:", |e| {
+        let (font, s) = (e.arg(0), f(e, 0));
+        let name = foundation::nsstring(e, e.read_u64(font + 8)?)?;
+        let w = f64::from_bits(e.read_u64(font + 24)?);
+        ret_font(e, &name, s, w)
+    }),
+    ("UIFont", false, "fontName", |e| {
+        let n = e.read_u64(e.arg(0) + 8)?;
+        e.ret(n);
+        Ok(())
+    }),
+    ("UIFont", false, "familyName", |e| {
+        let s = foundation::new_nsstring(e, ".SF UI")?;
+        e.ret(s);
+        Ok(())
+    }),
+    ("UIFont", false, "pointSize", |e| font_metric(e, 1.0)),
+    ("UIFont", false, "lineHeight", |e| font_metric(e, 1.193)),
+    ("UIFont", false, "ascender", |e| font_metric(e, 0.952)),
+    ("UIFont", false, "descender", |e| font_metric(e, -0.241)),
+    ("UIFont", false, "capHeight", |e| font_metric(e, 0.705)),
+    ("UIFont", false, "xHeight", |e| font_metric(e, 0.529)),
+    ("UIFont", false, "leading", |e| font_metric(e, 0.0)),
+    ("UIView", false, "safeAreaInsets", safe_area_insets),
+    ("UIView", false, "safeAreaInsetsDidChange", noop),
+    ("UIView", false, "layoutMargins", layout_margins),
+    ("UIView", false, "directionalLayoutMargins", layout_margins),
     ("UIView", false, "init", view_init),
     ("UIView", false, "initWithFrame:", view_init_with_frame),
     ("UIView", false, "initWithCoder:", view_init),
@@ -626,6 +847,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "viewIfLoaded", vc_view_if_loaded),
     ("UIViewController", false, "isViewLoaded", vc_is_view_loaded),
     ("UIViewController", false, "viewDidLoad", noop),
+    ("UIViewController", false, "prefersStatusBarHidden", ret_zero),
+    ("UIViewController", false, "preferredStatusBarStyle", ret_zero),
+    ("UIViewController", false, "setNeedsStatusBarAppearanceUpdate", noop),
+    ("UIViewController", false, "childViewControllerForStatusBarStyle", ret_zero),
+    ("UIViewController", false, "childViewControllerForStatusBarHidden", ret_zero),
     ("UIViewController", false, "viewWillAppear:", noop),
     ("UIViewController", false, "viewDidAppear:", noop),
     ("UIViewController", false, "viewWillLayoutSubviews", noop),

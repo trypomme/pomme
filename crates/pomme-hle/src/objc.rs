@@ -52,6 +52,7 @@ pub struct Objc {
     /// Class → is it a native Swift class (cache for retains).
     native_swift: HashMap<u64, bool>,
     swift_retain: u64,
+    swift_release: u64,
     /// Type encoding (C string address) by selector, as seen in method lists.
     types: HashMap<Sel, u64>,
     /// `Method` structs handed to the guest: address → (class, selector).
@@ -89,6 +90,8 @@ const PERMISSIVE: &[&str] = &[
     "NSParagraphStyle",
     // Screen properties beyond bounds/scale (brightness, mirroring, ...).
     "UIScreen",
+    // No touch input yet: gesture recognizers are configured but never fire.
+    "UIGestureRecognizer",
 ];
 
 fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
@@ -107,7 +110,9 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
     if emu.trace {
         println!("{:>10}   (permissive: {}[{} {sel}] answered generically)", emu.cpu.steps, if meta { '+' } else { '-' }, emu.objc.class_name(cls));
     }
-    let r = if meta && !sel.starts_with("set") {
+    let r = if !meta && sel.starts_with("init") {
+        emu.cpu.x[0] // initializers return self
+    } else if meta && !sel.starts_with("set") {
         // Factory methods (+defaultSessionConfiguration, +sharedSession, ...): a fresh instance.
         let k = emu.cpu.x[0];
         create_instance(emu, k, 0)?
@@ -120,7 +125,7 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
 }
 
 /// Instance sizes of host classes that store fields in the object (isa + fields).
-const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16)];
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16), ("NSError", 32), ("NSMethodSignature", 16), ("NSInvocation", 32), ("UIFont", 32)];
 
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
@@ -288,6 +293,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::bundle::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::uiview::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::threads::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::invocation::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -325,7 +331,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -618,6 +624,12 @@ fn attach_category(emu: &mut Emu, cat: u64) -> Result<()> {
     Ok(())
 }
 
+/// The type encoding recorded for a selector (from any method list that has it).
+pub fn method_type_encoding(emu: &Emu, sel: Sel) -> Option<String> {
+    let p = *emu.objc.types.get(&sel)?;
+    if p == 0 { None } else { emu.cstr(p).ok() }
+}
+
 /// The canonical SEL for a name, allocating its string if no image has one.
 pub fn intern(emu: &mut Emu, name: &str) -> Result<Sel> {
     if let Some(&s) = emu.objc.sels.get(name) {
@@ -643,7 +655,12 @@ pub fn class_of(emu: &mut Emu, obj: u64) -> Result<u64> {
     if obj >> 63 != 0 {
         return Err(Stop::Unsupported(format!("tagged pointer {obj:#x}")));
     }
-    let isa = emu.read_u64(obj)?;
+    let mut isa = emu.read_u64(obj)?;
+    if isa == 0 {
+        // A CF object made before toll-free bridging was set up: give it its class now.
+        isa = crate::foundation::class_for_unbridged(emu, obj)?;
+        emu.write_u64(obj, isa)?;
+    }
     if !emu.objc.classes.contains_key(&isa) {
         // A class we haven't seen (e.g. a Swift class realized late): read it now.
         let is_meta_of_known = emu.objc.classes.contains_key(&obj);
@@ -691,7 +708,10 @@ pub fn responds(emu: &mut Emu, obj: u64, sel: Sel) -> Result<bool> {
 /// The class itself for `obj` when it's a class, else its class.
 fn instance_class(emu: &mut Emu, obj: u64) -> Result<u64> {
     let c = class_of(emu, obj)?;
-    Ok(if emu.objc.classes[&c].meta { obj } else { c })
+    match emu.objc.classes.get(&c) {
+        Some(k) => Ok(if k.meta { obj } else { c }),
+        None => Err(Stop::Unsupported(format!("object {obj:#x}: class {c:#x} isn't registered"))),
+    }
 }
 
 /// Run `+initialize` for a class (superclasses first) the first time it's messaged.
@@ -1001,21 +1021,57 @@ fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
     native
 }
 
-/// Retain from Objective-C. pomme never frees Objective-C objects, but native
-/// Swift objects are freed by the (guest) Swift runtime when their Swift
-/// refcount drops to zero — so Objective-C's reference must count there. It's
-/// never released: a small leak, never an early free.
+/// Retain/release from Objective-C (and CF collections). pomme never frees
+/// Objective-C or CF objects, so for those these do nothing. Native Swift
+/// objects are reference-counted by the guest Swift runtime, and Swift relies on
+/// the counts being exact (uniqueness checks, copy-on-write), so for them these
+/// forward to `swift_retain` / `swift_release`, as on iOS.
 pub(crate) fn objc_retain_obj(emu: &mut Emu, obj: u64) -> Result<()> {
-    if is_native_swift(emu, obj) {
-        if emu.objc.swift_retain == 0 {
-            emu.objc.swift_retain = emu.p.images.iter().find_map(|i| i.symbol("_swift_retain")).unwrap_or(u64::MAX);
+    swift_refcount(emu, obj, true)
+}
+
+pub(crate) fn objc_release_obj(emu: &mut Emu, obj: u64) -> Result<()> {
+    swift_refcount(emu, obj, false)
+}
+
+fn swift_refcount(emu: &mut Emu, obj: u64, retain: bool) -> Result<()> {
+    if obj != 0 && obj >> 63 == 0 && crate::libc::is_heap_block(emu, obj) {
+        // Heap blocks are reference counted too (ARC retains/releases them as objects).
+        if retain {
+            let f = emu.p.memory.read_u32(obj + 8)?;
+            emu.p.memory.write_u32(obj + 8, f + 2)?;
+        } else {
+            crate::libc::block_release_obj(emu, obj)?;
         }
-        if emu.objc.swift_retain != u64::MAX {
-            emu.call(emu.objc.swift_retain, &[obj])?;
-        }
+        return Ok(());
+    }
+    if !is_native_swift(emu, obj) {
+        return Ok(());
+    }
+    let (slot, name) = if retain { (&mut emu.objc.swift_retain, "_swift_retain") } else { (&mut emu.objc.swift_release, "_swift_release") };
+    if *slot == 0 {
+        let found = emu.p.images.iter().find_map(|i| i.symbol(name)).unwrap_or(u64::MAX);
+        let slot = if retain { &mut emu.objc.swift_retain } else { &mut emu.objc.swift_release };
+        *slot = found;
+    }
+    let f = if retain { emu.objc.swift_retain } else { emu.objc.swift_release };
+    if f != u64::MAX {
+        emu.call(f, &[obj])?;
     }
     Ok(())
 }
+
+fn objc_release(emu: &mut Emu) -> Result<()> {
+    objc_release_obj(emu, emu.cpu.x[0])
+}
+
+/// `objc_release_xN`: release xN.
+macro_rules! release_reg {
+    ($($n:literal),*) => {
+        [$(|emu: &mut Emu| -> Result<()> { objc_release_obj(emu, emu.cpu.x[$n]) }),*]
+    };
+}
+const RELEASE_X: [HostFn; 29] = release_reg!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28);
 
 fn objc_retain(emu: &mut Emu) -> Result<()> {
     objc_retain_obj(emu, emu.cpu.x[0]) // returns its argument (x0 is preserved)
@@ -1072,8 +1128,11 @@ fn objc_opt_responds_to_selector(emu: &mut Emu) -> Result<()> {
 
 /// `objc_storeStrong(id *location, id obj)`
 fn objc_store_strong(emu: &mut Emu) -> Result<()> {
-    objc_retain_obj(emu, emu.cpu.x[1])?;
-    emu.write_u64(emu.cpu.x[0], emu.cpu.x[1])
+    let (loc, obj) = (emu.cpu.x[0], emu.cpu.x[1]);
+    let old = emu.read_u64(loc)?;
+    objc_retain_obj(emu, obj)?;
+    emu.write_u64(loc, obj)?;
+    objc_release_obj(emu, old)
 }
 
 /// `objc_storeWeak` / `objc_initWeak(id *location, id obj)` → obj
@@ -1189,14 +1248,42 @@ fn objc_get_property(emu: &mut Emu) -> Result<()> {
 }
 
 /// `objc_setProperty_*(self, _cmd, newValue, offset)`
+/// `objc_setProperty_*(self, _cmd, newValue, offset)` for strong properties: retain new, release old.
 fn objc_set_property(emu: &mut Emu) -> Result<()> {
-    emu.write_u64(emu.cpu.x[0].wrapping_add(emu.cpu.x[3]), emu.cpu.x[2])
+    let (obj, value, offset) = (emu.cpu.x[0], emu.cpu.x[2], emu.cpu.x[3]);
+    let at = obj.wrapping_add(offset);
+    let old = emu.read_u64(at)?;
+    objc_retain_obj(emu, value)?;
+    emu.write_u64(at, value)?;
+    objc_release_obj(emu, old)
 }
 
+/// …and for copy properties: store `[newValue copy]` (+1), release old.
 fn objc_set_property_copy(emu: &mut Emu) -> Result<()> {
     let (obj, value, offset) = (emu.cpu.x[0], emu.cpu.x[2], emu.cpu.x[3]);
+    let at = obj.wrapping_add(offset);
+    let old = emu.read_u64(at)?;
     let copy = send(emu, value, "copy", &[])?;
-    emu.write_u64(obj.wrapping_add(offset), copy)
+    emu.write_u64(at, copy)?;
+    objc_release_obj(emu, old)
+}
+
+/// `-copy` of an immutable object: itself, retained (copy returns +1).
+fn nsobject_copy(emu: &mut Emu) -> Result<()> {
+    objc_retain_obj(emu, emu.cpu.x[0]) // returns self
+}
+
+fn nsobject_retain(emu: &mut Emu) -> Result<()> {
+    objc_retain_obj(emu, emu.cpu.x[0])
+}
+
+fn nsobject_release(emu: &mut Emu) -> Result<()> {
+    objc_release_obj(emu, emu.cpu.x[0])
+}
+
+/// `-[NSBlock copy]`: `_Block_copy` (moves a stack block to the heap, or retains a heap one).
+fn block_copy_method(emu: &mut Emu) -> Result<()> {
+    crate::libc::block_copy(emu)
 }
 
 /// `objc_copyStruct(dest, src, size, atomic, hasStrong)`
@@ -1228,7 +1315,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_objc_allocWithZone", objc_alloc_with_zone),
     ("_objc_alloc_init", objc_alloc_init),
     ("_objc_retain", objc_retain),
-    ("_objc_release", noop),
+    ("_objc_release", objc_release),
     ("_objc_autorelease", ret_self),
     ("_objc_autoreleaseReturnValue", ret_self),
     ("_objc_retainAutorelease", objc_retain),
@@ -1283,7 +1370,7 @@ const RELEASE_NAMES: [&str; 29] = reg_names!("_objc_release_x"; 0,1,2,3,4,5,6,7,
 pub(crate) fn register_reg_variants(registry: &mut HashMap<&'static str, HostFn>) {
     for i in 0..29 {
         registry.insert(RETAIN_NAMES[i], RETAIN_X[i]);
-        registry.insert(RELEASE_NAMES[i], noop);
+        registry.insert(RELEASE_NAMES[i], RELEASE_X[i]);
     }
 }
 
@@ -1482,6 +1569,12 @@ fn nsobject_method_for_selector(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    // Key-value observing: registrations are accepted, but no change notifications are sent yet.
+    ("NSObject", false, "addObserver:forKeyPath:options:context:", noop),
+    ("NSObject", false, "removeObserver:forKeyPath:", noop),
+    ("NSObject", false, "removeObserver:forKeyPath:context:", noop),
+    ("NSObject", false, "willChangeValueForKey:", noop),
+    ("NSObject", false, "didChangeValueForKey:", noop),
     ("NSObject", true, "instanceMethodForSelector:", instance_method_for_selector),
     ("NSObject", false, "methodForSelector:", nsobject_method_for_selector),
     ("NSObject", false, "valueForKey:", nsobject_value_for_key),
@@ -1498,12 +1591,15 @@ pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSObject", false, "self", ret_self),
     ("NSObject", false, "class", nsobject_class),
     ("NSObject", false, "superclass", nsobject_superclass),
-    ("NSObject", false, "retain", ret_self),
-    ("NSObject", false, "release", noop),
+    ("NSObject", false, "retain", nsobject_retain),
+    ("NSObject", false, "release", nsobject_release),
     ("NSObject", false, "autorelease", ret_self),
     ("NSObject", false, "retainCount", nsobject_retain_count),
     ("NSObject", false, "dealloc", noop),
-    ("NSObject", false, "copy", ret_self),
+    ("NSObject", false, "copy", nsobject_copy),
+    ("NSObject", false, "copyWithZone:", nsobject_copy),
+    ("NSBlock", false, "copy", block_copy_method),
+    ("NSBlock", false, "copyWithZone:", block_copy_method),
     ("NSObject", false, "respondsToSelector:", nsobject_responds_to_selector),
     ("NSObject", false, "isKindOfClass:", nsobject_is_kind_of_class),
     ("NSObject", false, "isMemberOfClass:", nsobject_is_member_of_class),

@@ -23,7 +23,20 @@ pub struct State {
     queue_specific: HashMap<(u64, u64), u64>,
     data: HashMap<&'static str, u64>,
     pub next_port: u64,
+    /// Seeded random state (arc4random, UUIDs): the same every run.
+    rng: u64,
 }
+
+impl State {
+    pub fn rng_state(&self) -> u64 {
+        if self.rng == 0 { 0x9e37_79b9_7f4a_7c15 } else { self.rng }
+    }
+
+    pub fn set_rng_state(&mut self, v: u64) {
+        self.rng = v;
+    }
+}
+
 
 // ---- data symbols ----
 
@@ -1037,6 +1050,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_after", dispatch_after),
     ("_dispatch_after_f", dispatch_after_f),
     ("_dispatch_queue_create", dispatch_queue_create),
+    // The target queue doesn't matter: all queues are serviced, in order, by the main loop.
+    ("_dispatch_queue_create_with_target$V2", dispatch_queue_create),
     ("_dispatch_get_global_queue", dispatch_get_global_queue),
     ("_dispatch_queue_get_label", dispatch_queue_get_label),
     ("_dispatch_queue_set_specific", dispatch_queue_set_specific),
@@ -1084,7 +1099,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_os_signpost_id_make_with_pointer", ret_one),
     ("__os_signpost_emit_with_name_impl", noop),
     ("_os_release", noop),
-    ("_asl_log", ret_zero),
     ("_openlog", noop),
     ("_syslog", noop),
     ("_closelog", noop),

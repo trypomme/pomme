@@ -1,0 +1,5 @@
+// pomme: stand-ins for the private shim modules Apple's overlays import.
+module _SwiftObjectiveCOverlayShims {
+  header "ObjectiveCOverlayShims.h"
+  export *
+}

@@ -41,6 +41,112 @@ enum Kind {
 }
 
 impl Cpu {
+    /// Post-index writeback for SIMD structure loads/stores: Rm = 31 means "by the transfer size".
+    fn simd_writeback(&mut self, insn: u32, rn: u32, base: u64, total: u64) {
+        if bit(insn, 23) {
+            let rm = bits(insn, 20, 16);
+            let off = if rm == 31 { total } else { self.xr(rm) };
+            self.set_xsp(rn, base.wrapping_add(off));
+        }
+    }
+
+    /// LD1–LD4 / ST1–ST4 (multiple structures), per the Arm pseudocode.
+    fn simd_ldst_multiple(&mut self, insn: u32, mem: &mut Memory) -> Step {
+        let (rt, rn) = (bits(insn, 4, 0), bits(insn, 9, 5));
+        let (q, is_load) = (bit(insn, 30), bit(insn, 22));
+        let ebytes = 1u32 << bits(insn, 11, 10);
+        let (rpt, selem) = match bits(insn, 15, 12) {
+            0b0000 => (1, 4),
+            0b0010 => (4, 1),
+            0b0100 => (1, 3),
+            0b0110 => (3, 1),
+            0b0111 => (1, 1),
+            0b1000 => (1, 2),
+            0b1010 => (2, 1),
+            _ => return Err(Exit::Unimplemented { insn }),
+        };
+        if ebytes == 8 && !q && selem > 1 {
+            return Err(Exit::Unimplemented { insn }); // reserved
+        }
+        let elements = (if q { 16 } else { 8 }) / ebytes;
+        let base = self.xsp(rn);
+        let mut offs = 0u64;
+        if is_load && !q {
+            // A 64-bit form writes the whole register: the top half becomes zero.
+            for r in 0..rpt * selem {
+                self.q[((rt + r) % 32) as usize] = 0;
+            }
+        }
+        for r in 0..rpt {
+            for e in 0..elements {
+                let mut tt = (rt + r) % 32;
+                for _ in 0..selem {
+                    let addr = base.wrapping_add(offs);
+                    let shift = e * ebytes * 8;
+                    let emask = if ebytes == 16 { u128::MAX } else { ((1u128 << (ebytes * 8)) - 1) << shift };
+                    if is_load {
+                        let v = load(mem, addr, ebytes)?;
+                        let reg = &mut self.q[tt as usize];
+                        *reg = (*reg & !emask) | ((v << shift) & emask);
+                    } else {
+                        let v = (self.q[tt as usize] & emask) >> shift;
+                        store(mem, addr, ebytes, v)?;
+                    }
+                    offs += ebytes as u64;
+                    tt = (tt + 1) % 32;
+                }
+            }
+        }
+        self.simd_writeback(insn, rn, base, offs);
+        Ok(())
+    }
+
+    /// LD1–LD4 / ST1–ST4 (single lane) and LD1R–LD4R (load and replicate).
+    fn simd_ldst_single(&mut self, insn: u32, mem: &mut Memory) -> Step {
+        let unimpl = Err(Exit::Unimplemented { insn });
+        let (rt, rn) = (bits(insn, 4, 0), bits(insn, 9, 5));
+        let (q, is_load) = (bit(insn, 30), bit(insn, 22));
+        let opcode = bits(insn, 15, 13);
+        let (s, size) = (bit(insn, 12) as u32, bits(insn, 11, 10));
+        let selem = (((opcode & 1) << 1) | bit(insn, 21) as u32) + 1;
+        let qv = q as u32;
+        let (ebytes, index, replicate) = match opcode >> 1 {
+            0 => (1, (qv << 3) | (s << 2) | size, false),
+            1 if size & 1 == 0 => (2, (qv << 2) | (s << 1) | (size >> 1), false),
+            2 if size == 0 => (4, (qv << 1) | s, false),
+            2 if size == 1 && s == 0 => (8, qv, false),
+            3 if is_load && s == 0 => (1 << size, 0, true),
+            _ => return unimpl,
+        };
+        let base = self.xsp(rn);
+        let mut offs = 0u64;
+        for k in 0..selem {
+            let tt = ((rt + k) % 32) as usize;
+            let addr = base.wrapping_add(offs);
+            if replicate {
+                let v = load(mem, addr, ebytes)?;
+                let lanes = (if q { 16 } else { 8 }) / ebytes;
+                let mut r = 0u128;
+                for i in 0..lanes {
+                    r |= v << (i * ebytes * 8);
+                }
+                self.q[tt] = r;
+            } else {
+                let shift = index * ebytes * 8;
+                let emask = ((1u128 << (ebytes * 8)) - 1) << shift;
+                if is_load {
+                    let v = load(mem, addr, ebytes)?;
+                    self.q[tt] = (self.q[tt] & !emask) | (v << shift);
+                } else {
+                    store(mem, addr, ebytes, (self.q[tt] & emask) >> shift)?;
+                }
+            }
+            offs += ebytes as u64;
+        }
+        self.simd_writeback(insn, rn, base, offs);
+        Ok(())
+    }
+
     pub(crate) fn ldst(&mut self, insn: u32, mem: &mut Memory) -> Step {
         let unimpl = Err(Exit::Unimplemented { insn });
         let rt = bits(insn, 4, 0);
@@ -71,6 +177,15 @@ impl Cpu {
         // Load/store exclusive, acquire/release, compare-and-swap
         if insn & 0x3f00_0000 == 0x0800_0000 {
             return self.ldst_exclusive(insn, mem);
+        }
+
+        // Advanced SIMD load/store multiple structures (LD1–LD4 / ST1–ST4), optionally post-indexed
+        if insn & 0xbfbf_0000 == 0x0c00_0000 || insn & 0xbfa0_0000 == 0x0c80_0000 {
+            return self.simd_ldst_multiple(insn, mem);
+        }
+        // Advanced SIMD load/store single structure (lane / replicate), optionally post-indexed
+        if insn & 0xbf9f_0000 == 0x0d00_0000 || insn & 0xbf80_0000 == 0x0d80_0000 {
+            return self.simd_ldst_single(insn, mem);
         }
 
         // Load/store pair

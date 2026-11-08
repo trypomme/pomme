@@ -48,6 +48,9 @@ pub struct State {
     observers: Vec<Observer>,
     file_manager: u64,
     defaults: u64,
+    process_info: u64,
+    /// CF type ID → bridged class.
+    type_classes: HashMap<u64, u64>,
 }
 
 pub(crate) fn init(_emu: &mut Emu) -> Result<()> {
@@ -104,6 +107,18 @@ pub fn is_cf(emu: &Emu, obj: u64) -> bool {
 
 // ---- bridging ----
 
+/// The bridged class for a CF object whose isa is still 0 (created during CF's own initialization).
+pub fn class_for_unbridged(emu: &mut Emu, obj: u64) -> Result<u64> {
+    if emu.fnd.cf.is_none() {
+        return Err(Stop::Unsupported(format!("object {obj:#x} has no class (isa 0)")));
+    }
+    let id = cf(emu, "_CFGetTypeID", &[obj])?;
+    match emu.fnd.type_classes.get(&id) {
+        Some(&c) => Ok(c),
+        None => host_class(emu, "__NSCFType"),
+    }
+}
+
 /// Called right after `__CFInitialize` (as libSystem would).
 pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     emu.fnd.cf = Some(image);
@@ -134,6 +149,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         let cls = host_class(emu, class)?;
         emu.call(bridge_fn, &[id, cls])?;
         emu.fnd.cf_classes.insert(cls);
+        emu.fnd.type_classes.insert(id, cls);
     }
 
     // Objects CF made while initializing still have isa 0.
@@ -184,7 +200,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     for (sym, f) in [
         ("_CFRetain", hook_retain as HostFn),
         ("_CFRelease", hook_release),
-        ("_CFAutorelease", hook_retain),
+        ("_CFAutorelease", hook_autorelease),
         ("_CFHash", hook_hash),
         ("_CFEqual", hook_equal),
         ("_CFCopyDescription", hook_copy_description),
@@ -198,23 +214,35 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     let retain = emu.read_u64(callbacks + 8)?;
     let release = emu.read_u64(callbacks + 16)?;
     emu.hook(retain, hook_collection_retain)?;
-    emu.hook(release, hook_release)?;
+    emu.hook(release, hook_collection_release)?;
     Ok(())
 }
 
 
-fn hook_retain(_: &mut Emu) -> Result<()> {
-    Ok(()) // returns its argument
+/// `CFRetain(obj)` → obj. CF objects are never freed, so only Swift objects count.
+fn hook_retain(emu: &mut Emu) -> Result<()> {
+    objc::objc_retain_obj(emu, emu.arg(0)) // returns its argument
 }
 
-fn hook_release(_: &mut Emu) -> Result<()> {
-    Ok(())
+fn hook_release(emu: &mut Emu) -> Result<()> {
+    objc::objc_release_obj(emu, emu.arg(0))
+}
+
+fn hook_autorelease(_: &mut Emu) -> Result<()> {
+    Ok(()) // pools are never drained: autorelease keeps the reference
 }
 
 /// `__CFTypeCollectionRetain(allocator, ptr)` → ptr
 fn hook_collection_retain(emu: &mut Emu) -> Result<()> {
-    emu.ret(emu.arg(1));
+    let p = emu.arg(1);
+    objc::objc_retain_obj(emu, p)?;
+    emu.ret(p);
     Ok(())
+}
+
+/// `__CFTypeCollectionRelease(allocator, ptr)`
+fn hook_collection_release(emu: &mut Emu) -> Result<()> {
+    objc::objc_release_obj(emu, emu.arg(1))
 }
 
 fn hook_hash(emu: &mut Emu) -> Result<()> {
@@ -571,7 +599,8 @@ fn string_by_appending(emu: &mut Emu) -> Result<()> {
 }
 
 fn append_string(emu: &mut Emu) -> Result<()> {
-    cf(emu, "_CFStringAppend", &[emu.arg(0), emu.arg(2)])?;
+    let s = as_cf_string(emu, emu.arg(2))?;
+    cf(emu, "_CFStringAppend", &[emu.arg(0), s])?;
     Ok(())
 }
 
@@ -1845,15 +1874,26 @@ pub fn new_file_url(emu: &mut Emu, path: &str, is_dir: bool) -> Result<u64> {
     cf(emu, "_CFURLCreateWithFileSystemPath", &[0, p, POSIX_PATH_STYLE, is_dir as u64])
 }
 
+/// A CF string with the same contents: CF can't read Objective-C strings
+/// (e.g. Swift-native ones) because its Objective-C dispatch is compiled out.
+pub fn as_cf_string(emu: &mut Emu, s: u64) -> Result<u64> {
+    if s == 0 || is_cf(emu, s) {
+        return Ok(s);
+    }
+    let text = nsstring(emu, s)?;
+    new_nsstring(emu, &text)
+}
+
 fn url_with_string(emu: &mut Emu) -> Result<()> {
-    let s = emu.arg(2);
+    let s = as_cf_string(emu, emu.arg(2))?;
     let u = if s == 0 { 0 } else { cf(emu, "_CFURLCreateWithString", &[0, s, 0])? };
     emu.ret(u);
     Ok(())
 }
 
 fn url_with_string_relative(emu: &mut Emu) -> Result<()> {
-    let (s, base) = (emu.arg(2), emu.arg(3));
+    let base = emu.arg(3);
+    let s = as_cf_string(emu, emu.arg(2))?;
     let u = if s == 0 { 0 } else { cf(emu, "_CFURLCreateWithString", &[0, s, base])? };
     emu.ret(u);
     Ok(())
@@ -1920,7 +1960,8 @@ fn url_is_file(emu: &mut Emu) -> Result<()> {
 }
 
 fn url_appending_component(emu: &mut Emu) -> Result<()> {
-    let u = cf(emu, "_CFURLCreateCopyAppendingPathComponent", &[0, emu.arg(0), emu.arg(2), 0])?;
+    let c = as_cf_string(emu, emu.arg(2))?;
+    let u = cf(emu, "_CFURLCreateCopyAppendingPathComponent", &[0, emu.arg(0), c, 0])?;
     emu.ret(u);
     Ok(())
 }
@@ -2368,6 +2409,18 @@ fn path_components(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `-stringByReplacingCharactersInRange:(NSRange)range withString:` — range in x2/x3 (UTF-16), string x4.
+fn replacing_range(emu: &mut Emu) -> Result<()> {
+    let (s, loc, len, with) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3) as usize, emu.arg(4));
+    let text: Vec<u16> = nsstring(emu, s)?.encode_utf16().collect();
+    let with: Vec<u16> = nsstring(emu, with)?.encode_utf16().collect();
+    let (a, b) = (loc.min(text.len()), (loc + len).min(text.len()));
+    let mut out = text[..a].to_vec();
+    out.extend_from_slice(&with);
+    out.extend_from_slice(&text[b..]);
+    ret_string(emu, &String::from_utf16_lossy(&out))
+}
+
 fn replacing_occurrences(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(0))?;
     let from = nsstring(emu, emu.arg(2))?;
@@ -2813,7 +2866,163 @@ pub(crate) const PATH_FUNCS: &[(&str, HostFn)] = &[
     ("_NSTemporaryDirectory", ns_temporary_directory),
 ];
 
+// ---- NSError {isa, domain, code, userInfo} ----
+
+fn error_new(emu: &mut Emu) -> Result<()> {
+    let (domain, code, info) = (emu.arg(2), emu.arg(3), emu.arg(4));
+    let cls = if emu.objc.class(emu.arg(0)).is_some() { emu.arg(0) } else { host_class(emu, "NSError")? };
+    let e = objc::create_instance(emu, cls, 0)?;
+    emu.write_u64(e + 8, domain)?;
+    emu.write_u64(e + 16, code)?;
+    emu.write_u64(e + 24, info)?;
+    // Errors made at startup usually explain what's about to go wrong: show them.
+    let d = nsstring(emu, domain)?;
+    let desc = if info == 0 {
+        String::new()
+    } else {
+        let s = send(emu, info, "description", &[])?;
+        nsstring(emu, s)?.replace('\n', " ")
+    };
+    println!("[NSError] {d} {} {desc}", code as i64);
+    emu.ret(e);
+    Ok(())
+}
+
+fn error_field(emu: &mut Emu, off: u64) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + off)?;
+    emu.ret(v);
+    Ok(())
+}
+
+fn error_localized_description(emu: &mut Emu) -> Result<()> {
+    let e = emu.arg(0);
+    let info = emu.read_u64(e + 24)?;
+    if info != 0 {
+        let key = new_nsstring(emu, "NSLocalizedDescription")?;
+        let v = dict_get_any(emu, info, key)?;
+        if v != 0 {
+            emu.ret(v);
+            return Ok(());
+        }
+    }
+    let domain = nsstring(emu, emu.read_u64(e + 8)?)?;
+    let code = emu.read_u64(e + 16)? as i64;
+    ret_string(emu, &format!("The operation couldn’t be completed. ({domain} error {code}.)"))
+}
+
+/// objectForKey: on any NSDictionary (CF, constant or guest).
+fn dict_get_any(emu: &mut Emu, d: u64, key: u64) -> Result<u64> {
+    if is_cf(emu, d) {
+        cf(emu, "_CFDictionaryGetValue", &[d, key])
+    } else {
+        send(emu, d, "objectForKey:", &[key])
+    }
+}
+
+// ---- NSProcessInfo: an iPhone on iOS 26.0 ----
+
+const OS_VERSION: (u64, u64, u64) = (26, 0, 0);
+
+fn process_info(emu: &mut Emu) -> Result<()> {
+    if emu.fnd.process_info == 0 {
+        let cls = host_class(emu, "NSProcessInfo")?;
+        emu.fnd.process_info = objc::create_instance(emu, cls, 0)?;
+    }
+    emu.ret(emu.fnd.process_info);
+    Ok(())
+}
+
+/// `-operatingSystemVersion` → NSOperatingSystemVersion {major, minor, patch}: 24 bytes, returned through x8.
+fn os_version(emu: &mut Emu) -> Result<()> {
+    let out = emu.cpu.x[8];
+    emu.write_u64(out, OS_VERSION.0)?;
+    emu.write_u64(out + 8, OS_VERSION.1)?;
+    emu.write_u64(out + 16, OS_VERSION.2)?;
+    Ok(())
+}
+
+/// `-isOperatingSystemAtLeastVersion:` — the 24-byte struct argument arrives by reference (x2).
+fn os_at_least(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(2);
+    let want = (emu.read_u64(p)?, emu.read_u64(p + 8)?, emu.read_u64(p + 16)?);
+    ret_bool(emu, OS_VERSION >= want)
+}
+
+fn process_arguments(emu: &mut Emu) -> Result<()> {
+    let exe = format!("{}/{}", crate::fs::guest_bundle_path(emu), emu.p.main().name);
+    let s = new_nsstring(emu, &exe)?;
+    let a = array_from(emu, &[s])?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn process_environment(emu: &mut Emu) -> Result<()> {
+    let d = new_dict(emu)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn system_uptime(emu: &mut Emu) -> Result<()> {
+    let t = crate::threads::now_ns(emu) as f64 / 1e9;
+    ret_double(emu, t);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSProcessInfo", true, "processInfo", process_info),
+    ("NSProcessInfo", false, "operatingSystemVersion", os_version),
+    ("NSProcessInfo", false, "isOperatingSystemAtLeastVersion:", os_at_least),
+    ("NSProcessInfo", false, "operatingSystemVersionString", |e| ret_string(e, "Version 26.0 (Build pomme)")),
+    ("NSProcessInfo", false, "arguments", process_arguments),
+    ("NSProcessInfo", false, "environment", process_environment),
+    ("NSProcessInfo", false, "processName", |e| {
+        let n = e.p.main().name.clone();
+        ret_string(e, &n)
+    }),
+    ("NSProcessInfo", false, "processIdentifier", |e| {
+        e.ret(1000);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "globallyUniqueString", |e| ret_string(e, "00000000-0000-0000-0000-000000000000-1000-0000000000000000")),
+    ("NSProcessInfo", false, "hostName", |e| ret_string(e, "pomme")),
+    ("NSProcessInfo", false, "systemUptime", system_uptime),
+    ("NSProcessInfo", false, "physicalMemory", |e| {
+        e.ret(6 << 30);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "processorCount", |e| {
+        e.ret(1);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "activeProcessorCount", |e| {
+        e.ret(1);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "thermalState", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "isLowPowerModeEnabled", |e| ret_bool(e, false)),
+    ("NSProcessInfo", false, "isiOSAppOnMac", |e| ret_bool(e, false)),
+    ("NSProcessInfo", false, "isMacCatalystApp", |e| ret_bool(e, false)),
+    ("NSProcessInfo", false, "beginActivityWithOptions:reason:", |e| {
+        let cls = host_class(e, "NSObject")?;
+        let token = objc::create_instance(e, cls, 0)?;
+        e.ret(token);
+        Ok(())
+    }),
+    ("NSProcessInfo", false, "endActivity:", |_| Ok(())),
+    ("NSError", true, "errorWithDomain:code:userInfo:", error_new),
+    ("NSError", false, "initWithDomain:code:userInfo:", error_new),
+    ("NSError", false, "domain", |e| error_field(e, 8)),
+    ("NSError", false, "code", |e| error_field(e, 16)),
+    ("NSError", false, "userInfo", |e| error_field(e, 24)),
+    ("NSError", false, "localizedDescription", error_localized_description),
+    ("NSError", false, "description", error_localized_description),
+    ("NSError", false, "localizedFailureReason", |e| {
+        e.ret(0);
+        Ok(())
+    }),
     ("NSConstantArray", false, "count", constant_array_count),
     ("NSConstantArray", false, "objectAtIndex:", constant_array_object_at),
     ("NSConstantArray", false, "objectAtIndexedSubscript:", constant_array_object_at),
@@ -2919,6 +3128,25 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret_bool(e, s.starts_with('/'))
     }),
     ("NSString", false, "stringByReplacingOccurrencesOfString:withString:", replacing_occurrences),
+    ("NSString", false, "stringByReplacingCharactersInRange:withString:", replacing_range),
+    ("NSString", false, "capitalizedString", |e| {
+        let s = nsstring(e, e.arg(0))?;
+        let cap: String = s
+            .split(' ')
+            .map(|w| {
+                let mut c = w.chars();
+                c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        ret_string(e, &cap)
+    }),
+    ("NSString", false, "substringWithRange:", |e| {
+        let (s, loc, len) = (e.arg(0), e.arg(2) as usize, e.arg(3) as usize);
+        let text = nsstring(e, s)?;
+        let r = utf16_slice(&text, loc, loc + len);
+        ret_string(e, &r)
+    }),
     ("NSNotificationCenter", true, "defaultCenter", default_center),
     ("NSNotificationCenter", false, "addObserver:selector:name:object:", add_observer),
     ("NSNotificationCenter", false, "addObserverForName:object:queue:usingBlock:", add_observer_block),
@@ -3006,6 +3234,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSURL", true, "fileURLWithPath:isDirectory:", file_url_with_path_is_dir),
     ("NSURL", false, "initFileURLWithPath:isDirectory:", file_url_with_path_is_dir),
     ("NSURL", true, "alloc", cluster_alloc),
+    ("NSURL", true, "allocWithZone:", cluster_alloc),
+    ("NSDate", true, "allocWithZone:", cluster_alloc),
+    ("NSData", true, "allocWithZone:", cluster_alloc),
     ("NSURL", false, "absoluteString", url_absolute_string),
     ("NSURL", false, "absoluteURL", |e| {
         let u = cf(e, "_CFURLCopyAbsoluteURL", &[e.arg(0)])?;
@@ -3062,6 +3293,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "init", empty_string),
     ("NSString", true, "stringWithUTF8String:", string_with_utf8),
     ("NSString", false, "initWithUTF8String:", string_with_utf8),
+    ("NSString", true, "stringWithCString:encoding:", string_with_utf8),
+    ("NSString", false, "initWithCString:encoding:", string_with_utf8),
     ("NSString", true, "stringWithString:", string_with_string),
     ("NSString", false, "initWithString:", string_with_string),
     ("NSString", true, "stringWithFormat:", string_with_format),

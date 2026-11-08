@@ -131,6 +131,48 @@ impl Cpu {
         }
     }
 
+    /// SCVTF/UCVTF/FCVTZS/FCVTZU with a fixed-point scale: value = int / 2^fbits.
+    fn fp_fixed(&mut self, insn: u32) -> Step {
+        let unimpl = Err(Exit::Unimplemented { insn });
+        let (rd, rn) = (bits(insn, 4, 0), bits(insn, 9, 5));
+        let sf = bit(insn, 31);
+        let Some(t) = ty(insn) else { return unimpl };
+        let (rmode, opcode) = (bits(insn, 20, 19), bits(insn, 18, 16));
+        let fbits = 64 - bits(insn, 15, 10) as i32;
+        if !sf && fbits > 32 {
+            return unimpl;
+        }
+        let scale = 2f64.powi(fbits);
+        match (rmode, opcode) {
+            (0, 0b010) | (0, 0b011) => {
+                let x = self.xr(rn);
+                let v = match (opcode == 0b010, sf) {
+                    (true, true) => x as i64 as f64,
+                    (true, false) => x as u32 as i32 as f64,
+                    (false, true) => x as f64,
+                    (false, false) => x as u32 as f64,
+                } / scale;
+                match t {
+                    Ty::S => self.set_s(rd, v as f32),
+                    _ => self.set_d(rd, v),
+                }
+            }
+            (3, 0b000) | (3, 0b001) => {
+                let f = self.fp(t, rn) * scale;
+                let r = f.trunc();
+                let v = match (opcode == 0b001, sf) {
+                    (false, true) => r as i64 as u64,
+                    (false, false) => r as i32 as u32 as u64,
+                    (true, true) => r as u64,
+                    (true, false) => r as u32 as u64,
+                };
+                self.set_xr(rd, v);
+            }
+            _ => return unimpl,
+        }
+        Ok(())
+    }
+
     pub(crate) fn simd_fp(&mut self, insn: u32) -> Step {
         let unimpl = Err(Exit::Unimplemented { insn });
         let rd = bits(insn, 4, 0);
@@ -140,6 +182,10 @@ impl Cpu {
         // ---- Scalar floating point (bit 28 = 1, bit 30 = 0) ----
         if insn & 0x5f00_0000 == 0x1e00_0000 && bit(insn, 21) {
             return self.fp_scalar(insn);
+        }
+        // Conversion between floating point and fixed point (bit 21 = 0).
+        if insn & 0x5f20_0000 == 0x1e00_0000 {
+            return self.fp_fixed(insn);
         }
         // FP data-processing (3 source)
         if insn & 0x5f00_0000 == 0x1f00_0000 {
