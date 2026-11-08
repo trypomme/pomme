@@ -286,12 +286,16 @@ pub fn schedule_script(emu: &mut Emu) -> Result<()> {
 
 // ---- UIView responder defaults ----
 
-/// UIResponder's default: pass the touches to the next responder (the superview).
+/// UIResponder's default: pass the touches to the next responder (a view
+/// controller's root view → the controller → its view's superview …).
 fn view_forward(emu: &mut Emu, sel: &str) -> Result<()> {
-    let (v, touches, event) = (emu.arg(0), emu.arg(2), emu.arg(3));
-    let sup = view(emu, v).superview;
-    if sup != 0 {
-        send(emu, sup, sel, &[touches, event])?;
+    let (r, touches, event) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let next = send(emu, r, "nextResponder", &[])?;
+    if next != 0 {
+        let s = objc::intern(emu, sel)?;
+        if objc::responds(emu, next, s)? {
+            send(emu, next, sel, &[touches, event])?;
+        }
     }
     Ok(())
 }
@@ -433,6 +437,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("UIView", false, "hitTest:withEvent:", hit_test),
     ("UIView", false, "touchesBegan:withEvent:", |e| view_forward(e, "touchesBegan:withEvent:")),
+    ("UIViewController", false, "touchesBegan:withEvent:", |e| view_forward(e, "touchesBegan:withEvent:")),
+    ("UIViewController", false, "touchesMoved:withEvent:", |e| view_forward(e, "touchesMoved:withEvent:")),
+    ("UIViewController", false, "touchesEnded:withEvent:", |e| view_forward(e, "touchesEnded:withEvent:")),
+    ("UIViewController", false, "touchesCancelled:withEvent:", |e| view_forward(e, "touchesCancelled:withEvent:")),
     ("UIView", false, "touchesMoved:withEvent:", |e| view_forward(e, "touchesMoved:withEvent:")),
     ("UIView", false, "touchesEnded:withEvent:", |e| view_forward(e, "touchesEnded:withEvent:")),
     ("UIView", false, "touchesCancelled:withEvent:", |e| view_forward(e, "touchesCancelled:withEvent:")),
@@ -528,6 +536,28 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         crate::uikit::ret_f64(e, 20.0);
         Ok(())
     }),
+    ("UITouch", false, "majorRadiusTolerance", |e| {
+        crate::uikit::ret_f64(e, 5.0);
+        Ok(())
+    }),
+    // A finger: no stylus angles, no estimated properties to update later.
+    ("UITouch", false, "altitudeAngle", |e| {
+        crate::uikit::ret_f64(e, std::f64::consts::FRAC_PI_2);
+        Ok(())
+    }),
+    ("UITouch", false, "azimuthAngleInView:", |e| {
+        crate::uikit::ret_f64(e, 0.0);
+        Ok(())
+    }),
+    ("UITouch", false, "rollAngle", |e| {
+        crate::uikit::ret_f64(e, 0.0);
+        Ok(())
+    }),
+    ("UITouch", false, "estimatedProperties", |e| ret(e, 0)),
+    ("UITouch", false, "estimatedPropertiesExpectingUpdates", |e| ret(e, 0)),
+    ("UITouch", false, "estimationUpdateIndex", |e| ret(e, 0)),
+    ("UITouch", false, "preciseLocationInView:", |e| touch_location(e, false)),
+    ("UITouch", false, "precisePreviousLocationInView:", |e| touch_location(e, true)),
     ("UITouch", false, "gestureRecognizers", |e| {
         let rs = touch(e, e.arg(0)).recognizers;
         let a = foundation::new_array_of(e, &rs)?;
@@ -539,6 +569,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIEvent", false, "touchesForWindow:", |e| event_touches_for(e, 2)),
     ("UIEvent", false, "type", |e| ret(e, 0)),
     ("UIEvent", false, "subtype", |e| ret(e, 0)),
+    // A finger, not a pointer: no buttons or modifier keys.
+    ("UIEvent", false, "buttonMask", |e| ret(e, 0)),
+    ("UIEvent", false, "modifierFlags", |e| ret(e, 0)),
+    ("UIEvent", false, "coalescedTouchesForTouch:", |e| {
+        let t = e.arg(2);
+        let a = foundation::new_array_of(e, &[t])?;
+        ret(e, a)
+    }),
+    ("UIEvent", false, "predictedTouchesForTouch:", |e| {
+        let a = foundation::new_array_of(e, &[])?;
+        ret(e, a)
+    }),
     ("UIEvent", false, "timestamp", |e| {
         let now = crate::threads::now_ns(e) as f64 / 1e9;
         crate::uikit::ret_f64(e, now);

@@ -84,3 +84,53 @@ fn first_frame_renders() {
     assert!(ink(588.0, 612.0) > 500, "\"Tapped 0 times\": {} dark pixels", ink(588.0, 612.0));
     assert_eq!(ink(150.0, 200.0), 0);
 }
+
+fn tap(emu: &mut Emu, (x, y): (f64, f64), secs: f64) {
+    use pomme_hle::touch::{BEGAN, ENDED, Input};
+    let at = (secs * 1e9) as u64;
+    emu.touch.script.push(Input { at_ns: at, phase: BEGAN, x, y });
+    emu.touch.script.push(Input { at_ns: at + 80_000_000, phase: ENDED, x, y });
+}
+
+/// The "Tapped N times" line after running with these taps, as ink/no-ink
+/// pixels, or None without a GPU.
+fn counter_line(taps: &[(f64, f64)]) -> Option<Vec<bool>> {
+    let mut emu = boot()?;
+    for (i, &p) in taps.iter().enumerate() {
+        tap(&mut emu, p, 2.0 + 0.5 * i as f64);
+    }
+    emu.time_limit_ns = Some(2_000_000_000 + 500_000_000 * taps.len() as u64 + 500_000_000);
+    match emu.run_main() {
+        Err(pomme_hle::Stop::TimeLimit(_)) => {}
+        other => panic!("expected the app to idle until the time limit, got {other:?}"),
+    }
+    if emu.metal.gpu_error.is_some() {
+        return None;
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let mut line = Vec::new();
+    for y in (588 * 3)..(612 * 3) {
+        for x in (100 * 3)..(290 * 3) {
+            line.push(pix.pixel(x, y).unwrap().red() < 100);
+        }
+    }
+    Some(line)
+}
+
+/// Taps reach Dart: UIKit hit-tests FlutterView, the touches go up the
+/// responder chain to FlutterViewController, Flutter's GestureDetector counts
+/// them and the frame re-renders. A tap on the page outside the square doesn't count.
+#[test]
+fn taps_are_counted() {
+    const CIRCLE: (f64, f64) = (195.0, 422.0);
+    const SQUARE_CORNER: (f64, f64) = (60.0, 300.0);
+    const PAGE: (f64, f64) = (195.0, 100.0);
+    let Some(none) = counter_line(&[]) else { return };
+    let one = counter_line(&[CIRCLE]).unwrap();
+    let two = counter_line(&[CIRCLE, SQUARE_CORNER]).unwrap();
+    let two_and_page = counter_line(&[CIRCLE, SQUARE_CORNER, PAGE]).unwrap();
+    assert_ne!(none, one, "a tap didn't change the counter");
+    assert_ne!(one, two, "a second tap didn't change the counter");
+    assert_ne!(none, two);
+    assert_eq!(two, two_and_page, "a tap outside the square was counted");
+}
