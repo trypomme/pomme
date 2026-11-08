@@ -211,8 +211,17 @@ dependencies = [
  "anyhow",
  "clap",
  "plist",
+ "pomme-cpu",
  "pomme-loader",
  "pomme-macho",
+]
+
+[[package]]
+name = "pomme-cpu"
+version = "0.1.0"
+dependencies = [
+ "pomme-loader",
+ "pomme-mem",
 ]
 
 [[package]]
@@ -221,6 +230,7 @@ version = "0.1.0"
 dependencies = [
  "plist",
  "pomme-macho",
+ "pomme-mem",
  "thiserror",
 ]
 
@@ -229,6 +239,13 @@ name = "pomme-macho"
 version = "0.1.0"
 dependencies = [
  "goblin",
+ "thiserror",
+]
+
+[[package]]
+name = "pomme-mem"
+version = "0.1.0"
+dependencies = [
  "thiserror",
 ]
 

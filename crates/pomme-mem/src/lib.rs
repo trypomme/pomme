@@ -1,9 +1,28 @@
 //! The guest's address space: a sorted set of non-overlapping regions.
 //!
+//! Shared by the loader (which fills it) and the CPU (which executes from it).
+//!
 //! Deliberately simple for now (one `Vec<u8>` per region). The CPU will
 //! eventually want a page-table-like fast path, but the API stays the same.
 
-use pomme_macho::Prot;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prot {
+    pub read: bool,
+    pub write: bool,
+    pub exec: bool,
+}
+
+impl Prot {
+    pub const RW: Prot = Prot { read: true, write: true, exec: false };
+    pub const RX: Prot = Prot { read: true, write: false, exec: true };
+}
+
+impl std::fmt::Display for Prot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = |b, ch| if b { ch } else { '-' };
+        write!(f, "{}{}{}", c(self.read, 'r'), c(self.write, 'w'), c(self.exec, 'x'))
+    }
+}
 
 pub const PAGE_SIZE: u64 = 0x4000; // arm64 iOS uses 16 KiB pages.
 
@@ -92,6 +111,18 @@ impl Memory {
         Ok(())
     }
 
+    pub fn read_u8(&self, addr: u64) -> Result<u8, MemError> {
+        Ok(self.read(addr, 1)?[0])
+    }
+
+    pub fn read_u16(&self, addr: u64) -> Result<u16, MemError> {
+        Ok(u16::from_le_bytes(self.read(addr, 2)?.try_into().unwrap()))
+    }
+
+    pub fn read_u128(&self, addr: u64) -> Result<u128, MemError> {
+        Ok(u128::from_le_bytes(self.read(addr, 16)?.try_into().unwrap()))
+    }
+
     pub fn read_u32(&self, addr: u64) -> Result<u32, MemError> {
         Ok(u32::from_le_bytes(self.read(addr, 4)?.try_into().unwrap()))
     }
@@ -101,6 +132,22 @@ impl Memory {
     }
 
     pub fn write_u64(&mut self, addr: u64, v: u64) -> Result<(), MemError> {
+        self.write(addr, &v.to_le_bytes())
+    }
+
+    pub fn write_u8(&mut self, addr: u64, v: u8) -> Result<(), MemError> {
+        self.write(addr, &[v])
+    }
+
+    pub fn write_u16(&mut self, addr: u64, v: u16) -> Result<(), MemError> {
+        self.write(addr, &v.to_le_bytes())
+    }
+
+    pub fn write_u32(&mut self, addr: u64, v: u32) -> Result<(), MemError> {
+        self.write(addr, &v.to_le_bytes())
+    }
+
+    pub fn write_u128(&mut self, addr: u64, v: u128) -> Result<(), MemError> {
         self.write(addr, &v.to_le_bytes())
     }
 

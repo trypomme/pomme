@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 plist = "1.10.3"
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }
+pomme-mem = { version = "0.1.0", path = "../pomme-mem" }
 thiserror = "2.0.21"

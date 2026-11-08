@@ -20,6 +20,20 @@ enum Cmd {
         #[arg(long)]
         symbols: bool,
     },
+    /// Load a .app and execute main() on the arm64 interpreter until it needs the host.
+    Run {
+        path: PathBuf,
+        /// Stop after this many instructions.
+        #[arg(long, default_value_t = 50_000_000)]
+        steps: u64,
+        /// Instead of stopping at the first HLE stub, fake it (return 0) and keep going,
+        /// logging every system call. Shows how far the app gets and what it needs.
+        #[arg(long)]
+        stub_trace: bool,
+        /// With --stub-trace: print each call as it happens, not just the summary.
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Load and link a .app into guest memory, and report the result.
     Load {
         path: PathBuf,
@@ -33,6 +47,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
+        Cmd::Run { path, steps, stub_trace, verbose } => run(&path, steps, stub_trace, verbose),
     }
 }
 
@@ -166,4 +181,136 @@ fn load(path: &Path, show_stubs: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+const STACK_TOP: u64 = 0x3_0000_0000;
+const STACK_SIZE: u64 = 8 << 20;
+const TLS_BASE: u64 = 0x3_1000_0000;
+const TLS_SIZE: u64 = 64 << 10;
+
+/// Push a C string onto the stack image and return its guest address.
+fn push_cstr(mem: &mut pomme_loader::mem::Memory, sp: &mut u64, s: &str) -> Result<u64> {
+    let bytes = [s.as_bytes(), &[0]].concat();
+    *sp -= bytes.len() as u64;
+    mem.write(*sp, &bytes)?;
+    Ok(*sp)
+}
+
+fn run(path: &Path, max_steps: u64, stub_trace: bool, verbose: bool) -> Result<()> {
+    use pomme_cpu::{Cpu, Exit, HOST_RETURN};
+    use pomme_loader::Prot;
+
+    let mut p = pomme_loader::load(path)?;
+    let entry = p.entry().context("no LC_MAIN entry point")?;
+    p.memory.map(STACK_TOP - STACK_SIZE, STACK_SIZE, Prot::RW, "[stack]")?;
+    p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
+
+    // main(argc, argv, envp, apple)
+    let mut sp = STACK_TOP;
+    let exe_name = p.main().name.clone();
+    let arg0 = push_cstr(&mut p.memory, &mut sp, &exe_name)?;
+    let apple0 = push_cstr(&mut p.memory, &mut sp, &format!("executable_path={exe_name}"))?;
+    sp &= !0xf;
+    let vectors = [arg0, 0, /* envp */ 0, /* apple */ apple0, 0];
+    sp -= vectors.len() as u64 * 8;
+    sp &= !0xf;
+    for (i, v) in vectors.iter().enumerate() {
+        p.memory.write_u64(sp + i as u64 * 8, *v)?;
+    }
+
+    let mut cpu = Cpu::new();
+    cpu.x[0] = 1;
+    cpu.x[1] = sp;
+    cpu.x[2] = sp + 16;
+    cpu.x[3] = sp + 24;
+    cpu.x[30] = HOST_RETURN;
+    cpu.sp = sp;
+    cpu.pc = entry;
+    cpu.tpidrro_el0 = TLS_BASE;
+
+    println!("running {} from {} ({entry:#x})", p.bundle_id.as_deref().unwrap_or(&exe_name), p.symbolize(entry));
+    let start = std::time::Instant::now();
+    let mut calls: Vec<(String, u64)> = Vec::new();
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+
+    let exit = loop {
+        let remaining = max_steps.saturating_sub(cpu.steps);
+        let exit = cpu.run(&mut p.memory, remaining);
+        match exit {
+            Exit::Brk { .. } if stub_trace && p.stubs.at(cpu.pc).is_some() => {
+                let stub = p.stubs.at(cpu.pc).unwrap();
+                if stub.symbol == "_exit" {
+                    break None;
+                }
+                let mut desc = stub.symbol.clone();
+                // For message sends, the selector is a C string in x1.
+                if stub.symbol.starts_with("_objc_msgSend")
+                    && let Ok(sel) = p.memory.read_cstr(cpu.x[1], 128)
+                {
+                    desc = format!("{} [{sel}]", stub.symbol);
+                }
+                if verbose {
+                    println!("  {:>10}  {desc}  (from {})", cpu.steps, p.symbolize(cpu.x[30].wrapping_sub(4)));
+                }
+                *counts.entry(desc.clone()).or_default() += 1;
+                if calls.len() < 40 {
+                    calls.push((desc, cpu.steps));
+                }
+                // Fake the call: return 0 to the caller.
+                cpu.x[0] = 0;
+                cpu.x[1] = 0;
+                cpu.pc = cpu.x[30];
+            }
+            other => break Some(other),
+        }
+    };
+    let elapsed = start.elapsed();
+    let Some(exit) = exit else {
+        println!("\nexit({}) after {} instructions in {:.2?}", cpu.x[0] as i32, cpu.steps, elapsed);
+        print_trace(&calls, counts);
+        return Ok(());
+    };
+
+    println!(
+        "\nstopped after {} instructions in {:.2?} ({:.1} MIPS)",
+        cpu.steps,
+        elapsed,
+        cpu.steps as f64 / elapsed.as_secs_f64() / 1e6
+    );
+    match exit {
+        Exit::Brk { imm } => match p.stubs.at(cpu.pc) {
+            Some(stub) => println!("reason: called {} from {} — needs HLE", stub.symbol, p.symbolize(cpu.x[30].wrapping_sub(4))),
+            None => println!("reason: BRK #{imm:#x} at {}", p.symbolize(cpu.pc)),
+        },
+        Exit::Unimplemented { insn } => println!("reason: unimplemented instruction {insn:#010x} at {}", p.symbolize(cpu.pc)),
+        Exit::Fault { addr } => println!("reason: fault accessing {addr:#x} at {}", p.symbolize(cpu.pc)),
+        Exit::Svc { imm } => println!("reason: syscall SVC #{imm:#x} (x16 = {}) at {}", cpu.x[16], p.symbolize(cpu.pc.wrapping_sub(4))),
+        Exit::Returned => println!("reason: main returned {}", cpu.x[0] as i32),
+        Exit::StepLimit => println!("reason: step limit at {}", p.symbolize(cpu.pc)),
+    }
+    println!("  pc {:#x}  lr {:#x} ({})  sp {:#x}", cpu.pc, cpu.x[30], p.symbolize(cpu.x[30]), cpu.sp);
+    for r in (0..8).step_by(4) {
+        println!(
+            "  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}",
+            r, cpu.x[r], r + 1, cpu.x[r + 1], r + 2, cpu.x[r + 2], r + 3, cpu.x[r + 3]
+        );
+    }
+
+    if stub_trace {
+        print_trace(&calls, counts);
+    }
+    Ok(())
+}
+
+fn print_trace(calls: &[(String, u64)], counts: BTreeMap<String, u64>) {
+    println!("\nfirst system calls:");
+    for (desc, step) in calls {
+        println!("  {step:>10}  {desc}");
+    }
+    let mut by_count: Vec<_> = counts.into_iter().collect();
+    by_count.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    println!("\n{} distinct system calls (top 25 by count):", by_count.len());
+    for (desc, n) in by_count.iter().take(25) {
+        println!("  {n:>7}  {desc}");
+    }
 }

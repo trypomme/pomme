@@ -10,6 +10,8 @@ replacements (HLE) for the iOS system libraries the app calls into.
 | --- | --- |
 | `crates/pomme-macho` | Mach-O parsing: segments, dylibs, imports, fixups (chained + dyld_info), export trie. |
 | `crates/pomme-loader` | Our `dyld`: maps the app and its bundled frameworks into guest memory and links them. System symbols bind to trapping HLE stubs. |
+| `crates/pomme-mem` | Guest address space shared by the loader and CPU. |
+| `crates/pomme-cpu` | arm64 user-mode interpreter: integer, loads/stores, atomics, scalar FP and a NEON lane engine. Deterministic; instruction count is the clock. |
 | `crates/pomme-cli` | `pomme` command-line tool. |
 | `apps/hello-expo` | Skeleton Expo app — the first guest we want to boot. |
 | `scripts/` | Build helpers. |
@@ -20,7 +22,8 @@ replacements (HLE) for the iOS system libraries the app calls into.
 scripts/build-hello-expo.sh            # needs the iOS platform installed in Xcode
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
-cargo test           # loader fixture tests build tiny iOS binaries; need Xcode + iOS SDK
+cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --stub-trace
+cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
 `inspect` lists every image in the bundle and the **HLE surface**: the system
@@ -37,8 +40,9 @@ DOSBox or SameBoy. Every system library the app touches is pomme's own code.
 
 1. Inspect guest binaries ✅
 2. Loader: map segments, apply fixups, bind system imports to HLE stubs ✅
-3. CPU: arm64 user-mode interpreter, trap on HLE stubs ← *next*
-4. HLE: libSystem → libobjc runtime → CoreFoundation/Foundation → UIKit (render to a host canvas)
+3. CPU: arm64 user-mode interpreter, trap on HLE stubs ✅ (runs hello-expo's `main` to `UIApplicationMain`)
+4. HLE: Objective-C runtime ← *next* → libSystem → CoreFoundation/Foundation → UIKit (render to a host canvas);
+   run image initializers before `main`; Swift runtime / libc++ possibly from open-source builds
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 
 ## Design constraints (keep these true)

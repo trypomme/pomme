@@ -8,14 +8,12 @@
 //!
 //! Not done yet: running initializers, ObjC/Swift runtime registration, TLS.
 
-pub mod memory;
-
-use memory::{Memory, PAGE_SIZE, page_align_up};
-use pomme_macho::{Dylib, DylibKind, ExportKind, FileType, Fixup, Image, LibOrdinal, Prot};
+use pomme_mem::{Memory, PAGE_SIZE, page_align_up};
+use pomme_macho::{Dylib, DylibKind, ExportKind, FileType, Fixup, Image, LibOrdinal};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-pub use memory::MemError;
+pub use pomme_mem::{self as mem, MemError, Prot};
 
 /// Dylibs are slid into the address space starting here.
 const DYLIB_BASE: u64 = 0x2_0000_0000;
@@ -155,6 +153,30 @@ impl Process {
         &self.images[0]
     }
 
+    /// The image containing a guest address.
+    pub fn image_at(&self, addr: u64) -> Option<&LoadedImage> {
+        self.images.iter().find(|i| addr >= i.start && addr < i.end)
+    }
+
+    /// Describe an address for humans: `stub _puts (/usr/lib/libSystem.B.dylib)`,
+    /// `React _RCTFoo+0x1c`, or `hermesvm+0x1234`. Uses exported symbols only.
+    pub fn symbolize(&self, addr: u64) -> String {
+        if let Some(stub) = self.stubs.at(addr) {
+            return format!("stub {} ({})", stub.symbol, stub.library);
+        }
+        let Some(img) = self.image_at(addr) else { return format!("{addr:#x}") };
+        let nearest = img
+            .exports
+            .keys()
+            .filter_map(|name| img.symbol(name).map(|a| (a, name)))
+            .filter(|&(a, _)| a <= addr)
+            .max_by_key(|&(a, _)| a);
+        match nearest {
+            Some((a, name)) => format!("{} {name}+{:#x}", img.name, addr - a),
+            None => format!("{}+{:#x}", img.name, addr - img.header),
+        }
+    }
+
     pub fn entry(&self) -> Option<u64> {
         self.main().entry
     }
@@ -219,7 +241,8 @@ pub fn load(path: &Path) -> Result<Process> {
         };
         let name = display_name(&paths[i]);
         for seg in img.mapped_segments() {
-            let region = memory.map(seg.vmaddr.wrapping_add(slide), seg.vmsize, seg.prot, format!("{name}:{}", seg.name))?;
+            let prot = Prot { read: seg.prot.read, write: seg.prot.write, exec: seg.prot.exec };
+            let region = memory.map(seg.vmaddr.wrapping_add(slide), seg.vmsize, prot, format!("{name}:{}", seg.name))?;
             region.data[..seg.data.len()].copy_from_slice(seg.data);
         }
         images.push(LoadedImage {
@@ -276,7 +299,7 @@ pub fn load(path: &Path) -> Result<Process> {
     // Back every stub slot with a trapping instruction.
     if !stubs.is_empty() {
         let size = page_align_up(stubs.len() as u64 * STUB_SIZE);
-        let region = memory.map(STUB_BASE, size, Prot { read: true, write: false, exec: true }, "[hle stubs]")?;
+        let region = memory.map(STUB_BASE, size, Prot::RX, "[hle stubs]")?;
         for slot in region.data.chunks_exact_mut(STUB_SIZE as usize) {
             slot[..4].copy_from_slice(&STUB_INSN.to_le_bytes());
         }
