@@ -62,6 +62,11 @@ fn first_frame_renders() {
     // Outside it: the page; and just outside its rounded corner.
     assert!(near(at(195.0, 100.0), (255, 255, 255)), "page: {:?}", at(195.0, 100.0));
     assert!(near(at(47.0, 274.0), (255, 255, 255)), "corner: {:?}", at(47.0, 274.0));
+    // The circle's gradient (stops from a storage buffer): rose near its
+    // start (top left), amber near its end (bottom right).
+    let (start, end) = (at(150.0, 377.0), at(240.0, 467.0));
+    assert!(start.0 > 220 && start.1 < 110 && start.2 > 60, "gradient start: {start:?}");
+    assert!(end.0 > 220 && end.1 > 120 && end.2 < 60, "gradient end: {end:?}");
     // The text above and below the square (CoreText glyphs in Impeller's atlas):
     // dark ink in each line's band, none in the empty band between them.
     let ink = |y0: f64, y1: f64| {

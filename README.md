@@ -63,7 +63,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 |---|---|---|---|
 | Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
-| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | 🚧 first frame and text render; gradients black |
+| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders the full scene (not yet compared with the simulator); taps next |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |
 | Defold | Vulkan → MoltenVK → Metal (older builds: OpenGL ES) | — | planned: needs MoltenVK's runtime MSL, maybe GLES |
 | Native UIKit / SwiftUI | UIKit, Core Animation, Metal | — | later |
@@ -138,7 +138,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
    - Emoji ✅: Noto Color Emoji (SIL OFL), painted from its vector COLR glyphs (layers, gradients,
      clips) for any character the text font lacks
    - Virtual time: one instruction is 1 ns (a 1 GHz phone) on a 24 MHz mach clock
-   - Next: Flutter's gradients and taps, older (Skia-era) Flutter, Defold;
+   - Next: Flutter taps, older (Skia-era) Flutter, Defold;
      a native window host; a faster virtual CPU clock (startup takes ~2 s
      of virtual time: one instruction is one 24 MHz tick)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)

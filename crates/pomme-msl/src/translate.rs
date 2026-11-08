@@ -153,6 +153,9 @@ fn ident(name: &str) -> String {
     if WGSL_RESERVED.contains(&n.as_str()) { format!("{n}_") } else { n }
 }
 
+/// Elements a runtime-sized array at the end of a `device` buffer struct can hold.
+pub const DEVICE_ARRAY_CAPACITY: u32 = 64;
+
 // ---- reflection ----
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,8 +284,31 @@ pub fn translate(items: &[Item], constants: &HashMap<u32, f64>) -> R<Translation
             t.combined_structs.push(name.clone());
         }
     }
+    // Structs read through `device` buffers: a trailing `[1]` array is runtime
+    // sized there (Impeller's gradient stops). WGSL copies buffers into a value
+    // of fixed size, so such arrays get room for DEVICE_ARRAY_CAPACITY elements.
+    let mut device_structs = std::collections::HashSet::new();
+    for item in items {
+        if let Item::Func(f) = item
+            && f.stage.is_some()
+        {
+            for p in &f.params {
+                if p.ty.space.as_deref() == Some("device") && p.attrs.iter().any(|a| a.name == "buffer") {
+                    device_structs.insert(p.ty.name.clone());
+                }
+            }
+        }
+    }
     for item in items {
         if let Item::Struct { name, fields } = item {
+            let mut fields = fields.clone();
+            if device_structs.contains(name)
+                && let Some(last) = fields.last_mut()
+                && last.array == Some(1)
+            {
+                last.array = Some(DEVICE_ARRAY_CAPACITY);
+            }
+            let fields = &fields;
             let is_resources = !t.combined_structs.contains(name)
                 && fields.iter().any(|f| f.ty.pointer || f.ty.name.starts_with("texture") || f.ty.name == "sampler" || t.combined_structs.contains(&f.ty.name));
             if is_resources {
@@ -301,8 +327,9 @@ pub fn translate(items: &[Item], constants: &HashMap<u32, f64>) -> R<Translation
     let mut entry_points = Vec::new();
     for item in items {
         match item {
-            Item::Struct { name, fields } if !t.resource_structs.contains(name) && !t.combined_structs.contains(name) => {
-                let s = t.struct_def(name, fields)?;
+            Item::Struct { name, .. } if !t.resource_structs.contains(name) && !t.combined_structs.contains(name) => {
+                let fields = t.structs[name].clone();
+                let s = t.struct_def(name, &fields)?;
                 body += &s;
             }
             Item::Struct { .. } => {}

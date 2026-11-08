@@ -50,4 +50,26 @@ mod tests {
         assert_eq!(ep.buffers[0], crate::Binding { index: 2, group: 1, binding: 2, size: 96 });
         assert_eq!(ep.color_outputs, vec![0]);
     }
+
+    /// A struct read through a `device` buffer ending in `[1]` is a runtime-sized
+    /// array (Impeller's gradient stops): it gets room for more elements.
+    #[test]
+    fn device_buffer_arrays_have_room() {
+        let msl = r#"
+            using namespace metal;
+            struct Stop { float4 color; float stop; };
+            struct Stops { Stop colors[1]; };
+            struct Out { float4 color [[color(0)]]; };
+            fragment Out main0(const device Stops& s [[buffer(1)]], constant int& n [[buffer(0)]]) {
+                Out o;
+                o.color = s.colors[n - 1].color;
+                return o;
+            }
+        "#;
+        let t = crate::translate(msl).unwrap();
+        let cap = crate::translate::DEVICE_ARRAY_CAPACITY;
+        assert!(t.wgsl.contains(&format!("array<Stop, {cap}>")), "{}", t.wgsl);
+        let b = t.entry_points[0].buffers.iter().find(|b| b.index == 1).unwrap();
+        assert_eq!(b.size, 32 * cap);
+    }
 }
