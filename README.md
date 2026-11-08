@@ -39,8 +39,11 @@ Open hello-expo's `.app` on a machine with **no Apple software behind it**
 DOSBox or SameBoy. Every system library the app touches is pomme's own code.
 (Building the `.app` still needs Xcode, once, e.g. in CI.)
 
-Debugging: `POMME_BREAK=_sym1,_sym2 pomme run …` prints every call to those guest functions;
-every stop prints a backtrace.
+Debugging:
+- `pomme run … --trace` prints system calls, messages, thread switches and Mach traffic.
+- `POMME_BREAK=_sym1,_sym2 pomme run …` prints every call to those guest functions.
+- `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
+- Every stop prints a backtrace; C++ exceptions are reported with their type and `what()`.
 
 ## Rough roadmap
 
@@ -61,12 +64,18 @@ every stop prints a backtrace.
      `UIView` (state kept host-side, keyed by object), `UIViewController`, `UIColor` — hello-expo's
      `SceneDelegate` creates its window and React Native starts creating the Hermes runtime
      (~2.0M instructions)
-   - Threads ← *next*: React Native starts its JS thread (`NSThread`). Plan: guest threads with
-     their own register state, switched cooperatively at blocking points (run-loop waits,
-     semaphores, condition variables), so scheduling stays deterministic on one host thread
-   - Then: the run loop (timers, sources, Mach-port wakeups), loading the JS bundle from a virtual
-     filesystem, and rendering the view tree
-   - UIKit, rendering to a host canvas
+   - Threads ✅: guest threads with their own registers, stacks, TLS and thread-specific data,
+     switched cooperatively at blocking points (Mach-port receives, semaphores, condition
+     variables, joins, sleeps) plus a fixed instruction quantum; virtual time skips ahead when
+     every thread waits. Minimal Mach ports and messages, so CoreFoundation's real run loops sleep
+     and wake. `NSThread`, pthreads, cross-thread `performSelector`, `NSRunLoop`, `CADisplayLink`
+   - More Foundation: NSData, NSDate, NSFileManager, NSUserDefaults (in memory), notifications,
+     compile-time literals, system data constants; a read-only virtual filesystem for the app
+     bundle — hello-expo runs ~8.6M instructions on three threads (main, React Native's JS
+     thread, Hermes's GC thread): Hermes is up and React Native is installing native modules
+   - Swift overlays ← *next*: Expo needs `os` (Logger), `Dispatch`, `_StringProcessing`,
+     `RegexBuilder`, `Darwin`, `ObjectiveC`, `CoreGraphics`, … — most are open source
+   - Then: loading and running the JS bundle, rendering the view tree
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,
    arm64 → WebAssembly translation in the browser (as v86 does for x86). It must count

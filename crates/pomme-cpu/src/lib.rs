@@ -64,6 +64,8 @@ pub struct Cpu {
     pub tpidrro_el0: u64,
     /// Instructions retired. The guest's only clock.
     pub steps: u64,
+    /// Ticks added to the clock when every thread was idle (virtual time skipped ahead).
+    pub clock_offset: u64,
     /// Address held by the exclusive monitor (LDXR/STXR).
     exclusive: Option<u64>,
     /// Next pc, set by branches during a step.

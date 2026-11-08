@@ -218,15 +218,6 @@ fn alloc_aligned(emu: &mut Emu, align: u64, size: u64) -> Result<()> {
     ret(emu, (p + align - 1) & !(align - 1))
 }
 
-/// `mmap`: anonymous memory only.
-fn mmap(emu: &mut Emu) -> Result<()> {
-    let (len, flags, fd) = (emu.arg(1), emu.arg(3), emu.arg(4) as i32);
-    const MAP_ANON: u64 = 0x1000;
-    if flags & MAP_ANON == 0 || fd != -1 {
-        return fail(emu); // MAP_FAILED: no files to map
-    }
-    alloc_aligned(emu, pomme_mem::PAGE_SIZE, len)
-}
 
 /// `mach_vm_allocate(task, mach_vm_address_t *addr, size, flags)`
 fn mach_vm_allocate(emu: &mut Emu) -> Result<()> {
@@ -431,42 +422,15 @@ fn bsearch(emu: &mut Emu) -> Result<()> {
 
 // ---- Mach ports and timers: names only; nothing is ever received ----
 
-fn new_port(emu: &mut Emu) -> u64 {
-    emu.sys.next_port += 1;
-    0x1000 + emu.sys.next_port
-}
 
-/// `mach_port_allocate(task, right, mach_port_name_t *name)`
-fn mach_port_allocate(emu: &mut Emu) -> Result<()> {
-    let out = emu.arg(2);
-    let p = new_port(emu);
-    emu.p.memory.write_u32(out, p as u32)?;
-    ret_zero(emu)
-}
 
-/// `mach_port_construct(task, options, context, mach_port_name_t *name)`
-fn mach_port_construct(emu: &mut Emu) -> Result<()> {
-    let out = emu.arg(3);
-    let p = new_port(emu);
-    emu.p.memory.write_u32(out, p as u32)?;
-    ret_zero(emu)
-}
 
 fn mach_port_type(emu: &mut Emu) -> Result<()> {
     emu.p.memory.write_u32(emu.arg(2), 0)?;
     ret_zero(emu)
 }
 
-fn mk_timer_create(emu: &mut Emu) -> Result<()> {
-    let p = new_port(emu);
-    ret(emu, p)
-}
 
-/// `mach_msg`: sends succeed; receives time out (MACH_RCV_TIMED_OUT).
-fn mach_msg(emu: &mut Emu) -> Result<()> {
-    const MACH_RCV_MSG: u64 = 2;
-    ret(emu, if emu.arg(1) & MACH_RCV_MSG != 0 { 0x1000_4003 } else { 0 })
-}
 
 fn mach_error_string(emu: &mut Emu) -> Result<()> {
     let p = emu.alloc_cstr("(pomme) mach error")?;
@@ -597,7 +561,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_malloc_zone_realloc", zone_realloc),
     ("_malloc_zone_memalign", zone_memalign),
     ("_malloc_zone_from_ptr", ret_one),
-    ("_mmap", mmap),
     ("_munmap", ret_zero),
     ("_madvise", ret_zero),
     ("_mprotect", ret_zero),
@@ -625,21 +588,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_scalbn", scalbn),
     ("_tanhf", tanhf),
     ("_bsearch", bsearch),
-    ("_mach_port_allocate", mach_port_allocate),
-    ("_mach_port_construct", mach_port_construct),
     ("_mach_port_destruct", ret_zero),
     ("_mach_port_deallocate", ret_zero),
-    ("_mach_port_insert_member", ret_zero),
-    ("_mach_port_extract_member", ret_zero),
     ("_mach_port_insert_right", ret_zero),
     ("_mach_port_mod_refs", ret_zero),
     ("_mach_port_type", mach_port_type),
     ("_mach_port_set_attributes", ret_zero),
-    ("_mk_timer_create", mk_timer_create),
-    ("_mk_timer_arm", ret_zero),
-    ("_mk_timer_cancel", ret_zero),
     ("_mk_timer_destroy", ret_zero),
-    ("_mach_msg", mach_msg),
     ("_mach_error_string", mach_error_string),
     ("_voucher_mach_msg_adopt", ret_zero),
     ("_voucher_mach_msg_revert", noop),
@@ -653,8 +608,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_source_set_cancel_handler", noop),
     ("_dispatch_source_set_timer", noop),
     ("_dispatch_source_cancel", noop),
-    ("__dispatch_get_main_queue_port_4CF", ret_zero),
-    ("__dispatch_main_queue_callback_4CF", noop),
     ("_pthread_atfork", ret_zero),
     ("_pthread_is_threaded_np", ret_zero),
     ("_pthread_main_thread_np", |e| ret(e, 0x3_2000_0000)),
@@ -689,12 +642,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_select", ret_zero),
     ("_sscanf", sscanf),
     // No filesystem or network yet: fail cleanly.
-    ("_fstat", fail),
-    ("_lstat", fail),
-    ("_read", fail),
-    ("_pread", fail),
     ("_pwrite", fail),
-    ("_lseek", fail),
     ("_fcntl", fail),
     ("_ioctl", fail),
     ("_mkdir", fail),

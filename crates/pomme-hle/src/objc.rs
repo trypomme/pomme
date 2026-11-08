@@ -49,6 +49,9 @@ pub struct Objc {
     sel_names: HashMap<Sel, String>,
     cache: HashMap<(u64, Sel), Imp>,
     pub associated: HashMap<(u64, u64), u64>,
+    /// Class → is it a native Swift class (cache for retains).
+    native_swift: HashMap<u64, bool>,
+    swift_retain: u64,
     /// Type encoding (C string address) by selector, as seen in method lists.
     types: HashMap<Sel, u64>,
     /// `Method` structs handed to the guest: address → (class, selector).
@@ -78,6 +81,14 @@ const PERMISSIVE: &[&str] = &[
     "NSURLCache",
     "NSHTTPCookieStorage",
     "NSOperationQueue",
+    // Device properties: 0 is a fine answer (no proximity sensor, battery unknown, ...).
+    "UIDevice",
+    // Traits pomme doesn't model are "unspecified" (0), which is what UIKit reports too.
+    "UITraitCollection",
+    // Until there's text layout: writing direction 0 is left-to-right.
+    "NSParagraphStyle",
+    // Screen properties beyond bounds/scale (brightness, mirroring, ...).
+    "UIScreen",
 ];
 
 fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
@@ -109,7 +120,7 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
 }
 
 /// Instance sizes of host classes that store fields in the object (isa + fields).
-const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24)];
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16)];
 
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
@@ -117,6 +128,12 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSMutableString", "NSString"),
     ("__NSCFString", "NSMutableString"),
     ("__NSCFConstantString", "__NSCFString"),
+    // Compile-time literals.
+    ("NSConstantIntegerNumber", "NSNumber"),
+    ("NSConstantDoubleNumber", "NSNumber"),
+    ("NSConstantFloatNumber", "NSNumber"),
+    ("NSConstantArray", "NSArray"),
+    ("NSConstantDictionary", "NSDictionary"),
     // Toll-free bridged CoreFoundation types.
     ("__NSCFArray", "NSMutableArray"),
     ("__NSCFDictionary", "NSMutableDictionary"),
@@ -270,6 +287,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::uikit::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::bundle::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::uiview::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::threads::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -297,8 +315,17 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         }
     }
 
-    // 2. Host method implementations.
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS] {
+    // 2. Host method implementations. NSProxy is a second root class with the same basics.
+    let proxy = host_class(emu, "NSProxy")?;
+    let proxy_meta = emu.objc.classes[&proxy].isa;
+    for &(class, class_method, sel, f) in HOST_METHODS {
+        if class == "NSObject" && !sel.contains("ForKey:") {
+            let sel = intern(emu, sel)?;
+            let c = if class_method { proxy_meta } else { proxy };
+            emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
+        }
+    }
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -459,11 +486,11 @@ fn guest_class(emu: &mut Emu, cls: u64) -> Result<()> {
 /// the superclass is bigger at run time, move this class's ivars after it (as
 /// the Objective-C runtime does when it realizes the class). Returns the
 /// class's real instance size.
-fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, instance_size: u64) -> Result<u64> {
+fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, own_size: u64) -> Result<u64> {
     if !emu.objc.classes.contains_key(&superclass) {
         guest_class(emu, superclass)?;
     }
-    let super_size = emu.objc.classes.get(&superclass).map_or(0, |k| k.instance_size);
+    let super_size = instance_size(emu, superclass);
     let start = emu.p.memory.read_u32(ro + 4)? as u64;
     let ivars = emu.read_u64(ro + 48)?;
     // Keep the ivars' alignment.
@@ -481,7 +508,7 @@ fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, instance_size: u64) -> R
     }
     let super_end = (super_size + align - 1) & !(align - 1);
     if super_end <= start {
-        return Ok(instance_size);
+        return Ok(own_size);
     }
     let diff = super_end - start;
     for i in 0..count {
@@ -491,7 +518,10 @@ fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, instance_size: u64) -> R
             emu.p.memory.write_u32(offset_var, (v + diff) as u32)?;
         }
     }
-    Ok(instance_size + diff)
+    // Record the new layout in the class data itself (the single source of truth).
+    emu.p.memory.write_u32(ro + 4, (start + diff) as u32)?;
+    emu.p.memory.write_u32(ro + 8, (own_size + diff) as u32)?;
+    Ok(own_size + diff)
 }
 
 /// `ivar_list_t`: entries are {int32_t *offset; const char *name; const char *type; uint32 alignment; uint32 size}.
@@ -620,7 +650,13 @@ pub fn class_of(emu: &mut Emu, obj: u64) -> Result<u64> {
         if is_meta_of_known {
             return Err(Stop::Unsupported(format!("unknown metaclass {isa:#x}")));
         }
-        guest_class(emu, isa).map_err(|_| Stop::Unsupported(format!("object {obj:#x} has bad isa {isa:#x}")))?;
+        if let Err(e) = guest_class(emu, isa) {
+            let words: Vec<String> = (0..6).map(|i| format!("{:#x}", emu.read_u64(isa + i * 8).unwrap_or(0))).collect();
+            return Err(Stop::Unsupported(format!(
+                "object {obj:#x} has an isa {isa:#x} pomme can't read as a class ({e}); isa memory: [{}]",
+                words.join(", ")
+            )));
+        }
     }
     Ok(isa)
 }
@@ -719,6 +755,21 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
             let name = sel_name(emu, sel);
             permissive_answer(emu, cls, &name)
         }
+        None if forwards(emu, cls)? => {
+            // Fast forwarding: -forwardingTargetForSelector: names another receiver.
+            let target = send(emu, recv, "forwardingTargetForSelector:", &[sel])?;
+            if target != 0 && target != recv {
+                emu.cpu.x[0] = target;
+                let tcls = class_of(emu, target)?;
+                return dispatch(emu, tcls);
+            }
+            Err(Stop::MissingMethod {
+                class: emu.objc.class_name(k),
+                selector: sel_name(emu, sel),
+                class_method: emu.objc.classes[&cls].meta,
+                caller: emu.cpu.x[30],
+            })
+        }
         None => Err(Stop::MissingMethod {
             class: emu.objc.class_name(k),
             selector: sel_name(emu, sel),
@@ -726,6 +777,12 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
             caller: emu.cpu.x[30],
         }),
     }
+}
+
+/// Does the class implement `-forwardingTargetForSelector:` in guest code?
+fn forwards(emu: &mut Emu, cls: u64) -> Result<bool> {
+    let sel = intern(emu, "forwardingTargetForSelector:")?;
+    Ok(matches!(lookup(emu, cls, sel)?, Some(Imp::Guest(_))))
 }
 
 /// Send a message from host code and return x0.
@@ -742,14 +799,22 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
     match lookup(emu, cls, sel)? {
         Some(Imp::Guest(addr)) => emu.call(addr, &all),
         Some(Imp::Host(f)) => {
+            // Like Emu::call: the sender's registers survive.
             let (pc, lr) = (emu.cpu.pc, emu.cpu.x[30]);
+            let saved = save_args(emu);
+            let mut temps = [0u64; 9];
+            temps.copy_from_slice(&emu.cpu.x[9..18]);
             for (i, a) in all.iter().enumerate() {
                 emu.cpu.x[i] = *a;
             }
             f(emu)?;
+            let result = emu.cpu.x[0];
+            emu.last_q0 = emu.cpu.q[0];
+            restore_args(emu, saved);
+            emu.cpu.x[9..18].copy_from_slice(&temps);
             emu.cpu.pc = pc;
             emu.cpu.x[30] = lr;
-            Ok(emu.cpu.x[0])
+            Ok(result)
         }
         None => Err(Stop::MissingMethod {
             class: emu.objc.class_name(k),
@@ -789,10 +854,29 @@ pub(crate) fn call_own_method(emu: &mut Emu, cls: u64, meta: u64, entry: u64, is
     Ok(())
 }
 
+/// A class's instance size. For guest classes it's read live from the class
+/// data: the Swift runtime lays out classes with resilient fields at run time
+/// and rewrites their size after pomme first saw them.
+pub fn instance_size(emu: &Emu, cls: u64) -> u64 {
+    match emu.objc.classes.get(&cls) {
+        Some(c) if c.host => c.instance_size,
+        Some(c) => emu
+            .read_u64(cls + 32)
+            .ok()
+            .map(|data| data & FAST_DATA_MASK)
+            .and_then(|ro| emu.p.memory.read_u32(ro + 8).ok())
+            .map_or(c.instance_size, |s| s as u64),
+        None => 16,
+    }
+}
+
 /// Allocate a zeroed instance of `cls`, running C++ ivar constructors.
 pub fn create_instance(emu: &mut Emu, cls: u64, extra: u64) -> Result<u64> {
-    let size = emu.objc.classes.get(&cls).map_or(16, |c| c.instance_size).max(8) + extra;
+    let size = instance_size(emu, cls).max(8) + extra;
     let obj = emu.alloc(size)?;
+    if emu.trace {
+        println!("{:>10}   alloc {} → {obj:#x} ({size} bytes)", emu.cpu.steps, emu.objc.class_name(cls));
+    }
     emu.write_u64(obj, cls)?;
     cxx_construct(emu, obj, cls)?;
     Ok(obj)
@@ -852,7 +936,18 @@ fn msg_send(emu: &mut Emu) -> Result<()> {
         emu.cpu.q[..4].fill(0);
         return Ok(());
     }
-    let cls = class_of(emu, recv)?;
+    let cls = match class_of(emu, recv) {
+        Ok(c) => c,
+        Err(Stop::Unsupported(why)) => {
+            // Say who sent what, and what the "isa" memory holds.
+            let sel = sel_name(emu, emu.cpu.x[1]);
+            let from = emu.symbolize(emu.cpu.x[30].wrapping_sub(4));
+            let isa = emu.read_u64(recv).unwrap_or(0);
+            let words: Vec<String> = (0..5).map(|i| format!("{:#x}", emu.read_u64(isa + i * 8).unwrap_or(0))).collect();
+            return Err(Stop::Unsupported(format!("{why}; message -{sel} from {from}; isa memory: [{}]", words.join(", "))));
+        }
+        Err(e) => return Err(e),
+    };
     dispatch(emu, cls)
 }
 
@@ -882,10 +977,54 @@ fn ret_zero(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Is `obj` an instance of a native Swift class (root `Swift._SwiftObject`)?
+/// Those are reference-counted by the Swift runtime, which frees them.
+fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
+    if obj == 0 || obj >> 63 != 0 {
+        return false;
+    }
+    let Ok(cls) = emu.read_u64(obj) else { return false };
+    if let Some(&b) = emu.objc.native_swift.get(&cls) {
+        return b;
+    }
+    let mut c = cls;
+    let mut root = String::new();
+    while let Some(k) = emu.objc.classes.get(&c) {
+        if k.meta {
+            break;
+        }
+        root = k.name.clone();
+        c = k.superclass;
+    }
+    let native = root == "_TtCs12_SwiftObject" || root == "Swift._SwiftObject";
+    emu.objc.native_swift.insert(cls, native);
+    native
+}
+
+/// Retain from Objective-C. pomme never frees Objective-C objects, but native
+/// Swift objects are freed by the (guest) Swift runtime when their Swift
+/// refcount drops to zero — so Objective-C's reference must count there. It's
+/// never released: a small leak, never an early free.
+pub(crate) fn objc_retain_obj(emu: &mut Emu, obj: u64) -> Result<()> {
+    if is_native_swift(emu, obj) {
+        if emu.objc.swift_retain == 0 {
+            emu.objc.swift_retain = emu.p.images.iter().find_map(|i| i.symbol("_swift_retain")).unwrap_or(u64::MAX);
+        }
+        if emu.objc.swift_retain != u64::MAX {
+            emu.call(emu.objc.swift_retain, &[obj])?;
+        }
+    }
+    Ok(())
+}
+
+fn objc_retain(emu: &mut Emu) -> Result<()> {
+    objc_retain_obj(emu, emu.cpu.x[0]) // returns its argument (x0 is preserved)
+}
+
 /// `objc_retain_xN`: retain xN and return it in x0.
 macro_rules! from_reg {
     ($($n:literal),*) => {
-        [$(|emu: &mut Emu| -> Result<()> { emu.cpu.x[0] = emu.cpu.x[$n]; Ok(()) }),*]
+        [$(|emu: &mut Emu| -> Result<()> { emu.cpu.x[0] = emu.cpu.x[$n]; objc_retain_obj(emu, emu.cpu.x[0]) }),*]
     };
 }
 const RETAIN_X: [HostFn; 29] = from_reg!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28);
@@ -933,6 +1072,7 @@ fn objc_opt_responds_to_selector(emu: &mut Emu) -> Result<()> {
 
 /// `objc_storeStrong(id *location, id obj)`
 fn objc_store_strong(emu: &mut Emu) -> Result<()> {
+    objc_retain_obj(emu, emu.cpu.x[1])?;
     emu.write_u64(emu.cpu.x[0], emu.cpu.x[1])
 }
 
@@ -1087,13 +1227,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_objc_alloc", objc_alloc),
     ("_objc_allocWithZone", objc_alloc_with_zone),
     ("_objc_alloc_init", objc_alloc_init),
-    ("_objc_retain", ret_self),
+    ("_objc_retain", objc_retain),
     ("_objc_release", noop),
     ("_objc_autorelease", ret_self),
     ("_objc_autoreleaseReturnValue", ret_self),
-    ("_objc_retainAutorelease", ret_self),
-    ("_objc_retainAutoreleaseReturnValue", ret_self),
-    ("_objc_retainAutoreleasedReturnValue", ret_self),
+    ("_objc_retainAutorelease", objc_retain),
+    ("_objc_retainAutoreleaseReturnValue", objc_retain),
+    ("_objc_retainAutoreleasedReturnValue", objc_retain),
     ("_objc_unsafeClaimAutoreleasedReturnValue", ret_self),
     ("_objc_retainBlock", crate::libc::block_copy),
     ("_objc_autoreleasePoolPush", ret_zero),
@@ -1281,8 +1421,71 @@ fn nsobject_value_for_key(emu: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported(format!("valueForKey: {} has no getter or ivar for `{name}`", emu.objc.class_name(k))))
 }
 
+/// `setValue:forKey:`: the `setKey:` setter, else an ivar `_key`/`_isKey`/`key`/`isKey`.
+fn nsobject_set_value_for_key(emu: &mut Emu) -> Result<()> {
+    let (obj, value, key) = (emu.cpu.x[0], emu.cpu.x[2], emu.cpu.x[3]);
+    let name = crate::foundation::nsstring(emu, key)?;
+    let cap = name[..1].to_uppercase() + &name[1..];
+    let setter = format!("set{cap}:");
+    let sel = intern(emu, &setter)?;
+    if responds(emu, obj, sel)? {
+        send(emu, obj, &setter, &[value])?;
+        return Ok(());
+    }
+    let k = instance_class(emu, obj)?;
+    for candidate in [format!("_{name}"), format!("_is{cap}"), name.clone(), format!("is{cap}")] {
+        if let Some((offset, ty)) = find_ivar(emu, k, &candidate)? {
+            let at = obj + offset;
+            match ty.chars().next() {
+                Some('@' | '#') | None => emu.write_u64(at, value)?,
+                Some('c' | 'B') => {
+                    let b = send(emu, value, "boolValue", &[])?;
+                    emu.p.memory.write_u8(at, b as u8)?;
+                }
+                Some('d') => {
+                    send(emu, value, "doubleValue", &[])?;
+                    emu.write_u64(at, emu.last_q0 as u64)?;
+                }
+                Some('i' | 'I') => {
+                    let v = send(emu, value, "longLongValue", &[])?;
+                    emu.p.memory.write_u32(at, v as u32)?;
+                }
+                _ => {
+                    let v = send(emu, value, "longLongValue", &[])?;
+                    emu.write_u64(at, v)?;
+                }
+            }
+            return Ok(());
+        }
+    }
+    Err(Stop::Unsupported(format!("setValue:forKey: {} has no setter or ivar for `{name}`", emu.objc.class_name(k))))
+}
+
+/// `+instanceMethodForSelector:` (receiver is a class) / `-methodForSelector:`.
+fn method_for_selector(emu: &mut Emu, cls: u64) -> Result<()> {
+    let sel = emu.cpu.x[2];
+    let a = match lookup(emu, cls, sel)? {
+        Some(imp) => imp_addr(emu, imp)?,
+        None => emu.host_thunk(forward_missing)?,
+    };
+    emu.ret(a);
+    Ok(())
+}
+
+fn instance_method_for_selector(emu: &mut Emu) -> Result<()> {
+    method_for_selector(emu, emu.cpu.x[0])
+}
+
+fn nsobject_method_for_selector(emu: &mut Emu) -> Result<()> {
+    let cls = class_of(emu, emu.cpu.x[0])?;
+    method_for_selector(emu, cls)
+}
+
 pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSObject", true, "instanceMethodForSelector:", instance_method_for_selector),
+    ("NSObject", false, "methodForSelector:", nsobject_method_for_selector),
     ("NSObject", false, "valueForKey:", nsobject_value_for_key),
+    ("NSObject", false, "setValue:forKey:", nsobject_set_value_for_key),
     ("NSObject", true, "alloc", nsobject_alloc),
     ("NSObject", true, "allocWithZone:", nsobject_alloc),
     ("NSObject", true, "new", nsobject_new),
@@ -1538,7 +1741,7 @@ fn realize_class(emu: &mut Emu) -> Result<()> {
 }
 
 fn class_get_instance_size(emu: &mut Emu) -> Result<()> {
-    let s = emu.objc.classes.get(&emu.arg(0)).map_or(0, |c| c.instance_size);
+    let s = instance_size(emu, emu.arg(0));
     emu.ret(s);
     Ok(())
 }

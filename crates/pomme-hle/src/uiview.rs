@@ -656,6 +656,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("CALayer", false, "delegate", layer_delegate),
     ("CALayer", false, "setNeedsDisplay", noop),
     ("CALayer", false, "setNeedsLayout", noop),
+    ("UITraitCollection", true, "currentTraitCollection", trait_collection),
+    ("UITraitCollection", true, "setCurrentTraitCollection:", noop),
     ("UITraitCollection", false, "userInterfaceStyle", ret_one), // light
     ("UITraitCollection", false, "displayScale", |e| {
         ret_f64(e, crate::uikit::SCREEN_SCALE);
@@ -667,7 +669,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UITraitCollection", false, "preferredContentSizeCategory", |e| {
-        let s = foundation::new_nsstring(e, "UICTContentSizeCategoryL")?;
+        // Same value pomme gives the UIContentSizeCategoryLarge constant (see constants.rs).
+        let s = foundation::new_nsstring(e, "UIContentSizeCategoryLarge")?;
         e.ret(s);
         Ok(())
     }),

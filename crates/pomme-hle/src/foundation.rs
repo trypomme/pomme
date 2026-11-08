@@ -42,6 +42,12 @@ pub struct State {
     true_obj: u64,
     false_obj: u64,
     null_obj: u64,
+    /// NSRunLoop object for each CFRunLoop.
+    run_loops: HashMap<u64, u64>,
+    center: u64,
+    observers: Vec<Observer>,
+    file_manager: u64,
+    defaults: u64,
 }
 
 pub(crate) fn init(_emu: &mut Emu) -> Result<()> {
@@ -64,6 +70,15 @@ fn cf_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
 fn cf(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
     let f = cf_sym(emu, name)?;
     emu.call(f, args)
+}
+
+/// Call a CoreFoundation function (for other modules).
+pub fn cf_call(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
+    cf(emu, name, args)
+}
+
+pub fn cf_data_pub(emu: &mut Emu, name: &'static str) -> Result<u64> {
+    cf_data(emu, name)
 }
 
 /// Read a CF data symbol (e.g. a `kCF...` constant pointer).
@@ -127,6 +142,34 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         let cls = host_class(emu, class)?;
         emu.write_u64(obj, cls)?;
     }
+    // Foundation's NSString constants that are CF's under another name.
+    for (ns, cfname) in [("_NSDefaultRunLoopMode", "_kCFRunLoopDefaultMode"), ("_NSRunLoopCommonModes", "_kCFRunLoopCommonModes")] {
+        let stubs = emu.p.stubs.find(ns);
+        if stubs.is_empty() {
+            continue;
+        }
+        let value = cf_data(emu, cfname)?;
+        let cell = emu.alloc(8)?;
+        emu.write_u64(cell, value)?;
+        for s in stubs {
+            emu.p.rebind(s, cell).map_err(|e| Stop::Unsupported(e.to_string()))?;
+        }
+    }
+    crate::constants::bind(emu)?;
+    // `@[]` and friends compile to references to Apple's empty-collection singletons.
+    for (sym, make) in [
+        ("___NSArray0__struct", new_array as fn(&mut Emu, bool) -> Result<u64>),
+        ("___NSDictionary0__struct", |e: &mut Emu, _| new_dict(e)),
+        ("___NSSet0__struct", |e: &mut Emu, _| new_set(e)),
+    ] {
+        let stubs = emu.p.stubs.find(sym);
+        if !stubs.is_empty() {
+            let obj = make(emu, false)?;
+            for s in stubs {
+                emu.p.rebind(s, obj).map_err(|e| Stop::Unsupported(e.to_string()))?;
+            }
+        }
+    }
     emu.fnd.true_obj = cf_data(emu, "_kCFBooleanTrue")?;
     emu.fnd.false_obj = cf_data(emu, "_kCFBooleanFalse")?;
     emu.fnd.null_obj = cf_data(emu, "_kCFNull")?;
@@ -158,6 +201,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     emu.hook(release, hook_release)?;
     Ok(())
 }
+
 
 fn hook_retain(_: &mut Emu) -> Result<()> {
     Ok(()) // returns its argument
@@ -513,6 +557,13 @@ fn string_with_format(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &String::from_utf8_lossy(&s))
 }
 
+/// `-initWithFormat:arguments:` — format x2, va_list x3.
+fn string_with_format_va(emu: &mut Emu) -> Result<()> {
+    let fmt = nsstring(emu, emu.arg(2))?;
+    let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.arg(3)))?;
+    ret_string(emu, &String::from_utf8_lossy(&s))
+}
+
 fn string_by_appending(emu: &mut Emu) -> Result<()> {
     let a = nsstring(emu, emu.arg(0))?;
     let b = nsstring(emu, emu.arg(2))?;
@@ -758,7 +809,55 @@ fn read_ptrs(emu: &Emu, at: u64, n: u64) -> Result<Vec<u64>> {
     (0..n).map(|i| emu.read_u64(at + i * 8)).collect()
 }
 
+/// Compile-time literals (`@1.5`, `@[...]`, `@{...}`) emitted by clang as
+/// ready-made objects in the binary. Not CF objects: read their layout.
+#[derive(Clone, Copy, PartialEq)]
+enum Constant {
+    /// {isa, const char *encoding, long long value}
+    Integer,
+    /// {isa, double value}
+    Double,
+    /// {isa, float value}
+    Float,
+    /// {isa, NSUInteger count, id const *objects}
+    Array,
+    /// {isa, NSUInteger options, NSUInteger count, id const *keys, id const *objects}
+    Dictionary,
+}
+
+fn constant_kind(emu: &Emu, obj: u64) -> Option<Constant> {
+    if obj == 0 || obj >> 63 != 0 {
+        return None;
+    }
+    let isa = emu.read_u64(obj).ok()?;
+    let name = emu.objc.class(isa)?.name.as_str();
+    Some(match name {
+        "NSConstantIntegerNumber" => Constant::Integer,
+        "NSConstantDoubleNumber" => Constant::Double,
+        "NSConstantFloatNumber" => Constant::Float,
+        "NSConstantArray" => Constant::Array,
+        "NSConstantDictionary" => Constant::Dictionary,
+        _ => return None,
+    })
+}
+
+fn constant_array_values(emu: &Emu, a: u64) -> Result<Vec<u64>> {
+    let n = emu.read_u64(a + 8)?;
+    let objs = emu.read_u64(a + 16)?;
+    read_ptrs(emu, objs, n)
+}
+
+fn constant_dict_pairs(emu: &Emu, d: u64) -> Result<Vec<(u64, u64)>> {
+    let n = emu.read_u64(d + 16)?;
+    let keys = read_ptrs(emu, emu.read_u64(d + 24)?, n)?;
+    let vals = read_ptrs(emu, emu.read_u64(d + 32)?, n)?;
+    Ok(keys.into_iter().zip(vals).collect())
+}
+
 fn array_values(emu: &mut Emu, arr: u64) -> Result<Vec<u64>> {
+    if constant_kind(emu, arr) == Some(Constant::Array) {
+        return constant_array_values(emu, arr);
+    }
     if !is_cf(emu, arr) {
         let n = send(emu, arr, "count", &[])?;
         return (0..n).map(|i| send(emu, arr, "objectAtIndex:", &[i])).collect();
@@ -999,6 +1098,9 @@ fn new_dict(emu: &mut Emu) -> Result<u64> {
 }
 
 fn dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
+    if constant_kind(emu, d) == Some(Constant::Dictionary) {
+        return constant_dict_pairs(emu, d);
+    }
     let n = cf(emu, "_CFDictionaryGetCount", &[d])?;
     let keys = emu.alloc(n * 8 + 8)?;
     let vals = emu.alloc(n * 8 + 8)?;
@@ -1330,12 +1432,27 @@ fn number_value(emu: &mut Emu, n: u64) -> Result<(i64, f64)> {
     if n == 0 {
         return Ok((0, 0.0));
     }
+    match constant_kind(emu, n) {
+        Some(Constant::Integer) => {
+            let v = emu.read_u64(n + 16)? as i64;
+            return Ok((v, v as f64));
+        }
+        Some(Constant::Double) => {
+            let d = f64::from_bits(emu.read_u64(n + 8)?);
+            return Ok((d as i64, d));
+        }
+        Some(Constant::Float) => {
+            let d = f32::from_bits(emu.p.memory.read_u32(n + 8)?) as f64;
+            return Ok((d as i64, d));
+        }
+        _ => {}
+    }
     if is_boolean(emu, n) {
         let b = (n == emu.fnd.true_obj) as i64;
         return Ok((b, b as f64));
     }
     let tmp = emu.alloc(8)?;
-    let float = cf(emu, "_CFNumberIsFloatType", &[n])? & 0xff != 0;
+    let float = number_is_float(emu, n)?;
     let r = if float {
         cf(emu, "_CFNumberGetValue", &[n, NUMBER_FLOAT64, tmp])?;
         let d = f64::from_bits(emu.read_u64(tmp)?);
@@ -1347,6 +1464,59 @@ fn number_value(emu: &mut Emu, n: u64) -> Result<(i64, f64)> {
     };
     emu.heap.free(&emu.p.memory, tmp)?;
     Ok(r)
+}
+
+fn number_is_float(emu: &mut Emu, n: u64) -> Result<bool> {
+    match constant_kind(emu, n) {
+        Some(Constant::Double | Constant::Float) => Ok(true),
+        Some(_) => Ok(false),
+        None => Ok(cf(emu, "_CFNumberIsFloatType", &[n])? & 0xff != 0),
+    }
+}
+
+/// `-count` / `-objectAtIndex:` on a constant array, and the dictionary equivalents.
+fn constant_array_count(emu: &mut Emu) -> Result<()> {
+    let n = emu.read_u64(emu.arg(0) + 8)?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn constant_array_object_at(emu: &mut Emu) -> Result<()> {
+    let (a, i) = (emu.arg(0), emu.arg(2));
+    let v = constant_array_values(emu, a)?;
+    let o = *v.get(i as usize).ok_or_else(|| Stop::Unsupported(format!("NSRangeException: index {i} beyond bounds of {}", v.len())))?;
+    emu.ret(o);
+    Ok(())
+}
+
+fn constant_array_first(emu: &mut Emu) -> Result<()> {
+    let v = constant_array_values(emu, emu.arg(0))?;
+    emu.ret(v.first().copied().unwrap_or(0));
+    Ok(())
+}
+
+fn constant_array_last(emu: &mut Emu) -> Result<()> {
+    let v = constant_array_values(emu, emu.arg(0))?;
+    emu.ret(v.last().copied().unwrap_or(0));
+    Ok(())
+}
+
+fn constant_dict_count(emu: &mut Emu) -> Result<()> {
+    let n = emu.read_u64(emu.arg(0) + 16)?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn constant_dict_object_for_key(emu: &mut Emu) -> Result<()> {
+    let (d, key) = (emu.arg(0), emu.arg(2));
+    for (k, v) in constant_dict_pairs(emu, d)? {
+        if k == key || send(emu, k, "isEqual:", &[key])? & 1 != 0 {
+            emu.ret(v);
+            return Ok(());
+        }
+    }
+    emu.ret(0);
+    Ok(())
 }
 
 fn number_int_value(emu: &mut Emu) -> Result<()> {
@@ -1383,7 +1553,7 @@ fn number_string_value(emu: &mut Emu) -> Result<()> {
     let s = if is_boolean(emu, n) {
         if n == emu.fnd.true_obj { "1".to_string() } else { "0".to_string() }
     } else {
-        let float = cf(emu, "_CFNumberIsFloatType", &[n])? & 0xff != 0;
+        let float = number_is_float(emu, n)?;
         let (i, d) = number_value(emu, n)?;
         if float { format!("{d}") } else { i.to_string() }
     };
@@ -1655,7 +1825,7 @@ fn number_objc_type(emu: &mut Emu) -> Result<()> {
     let n = emu.arg(0);
     let t = if is_boolean(emu, n) {
         "c"
-    } else if cf(emu, "_CFNumberIsFloatType", &[n])? & 0xff != 0 {
+    } else if number_is_float(emu, n)? {
         "d"
     } else {
         "q"
@@ -1792,24 +1962,1024 @@ fn map_table_new(emu: &mut Emu) -> Result<()> {
     dict_empty(emu)
 }
 
+/// NSPointerFunctionsOptions personality (bits 8–11): anything but the object
+/// personality (0) means the entries aren't objects: compare and hash them as
+/// raw pointers, and don't retain them.
+fn objects_personality(options: u64) -> bool {
+    (options >> 8) & 0xf == 0
+}
+
+/// `+mapTableWithKeyOptions:valueOptions:` / `-initWithKeyOptions:valueOptions:capacity:`
+fn map_table_with_options(emu: &mut Emu) -> Result<()> {
+    let (keys, values) = (emu.arg(2), emu.arg(3));
+    let kcb = if objects_personality(keys) { cf_sym(emu, "_kCFTypeDictionaryKeyCallBacks")? } else { 0 };
+    let vcb = if objects_personality(values) { cf_sym(emu, "_kCFTypeDictionaryValueCallBacks")? } else { 0 };
+    let d = cf(emu, "_CFDictionaryCreateMutable", &[0, 0, kcb, vcb])?;
+    emu.ret(d);
+    Ok(())
+}
+
+/// `+hashTableWithOptions:` / `-initWithOptions:capacity:`
+fn hash_table_with_options(emu: &mut Emu) -> Result<()> {
+    let options = emu.arg(2);
+    let cb = if objects_personality(options) { cf_sym(emu, "_kCFTypeSetCallBacks")? } else { 0 };
+    let s = cf(emu, "_CFSetCreateMutable", &[0, 0, cb])?;
+    emu.ret(s);
+    Ok(())
+}
+
 fn map_table_dictionary(emu: &mut Emu) -> Result<()> {
     dict_copy(emu)
 }
 
+// ---- NSDate (CFDate: seconds since 2001-01-01) ----
+
+const SECONDS_1970_TO_2001: f64 = 978_307_200.0;
+
+fn f64_arg(emu: &Emu, i: usize) -> f64 {
+    f64::from_bits(emu.cpu.q[i] as u64)
+}
+
+fn ret_double(emu: &mut Emu, v: f64) {
+    emu.cpu.q[0] = v.to_bits() as u128;
+}
+
+/// Now, as CFAbsoluteTime.
+fn absolute_now(emu: &Emu) -> f64 {
+    crate::threads::now_ns(emu) as f64 / 1e9 + crate::libsystem::EPOCH_BASE_SECS as f64 - SECONDS_1970_TO_2001
+}
+
+pub fn new_date(emu: &mut Emu, abs: f64) -> Result<u64> {
+    emu.cpu.q[0] = abs.to_bits() as u128;
+    cf(emu, "_CFDateCreate", &[0])
+}
+
+fn date_value(emu: &mut Emu, d: u64) -> Result<f64> {
+    cf(emu, "_CFDateGetAbsoluteTime", &[d])?;
+    Ok(f64::from_bits(emu.last_q0 as u64))
+}
+
+fn ret_date(emu: &mut Emu, abs: f64) -> Result<()> {
+    let d = new_date(emu, abs)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn date_now(emu: &mut Emu) -> Result<()> {
+    let t = absolute_now(emu);
+    ret_date(emu, t)
+}
+
+fn date_since_now(emu: &mut Emu) -> Result<()> {
+    let t = absolute_now(emu) + f64_arg(emu, 0);
+    ret_date(emu, t)
+}
+
+fn date_since_1970(emu: &mut Emu) -> Result<()> {
+    let t = f64_arg(emu, 0) - SECONDS_1970_TO_2001;
+    ret_date(emu, t)
+}
+
+fn date_since_reference(emu: &mut Emu) -> Result<()> {
+    let t = f64_arg(emu, 0);
+    ret_date(emu, t)
+}
+
+fn date_interval_since_now(emu: &mut Emu) -> Result<()> {
+    let v = date_value(emu, emu.arg(0))? - absolute_now(emu);
+    ret_double(emu, v);
+    Ok(())
+}
+
+fn date_interval_since_1970(emu: &mut Emu) -> Result<()> {
+    let v = date_value(emu, emu.arg(0))? + SECONDS_1970_TO_2001;
+    ret_double(emu, v);
+    Ok(())
+}
+
+fn date_interval_since_reference(emu: &mut Emu) -> Result<()> {
+    let v = date_value(emu, emu.arg(0))?;
+    ret_double(emu, v);
+    Ok(())
+}
+
+fn date_interval_since_date(emu: &mut Emu) -> Result<()> {
+    let a = date_value(emu, emu.arg(0))?;
+    let b = date_value(emu, emu.arg(2))?;
+    ret_double(emu, a - b);
+    Ok(())
+}
+
+fn date_compare(emu: &mut Emu) -> Result<()> {
+    let a = date_value(emu, emu.arg(0))?;
+    let b = date_value(emu, emu.arg(2))?;
+    emu.ret(a.partial_cmp(&b).map_or(0, |o| o as i64) as u64);
+    Ok(())
+}
+
+fn date_adding(emu: &mut Emu) -> Result<()> {
+    let delta = f64_arg(emu, 0);
+    let t = date_value(emu, emu.arg(0))? + delta;
+    ret_date(emu, t)
+}
+
+// ---- NSRunLoop: {isa, CFRunLoopRef} ----
+
+fn run_loop_for(emu: &mut Emu, cf_rl: u64) -> Result<u64> {
+    if let Some(&o) = emu.fnd.run_loops.get(&cf_rl) {
+        return Ok(o);
+    }
+    let cls = host_class(emu, "NSRunLoop")?;
+    let o = objc::create_instance(emu, cls, 0)?;
+    emu.write_u64(o + 8, cf_rl)?;
+    emu.fnd.run_loops.insert(cf_rl, o);
+    Ok(o)
+}
+
+fn run_loop_current(emu: &mut Emu) -> Result<()> {
+    let rl = cf(emu, "_CFRunLoopGetCurrent", &[])?;
+    let o = run_loop_for(emu, rl)?;
+    emu.ret(o);
+    Ok(())
+}
+
+fn run_loop_main(emu: &mut Emu) -> Result<()> {
+    let rl = cf(emu, "_CFRunLoopGetMain", &[])?;
+    let o = run_loop_for(emu, rl)?;
+    emu.ret(o);
+    Ok(())
+}
+
+fn run_loop_get_cf(emu: &mut Emu) -> Result<()> {
+    let rl = emu.read_u64(emu.arg(0) + 8)?;
+    emu.ret(rl);
+    Ok(())
+}
+
+/// `-runMode:beforeDate:` → YES if the run loop ran (it had sources).
+fn run_loop_run_mode(emu: &mut Emu) -> Result<()> {
+    let (mode, date) = (emu.arg(2), emu.arg(3));
+    let secs = if date == 0 { 0.0 } else { (date_value(emu, date)? - absolute_now(emu)).max(0.0) };
+    emu.cpu.q[0] = secs.to_bits() as u128;
+    let r = cf(emu, "_CFRunLoopRunInMode", &[mode, 1])?;
+    ret_bool(emu, r != 1) // kCFRunLoopRunFinished → NO
+}
+
+fn run_loop_run(emu: &mut Emu) -> Result<()> {
+    let mode = cf_data(emu, "_kCFRunLoopDefaultMode")?;
+    loop {
+        emu.cpu.q[0] = 1.0e10f64.to_bits() as u128;
+        if cf(emu, "_CFRunLoopRunInMode", &[mode, 0])? == 1 {
+            return Ok(());
+        }
+    }
+}
+
+fn run_loop_run_until(emu: &mut Emu) -> Result<()> {
+    let date = emu.arg(2);
+    let mode = cf_data(emu, "_kCFRunLoopDefaultMode")?;
+    let secs = (date_value(emu, date)? - absolute_now(emu)).max(0.0);
+    emu.cpu.q[0] = secs.to_bits() as u128;
+    cf(emu, "_CFRunLoopRunInMode", &[mode, 0])?;
+    Ok(())
+}
+
+/// `-addTimer:forMode:` — an NSTimer is a CFRunLoopTimer.
+fn run_loop_add_timer(emu: &mut Emu) -> Result<()> {
+    let (o, timer, mode) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let rl = emu.read_u64(o + 8)?;
+    cf(emu, "_CFRunLoopAddTimer", &[rl, timer, mode])?;
+    Ok(())
+}
+
+/// `-addPort:forMode:` — keeps a run loop alive; a port with a source (NSMachPort) isn't modeled
+/// yet, so add an empty, never-signaled source instead.
+fn run_loop_add_port(emu: &mut Emu) -> Result<()> {
+    let (o, mode) = (emu.arg(0), emu.arg(3));
+    let rl = emu.read_u64(o + 8)?;
+    // CFRunLoopSourceContext (version 0): all callbacks NULL except perform, which must exist.
+    let ctx = emu.alloc(80)?;
+    let perform = emu.host_thunk(noop)?;
+    emu.write_u64(ctx + 72, perform)?;
+    let src = cf(emu, "_CFRunLoopSourceCreate", &[0, 0, ctx])?;
+    cf(emu, "_CFRunLoopAddSource", &[rl, src, mode])?;
+    Ok(())
+}
+
+fn run_loop_perform_block(emu: &mut Emu) -> Result<()> {
+    let (o, block) = (emu.arg(0), emu.arg(2));
+    let rl = emu.read_u64(o + 8)?;
+    let modes = cf_data(emu, "_kCFRunLoopCommonModes")?;
+    cf(emu, "_CFRunLoopPerformBlock", &[rl, modes, block])?;
+    cf(emu, "_CFRunLoopWakeUp", &[rl])?;
+    Ok(())
+}
+
+fn run_loop_current_mode(emu: &mut Emu) -> Result<()> {
+    let rl = emu.read_u64(emu.arg(0) + 8)?;
+    let m = cf(emu, "_CFRunLoopCopyCurrentMode", &[rl])?;
+    emu.ret(m);
+    Ok(())
+}
+
+// ---- NSNotificationCenter / NSNotification {isa, name, object, userInfo} ----
+
+#[derive(Clone)]
+struct Observer {
+    /// Target and selector, or 0 and a block.
+    target: u64,
+    sel: u64,
+    block: u64,
+    name: Option<String>,
+    object: u64,
+}
+
+fn default_center(emu: &mut Emu) -> Result<()> {
+    if emu.fnd.center == 0 {
+        let cls = host_class(emu, "NSNotificationCenter")?;
+        emu.fnd.center = objc::create_instance(emu, cls, 0)?;
+    }
+    emu.ret(emu.fnd.center);
+    Ok(())
+}
+
+fn opt_name(emu: &mut Emu, n: u64) -> Result<Option<String>> {
+    if n == 0 { Ok(None) } else { nsstring(emu, n).map(Some) }
+}
+
+/// `-addObserver:selector:name:object:`
+fn add_observer(emu: &mut Emu) -> Result<()> {
+    let (target, sel, name, object) = (emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5));
+    let name = opt_name(emu, name)?;
+    emu.fnd.observers.push(Observer { target, sel, block: 0, name, object });
+    Ok(())
+}
+
+/// `-addObserverForName:object:queue:usingBlock:` → an opaque token
+fn add_observer_block(emu: &mut Emu) -> Result<()> {
+    let (name, object, block) = (emu.arg(2), emu.arg(3), emu.arg(5));
+    let name = opt_name(emu, name)?;
+    emu.cpu.x[0] = block;
+    crate::libc::block_copy(emu)?;
+    let block = emu.cpu.x[0];
+    let cls = host_class(emu, "NSObject")?;
+    let token = objc::create_instance(emu, cls, 0)?;
+    emu.fnd.observers.push(Observer { target: token, sel: 0, block, name, object });
+    emu.ret(token);
+    Ok(())
+}
+
+fn remove_observer(emu: &mut Emu) -> Result<()> {
+    let target = emu.arg(2);
+    emu.fnd.observers.retain(|o| o.target != target);
+    Ok(())
+}
+
+/// `-removeObserver:name:object:`
+fn remove_observer_name(emu: &mut Emu) -> Result<()> {
+    let (target, name, object) = (emu.arg(2), emu.arg(3), emu.arg(4));
+    let name = opt_name(emu, name)?;
+    emu.fnd.observers.retain(|o| !(o.target == target && (name.is_none() || o.name == name) && (object == 0 || o.object == object)));
+    Ok(())
+}
+
+fn new_notification(emu: &mut Emu, name: u64, object: u64, info: u64) -> Result<u64> {
+    let cls = host_class(emu, "NSNotification")?;
+    let n = objc::create_instance(emu, cls, 0)?;
+    emu.write_u64(n + 8, name)?;
+    emu.write_u64(n + 16, object)?;
+    emu.write_u64(n + 24, info)?;
+    Ok(n)
+}
+
+/// Deliver synchronously to every matching observer, in registration order.
+fn deliver(emu: &mut Emu, note: u64) -> Result<()> {
+    let name = emu.read_u64(note + 8)?;
+    let object = emu.read_u64(note + 16)?;
+    let name = opt_name(emu, name)?;
+    let matching: Vec<Observer> =
+        emu.fnd.observers.iter().filter(|o| (o.name.is_none() || o.name == name) && (o.object == 0 || o.object == object)).cloned().collect();
+    if emu.trace {
+        println!("{:>10}   notification {} → {} observer(s)", emu.cpu.steps, name.as_deref().unwrap_or("<nil>"), matching.len());
+    }
+    for o in matching {
+        if o.block != 0 {
+            call_block(emu, o.block, &[note])?;
+        } else {
+            let sel = objc::sel_name(emu, o.sel);
+            send(emu, o.target, &sel, &[note])?;
+        }
+    }
+    Ok(())
+}
+
+fn post_notification(emu: &mut Emu) -> Result<()> {
+    deliver(emu, emu.arg(2))
+}
+
+/// `-postNotificationName:object:` / `-postNotificationName:object:userInfo:`
+fn post_notification_name(emu: &mut Emu) -> Result<()> {
+    let (name, object) = (emu.arg(2), emu.arg(3));
+    let info = if objc::sel_name(emu, emu.arg(1)).ends_with("userInfo:") { emu.arg(4) } else { 0 };
+    let n = new_notification(emu, name, object, info)?;
+    deliver(emu, n)
+}
+
+fn notification_with_name(emu: &mut Emu) -> Result<()> {
+    let info = if objc::sel_name(emu, emu.arg(1)).ends_with("userInfo:") { emu.arg(4) } else { 0 };
+    let n = new_notification(emu, emu.arg(2), emu.arg(3), info)?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn notification_field(emu: &mut Emu, offset: u64) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + offset)?;
+    emu.ret(v);
+    Ok(())
+}
+
+// ---- NSString path helpers (POSIX paths) ----
+
+fn string_map(emu: &mut Emu, f: impl Fn(&str) -> String) -> Result<()> {
+    let s = nsstring(emu, emu.arg(0))?;
+    ret_string(emu, &f(&s))
+}
+
+fn last_component(p: &str) -> &str {
+    let t = p.trim_end_matches('/');
+    if t.is_empty() && p.starts_with('/') { "/" } else { t.rsplit('/').next().unwrap_or("") }
+}
+
+fn path_extension(p: &str) -> String {
+    let last = last_component(p);
+    match last.rfind('.') {
+        Some(i) if i > 0 => last[i + 1..].to_string(),
+        _ => String::new(),
+    }
+}
+
+fn deleting_last_component(p: &str) -> String {
+    let t = p.trim_end_matches('/');
+    match t.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => t[..i].to_string(),
+        None => String::new(),
+    }
+}
+
+fn deleting_extension(p: &str) -> String {
+    let ext = path_extension(p);
+    let t = p.trim_end_matches('/');
+    if ext.is_empty() { t.to_string() } else { t[..t.len() - ext.len() - 1].to_string() }
+}
+
+fn appending_component(emu: &mut Emu) -> Result<()> {
+    let a = nsstring(emu, emu.arg(0))?;
+    let b = nsstring(emu, emu.arg(2))?;
+    let joined = if a.is_empty() {
+        b
+    } else if b.is_empty() {
+        a
+    } else {
+        format!("{}/{}", a.trim_end_matches('/'), b.trim_start_matches('/'))
+    };
+    ret_string(emu, &joined)
+}
+
+fn appending_extension(emu: &mut Emu) -> Result<()> {
+    let a = nsstring(emu, emu.arg(0))?;
+    let e = nsstring(emu, emu.arg(2))?;
+    ret_string(emu, &format!("{}.{e}", a.trim_end_matches('/')))
+}
+
+fn path_components(emu: &mut Emu) -> Result<()> {
+    let s = nsstring(emu, emu.arg(0))?;
+    let mut parts: Vec<String> = Vec::new();
+    if s.starts_with('/') {
+        parts.push("/".into());
+    }
+    parts.extend(s.split('/').filter(|c| !c.is_empty()).map(str::to_string));
+    let mut objs = Vec::new();
+    for p in parts {
+        objs.push(new_nsstring(emu, &p)?);
+    }
+    let a = array_from(emu, &objs)?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn replacing_occurrences(emu: &mut Emu) -> Result<()> {
+    let s = nsstring(emu, emu.arg(0))?;
+    let from = nsstring(emu, emu.arg(2))?;
+    let to = nsstring(emu, emu.arg(3))?;
+    let r = if from.is_empty() { s } else { s.replace(&from, &to) };
+    ret_string(emu, &r)
+}
+
+// ---- NSData (CFData) ----
+
+pub fn new_data(emu: &mut Emu, bytes: &[u8]) -> Result<u64> {
+    let buf = emu.alloc(bytes.len() as u64 + 1)?;
+    emu.p.memory.write(buf, bytes)?;
+    let d = cf(emu, "_CFDataCreate", &[0, buf, bytes.len() as u64])?;
+    emu.heap.free(&emu.p.memory, buf)?;
+    Ok(d)
+}
+
+fn new_mutable_data(emu: &mut Emu, bytes: &[u8]) -> Result<u64> {
+    let d = cf(emu, "_CFDataCreateMutable", &[0, 0])?;
+    if !bytes.is_empty() {
+        let buf = emu.alloc(bytes.len() as u64)?;
+        emu.p.memory.write(buf, bytes)?;
+        cf(emu, "_CFDataAppendBytes", &[d, buf, bytes.len() as u64])?;
+    }
+    Ok(d)
+}
+
+pub fn data_bytes(emu: &mut Emu, d: u64) -> Result<Vec<u8>> {
+    if d == 0 {
+        return Ok(Vec::new());
+    }
+    if !is_cf(emu, d) {
+        let p = send(emu, d, "bytes", &[])?;
+        let n = send(emu, d, "length", &[])?;
+        return Ok(emu.p.memory.read(p, n as usize)?.to_vec());
+    }
+    let p = cf(emu, "_CFDataGetBytePtr", &[d])?;
+    let n = cf(emu, "_CFDataGetLength", &[d])?;
+    Ok(if n == 0 { Vec::new() } else { emu.p.memory.read(p, n as usize)?.to_vec() })
+}
+
+fn ret_data(emu: &mut Emu, bytes: &[u8]) -> Result<()> {
+    let mutable = wants_mutable(emu, emu.arg(0), "NSMutableData")?;
+    let d = if mutable { new_mutable_data(emu, bytes)? } else { new_data(emu, bytes)? };
+    emu.ret(d);
+    Ok(())
+}
+
+fn data_with_bytes(emu: &mut Emu) -> Result<()> {
+    let (p, n) = (emu.arg(2), emu.arg(3));
+    let bytes = if n == 0 { Vec::new() } else { emu.p.memory.read(p, n as usize)?.to_vec() };
+    ret_data(emu, &bytes)
+}
+
+fn data_empty(emu: &mut Emu) -> Result<()> {
+    ret_data(emu, &[])
+}
+
+fn data_with_length(emu: &mut Emu) -> Result<()> {
+    let n = emu.arg(2) as usize;
+    ret_data(emu, &vec![0; n])
+}
+
+/// `+dataWithContentsOfFile:` (and `options:error:`) — nil if missing.
+fn data_with_contents_of_file(emu: &mut Emu) -> Result<()> {
+    let path = nsstring(emu, emu.arg(2))?;
+    match crate::fs::read_file(emu, &path) {
+        Some(bytes) => ret_data(emu, &bytes),
+        None => {
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
+fn data_with_contents_of_url(emu: &mut Emu) -> Result<()> {
+    let url = emu.arg(2);
+    let path = cf(emu, "_CFURLCopyFileSystemPath", &[url, POSIX_PATH_STYLE])?;
+    let path = nsstring(emu, path)?;
+    match crate::fs::read_file(emu, &path) {
+        Some(bytes) => ret_data(emu, &bytes),
+        None => {
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
+fn data_length(emu: &mut Emu) -> Result<()> {
+    let n = cf(emu, "_CFDataGetLength", &[emu.arg(0)])?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn data_bytes_ptr(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFDataGetBytePtr", &[emu.arg(0)])?;
+    emu.ret(p);
+    Ok(())
+}
+
+fn data_mutable_bytes(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFDataGetMutableBytePtr", &[emu.arg(0)])?;
+    emu.ret(p);
+    Ok(())
+}
+
+/// `-getBytes:length:`
+fn data_get_bytes(emu: &mut Emu) -> Result<()> {
+    let (d, buf, n) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let bytes = data_bytes(emu, d)?;
+    let n = (n as usize).min(bytes.len());
+    emu.p.memory.write(buf, &bytes[..n])?;
+    Ok(())
+}
+
+/// `-subdataWithRange:` (NSRange in x2, x3)
+fn data_subdata(emu: &mut Emu) -> Result<()> {
+    let (d, loc, len) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3) as usize);
+    let bytes = data_bytes(emu, d)?;
+    let end = (loc + len).min(bytes.len());
+    let r = new_data(emu, &bytes[loc.min(end)..end])?;
+    emu.ret(r);
+    Ok(())
+}
+
+fn data_is_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    if b == 0 {
+        return ret_bool(emu, false);
+    }
+    let x = data_bytes(emu, a)?;
+    let y = data_bytes(emu, b)?;
+    ret_bool(emu, x == y)
+}
+
+fn data_copy(emu: &mut Emu) -> Result<()> {
+    let bytes = data_bytes(emu, emu.arg(0))?;
+    let d = new_data(emu, &bytes)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn data_mutable_copy(emu: &mut Emu) -> Result<()> {
+    let bytes = data_bytes(emu, emu.arg(0))?;
+    let d = new_mutable_data(emu, &bytes)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn data_append_bytes(emu: &mut Emu) -> Result<()> {
+    cf(emu, "_CFDataAppendBytes", &[emu.arg(0), emu.arg(2), emu.arg(3)])?;
+    Ok(())
+}
+
+fn data_append_data(emu: &mut Emu) -> Result<()> {
+    let (d, other) = (emu.arg(0), emu.arg(2));
+    let bytes = data_bytes(emu, other)?;
+    if !bytes.is_empty() {
+        let buf = emu.alloc(bytes.len() as u64)?;
+        emu.p.memory.write(buf, &bytes)?;
+        cf(emu, "_CFDataAppendBytes", &[d, buf, bytes.len() as u64])?;
+    }
+    Ok(())
+}
+
+fn data_set_length(emu: &mut Emu) -> Result<()> {
+    cf(emu, "_CFDataSetLength", &[emu.arg(0), emu.arg(2)])?;
+    Ok(())
+}
+
+// ---- strings ↔ data ----
+
+/// `-dataUsingEncoding:` (UTF-8 for every 8-bit encoding; UTF-16LE for NSUnicodeStringEncoding)
+fn string_data_using_encoding(emu: &mut Emu) -> Result<()> {
+    let (s, enc) = (emu.arg(0), emu.arg(2));
+    let text = nsstring(emu, s)?;
+    let bytes: Vec<u8> = if enc == 10 || enc == 0x9400_0100 { text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect() } else { text.into_bytes() };
+    let d = new_data(emu, &bytes)?;
+    emu.ret(d);
+    Ok(())
+}
+
+/// `-initWithData:encoding:`
+fn string_with_data(emu: &mut Emu) -> Result<()> {
+    let (d, enc) = (emu.arg(2), emu.arg(3));
+    let bytes = data_bytes(emu, d)?;
+    string_from_bytes(emu, &bytes, enc)
+}
+
+/// `-initWithBytes:length:encoding:`
+fn string_with_bytes(emu: &mut Emu) -> Result<()> {
+    let (p, n, enc) = (emu.arg(2), emu.arg(3), emu.arg(4));
+    let bytes = if n == 0 { Vec::new() } else { emu.p.memory.read(p, n as usize)?.to_vec() };
+    string_from_bytes(emu, &bytes, enc)
+}
+
+fn string_from_bytes(emu: &mut Emu, bytes: &[u8], enc: u64) -> Result<()> {
+    let s = if enc == 10 {
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) if enc == 4 => {
+                emu.ret(0); // invalid UTF-8 → nil
+                return Ok(());
+            }
+            Err(_) => bytes.iter().map(|&b| b as char).collect(), // Latin-1
+        }
+    };
+    ret_string(emu, &s)
+}
+
+/// `+stringWithContentsOfFile:encoding:error:`
+fn string_with_contents_of_file(emu: &mut Emu) -> Result<()> {
+    let path = nsstring(emu, emu.arg(2))?;
+    match crate::fs::read_file(emu, &path) {
+        Some(bytes) => string_from_bytes(emu, &bytes, 4),
+        None => {
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
+// ---- NSFileManager and standard directories ----
+
+const DATA_CONTAINER: &str = "/private/var/mobile/Containers/Data/Application/pomme";
+
+fn search_dir(kind: u64) -> String {
+    match kind {
+        9 => format!("{DATA_CONTAINER}/Documents"),
+        13 => format!("{DATA_CONTAINER}/Library/Caches"),
+        14 => format!("{DATA_CONTAINER}/Library/Application Support"),
+        _ => format!("{DATA_CONTAINER}/Library"),
+    }
+}
+
+fn file_manager(emu: &mut Emu) -> Result<()> {
+    if emu.fnd.file_manager == 0 {
+        let cls = host_class(emu, "NSFileManager")?;
+        emu.fnd.file_manager = objc::create_instance(emu, cls, 0)?;
+    }
+    emu.ret(emu.fnd.file_manager);
+    Ok(())
+}
+
+fn file_exists(emu: &mut Emu) -> Result<()> {
+    let (path, is_dir_out) = (emu.arg(2), emu.arg(3));
+    let path = nsstring(emu, path)?;
+    let host = crate::fs::host_path(emu, &path);
+    let exists = host.as_ref().is_some_and(|p| p.exists());
+    if exists && is_dir_out != 0 && objc::sel_name(emu, emu.arg(1)).contains("isDirectory") {
+        let dir = host.as_ref().is_some_and(|p| p.is_dir());
+        emu.p.memory.write_u8(is_dir_out, dir as u8)?;
+    }
+    ret_bool(emu, exists)
+}
+
+fn file_contents(emu: &mut Emu) -> Result<()> {
+    let path = nsstring(emu, emu.arg(2))?;
+    match crate::fs::read_file(emu, &path) {
+        Some(bytes) => {
+            let d = new_data(emu, &bytes)?;
+            emu.ret(d);
+        }
+        None => emu.ret(0),
+    }
+    Ok(())
+}
+
+/// `-URLsForDirectory:inDomains:` → [file URL]
+fn urls_for_directory(emu: &mut Emu) -> Result<()> {
+    let dir = search_dir(emu.arg(2));
+    let u = new_file_url(emu, &dir, true)?;
+    let a = array_from(emu, &[u])?;
+    emu.ret(a);
+    Ok(())
+}
+
+/// `-URLForDirectory:inDomain:appropriateForURL:create:error:`
+fn url_for_directory(emu: &mut Emu) -> Result<()> {
+    let dir = search_dir(emu.arg(2));
+    let u = new_file_url(emu, &dir, true)?;
+    emu.ret(u);
+    Ok(())
+}
+
+/// `NSSearchPathForDirectoriesInDomains(directory, domainMask, expandTilde)` → [path]
+fn search_path_for_directories(emu: &mut Emu) -> Result<()> {
+    let dir = search_dir(emu.arg(0));
+    let s = new_nsstring(emu, &dir)?;
+    let a = array_from(emu, &[s])?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn ns_home_directory(emu: &mut Emu) -> Result<()> {
+    ret_string(emu, DATA_CONTAINER)
+}
+
+fn ns_temporary_directory(emu: &mut Emu) -> Result<()> {
+    ret_string(emu, &format!("{DATA_CONTAINER}/tmp/"))
+}
+
+// ---- NSUserDefaults: in memory, per run (nothing persists yet) ----
+
+fn user_defaults(emu: &mut Emu) -> Result<()> {
+    if emu.fnd.defaults == 0 {
+        let cls = host_class(emu, "NSUserDefaults")?;
+        let ud = objc::create_instance(emu, cls, 0)?;
+        let store = new_dict(emu)?;
+        emu.write_u64(ud + 8, store)?;
+        // What a fresh English-language device reports.
+        let en = new_nsstring(emu, "en")?;
+        let langs = array_from(emu, &[en])?;
+        let k = new_nsstring(emu, "AppleLanguages")?;
+        cf(emu, "_CFDictionarySetValue", &[store, k, langs])?;
+        let k = new_nsstring(emu, "AppleLocale")?;
+        let v = new_nsstring(emu, "en_US")?;
+        cf(emu, "_CFDictionarySetValue", &[store, k, v])?;
+        emu.fnd.defaults = ud;
+    }
+    emu.ret(emu.fnd.defaults);
+    Ok(())
+}
+
+fn defaults_store(emu: &mut Emu, ud: u64) -> Result<u64> {
+    let s = emu.read_u64(ud + 8)?;
+    if s != 0 {
+        return Ok(s);
+    }
+    let s = new_dict(emu)?;
+    emu.write_u64(ud + 8, s)?;
+    Ok(s)
+}
+
+fn defaults_get(emu: &mut Emu) -> Result<u64> {
+    let (ud, key) = (emu.arg(0), emu.arg(2));
+    let store = defaults_store(emu, ud)?;
+    if key == 0 { Ok(0) } else { cf(emu, "_CFDictionaryGetValue", &[store, key]) }
+}
+
+fn defaults_set(emu: &mut Emu, value: u64) -> Result<()> {
+    let (ud, key) = (emu.arg(0), emu.arg(3));
+    let store = defaults_store(emu, ud)?;
+    if value == 0 {
+        cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
+    } else {
+        cf(emu, "_CFDictionarySetValue", &[store, key, value])?;
+    }
+    Ok(())
+}
+
+fn defaults_object(emu: &mut Emu) -> Result<()> {
+    let v = defaults_get(emu)?;
+    emu.ret(v);
+    Ok(())
+}
+
+fn defaults_set_object(emu: &mut Emu) -> Result<()> {
+    defaults_set(emu, emu.arg(2))
+}
+
+fn defaults_remove(emu: &mut Emu) -> Result<()> {
+    let (ud, key) = (emu.arg(0), emu.arg(2));
+    let store = defaults_store(emu, ud)?;
+    cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
+    Ok(())
+}
+
+fn defaults_bool(emu: &mut Emu) -> Result<()> {
+    let v = defaults_get(emu)?;
+    let b = v != 0 && send(emu, v, "boolValue", &[])? & 0xff != 0;
+    ret_bool(emu, b)
+}
+
+fn defaults_integer(emu: &mut Emu) -> Result<()> {
+    let v = defaults_get(emu)?;
+    let i = if v == 0 { 0 } else { send(emu, v, "integerValue", &[])? };
+    emu.ret(i);
+    Ok(())
+}
+
+fn defaults_double(emu: &mut Emu) -> Result<()> {
+    let v = defaults_get(emu)?;
+    let d = if v == 0 {
+        0.0
+    } else {
+        send(emu, v, "doubleValue", &[])?;
+        f64::from_bits(emu.last_q0 as u64)
+    };
+    emu.cpu.q[0] = d.to_bits() as u128;
+    Ok(())
+}
+
+fn defaults_set_bool(emu: &mut Emu) -> Result<()> {
+    let v = boolean(emu, emu.arg(2) & 0xff != 0);
+    defaults_set(emu, v)
+}
+
+fn defaults_set_integer(emu: &mut Emu) -> Result<()> {
+    let v = new_number_i64(emu, emu.arg(2) as i64)?;
+    defaults_set(emu, v)
+}
+
+fn defaults_set_double(emu: &mut Emu) -> Result<()> {
+    let d = f64::from_bits(emu.cpu.q[0] as u64);
+    // setDouble:forKey: has the key in x2 (the double is in d0).
+    let (ud, key) = (emu.arg(0), emu.arg(2));
+    let v = new_number_f64(emu, d)?;
+    let store = defaults_store(emu, ud)?;
+    cf(emu, "_CFDictionarySetValue", &[store, key, v])?;
+    Ok(())
+}
+
+/// `-registerDefaults:` — only fills keys that aren't set.
+fn defaults_register(emu: &mut Emu) -> Result<()> {
+    let (ud, d) = (emu.arg(0), emu.arg(2));
+    let store = defaults_store(emu, ud)?;
+    for (k, v) in dict_pairs(emu, d)? {
+        cf(emu, "_CFDictionaryAddValue", &[store, k, v])?;
+    }
+    Ok(())
+}
+
+fn defaults_dictionary(emu: &mut Emu) -> Result<()> {
+    let store = defaults_store(emu, emu.arg(0))?;
+    dict_with_dict_of(emu, store)
+}
+
+fn defaults_init_suite(emu: &mut Emu) -> Result<()> {
+    let ud = emu.arg(0);
+    defaults_store(emu, ud)?;
+    emu.ret(ud);
+    Ok(())
+}
+
+pub(crate) const PATH_FUNCS: &[(&str, HostFn)] = &[
+    ("_NSSearchPathForDirectoriesInDomains", search_path_for_directories),
+    ("_NSHomeDirectory", ns_home_directory),
+    ("_NSTemporaryDirectory", ns_temporary_directory),
+];
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSConstantArray", false, "count", constant_array_count),
+    ("NSConstantArray", false, "objectAtIndex:", constant_array_object_at),
+    ("NSConstantArray", false, "objectAtIndexedSubscript:", constant_array_object_at),
+    ("NSConstantArray", false, "firstObject", constant_array_first),
+    ("NSConstantArray", false, "lastObject", constant_array_last),
+    ("NSConstantDictionary", false, "count", constant_dict_count),
+    ("NSConstantDictionary", false, "objectForKey:", constant_dict_object_for_key),
+    ("NSConstantDictionary", false, "objectForKeyedSubscript:", constant_dict_object_for_key),
+    ("NSUserDefaults", true, "standardUserDefaults", user_defaults),
+    ("NSUserDefaults", false, "initWithSuiteName:", defaults_init_suite),
+    ("NSUserDefaults", false, "objectForKey:", defaults_object),
+    ("NSUserDefaults", false, "stringForKey:", defaults_object),
+    ("NSUserDefaults", false, "arrayForKey:", defaults_object),
+    ("NSUserDefaults", false, "dictionaryForKey:", defaults_object),
+    ("NSUserDefaults", false, "dataForKey:", defaults_object),
+    ("NSUserDefaults", false, "stringArrayForKey:", defaults_object),
+    ("NSUserDefaults", false, "URLForKey:", defaults_object),
+    ("NSUserDefaults", false, "boolForKey:", defaults_bool),
+    ("NSUserDefaults", false, "integerForKey:", defaults_integer),
+    ("NSUserDefaults", false, "doubleForKey:", defaults_double),
+    ("NSUserDefaults", false, "floatForKey:", |e| {
+        defaults_double(e)?;
+        let d = f64::from_bits(e.cpu.q[0] as u64);
+        e.cpu.q[0] = (d as f32).to_bits() as u128;
+        Ok(())
+    }),
+    ("NSUserDefaults", false, "setObject:forKey:", defaults_set_object),
+    ("NSUserDefaults", false, "setValue:forKey:", defaults_set_object),
+    ("NSUserDefaults", false, "setBool:forKey:", defaults_set_bool),
+    ("NSUserDefaults", false, "setInteger:forKey:", defaults_set_integer),
+    ("NSUserDefaults", false, "setDouble:forKey:", defaults_set_double),
+    ("NSUserDefaults", false, "removeObjectForKey:", defaults_remove),
+    ("NSUserDefaults", false, "registerDefaults:", defaults_register),
+    ("NSUserDefaults", false, "dictionaryRepresentation", defaults_dictionary),
+    ("NSUserDefaults", false, "synchronize", ret_yes),
+    ("NSData", true, "alloc", cluster_alloc),
+    ("NSData", true, "data", data_empty),
+    ("NSData", true, "new", data_empty),
+    ("NSData", false, "init", data_empty),
+    ("NSData", true, "dataWithBytes:length:", data_with_bytes),
+    ("NSData", false, "initWithBytes:length:", data_with_bytes),
+    ("NSData", true, "dataWithBytesNoCopy:length:", data_with_bytes),
+    ("NSData", true, "dataWithBytesNoCopy:length:freeWhenDone:", data_with_bytes),
+    ("NSData", false, "initWithBytesNoCopy:length:", data_with_bytes),
+    ("NSData", false, "initWithBytesNoCopy:length:freeWhenDone:", data_with_bytes),
+    ("NSData", true, "dataWithContentsOfFile:", data_with_contents_of_file),
+    ("NSData", true, "dataWithContentsOfFile:options:error:", data_with_contents_of_file),
+    ("NSData", false, "initWithContentsOfFile:", data_with_contents_of_file),
+    ("NSData", false, "initWithContentsOfFile:options:error:", data_with_contents_of_file),
+    ("NSData", true, "dataWithContentsOfURL:", data_with_contents_of_url),
+    ("NSData", true, "dataWithContentsOfURL:options:error:", data_with_contents_of_url),
+    ("NSData", false, "initWithContentsOfURL:", data_with_contents_of_url),
+    ("NSData", false, "initWithContentsOfURL:options:error:", data_with_contents_of_url),
+    ("NSData", false, "length", data_length),
+    ("NSData", false, "bytes", data_bytes_ptr),
+    ("NSData", false, "getBytes:length:", data_get_bytes),
+    ("NSData", false, "subdataWithRange:", data_subdata),
+    ("NSData", false, "isEqualToData:", data_is_equal),
+    ("NSData", false, "isEqual:", data_is_equal),
+    ("NSData", false, "copy", data_copy),
+    ("NSData", false, "copyWithZone:", data_copy),
+    ("NSData", false, "mutableCopy", data_mutable_copy),
+    ("NSMutableData", true, "dataWithCapacity:", data_empty),
+    ("NSMutableData", false, "initWithCapacity:", data_empty),
+    ("NSMutableData", true, "dataWithLength:", data_with_length),
+    ("NSMutableData", false, "initWithLength:", data_with_length),
+    ("NSMutableData", false, "mutableBytes", data_mutable_bytes),
+    ("NSMutableData", false, "appendBytes:length:", data_append_bytes),
+    ("NSMutableData", false, "appendData:", data_append_data),
+    ("NSMutableData", false, "setLength:", data_set_length),
+    ("NSString", false, "dataUsingEncoding:", string_data_using_encoding),
+    ("NSString", false, "dataUsingEncoding:allowLossyConversion:", string_data_using_encoding),
+    ("NSString", false, "initWithData:encoding:", string_with_data),
+    ("NSString", false, "initWithBytes:length:encoding:", string_with_bytes),
+    ("NSString", true, "stringWithContentsOfFile:encoding:error:", string_with_contents_of_file),
+    ("NSString", false, "initWithContentsOfFile:encoding:error:", string_with_contents_of_file),
+    ("NSFileManager", true, "defaultManager", file_manager),
+    ("NSFileManager", false, "fileExistsAtPath:", file_exists),
+    ("NSFileManager", false, "fileExistsAtPath:isDirectory:", file_exists),
+    ("NSFileManager", false, "contentsAtPath:", file_contents),
+    ("NSFileManager", false, "URLsForDirectory:inDomains:", urls_for_directory),
+    ("NSFileManager", false, "URLForDirectory:inDomain:appropriateForURL:create:error:", url_for_directory),
+    ("NSFileManager", false, "temporaryDirectory", |e| {
+        let u = new_file_url(e, &format!("{DATA_CONTAINER}/tmp/"), true)?;
+        e.ret(u);
+        Ok(())
+    }),
+    // No writable storage yet: pretend directory creation works, refuse other writes.
+    ("NSFileManager", false, "createDirectoryAtPath:withIntermediateDirectories:attributes:error:", ret_yes),
+    ("NSFileManager", false, "createDirectoryAtURL:withIntermediateDirectories:attributes:error:", ret_yes),
+    ("NSString", false, "pathExtension", |e| string_map(e, path_extension)),
+    ("NSString", false, "lastPathComponent", |e| string_map(e, |p| last_component(p).to_string())),
+    ("NSString", false, "stringByDeletingLastPathComponent", |e| string_map(e, deleting_last_component)),
+    ("NSString", false, "stringByDeletingPathExtension", |e| string_map(e, deleting_extension)),
+    ("NSString", false, "stringByStandardizingPath", |e| string_map(e, |p| p.to_string())),
+    ("NSString", false, "stringByResolvingSymlinksInPath", |e| string_map(e, |p| p.to_string())),
+    ("NSString", false, "stringByExpandingTildeInPath", |e| string_map(e, |p| p.replacen('~', "/var/mobile", 1))),
+    ("NSString", false, "stringByAppendingPathComponent:", appending_component),
+    ("NSString", false, "stringByAppendingPathExtension:", appending_extension),
+    ("NSString", false, "pathComponents", path_components),
+    ("NSString", false, "isAbsolutePath", |e| {
+        let s = nsstring(e, e.arg(0))?;
+        ret_bool(e, s.starts_with('/'))
+    }),
+    ("NSString", false, "stringByReplacingOccurrencesOfString:withString:", replacing_occurrences),
+    ("NSNotificationCenter", true, "defaultCenter", default_center),
+    ("NSNotificationCenter", false, "addObserver:selector:name:object:", add_observer),
+    ("NSNotificationCenter", false, "addObserverForName:object:queue:usingBlock:", add_observer_block),
+    ("NSNotificationCenter", false, "removeObserver:", remove_observer),
+    ("NSNotificationCenter", false, "removeObserver:name:object:", remove_observer_name),
+    ("NSNotificationCenter", false, "postNotification:", post_notification),
+    ("NSNotificationCenter", false, "postNotificationName:object:", post_notification_name),
+    ("NSNotificationCenter", false, "postNotificationName:object:userInfo:", post_notification_name),
+    ("NSNotification", true, "notificationWithName:object:", notification_with_name),
+    ("NSNotification", true, "notificationWithName:object:userInfo:", notification_with_name),
+    ("NSNotification", false, "name", |e| notification_field(e, 8)),
+    ("NSNotification", false, "object", |e| notification_field(e, 16)),
+    ("NSNotification", false, "userInfo", |e| notification_field(e, 24)),
+    ("NSDate", true, "alloc", cluster_alloc),
+    ("NSDate", true, "date", date_now),
+    ("NSDate", true, "now", date_now),
+    ("NSDate", false, "init", date_now),
+    ("NSDate", true, "distantFuture", |e| ret_date(e, 63_113_904_000.0)),
+    ("NSDate", true, "distantPast", |e| ret_date(e, -63_114_076_800.0)),
+    ("NSDate", true, "dateWithTimeIntervalSinceNow:", date_since_now),
+    ("NSDate", false, "initWithTimeIntervalSinceNow:", date_since_now),
+    ("NSDate", true, "dateWithTimeIntervalSince1970:", date_since_1970),
+    ("NSDate", false, "initWithTimeIntervalSince1970:", date_since_1970),
+    ("NSDate", true, "dateWithTimeIntervalSinceReferenceDate:", date_since_reference),
+    ("NSDate", false, "initWithTimeIntervalSinceReferenceDate:", date_since_reference),
+    ("NSDate", true, "timeIntervalSinceReferenceDate", |e| {
+        let t = absolute_now(e);
+        ret_double(e, t);
+        Ok(())
+    }),
+    ("NSDate", false, "timeIntervalSinceNow", date_interval_since_now),
+    ("NSDate", false, "timeIntervalSince1970", date_interval_since_1970),
+    ("NSDate", false, "timeIntervalSinceReferenceDate", date_interval_since_reference),
+    ("NSDate", false, "timeIntervalSinceDate:", date_interval_since_date),
+    ("NSDate", false, "compare:", date_compare),
+    ("NSDate", false, "dateByAddingTimeInterval:", date_adding),
+    ("NSDate", false, "copy", ret_self),
+    ("NSDate", false, "copyWithZone:", ret_self),
+    ("NSRunLoop", true, "currentRunLoop", run_loop_current),
+    ("NSRunLoop", true, "mainRunLoop", run_loop_main),
+    ("NSRunLoop", false, "getCFRunLoop", run_loop_get_cf),
+    ("NSRunLoop", false, "runMode:beforeDate:", run_loop_run_mode),
+    ("NSRunLoop", false, "run", run_loop_run),
+    ("NSRunLoop", false, "runUntilDate:", run_loop_run_until),
+    ("NSRunLoop", false, "addTimer:forMode:", run_loop_add_timer),
+    ("NSRunLoop", false, "addPort:forMode:", run_loop_add_port),
+    ("NSRunLoop", false, "performBlock:", run_loop_perform_block),
+    ("NSRunLoop", false, "currentMode", run_loop_current_mode),
     ("NSHashTable", true, "alloc", cluster_alloc),
     ("NSHashTable", true, "weakObjectsHashTable", hash_table_new),
-    ("NSHashTable", true, "hashTableWithOptions:", hash_table_new),
+    ("NSHashTable", true, "hashTableWithOptions:", hash_table_with_options),
     ("NSHashTable", true, "hashTableWithWeakObjects", hash_table_new),
-    ("NSHashTable", false, "initWithOptions:capacity:", hash_table_new),
+    ("NSHashTable", false, "initWithOptions:capacity:", hash_table_with_options),
     ("NSHashTable", false, "init", hash_table_new),
     ("NSMapTable", true, "alloc", cluster_alloc),
     ("NSMapTable", true, "strongToStrongObjectsMapTable", map_table_new),
     ("NSMapTable", true, "strongToWeakObjectsMapTable", map_table_new),
     ("NSMapTable", true, "weakToStrongObjectsMapTable", map_table_new),
     ("NSMapTable", true, "weakToWeakObjectsMapTable", map_table_new),
-    ("NSMapTable", true, "mapTableWithKeyOptions:valueOptions:", map_table_new),
-    ("NSMapTable", false, "initWithKeyOptions:valueOptions:capacity:", map_table_new),
+    ("NSMapTable", true, "mapTableWithKeyOptions:valueOptions:", map_table_with_options),
+    ("NSMapTable", false, "initWithKeyOptions:valueOptions:capacity:", map_table_with_options),
     ("NSMapTable", false, "init", map_table_new),
     ("NSDictionary", false, "dictionaryRepresentation", map_table_dictionary),
     // Locks: one thread, so they always succeed immediately.
@@ -1896,6 +3066,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "initWithString:", string_with_string),
     ("NSString", true, "stringWithFormat:", string_with_format),
     ("NSString", false, "initWithFormat:", string_with_format),
+    ("NSString", false, "initWithFormat:arguments:", string_with_format_va),
     ("NSString", false, "length", string_length),
     ("NSString", false, "UTF8String", utf8_string),
     ("NSString", false, "characterAtIndex:", character_at_index),

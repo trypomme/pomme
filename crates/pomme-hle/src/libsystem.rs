@@ -10,16 +10,14 @@ use crate::{Emu, HostFn, Result, Stop};
 use std::collections::{HashMap, VecDeque};
 
 /// Wall-clock time at boot: 2026-01-01T00:00:00Z. Guest time = this + steps / 24 MHz.
-const EPOCH_BASE_SECS: u64 = 1_767_225_600;
+pub const EPOCH_BASE_SECS: u64 = 1_767_225_600;
 pub const TICKS_PER_SEC: u64 = 24_000_000;
 
 #[derive(Default)]
 pub struct State {
     errno: u64,
-    tls_keys: HashMap<u64, u64>,
-    next_key: u64,
     /// Per-image thread-local storage blocks.
-    tlv_blocks: HashMap<usize, u64>,
+    tlv_blocks: HashMap<(usize, usize), u64>,
     /// Queued async work: (function, context). Blocks are queued as (invoke, block).
     pub queue: VecDeque<(u64, u64)>,
     queue_specific: HashMap<(u64, u64), u64>,
@@ -158,6 +156,10 @@ fn ret_one(emu: &mut Emu) -> Result<()> {
 // ---- memory and strings ----
 
 fn memcmp(emu: &mut Emu) -> Result<()> {
+    if emu.arg(2) == 0 {
+        emu.ret(0); // zero-length compares may pass NULL
+        return Ok(());
+    }
     let a = bytes(emu, emu.arg(0), emu.arg(2))?;
     let b = bytes(emu, emu.arg(1), emu.arg(2))?;
     let r = a.iter().zip(&b).find(|(x, y)| x != y).map_or(0, |(x, y)| *x as i64 - *y as i64);
@@ -167,6 +169,10 @@ fn memcmp(emu: &mut Emu) -> Result<()> {
 
 fn memchr(emu: &mut Emu) -> Result<()> {
     let (s, c, n) = (emu.arg(0), emu.arg(1) as u8, emu.arg(2));
+    if n == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
     let b = bytes(emu, s, n)?;
     emu.ret(b.iter().position(|&x| x == c).map_or(0, |i| s + i as u64));
     Ok(())
@@ -505,11 +511,11 @@ fn lldiv(emu: &mut Emu) -> Result<()> {
 // ---- time ----
 
 fn now_ns(emu: &Emu) -> u64 {
-    emu.cpu.steps.saturating_mul(1_000_000_000 / TICKS_PER_SEC * 1000) / 1000
+    crate::threads::now_ns(emu)
 }
 
 fn mach_absolute_time(emu: &mut Emu) -> Result<()> {
-    emu.ret(emu.cpu.steps);
+    emu.ret(crate::threads::now_ticks(emu));
     Ok(())
 }
 
@@ -583,6 +589,15 @@ fn getenv(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Set the guest's errno.
+pub fn set_errno(emu: &mut Emu, v: u64) -> Result<()> {
+    if emu.sys.errno == 0 {
+        emu.sys.errno = emu.alloc(8)?;
+    }
+    emu.p.memory.write_u32(emu.sys.errno, v as u32)?;
+    Ok(())
+}
+
 fn errno_location(emu: &mut Emu) -> Result<()> {
     if emu.sys.errno == 0 {
         emu.sys.errno = emu.alloc(8)?;
@@ -618,58 +633,18 @@ fn sysconf(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-const MAIN_THREAD: u64 = 0x3_2000_0000;
 
-fn pthread_self(emu: &mut Emu) -> Result<()> {
-    emu.ret(MAIN_THREAD);
-    Ok(())
-}
 
-fn pthread_threadid_np(emu: &mut Emu) -> Result<()> {
-    if emu.arg(1) != 0 {
-        emu.write_u64(emu.arg(1), 1)?;
-    }
-    emu.ret(0);
-    Ok(())
-}
 
 fn pthread_equal(emu: &mut Emu) -> Result<()> {
     emu.ret((emu.arg(0) == emu.arg(1)) as u64);
     Ok(())
 }
 
-fn pthread_key_create(emu: &mut Emu) -> Result<()> {
-    emu.sys.next_key += 1;
-    emu.p.memory.write_u64(emu.arg(0), emu.sys.next_key)?;
-    emu.ret(0);
-    Ok(())
-}
 
-fn pthread_getspecific(emu: &mut Emu) -> Result<()> {
-    let v = emu.sys.tls_keys.get(&emu.arg(0)).copied().unwrap_or(0);
-    emu.ret(v);
-    Ok(())
-}
 
-fn pthread_setspecific(emu: &mut Emu) -> Result<()> {
-    emu.sys.tls_keys.insert(emu.arg(0), emu.arg(1));
-    emu.ret(0);
-    Ok(())
-}
 
-fn pthread_stack(emu: &mut Emu) -> Result<()> {
-    emu.ret(crate::STACK_TOP);
-    Ok(())
-}
 
-fn pthread_stack_size(emu: &mut Emu) -> Result<()> {
-    emu.ret(crate::STACK_SIZE);
-    Ok(())
-}
-
-fn pthread_create(_: &mut Emu) -> Result<()> {
-    Err(Stop::Unsupported("pthread_create: threads aren't implemented yet".into()))
-}
 
 /// `_tlv_bootstrap`: the thunk for every `__thread` variable. x0 points at a
 /// descriptor {thunk, key, offset}; return the variable's address. Must only
@@ -678,7 +653,8 @@ fn tlv_get_addr(emu: &mut Emu) -> Result<()> {
     let desc = emu.arg(0);
     let offset = emu.read_u64(desc + 16)?;
     let img = emu.p.images.iter().position(|i| desc >= i.start && desc < i.end).ok_or(Stop::Unsupported("TLV descriptor outside any image".into()))?;
-    let block = match emu.sys.tlv_blocks.get(&img) {
+    let key = (emu.th.current, img);
+    let block = match emu.sys.tlv_blocks.get(&key) {
         Some(&b) => b,
         None => {
             let image = &emu.p.images[img];
@@ -691,7 +667,7 @@ fn tlv_get_addr(emu: &mut Emu) -> Result<()> {
                 let init = bytes(emu, a, s)?;
                 emu.p.memory.write(b + (a - start), &init)?;
             }
-            emu.sys.tlv_blocks.insert(img, b);
+            emu.sys.tlv_blocks.insert(key, b);
             b
         }
     };
@@ -734,11 +710,13 @@ fn dispatch_async(emu: &mut Emu) -> Result<()> {
     let block = emu.cpu.x[0];
     let invoke = emu.read_u64(block + 16)?;
     emu.sys.queue.push_back((invoke, block));
+    crate::threads::wake_main_queue(emu);
     Ok(())
 }
 
 fn dispatch_async_f(emu: &mut Emu) -> Result<()> {
     emu.sys.queue.push_back((emu.arg(2), emu.arg(1)));
+    crate::threads::wake_main_queue(emu);
     Ok(())
 }
 
@@ -796,22 +774,6 @@ fn dispatch_semaphore_create(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_semaphore_wait(emu: &mut Emu) -> Result<()> {
-    let s = emu.arg(0);
-    let v = emu.read_u64(s + 8)?;
-    if v == 0 {
-        // Nobody else can signal it: run queued work, then give up.
-        drain_queue(emu)?;
-        let v = emu.read_u64(s + 8)?;
-        if v == 0 {
-            return Err(Stop::Unsupported("dispatch_semaphore_wait would block forever".into()));
-        }
-    }
-    let v = emu.read_u64(s + 8)?;
-    emu.write_u64(s + 8, v - 1)?;
-    emu.ret(0);
-    Ok(())
-}
 
 fn dispatch_semaphore_signal(emu: &mut Emu) -> Result<()> {
     let s = emu.arg(0);
@@ -833,10 +795,6 @@ fn dispatch_group_wait(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_time(emu: &mut Emu) -> Result<()> {
-    emu.ret(emu.arg(0).wrapping_add(emu.arg(1)));
-    Ok(())
-}
 
 /// `dispatch_after(when, queue, block)`: no timers yet; queue it.
 fn dispatch_after(emu: &mut Emu) -> Result<()> {
@@ -959,10 +917,6 @@ fn write_fd(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn fail_minus_one(emu: &mut Emu) -> Result<()> {
-    emu.ret(u64::MAX);
-    Ok(())
-}
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_memcmp", memcmp),
@@ -1051,16 +1005,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_getpagesize", pagesize),
     ("_host_page_size", host_page_size),
     ("_sysconf", sysconf),
-    ("_pthread_self", pthread_self),
-    ("_pthread_main_np", ret_one),
-    ("_pthread_threadid_np", pthread_threadid_np),
     ("_pthread_equal", pthread_equal),
-    ("_pthread_key_create", pthread_key_create),
-    ("_pthread_getspecific", pthread_getspecific),
-    ("_pthread_setspecific", pthread_setspecific),
-    ("_pthread_get_stackaddr_np", pthread_stack),
-    ("_pthread_get_stacksize_np", pthread_stack_size),
-    ("_pthread_setname_np", ret_zero),
     ("_pthread_mutex_init", ret_zero),
     ("_pthread_mutex_destroy", ret_zero),
     ("_pthread_mutex_lock", ret_zero),
@@ -1076,7 +1021,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_attr_init", ret_zero),
     ("_pthread_attr_setstacksize", ret_zero),
     ("_pthread_sigmask", ret_zero),
-    ("_pthread_create", pthread_create),
     ("_os_unfair_lock_lock", noop),
     ("_os_unfair_lock_unlock", noop),
     ("_os_unfair_recursive_lock_lock_with_options", noop),
@@ -1100,14 +1044,11 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_queue_attr_make_with_qos_class", ret_self),
     ("_dispatch_set_target_queue", noop),
     ("_dispatch_semaphore_create", dispatch_semaphore_create),
-    ("_dispatch_semaphore_wait", dispatch_semaphore_wait),
     ("_dispatch_semaphore_signal", dispatch_semaphore_signal),
     ("_dispatch_group_create", dispatch_group_create),
     ("_dispatch_group_enter", noop),
     ("_dispatch_group_leave", noop),
     ("_dispatch_group_wait", dispatch_group_wait),
-    ("_dispatch_time", dispatch_time),
-    ("_dispatch_walltime", dispatch_time),
     ("_dispatch_release", noop),
     ("_dispatch_activate", noop),
     ("_dispatch_set_context", noop),
@@ -1135,9 +1076,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dlopen", ret_zero),
     ("_dlclose", ret_zero),
     ("_write", write_fd),
-    ("_open", fail_minus_one),
-    ("_stat", fail_minus_one),
-    ("_access", fail_minus_one),
     ("_isatty", ret_zero),
     ("_os_log_create", ret_one),
     ("_os_log_type_enabled", ret_zero),
@@ -1151,7 +1089,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_syslog", noop),
     ("_closelog", noop),
     ("__dyld_is_objc_constant", ret_zero),
-    ("_sched_yield", ret_zero),
 ];
 
 // ---- locale (always the C locale) ----
@@ -1207,14 +1144,6 @@ fn ulock_wait(_: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported("__ulock_wait: would block (lock held with no other thread to release it)".into()))
 }
 
-fn cond_wait(emu: &mut Emu) -> Result<()> {
-    // The only way the condition can change is queued work running.
-    if drain_queue(emu)? == 0 {
-        return Err(Stop::Unsupported("pthread_cond_wait would block forever".into()));
-    }
-    emu.ret(0);
-    Ok(())
-}
 
 fn mach_port(emu: &mut Emu) -> Result<()> {
     emu.ret(0x103);
@@ -1285,21 +1214,13 @@ pub(crate) const MORE_FUNCS: &[(&str, HostFn)] = &[
     ("_arc4random", arc4random),
     ("___ulock_wait", ulock_wait),
     ("___ulock_wake", ret_zero),
-    ("_pthread_mach_thread_np", mach_port),
     ("_mach_host_self", mach_port),
     ("_pthread_mutex_trylock", ret_zero),
     ("_pthread_cond_init", ret_zero),
     ("_pthread_cond_destroy", ret_zero),
-    ("_pthread_cond_signal", ret_zero),
-    ("_pthread_cond_broadcast", ret_zero),
-    ("_pthread_cond_wait", cond_wait),
-    ("_pthread_cond_timedwait", cond_wait),
     ("_pthread_detach", ret_zero),
     ("_pthread_key_init_np", ret_zero),
     ("_close", ret_zero),
-    ("_nanosleep", ret_zero),
-    ("_usleep", ret_zero),
-    ("_sleep", ret_zero),
     ("_tzset", noop),
     ("_qsort", qsort),
     ("_aligned_alloc", aligned_alloc),

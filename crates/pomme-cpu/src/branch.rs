@@ -107,7 +107,7 @@ impl Cpu {
                     TPIDRRO_EL0 => self.tpidrro_el0,
                     CNTFRQ_EL0 => TIMER_HZ,
                     // Deterministic time: one tick per retired instruction.
-                    CNTVCT_EL0 => self.steps,
+                    CNTVCT_EL0 => self.steps + self.clock_offset,
                     _ => return unimpl,
                 };
                 self.set_xr(rt, v);

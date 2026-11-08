@@ -10,11 +10,14 @@
 
 pub mod heap;
 mod bundle;
+mod constants;
+pub mod fs;
 pub mod objc;
 
 mod foundation;
 mod libc;
 pub mod libsystem;
+pub mod threads;
 mod posix;
 mod printf;
 mod swift;
@@ -43,6 +46,27 @@ const HOOK_INSN: u32 = 0xd420_0000 | ((HOOK_IMM as u32) << 5);
 pub const CODE_BASE: u64 = 0x6_9000_0000;
 const CODE_SIZE: u64 = 1 << 20;
 
+/// Hook on `__cxa_throw(void *obj, std::type_info *type, void (*dtor)(void *))`.
+fn report_cxx_throw(emu: &mut Emu) -> Result<()> {
+    let (obj, tinfo) = (emu.cpu.x[0], emu.cpu.x[1]);
+    // type_info: {vtable, const char *name}; the name may carry a flag in its top bit.
+    let name_ptr = emu.read_u64(tinfo + 8).unwrap_or(0) & 0x7fff_ffff_ffff_ffff;
+    let name = emu.cstr(name_ptr).unwrap_or_default();
+    // std::exception's vtable: [complete dtor, deleting dtor, what()].
+    let what = emu
+        .read_u64(obj)
+        .and_then(|vt| emu.read_u64(vt + 16))
+        .ok()
+        .filter(|&f| f != 0 && name.contains("St") || name.contains("error") || name.contains("Error") || name.contains("exception"))
+        .and_then(|f| emu.call(f, &[obj]).ok())
+        .and_then(|p| emu.cstr(p).ok());
+    let thread = emu.th.threads[emu.th.current].name.clone();
+    println!("[C++ exception on thread {thread}] {name}: {}", what.as_deref().unwrap_or("(no what())"));
+    emu.last_exception = Some(format!("{name}: {}", what.unwrap_or_default()));
+    emu.continue_original();
+    Ok(())
+}
+
 /// A host implementation of a system function.
 pub type HostFn = fn(&mut Emu) -> Result<()>;
 
@@ -59,6 +83,10 @@ pub enum Stop {
     Exit(i32),
     /// Something host-side isn't supported yet.
     Unsupported(String),
+    /// Internal: a guest thread blocked and unwound to the scheduler.
+    Blocked,
+    /// Every thread is waiting and nothing is scheduled to wake any of them.
+    Idle(String),
 }
 
 impl From<MemError> for Stop {
@@ -81,6 +109,8 @@ impl fmt::Display for Stop {
             Stop::Cpu { exit, .. } => write!(f, "cpu: {exit:?}"),
             Stop::Exit(code) => write!(f, "exit({code})"),
             Stop::Unsupported(what) => write!(f, "unsupported: {what}"),
+            Stop::Blocked => write!(f, "thread blocked"),
+            Stop::Idle(what) => write!(f, "idle: {what}"),
         }
     }
 }
@@ -105,6 +135,12 @@ pub struct Emu {
     pub argv: u64,
     /// Guest-call nesting depth (host → guest → host → ...).
     pub depth: usize,
+    /// q0 as the last [`call`](Self::call) returned it (float results).
+    pub last_q0: u128,
+    /// The most recent C++ exception thrown (type: what).
+    pub last_exception: Option<String>,
+    /// Debugging aid: heap addresses to report allocations of (POMME_WATCH=0x...,0x...).
+    pub watch: Vec<u64>,
     /// Host-side state for UIKit.
     pub ui: uikit::State,
     /// Host-side state for libSystem (errno, TLS, dispatch queue, ...).
@@ -118,6 +154,10 @@ pub struct Emu {
     hook_target: u64,
     /// Host-side state for Foundation (CF bridge).
     pub fnd: foundation::State,
+    /// Guest threads and Mach ports.
+    pub th: threads::State,
+    /// Open files.
+    pub fs: fs::State,
     bundle: bundle::State,
 }
 
@@ -128,10 +168,12 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, printf::FUNCS, swift::FUNCS, uikit::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
+        // Thread-aware versions take precedence over libSystem's simpler ones.
+        registry.extend(threads::FUNCS.iter().copied());
         let handlers = p.stubs.iter().map(|(_, s)| registry.get(s.symbol.as_str()).copied()).collect();
 
         let mut cpu = Cpu::new();
@@ -150,6 +192,11 @@ impl Emu {
             argc: 0,
             argv: 0,
             depth: 0,
+            last_q0: 0,
+            last_exception: None,
+            watch: std::env::var("POMME_WATCH")
+                .map(|v| v.split(',').filter_map(|a| u64::from_str_radix(a.trim().trim_start_matches("0x"), 16).ok()).collect())
+                .unwrap_or_default(),
             ui: Default::default(),
             sys: Default::default(),
             thunks: Vec::new(),
@@ -158,6 +205,8 @@ impl Emu {
             hook_original: 0,
             hook_target: 0,
             fnd: Default::default(),
+            th: Default::default(),
+            fs: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
@@ -165,7 +214,12 @@ impl Emu {
             slot.copy_from_slice(&THUNK_INSN.to_le_bytes());
         }
         emu.p.memory.map(CODE_BASE, CODE_SIZE, Prot::RX, "[trampolines]")?;
+        threads::init(&mut emu);
         objc::init(&mut emu)?;
+        // Report every C++ throw (type and what()) before unwinding is attempted.
+        if let Some(throw) = emu.p.images.iter().find_map(|i| i.symbol("___cxa_throw")) {
+            emu.hook(throw, report_cxx_throw)?;
+        }
         foundation::init(&mut emu)?;
         libsystem::init(&mut emu)?;
         Ok(emu)
@@ -266,11 +320,18 @@ impl Emu {
     }
 
     /// Call guest code at `addr` with integer arguments, returning x0.
-    /// Callee-saved registers survive (the callee preserves them); pc and lr
-    /// are restored so a host function can call out and then return normally.
+    ///
+    /// The calling host function's registers are preserved: pc, lr, and the
+    /// argument and temporary registers (x0–x17, q0–q7), so a host function
+    /// can read its own arguments after calling out. The callee's float result
+    /// is in [`last_q0`](Self::last_q0).
     pub fn call(&mut self, addr: u64, args: &[u64]) -> Result<u64> {
         assert!(args.len() <= 8, "stack arguments not supported yet");
         let (pc, lr) = (self.cpu.pc, self.cpu.x[30]);
+        let mut saved_x = [0u64; 18];
+        saved_x.copy_from_slice(&self.cpu.x[..18]);
+        let mut saved_q = [0u128; 8];
+        saved_q.copy_from_slice(&self.cpu.q[..8]);
         for (i, a) in args.iter().enumerate() {
             self.cpu.x[i] = *a;
         }
@@ -280,9 +341,13 @@ impl Emu {
         let r = self.run_until_return();
         self.depth -= 1;
         r?;
+        let result = self.cpu.x[0];
+        self.last_q0 = self.cpu.q[0];
+        self.cpu.x[..18].copy_from_slice(&saved_x);
+        self.cpu.q[..8].copy_from_slice(&saved_q);
         self.cpu.pc = pc;
         self.cpu.x[30] = lr;
-        Ok(self.cpu.x[0])
+        Ok(result)
     }
 
     /// Execute guest code until it returns to the host, servicing stub calls.
@@ -291,21 +356,29 @@ impl Emu {
             let budget = self.max_steps.saturating_sub(self.cpu.steps);
             match self.cpu.run(&mut self.p.memory, budget) {
                 Exit::Returned => return Ok(()),
-                Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch()?,
-                Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
-                    let (f, original) = self.hooks[&self.cpu.pc];
-                    self.hook_original = original;
-                    self.hook_target = self.cpu.pc;
-                    self.cpu.pc = self.cpu.x[30];
-                    f(self)?
-                }
-                Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
-                    let f = self.thunks[((self.cpu.pc - THUNK_BASE) / 4) as usize];
-                    self.cpu.pc = self.cpu.x[30];
-                    f(self)?
-                }
-                exit => return Err(Stop::Cpu { exit, pc: self.cpu.pc }),
+                exit => self.service_trap(exit)?,
             }
+        }
+    }
+
+    /// Handle a CPU exit that needs the host: a stub call, a hooked function,
+    /// or a host thunk. Anything else is a stop.
+    pub(crate) fn service_trap(&mut self, exit: Exit) -> Result<()> {
+        match exit {
+            Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch(),
+            Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
+                let (f, original) = self.hooks[&self.cpu.pc];
+                self.hook_original = original;
+                self.hook_target = self.cpu.pc;
+                self.cpu.pc = self.cpu.x[30];
+                f(self)
+            }
+            Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
+                let f = self.thunks[((self.cpu.pc - THUNK_BASE) / 4) as usize];
+                self.cpu.pc = self.cpu.x[30];
+                f(self)
+            }
+            exit => Err(Stop::Cpu { exit, pc: self.cpu.pc }),
         }
     }
 
@@ -428,6 +501,11 @@ impl Emu {
         Ok(at)
     }
 
+    /// Whether stub `i` has a host implementation.
+    pub fn has_handler(&self, i: usize) -> bool {
+        self.handlers.get(i).is_some_and(|h| h.is_some())
+    }
+
     /// How many stubs have a host implementation.
     pub fn bound_functions(&self) -> usize {
         self.handlers.iter().filter(|h| h.is_some()).count()
@@ -447,7 +525,12 @@ impl Emu {
     }
 
     pub fn alloc(&mut self, size: u64) -> Result<u64> {
-        Ok(self.heap.alloc(&mut self.p.memory, size)?)
+        let a = self.heap.alloc(&mut self.p.memory, size)?;
+        if self.watch.contains(&a) {
+            let thread = self.th.threads.get(self.th.current).map_or(String::new(), |t| t.name.clone());
+            println!("[watch] {a:#x} allocated ({size} bytes) on thread {thread}, called from {}", self.symbolize(self.cpu.x[30].wrapping_sub(4)));
+        }
+        Ok(a)
     }
 
     pub fn alloc_cstr(&mut self, s: &str) -> Result<u64> {

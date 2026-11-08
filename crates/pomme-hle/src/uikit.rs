@@ -106,14 +106,21 @@ fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
     Ok(())
 }
 
-/// The main run loop. For now: drain queued main-queue work until idle.
+/// The main run loop: CoreFoundation's own, run until nothing can happen.
+/// While the main thread waits in it, the other threads run (see threads.rs).
 fn run_loop(emu: &mut Emu) -> Result<()> {
-    let ran = crate::libsystem::drain_queue(emu)?;
-    let windows = emu.ui.windows.len();
-    let views = emu.ui.views.count();
-    Err(Stop::Unsupported(format!(
-        "main run loop is idle after {ran} queued blocks ({windows} window(s), {views} view(s)); timers, run-loop sources and rendering aren't implemented yet"
-    )))
+    crate::libsystem::drain_queue(emu)?;
+    let mode = foundation::cf_data_pub(emu, "_kCFRunLoopDefaultMode")?;
+    loop {
+        emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
+        let r = foundation::cf_call(emu, "_CFRunLoopRunInMode", &[mode, 0])?;
+        if r == 1 {
+            // kCFRunLoopRunFinished: no sources or timers left.
+            let windows = emu.ui.windows.len();
+            let views = emu.ui.views.count();
+            return Err(Stop::Idle(format!("main run loop has no sources or timers left ({windows} window(s), {views} view(s))")));
+        }
+    }
 }
 
 /// Swift overlay: `UIApplicationMain(_ argc: Int32, _ argv: …, _ principalClassName: String?, _ delegateClassName: String?) -> Int32`
@@ -322,7 +329,97 @@ fn device_string(emu: &mut Emu, s: &str) -> Result<()> {
     Ok(())
 }
 
+// ---- CADisplayLink: {isa, target, selector, paused, CFRunLoopTimer, timestamp} ----
+
+const FRAME: f64 = 1.0 / 60.0;
+
+fn display_link_new(emu: &mut Emu) -> Result<()> {
+    let (target, sel) = (emu.arg(2), emu.arg(3));
+    let link = new_object(emu, "CADisplayLink")?;
+    emu.write_u64(link + 8, target)?;
+    emu.write_u64(link + 16, sel)?;
+    emu.ret(link);
+    Ok(())
+}
+
+/// The timer callout `void (*)(CFRunLoopTimerRef, void *info)`: one frame.
+fn display_link_fire(emu: &mut Emu) -> Result<()> {
+    let link = emu.arg(1);
+    if emu.read_u64(link + 24)? != 0 {
+        return Ok(()); // paused
+    }
+    let now = emu.cpu.steps as f64 / crate::libsystem::TICKS_PER_SEC as f64;
+    emu.write_u64(link + 40, now.to_bits())?;
+    let (target, sel) = (emu.read_u64(link + 8)?, emu.read_u64(link + 16)?);
+    let name = objc::sel_name(emu, sel);
+    send(emu, target, &name, &[link])?;
+    Ok(())
+}
+
+/// `-addToRunLoop:forMode:` — a repeating CFRunLoopTimer at 60 Hz.
+fn display_link_add(emu: &mut Emu) -> Result<()> {
+    let (link, run_loop, mode) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let rl = send(emu, run_loop, "getCFRunLoop", &[])?;
+    let callout = emu.host_thunk(display_link_fire)?;
+    // CFRunLoopTimerContext {version, info, retain, release, copyDescription}
+    let ctx = emu.alloc(40)?;
+    emu.write_u64(ctx + 8, link)?;
+    let now = foundation::cf_call(emu, "_CFAbsoluteTimeGetCurrent", &[])?;
+    let _ = now;
+    let first = f64::from_bits(emu.last_q0 as u64) + FRAME;
+    emu.cpu.q[0] = first.to_bits() as u128;
+    emu.cpu.q[1] = FRAME.to_bits() as u128;
+    let timer = foundation::cf_call(emu, "_CFRunLoopTimerCreate", &[0, 0, 0, callout, ctx])?;
+    foundation::cf_call(emu, "_CFRunLoopAddTimer", &[rl, timer, mode])?;
+    emu.write_u64(link + 32, timer)?;
+    Ok(())
+}
+
+fn display_link_invalidate(emu: &mut Emu) -> Result<()> {
+    let timer = emu.read_u64(emu.arg(0) + 32)?;
+    if timer != 0 {
+        foundation::cf_call(emu, "_CFRunLoopTimerInvalidate", &[timer])?;
+    }
+    Ok(())
+}
+
+fn display_link_set_paused(emu: &mut Emu) -> Result<()> {
+    emu.write_u64(emu.arg(0) + 24, emu.arg(2) & 0xff)
+}
+
+fn display_link_paused(emu: &mut Emu) -> Result<()> {
+    let p = emu.read_u64(emu.arg(0) + 24)?;
+    emu.ret(p);
+    Ok(())
+}
+
+fn display_link_timestamp(emu: &mut Emu) -> Result<()> {
+    let t = f64::from_bits(emu.read_u64(emu.arg(0) + 40)?);
+    ret_f64(emu, t);
+    Ok(())
+}
+
+fn display_link_target_timestamp(emu: &mut Emu) -> Result<()> {
+    let t = f64::from_bits(emu.read_u64(emu.arg(0) + 40)?) + FRAME;
+    ret_f64(emu, t);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("CADisplayLink", true, "displayLinkWithTarget:selector:", display_link_new),
+    ("CADisplayLink", false, "addToRunLoop:forMode:", display_link_add),
+    ("CADisplayLink", false, "removeFromRunLoop:forMode:", display_link_invalidate),
+    ("CADisplayLink", false, "invalidate", display_link_invalidate),
+    ("CADisplayLink", false, "setPaused:", display_link_set_paused),
+    ("CADisplayLink", false, "isPaused", display_link_paused),
+    ("CADisplayLink", false, "timestamp", display_link_timestamp),
+    ("CADisplayLink", false, "targetTimestamp", display_link_target_timestamp),
+    ("CADisplayLink", false, "duration", |e| {
+        ret_f64(e, FRAME);
+        Ok(())
+    }),
+    ("CADisplayLink", false, "setPreferredFramesPerSecond:", noop),
+    ("CADisplayLink", false, "setPreferredFrameRateRange:", noop),
     ("UIApplication", true, "sharedApplication", shared_application),
     ("UIApplication", false, "delegate", app_delegate),
     ("UIApplication", false, "setDelegate:", set_app_delegate),
@@ -330,6 +427,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "windows", windows),
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
+    ("UIApplication", false, "preferredContentSizeCategory", |e| {
+        // The same string pomme binds to UIContentSizeCategoryLarge (see constants.rs).
+        let s = foundation::new_nsstring(e, "UIContentSizeCategoryLarge")?;
+        e.ret(s);
+        Ok(())
+    }),
     ("UIApplication", false, "isIdleTimerDisabled", ret_zero),
     ("UIApplication", false, "setIdleTimerDisabled:", noop),
     ("UIApplication", false, "applicationIconBadgeNumber", ret_zero),
@@ -358,6 +461,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UISceneConnectionOptions", false, "notificationResponse", ret_zero),
     ("UISceneConnectionOptions", false, "sourceApplication", ret_zero),
     ("UIScreen", true, "mainScreen", main_screen),
+    ("UIScreen", true, "screens", |e| {
+        let s = main_screen_obj(e)?;
+        let a = foundation::new_array_of(e, &[s])?;
+        e.ret(a);
+        Ok(())
+    }),
+    ("UIScreen", false, "traitCollection", |e| {
+        let tc = host_class(e, "UITraitCollection")?;
+        let t = send(e, tc, "currentTraitCollection", &[])?;
+        e.ret(t);
+        Ok(())
+    }),
     ("UIScreen", false, "bounds", screen_bounds),
     ("UIScreen", false, "applicationFrame", screen_bounds),
     ("UIScreen", false, "nativeBounds", screen_native_bounds),
