@@ -31,24 +31,36 @@ const NOT_FOUND: u64 = i64::MAX as u64;
 
 #[derive(Default)]
 pub struct State {
-    /// Inter's bytes, once looked for (None inside: not in the sysroot).
-    font: Option<Option<Vec<u8>>>,
+    /// System fonts by file name, once looked for (None: not in the sysroot).
+    fonts: HashMap<&'static str, Option<std::rc::Rc<Vec<u8>>>>,
     /// (char, weight, optical size) → advance in em.
     advances: HashMap<(char, u16, u16), f64>,
 }
 
-/// The sysroot, found from where CoreFoundation was loaded.
-pub(crate) fn font_bytes(emu: &mut Emu) -> Option<&[u8]> {
-    if emu.text.font.is_none() {
+/// A font from the sysroot's System/Library/Fonts (found from where
+/// CoreFoundation was loaded), read once and shared.
+pub(crate) fn system_font(emu: &mut Emu, file: &'static str) -> Option<std::rc::Rc<Vec<u8>>> {
+    if !emu.text.fonts.contains_key(file) {
         let path = emu
             .p
             .images
             .iter()
             .find(|i| i.path.ends_with("System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"))
-            .and_then(|i| i.path.ancestors().nth(5).map(|root| root.join("System/Library/Fonts/Inter.ttf")));
-        emu.text.font = Some(path.and_then(|p| pomme_loader::vfs::read(&p).ok()));
+            .and_then(|i| i.path.ancestors().nth(5).map(|root| root.join("System/Library/Fonts").join(file)));
+        let bytes = path.and_then(|p| pomme_loader::vfs::read(&p).ok()).map(std::rc::Rc::new);
+        emu.text.fonts.insert(file, bytes);
     }
-    emu.text.font.as_ref().unwrap().as_deref()
+    emu.text.fonts[file].clone()
+}
+
+/// The text font (Inter).
+pub(crate) fn font_bytes(emu: &mut Emu) -> Option<std::rc::Rc<Vec<u8>>> {
+    system_font(emu, "Inter.ttf")
+}
+
+/// The emoji font (Noto Color Emoji), for characters the text font lacks.
+pub(crate) fn emoji_bytes(emu: &mut Emu) -> Option<std::rc::Rc<Vec<u8>>> {
+    system_font(emu, "NotoColorEmoji.ttf")
 }
 
 /// UIFontWeight (-0.8 … 0.62) → OpenType `wght` (100 … 900).
@@ -66,6 +78,14 @@ pub(crate) fn ot_weight(w: f64) -> f64 {
     900.0
 }
 
+/// Advance of `ch` in the emoji font, in em.
+fn emoji_advance(emu: &mut Emu, ch: char) -> Option<f64> {
+    let bytes = emoji_bytes(emu)?;
+    let face = ttf_parser::Face::parse(&bytes, 0).ok()?;
+    let g = face.glyph_index(ch)?;
+    Some(face.glyph_hor_advance(g)? as f64 / face.units_per_em() as f64)
+}
+
 /// Advance width of `ch` in points.
 fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
     let wght = ot_weight(weight).round() as u16;
@@ -74,13 +94,20 @@ fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
     if let Some(&em) = emu.text.advances.get(&key) {
         return em * size;
     }
-    let em = match font_bytes(emu).and_then(|d| ttf_parser::Face::parse(d, 0).ok()) {
+    let text = font_bytes(emu);
+    let face = text.as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok());
+    let em = match face {
         Some(mut face) => {
             face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), wght as f32);
             face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
             let upem = face.units_per_em() as f64;
-            let gid = face.glyph_index(ch).or_else(|| face.glyph_index('\u{fffd}'));
-            gid.and_then(|g| face.glyph_hor_advance(g)).map_or(0.55, |a| a as f64 / upem)
+            match face.glyph_index(ch) {
+                Some(g) => face.glyph_hor_advance(g).map_or(0.55, |a| a as f64 / upem),
+                // Not in the text font: emoji (and other symbols) come from the emoji font.
+                None => emoji_advance(emu, ch).unwrap_or_else(|| {
+                    face.glyph_index('\u{fffd}').and_then(|g| face.glyph_hor_advance(g)).map_or(0.55, |a| a as f64 / upem)
+                }),
+            }
         }
         None if ch.is_whitespace() => 0.25,
         None => 0.55,

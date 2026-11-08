@@ -10,7 +10,8 @@
 #   - Swift Foundation (swiftlang/swift-foundation) built as module `Foundation`,
 #     with pomme's Objective-C bridging overlay (scripts/sysroot/build-swift-foundation.sh)
 #   - Swift overlays (scripts/sysroot/build-overlays.sh)
-#   - Inter (rsms/inter, SIL OFL) as the system font, for text metrics and drawing
+#   - Inter (rsms/inter, SIL OFL) as the system font, for text metrics and drawing,
+#     and Noto Color Emoji (SIL OFL) for emoji
 #   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
 #     (swiftlang/swift-foundation-icu). Built for arm64 *macOS*: its Darwin code
 #     paths assume macOS APIs that the iOS SDK hides, and the machine code and
@@ -131,5 +132,10 @@ mkdir -p "$FONTS"
   'https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf'
 [ -f "$FONTS/Inter-OFL.txt" ] || curl -fsSL -o "$FONTS/Inter-OFL.txt" \
   'https://raw.githubusercontent.com/google/fonts/main/ofl/inter/OFL.txt'
+# Emoji: Noto Color Emoji (SIL OFL), vector COLR glyphs.
+[ -f "$FONTS/NotoColorEmoji.ttf" ] || curl -fsSL -o "$FONTS/NotoColorEmoji.ttf" \
+  'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf'
+[ -f "$FONTS/NotoColorEmoji-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoColorEmoji-OFL.txt" \
+  'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/OFL.txt'
 
 echo "installed into $VENDOR/sysroot"

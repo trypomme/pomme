@@ -74,6 +74,18 @@ fn renders_and_counts_taps() {
     assert!(views.contains("\"Tapped 2 times\""), "{views}");
     let png = emu.screenshot_png(1.0).unwrap();
     assert!(png.starts_with(b"\x89PNG"));
+
+    // The 🍎 is drawn (from the emoji font): red pixels on the greeting's line.
+    let line = views.lines().find(|l| l.contains("Hello from pomme")).unwrap();
+    let frame: Vec<f64> = line.split(['(', ',', '×', ')']).filter_map(|t| t.trim().parse().ok()).take(4).collect();
+    let (x, y, w, h) = (frame[0], frame[1], frame[2], frame[3]);
+    let pix = pomme_hle::render::render(&mut emu, 1.0).unwrap();
+    let red = (y as u32..(y + h) as u32)
+        .flat_map(|py| (x as u32..(x + w) as u32).map(move |px| (px, py)))
+        .filter_map(|(px, py)| pix.pixel(px, py))
+        .filter(|c| c.red() > 180 && c.green() < 110 && c.blue() < 110)
+        .count();
+    assert!(red > 20, "no emoji on the greeting line ({red} red pixels)");
 }
 
 #[test]

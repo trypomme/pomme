@@ -347,6 +347,8 @@ fn paint(color: [f32; 4], alpha: f32) -> Option<Paint<'static>> {
 struct Painter<'a> {
     pix: Pixmap,
     font: Option<&'a [u8]>,
+    /// For characters the text font lacks (emoji): color glyphs (COLR).
+    emoji: Option<&'a [u8]>,
 }
 
 impl Painter<'_> {
@@ -377,7 +379,10 @@ impl Painter<'_> {
                 face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
                 current = Some((wght, opsz));
             }
-            let Some(gid) = face.glyph_index(g.ch) else { continue };
+            let Some(gid) = face.glyph_index(g.ch) else {
+                self.emoji_glyph(g, alpha, t, mask);
+                continue;
+            };
             let mut b = Outline(PathBuilder::new());
             if face.outline_glyph(gid, &mut b).is_none() {
                 continue;
@@ -388,6 +393,26 @@ impl Painter<'_> {
             let color = g.color.map(|v| v as f32);
             if let Some(p) = paint(color, alpha) {
                 self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
+            }
+        }
+    }
+
+    /// A color glyph from the emoji font, painted layer by layer.
+    fn emoji_glyph(&mut self, g: &Glyph, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let Some(data) = self.emoji else { return };
+        let Ok(face) = ttf_parser::Face::parse(data, 0) else { return };
+        let Some(gid) = face.glyph_index(g.ch) else { return };
+        let s = g.size as f32 / face.units_per_em() as f32;
+        let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
+        let base = ts(&concat(&place, t));
+        let mut painter = ColrPainter { face: &face, pix: &mut self.pix, base, transforms: Vec::new(), clips: Vec::new(), outline: None, alpha, mask };
+        let fg = ttf_parser::RgbaColor::new(0, 0, 0, 255);
+        if face.is_color_glyph(gid) {
+            face.paint_color_glyph(gid, 0, fg, &mut painter);
+        } else if let Some(path) = painter.glyph_path(gid) {
+            // A plain outline in the emoji font: draw it in the text color.
+            if let Some(p) = paint(g.color.map(|v| v as f32), alpha) {
+                self.pix.fill_path(&path, &p, FillRule::Winding, base, mask);
             }
         }
     }
@@ -432,6 +457,130 @@ impl Painter<'_> {
 
 fn rect_path(w: f32, h: f32) -> Option<tiny_skia::Path> {
     build(&rect_els(0.0, 0.0, w, h))
+}
+
+/// Paints COLR (v0 and v1) color glyphs: layers of outlines filled with solid
+/// colors or gradients, under clips and transforms. Layer compositing modes
+/// are treated as plain source-over.
+struct ColrPainter<'f, 'p, 'm> {
+    face: &'f ttf_parser::Face<'f>,
+    pix: &'p mut Pixmap,
+    /// Glyph space (font units, y up) to device.
+    base: Transform,
+    transforms: Vec<Transform>,
+    /// Clip paths in device space.
+    clips: Vec<tiny_skia::Path>,
+    /// The last outlined glyph (font units).
+    outline: Option<tiny_skia::Path>,
+    alpha: f32,
+    mask: Option<&'m Mask>,
+}
+
+impl ColrPainter<'_, '_, '_> {
+    fn current(&self) -> Transform {
+        self.transforms.last().copied().unwrap_or(self.base)
+    }
+
+    fn glyph_path(&self, gid: ttf_parser::GlyphId) -> Option<tiny_skia::Path> {
+        let mut b = Outline(PathBuilder::new());
+        self.face.outline_glyph(gid, &mut b)?;
+        b.0.finish()
+    }
+
+    fn color(&self, c: ttf_parser::RgbaColor) -> tiny_skia::Color {
+        tiny_skia::Color::from_rgba8(c.red, c.green, c.blue, (c.alpha as f32 * self.alpha.clamp(0.0, 1.0)) as u8)
+    }
+
+    fn stops(&self, it: impl Iterator<Item = ttf_parser::colr::ColorStop>) -> Vec<tiny_skia::GradientStop> {
+        let mut v: Vec<_> = it.collect();
+        v.sort_by(|a, b| a.stop_offset.total_cmp(&b.stop_offset));
+        v.iter().map(|s| tiny_skia::GradientStop::new(s.stop_offset, self.color(s.color))).collect()
+    }
+
+    /// The outer mask ∩ every clip, or None when nothing clips.
+    fn clip_mask(&self) -> Option<Mask> {
+        if self.clips.is_empty() {
+            return self.mask.cloned();
+        }
+        let (w, h) = (self.pix.width(), self.pix.height());
+        let mut m = match self.mask {
+            Some(m) => m.clone(),
+            None => {
+                let mut m = Mask::new(w, h)?;
+                m.fill_path(&rect_path(w as f32, h as f32)?, FillRule::Winding, false, Transform::identity());
+                m
+            }
+        };
+        for c in &self.clips {
+            m.intersect_path(c, FillRule::Winding, true, Transform::identity());
+        }
+        Some(m)
+    }
+}
+
+impl<'a> ttf_parser::colr::Painter<'a> for ColrPainter<'_, '_, '_> {
+    fn outline_glyph(&mut self, glyph_id: ttf_parser::GlyphId) {
+        self.outline = self.glyph_path(glyph_id);
+    }
+
+    fn paint(&mut self, p: ttf_parser::colr::Paint<'a>) {
+        use ttf_parser::colr::Paint as P;
+        let t = self.current();
+        let shader = match p {
+            P::Solid(c) => tiny_skia::Shader::SolidColor(self.color(c)),
+            P::LinearGradient(g) => {
+                let stops = self.stops(g.stops(0, &[]));
+                tiny_skia::LinearGradient::new((g.x0, g.y0).into(), (g.x1, g.y1).into(), stops, tiny_skia::SpreadMode::Pad, t)
+                    .unwrap_or(tiny_skia::Shader::SolidColor(tiny_skia::Color::TRANSPARENT))
+            }
+            P::RadialGradient(g) => {
+                let stops = self.stops(g.stops(0, &[]));
+                tiny_skia::RadialGradient::new((g.x0, g.y0).into(), g.r0.max(0.0), (g.x1, g.y1).into(), g.r1.max(0.0), stops, tiny_skia::SpreadMode::Pad, t)
+                    .unwrap_or(tiny_skia::Shader::SolidColor(tiny_skia::Color::TRANSPARENT))
+            }
+            // Sweep gradients aren't in tiny-skia: their first color stands in.
+            P::SweepGradient(g) => {
+                let c = g.stops(0, &[]).min_by(|a, b| a.stop_offset.total_cmp(&b.stop_offset)).map_or(tiny_skia::Color::TRANSPARENT, |s| self.color(s.color));
+                tiny_skia::Shader::SolidColor(c)
+            }
+        };
+        let paint = Paint { shader, anti_alias: true, ..Default::default() };
+        let mask = self.clip_mask();
+        // Fill the clip region: the whole canvas, under the clips' mask.
+        if let Some(r) = tiny_skia::Rect::from_xywh(0.0, 0.0, self.pix.width() as f32, self.pix.height() as f32) {
+            self.pix.fill_rect(r, &paint, Transform::identity(), mask.as_ref());
+        }
+    }
+
+    fn push_clip(&mut self) {
+        let t = self.current();
+        if let Some(p) = self.outline.clone().and_then(|p| p.transform(t)) {
+            self.clips.push(p);
+        }
+    }
+
+    fn push_clip_box(&mut self, b: ttf_parser::colr::ClipBox) {
+        let t = self.current();
+        if let Some(p) = tiny_skia::Rect::from_ltrb(b.x_min, b.y_min, b.x_max, b.y_max).map(PathBuilder::from_rect).and_then(|p| p.transform(t)) {
+            self.clips.push(p);
+        }
+    }
+
+    fn pop_clip(&mut self) {
+        self.clips.pop();
+    }
+
+    fn push_layer(&mut self, _mode: ttf_parser::colr::CompositeMode) {}
+    fn pop_layer(&mut self) {}
+
+    fn push_transform(&mut self, t: ttf_parser::Transform) {
+        let next = self.current().pre_concat(Transform::from_row(t.a, t.b, t.c, t.d, t.e, t.f));
+        self.transforms.push(next);
+    }
+
+    fn pop_transform(&mut self) {
+        self.transforms.pop();
+    }
 }
 
 struct Outline(PathBuilder);
@@ -541,8 +690,8 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
 pub(crate) fn rasterize(emu: &mut Emu, ops: &[Op], size: [f64; 2], scale: f64) -> Result<Pixmap> {
     let (w, h) = (((size[0] * scale).ceil() as u32).max(1), ((size[1] * scale).ceil() as u32).max(1));
     let pix = Pixmap::new(w, h).ok_or_else(|| Stop::Unsupported(format!("can't make a {w}×{h} bitmap")))?;
-    let font = crate::textkit::font_bytes(emu).map(|f| f.to_vec());
-    let mut p = Painter { pix, font: font.as_deref() };
+    let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
     let s = scale as f32;
     p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None);
     Ok(p.pix)
@@ -588,8 +737,8 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     let (sw, sh) = ((crate::uikit::SCREEN_W as f32 * scale) as u32, (crate::uikit::SCREEN_H as f32 * scale) as u32);
     let mut pix = Pixmap::new(sw, sh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
     pix.fill(tiny_skia::Color::BLACK);
-    let font = crate::textkit::font_bytes(emu).map(|f| f.to_vec());
-    let mut p = Painter { pix, font: font.as_deref() };
+    let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
     let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
     for w in emu.ui.windows.clone() {
         draw_view(emu, &mut p, w, 1.0, &t, None);

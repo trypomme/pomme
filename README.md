@@ -120,6 +120,8 @@ Debugging:
      against the iOS Simulator: same screen, including MSW's real-iOS bug (requests it passes
      through lose their bodies). Along the way: NSJSONSerialization, NSValue, NSException,
      `thread_info`, and a CPU fix (FCVTL dropped its upper double: square "rounded" corners)
+   - Emoji ✅: Noto Color Emoji (SIL OFL), painted from its vector COLR glyphs (layers, gradients,
+     clips) for any character the text font lacks
    - Virtual time: one instruction is 1 ns (a 1 GHz phone) on a 24 MHz mach clock
    - Next: Expo Router, React Native Skia (and through it, the Metal/raster path Flutter needs);
      a native window host; a faster virtual CPU clock (startup takes ~2 s
