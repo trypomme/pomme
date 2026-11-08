@@ -77,6 +77,9 @@ const DIRECT_SELECTORS: u32 = 0x4000_0000;
 /// These are configuration-style objects that don't affect what's on screen.
 /// `--trace` shows every message answered this way.
 const PERMISSIVE: &[&str] = &[
+    "NSCache",
+    "NSLayoutManager",
+    "NSTextContainer",
     "NSURLSessionConfiguration",
     "NSURLSession",
     "NSURLCache",
@@ -125,7 +128,7 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
 }
 
 /// Instance sizes of host classes that store fields in the object (isa + fields).
-const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16), ("NSError", 32), ("NSMethodSignature", 16), ("NSInvocation", 32), ("UIFont", 32)];
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32), ("__NSFastEnumerationEnumerator", 24), ("NSThread", 64), ("NSRunLoop", 16), ("NSNotification", 32), ("CADisplayLink", 48), ("NSUserDefaults", 16), ("NSError", 32), ("NSMethodSignature", 16), ("NSInvocation", 32), ("UIFont", 32), ("NSCache", 16), ("NSTextStorage", 24), ("NSLayoutManager", 24), ("NSTextContainer", 56)];
 
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
@@ -294,6 +297,8 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::uiview::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::threads::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::invocation::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::attributed::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::textkit::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -331,7 +336,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -799,10 +804,10 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
     }
 }
 
-/// Does the class implement `-forwardingTargetForSelector:` in guest code?
+/// Does the class implement `-forwardingTargetForSelector:` (in guest code, or a host wrapper like NSTextStorage)?
 fn forwards(emu: &mut Emu, cls: u64) -> Result<bool> {
     let sel = intern(emu, "forwardingTargetForSelector:")?;
-    Ok(matches!(lookup(emu, cls, sel)?, Some(Imp::Guest(_))))
+    Ok(lookup(emu, cls, sel)?.is_some())
 }
 
 /// Send a message from host code and return x0.

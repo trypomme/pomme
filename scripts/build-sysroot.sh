@@ -10,6 +10,7 @@
 #   - Swift Foundation (swiftlang/swift-foundation) built as module `Foundation`,
 #     with pomme's Objective-C bridging overlay (scripts/sysroot/build-swift-foundation.sh)
 #   - Swift overlays (scripts/sysroot/build-overlays.sh)
+#   - Inter (rsms/inter, SIL OFL) as the system font, for text metrics and drawing
 #   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
 #     (swiftlang/swift-foundation-icu). Built for arm64 *macOS*: its Darwin code
 #     paths assume macOS APIs that the iOS SDK hides, and the machine code and
@@ -122,5 +123,13 @@ VENDOR="$VENDOR" TAG="$TAG" "$ROOT/scripts/sysroot/build-swift-foundation.sh"
 
 # Swift overlays (ObjectiveC, Darwin, Dispatch, os, CoreFoundation, CoreGraphics, ...)
 VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-overlays.sh"
+
+# System font: Inter, open-source with metrics close to SF Pro.
+FONTS="$VENDOR/sysroot/System/Library/Fonts"
+mkdir -p "$FONTS"
+[ -f "$FONTS/Inter.ttf" ] || curl -fsSL -o "$FONTS/Inter.ttf" \
+  'https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf'
+[ -f "$FONTS/Inter-OFL.txt" ] || curl -fsSL -o "$FONTS/Inter-OFL.txt" \
+  'https://raw.githubusercontent.com/google/fonts/main/ofl/inter/OFL.txt'
 
 echo "installed into $VENDOR/sysroot"

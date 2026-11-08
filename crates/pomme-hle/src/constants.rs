@@ -72,6 +72,12 @@ const TRAITS: &[(&str, u64)] = &[
 /// Struct constants that are all zeros: (name, size).
 const ZEROS: &[(&str, u64)] = &[("UIEdgeInsetsZero", 32), ("CGRectZero", 32), ("CGPointZero", 16), ("CGSizeZero", 16), ("CGAffineTransformIdentity", 48)];
 
+/// Rect constants that aren't zero: (name, {x, y, width, height}).
+const RECTS: &[(&str, [f64; 4])] = &[
+    ("CGRectNull", [f64::INFINITY, f64::INFINITY, 0.0, 0.0]),
+    ("CGRectInfinite", [-8.988_465_674_311_579e307, -8.988_465_674_311_579e307, f64::MAX, f64::MAX]),
+];
+
 fn is_string_constant(name: &str) -> bool {
     let constant_shape = (name.starts_with(|c: char| c.is_ascii_uppercase()) || name.starts_with('k')) && !name.starts_with("OBJC_") && !name.contains('$');
     constant_shape && (STRING_SUFFIXES.iter().any(|s| name.ends_with(s)) || STRING_PREFIXES.iter().any(|p| name.starts_with(p)))
@@ -114,6 +120,17 @@ pub(crate) fn bind(emu: &mut Emu) -> Result<()> {
                 // {a=1, b=0, c=0, d=1, tx=0, ty=0}
                 emu.write_u64(cell, 1f64.to_bits())?;
                 emu.write_u64(cell + 24, 1f64.to_bits())?;
+            }
+            rebind_all(emu, stubs, cell)?;
+        }
+        handled.insert(name);
+    }
+    for &(name, r) in RECTS {
+        let stubs = emu.p.stubs.find(&format!("_{name}"));
+        if !stubs.is_empty() {
+            let cell = emu.alloc(32)?;
+            for (i, v) in r.iter().enumerate() {
+                emu.write_u64(cell + i as u64 * 8, v.to_bits())?;
             }
             rebind_all(emu, stubs, cell)?;
         }

@@ -10,7 +10,9 @@
 
 pub mod heap;
 mod bundle;
+mod cg;
 mod constants;
+mod attributed;
 mod invocation;
 pub mod fs;
 pub mod objc;
@@ -22,6 +24,7 @@ pub mod threads;
 mod posix;
 mod printf;
 mod swift;
+mod textkit;
 mod uikit;
 mod uiview;
 
@@ -162,6 +165,8 @@ pub struct Emu {
     pub th: threads::State,
     /// Open files.
     pub fs: fs::State,
+    /// Text layout (font data and advance cache).
+    text: textkit::State,
     bundle: bundle::State,
 }
 
@@ -172,7 +177,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -213,6 +218,7 @@ impl Emu {
             fnd: Default::default(),
             th: Default::default(),
             fs: Default::default(),
+            text: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;

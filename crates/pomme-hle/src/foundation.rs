@@ -59,7 +59,7 @@ pub(crate) fn init(_emu: &mut Emu) -> Result<()> {
 
 // ---- calling CoreFoundation ----
 
-fn cf_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
+pub(crate) fn cf_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
     if let Some(&a) = emu.fnd.syms.get(name) {
         return Ok(a);
     }
@@ -70,7 +70,7 @@ fn cf_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
 }
 
 /// Call a CoreFoundation function with integer arguments.
-fn cf(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
+pub(crate) fn cf(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
     let f = cf_sym(emu, name)?;
     emu.call(f, args)
 }
@@ -387,7 +387,7 @@ fn ret_bool(emu: &mut Emu, b: bool) -> Result<()> {
 
 // ---- class clusters: +alloc returns a placeholder, -init... makes the real object ----
 
-fn cluster_alloc(emu: &mut Emu) -> Result<()> {
+pub(crate) fn cluster_alloc(emu: &mut Emu) -> Result<()> {
     let cls = emu.arg(0);
     if !emu.objc.class(cls).is_some_and(|c| c.host) {
         // A guest subclass of a cluster class: a normal instance.
@@ -403,7 +403,7 @@ fn cluster_alloc(emu: &mut Emu) -> Result<()> {
 }
 
 /// Whether the receiver (placeholder or class) is the mutable variant.
-fn wants_mutable(emu: &mut Emu, obj: u64, mutable_class: &str) -> Result<bool> {
+pub(crate) fn wants_mutable(emu: &mut Emu, obj: u64, mutable_class: &str) -> Result<bool> {
     let cls = if emu.objc.class(obj).is_some() { obj } else { emu.read_u64(obj)? };
     let m = host_class(emu, mutable_class)?;
     let mut c = cls;
@@ -826,7 +826,7 @@ fn new_array(emu: &mut Emu, _mutable: bool) -> Result<u64> {
     cf(emu, "_CFArrayCreateMutable", &[0, 0, cb])
 }
 
-fn array_from(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
+pub(crate) fn array_from(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
     let a = new_array(emu, true)?;
     for &o in objs {
         cf(emu, "_CFArrayAppendValue", &[a, o])?;
@@ -1120,13 +1120,13 @@ fn array_description(emu: &mut Emu) -> Result<()> {
 
 // ---- dictionaries ----
 
-fn new_dict(emu: &mut Emu) -> Result<u64> {
+pub(crate) fn new_dict(emu: &mut Emu) -> Result<u64> {
     let k = cf_sym(emu, "_kCFTypeDictionaryKeyCallBacks")?;
     let v = cf_sym(emu, "_kCFTypeDictionaryValueCallBacks")?;
     cf(emu, "_CFDictionaryCreateMutable", &[0, 0, k, v])
 }
 
-fn dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
+pub(crate) fn dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
     if constant_kind(emu, d) == Some(Constant::Dictionary) {
         return constant_dict_pairs(emu, d);
     }
@@ -2727,6 +2727,43 @@ fn ns_temporary_directory(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &format!("{DATA_CONTAINER}/tmp/"))
 }
 
+// ---- NSCache: a dictionary that never evicts (deterministic) ----
+
+fn cache_get(emu: &mut Emu) -> Result<()> {
+    let (c, key) = (emu.arg(0), emu.arg(2));
+    let store = defaults_store(emu, c)?;
+    let v = if key == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[store, key])? };
+    emu.ret(v);
+    Ok(())
+}
+
+fn cache_set(emu: &mut Emu) -> Result<()> {
+    let (c, v, key) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let store = defaults_store(emu, c)?;
+    if key != 0 {
+        if v == 0 {
+            cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
+        } else {
+            cf(emu, "_CFDictionarySetValue", &[store, key, v])?;
+        }
+    }
+    Ok(())
+}
+
+fn cache_remove(emu: &mut Emu) -> Result<()> {
+    let (c, key) = (emu.arg(0), emu.arg(2));
+    let store = defaults_store(emu, c)?;
+    cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
+    Ok(())
+}
+
+fn cache_remove_all(emu: &mut Emu) -> Result<()> {
+    let c = emu.arg(0);
+    let store = defaults_store(emu, c)?;
+    cf(emu, "_CFDictionaryRemoveAllValues", &[store])?;
+    Ok(())
+}
+
 // ---- NSUserDefaults: in memory, per run (nothing persists yet) ----
 
 fn user_defaults(emu: &mut Emu) -> Result<()> {
@@ -3031,6 +3068,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSConstantDictionary", false, "count", constant_dict_count),
     ("NSConstantDictionary", false, "objectForKey:", constant_dict_object_for_key),
     ("NSConstantDictionary", false, "objectForKeyedSubscript:", constant_dict_object_for_key),
+    ("NSCache", false, "objectForKey:", cache_get),
+    ("NSCache", false, "setObject:forKey:", cache_set),
+    ("NSCache", false, "setObject:forKey:cost:", cache_set),
+    ("NSCache", false, "removeObjectForKey:", cache_remove),
+    ("NSCache", false, "removeAllObjects", cache_remove_all),
     ("NSUserDefaults", true, "standardUserDefaults", user_defaults),
     ("NSUserDefaults", false, "initWithSuiteName:", defaults_init_suite),
     ("NSUserDefaults", false, "objectForKey:", defaults_object),
@@ -3068,6 +3110,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSData", true, "dataWithBytesNoCopy:length:freeWhenDone:", data_with_bytes),
     ("NSData", false, "initWithBytesNoCopy:length:", data_with_bytes),
     ("NSData", false, "initWithBytesNoCopy:length:freeWhenDone:", data_with_bytes),
+    // We copy the bytes and never free, so the deallocator never runs (the bytes may be an owning pointer).
+    ("NSData", false, "initWithBytesNoCopy:length:deallocator:", data_with_bytes),
+    ("NSData", true, "dataWithBytesNoCopy:length:deallocator:", data_with_bytes),
     ("NSData", true, "dataWithContentsOfFile:", data_with_contents_of_file),
     ("NSData", true, "dataWithContentsOfFile:options:error:", data_with_contents_of_file),
     ("NSData", false, "initWithContentsOfFile:", data_with_contents_of_file),
@@ -3501,4 +3546,36 @@ pub fn new_dict_of(emu: &mut Emu, pairs: &[(u64, u64)]) -> Result<u64> {
 
 pub fn dict_get(emu: &mut Emu, d: u64, k: u64) -> Result<u64> {
     cf(emu, "_CFDictionaryGetValue", &[d, k])
+}
+
+/// A CF dictionary with the same entries, for handing to CoreFoundation
+/// (constant literals and Swift-native dictionaries aren't CF objects).
+pub fn as_cf_dict(emu: &mut Emu, d: u64) -> Result<u64> {
+    if d == 0 {
+        return new_dict(emu);
+    }
+    if is_cf(emu, d) && constant_kind(emu, d).is_none() {
+        return Ok(d);
+    }
+    let pairs = if constant_kind(emu, d).is_some() {
+        dict_pairs(emu, d)?
+    } else {
+        let e = send(emu, d, "keyEnumerator", &[])?;
+        let mut v = Vec::new();
+        loop {
+            let k = send(emu, e, "nextObject", &[])?;
+            if k == 0 {
+                break;
+            }
+            let val = send(emu, d, "objectForKey:", &[k])?;
+            v.push((k, val));
+        }
+        v
+    };
+    let out = new_dict(emu)?;
+    for (k, v) in pairs {
+        let k = as_cf_string(emu, k)?;
+        cf(emu, "_CFDictionarySetValue", &[out, k, v])?;
+    }
+    Ok(out)
 }
