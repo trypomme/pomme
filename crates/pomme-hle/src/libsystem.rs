@@ -77,6 +77,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
                 emu.write_u64(addr, s)?;
             }
             "__dispatch_main_q" => emu.write_u64(addr, queue_cls)?,
+            "__DefaultRuneLocale" => fill_rune_locale(emu, addr)?,
             "_vm_page_size" | "_vm_kernel_page_size" => emu.write_u64(addr, pomme_mem::PAGE_SIZE)?,
             "_tzname" => {
                 let utc = emu.alloc_cstr("UTC")?;
@@ -367,6 +368,12 @@ fn toupper(emu: &mut Emu) -> Result<()> {
 /// `__maskrune(c, mask)`: ctype classification against the C locale.
 fn maskrune(emu: &mut Emu) -> Result<()> {
     let (c, mask) = (emu.arg(0) as u32, emu.arg(1));
+    emu.ret(ctype_bits(c) & mask);
+    Ok(())
+}
+
+/// The C locale's `_CTYPE_*` bits for a character.
+pub(crate) fn ctype_bits(c: u32) -> u64 {
     let ch = char::from_u32(c).unwrap_or('\0');
     let mut bits = 0u64;
     let set = |cond: bool, bit: u64, bits: &mut u64| {
@@ -385,7 +392,29 @@ fn maskrune(emu: &mut Emu) -> Result<()> {
     set(ch.is_ascii_hexdigit(), 0x10000, &mut bits); // _CTYPE_X
     set(ch == ' ' || ch == '\t', 0x20000, &mut bits); // _CTYPE_B
     set(ch.is_ascii_graphic() || ch == ' ', 0x40000, &mut bits); // _CTYPE_R
-    emu.ret(bits & mask);
+    bits
+}
+
+/// `_DefaultRuneLocale` (the C locale), whose tables libc++'s `ctype<char>`
+/// reads directly: `__runetype` at 60, `__maplower` at 1084, `__mapupper` at 2108.
+fn fill_rune_locale(emu: &mut Emu, addr: u64) -> Result<()> {
+    for (i, b) in b"RuneMagA".iter().enumerate() {
+        emu.p.memory.write_u8(addr + i as u64, *b)?;
+    }
+    for (i, b) in b"NONE".iter().enumerate() {
+        emu.p.memory.write_u8(addr + 8 + i as u64, *b)?;
+    }
+    emu.p.memory.write_u32(addr + 56, 0xfffd)?; // __invalid_rune
+    for c in 0..256u32 {
+        let o = c as u64 * 4;
+        let bits = if c < 128 { ctype_bits(c) } else { 0 };
+        emu.p.memory.write_u32(addr + 60 + o, bits as u32)?;
+        let b = c as u8;
+        let lower = if c < 128 { b.to_ascii_lowercase() as u32 } else { c };
+        let upper = if c < 128 { b.to_ascii_uppercase() as u32 } else { c };
+        emu.p.memory.write_u32(addr + 1084 + o, lower)?;
+        emu.p.memory.write_u32(addr + 2108 + o, upper)?;
+    }
     Ok(())
 }
 

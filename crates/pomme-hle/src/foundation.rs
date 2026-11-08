@@ -929,7 +929,8 @@ fn array_with_array(emu: &mut Emu) -> Result<()> {
 }
 
 /// `+arrayWithObjects:(id)first, ...` — nil-terminated varargs on the stack.
-fn array_with_objects_varargs(emu: &mut Emu) -> Result<()> {
+/// A nil-terminated `id` vararg list (arm64 Darwin: the variadic part is on the stack).
+fn varargs_objects(emu: &mut Emu) -> Result<Vec<u64>> {
     let mut objs = Vec::new();
     let mut o = emu.arg(2);
     let mut at = emu.cpu.sp;
@@ -938,8 +939,53 @@ fn array_with_objects_varargs(emu: &mut Emu) -> Result<()> {
         o = emu.read_u64(at)?;
         at += 8;
     }
+    Ok(objs)
+}
+
+fn set_with_objects_varargs(emu: &mut Emu) -> Result<()> {
+    let objs = varargs_objects(emu)?;
+    let s = new_set(emu)?;
+    for o in objs {
+        cf(emu, "_CFSetAddValue", &[s, o])?;
+    }
+    emu.ret(s);
+    Ok(())
+}
+
+/// `+dictionaryWithObjectsAndKeys:` (object, key, object, key, ..., nil).
+fn dict_with_objects_and_keys(emu: &mut Emu) -> Result<()> {
+    let items = varargs_objects(emu)?;
+    let pairs: Vec<(u64, u64)> = items.chunks_exact(2).map(|p| (p[1], p[0])).collect();
+    let d = new_dict_of(emu, &pairs)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn array_with_objects_varargs(emu: &mut Emu) -> Result<()> {
+    let objs = varargs_objects(emu)?;
     let a = array_from(emu, &objs)?;
     emu.ret(a);
+    Ok(())
+}
+
+/// `-isEqualToArray:` / `-isEqual:`: same length, elements equal pairwise.
+fn array_is_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    let eq = a == b || (b != 0 && {
+        let cls = crate::objc::host_class(emu, "NSArray")?;
+        send(emu, b, "isKindOfClass:", &[cls])? & 0xff != 0 && {
+            let (x, y) = (array_values(emu, a)?, array_values(emu, b)?);
+            let mut same = x.len() == y.len();
+            for (p, q) in x.into_iter().zip(y) {
+                if !same {
+                    break;
+                }
+                same = p == q || send(emu, p, "isEqual:", &[q])? & 0xff != 0;
+            }
+            same
+        }
+    });
+    emu.ret(eq as u64);
     Ok(())
 }
 
@@ -3522,6 +3568,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSArray", false, "initWithObjects:count:", array_with_objects_count),
     ("NSArray", true, "arrayWithObject:", array_with_object),
     ("NSArray", true, "arrayWithObjects:", array_with_objects_varargs),
+    ("NSArray", false, "isEqualToArray:", array_is_equal),
+    ("NSDictionary", true, "dictionaryWithObjectsAndKeys:", dict_with_objects_and_keys),
+    ("NSArray", false, "isEqual:", array_is_equal),
     ("NSArray", true, "arrayWithArray:", array_with_array),
     ("NSArray", false, "initWithArray:", array_with_array),
     ("NSMutableArray", true, "arrayWithCapacity:", array_empty),
@@ -3583,6 +3632,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSSet", true, "new", set_empty),
     ("NSSet", false, "init", set_empty),
     ("NSSet", true, "setWithArray:", set_with_array),
+    ("NSSet", true, "setWithObjects:", set_with_objects_varargs),
     ("NSSet", false, "initWithArray:", set_with_array),
     ("NSSet", true, "setWithObjects:count:", set_with_objects_count),
     ("NSSet", false, "initWithObjects:count:", set_with_objects_count),

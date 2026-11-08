@@ -17,7 +17,10 @@ const API: &str = "https://api.github.com/repos/";
 // Where the app's buttons are (points; from `pomme run --views`).
 const TAP_BUTTON: (f64, f64) = (195.0, 265.0);
 const SWR_REFRESH: (f64, f64) = (195.0, 383.0);
-const QUERY_REFRESH: (f64, f64) = (195.0, 508.0);
+const QUERY_REFRESH: (f64, f64) = (153.0, 508.0);
+// Expo Router: the query card's link to /repo/TanStack/query, and the header's back button.
+const DETAILS: (f64, f64) = (240.0, 508.0);
+const BACK: (f64, f64) = (38.0, 69.0);
 
 fn boot() -> Option<Emu> {
     let (app, sysroot) = (Path::new(APP), Path::new(SYSROOT));
@@ -127,6 +130,40 @@ fn offline_fetch_shows_the_error() {
     let views = run_for(&mut emu, 6.0);
     assert!(views.contains("Couldn't load"), "{views}");
     assert!(views.contains("Promise.all failed"), "{views}");
+}
+
+/// Expo Router's native stack (react-native-screens on UINavigationController):
+/// push a route, go back by the header button, push again; the home screen
+/// keeps its state across the round trip.
+#[test]
+fn expo_router_pushes_and_goes_back() {
+    let Some(mut emu) = boot() else { return };
+    emu.net.client = Some(Box::new(repos()));
+    tap(&mut emu, TAP_BUTTON, 3.0);
+    tap(&mut emu, DETAILS, 5.0);
+    tap(&mut emu, BACK, 6.5);
+    let views = run_for(&mut emu, 7.5);
+    assert!(views.contains("\"Tapped 1 time\""), "{views}");
+    assert!(!views.contains("stars"), "still on the details screen: {views}");
+    // React Navigation saw the native pop, so the link works again.
+    let mut emu2 = boot().unwrap();
+    emu2.net.client = Some(Box::new(repos()));
+    tap(&mut emu2, DETAILS, 5.0);
+    tap(&mut emu2, BACK, 6.5);
+    tap(&mut emu2, DETAILS, 8.0);
+    let views = run_for(&mut emu2, 9.0);
+    assert!(views.contains("\"TanStack/query\""), "{views}");
+    assert!(views.contains("\"★ 48,000 stars\""), "{views}");
+    assert!(!views.contains("Hello from pomme"), "{views}");
+
+    // The header draws its title: dark pixels centered in the bar (y 47–91).
+    let pix = pomme_hle::render::render(&mut emu2, 1.0).unwrap();
+    let dark = (55..85)
+        .flat_map(|py| (150..240).map(move |px| (px, py)))
+        .filter_map(|(px, py)| pix.pixel(px, py))
+        .filter(|c| c.red() < 80 && c.green() < 80 && c.blue() < 80)
+        .count();
+    assert!(dark > 30, "no title in the navigation bar ({dark} dark pixels)");
 }
 
 static HITS: AtomicUsize = AtomicUsize::new(0);

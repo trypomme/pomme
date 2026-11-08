@@ -349,6 +349,7 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
 /// Run `layoutSubviews` on every view in the tree that needs it, parents first.
 pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<()> {
     if std::mem::take(&mut view_mut(emu, v).needs_layout) {
+        crate::navigation::layout_container(emu, v)?;
         send(emu, v, "layoutSubviews", &[])?;
     }
     for s in view(emu, v).subviews {
@@ -600,11 +601,10 @@ pub const SAFE_AREA: [f64; 4] = [47.0, 0.0, 34.0, 0.0];
 
 /// `-safeAreaInsets` (UIEdgeInsets, in d0–d3): the device insets for windows
 /// and views that cover the screen; zero for views inside the safe area.
-fn safe_area_insets(emu: &mut Emu) -> Result<()> {
+pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
-    let f = frame_of(emu, v);
-    let full = emu.ui.windows.contains(&v) || (f[2] >= SCREEN_W && f[3] >= SCREEN_H);
-    ret_rect(emu, if full { SAFE_AREA } else { [0.0; 4] });
+    let insets = if emu.ui.windows.contains(&v) { SAFE_AREA } else { crate::navigation::safe_area(emu, v) };
+    ret_rect(emu, insets);
     Ok(())
 }
 
@@ -643,7 +643,7 @@ fn font_metric(emu: &mut Emu, factor: f64) -> Result<()> {
 }
 
 /// The view's origin in window coordinates (frame offsets up the tree; no transforms yet).
-fn window_origin(emu: &mut Emu, mut v: u64) -> [f64; 2] {
+pub(crate) fn window_origin(emu: &mut Emu, mut v: u64) -> [f64; 2] {
     let mut p = [0.0, 0.0];
     while v != 0 {
         let vw = view(emu, v);
@@ -914,15 +914,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "viewDidAppear:", noop),
     ("UIViewController", false, "viewWillLayoutSubviews", noop),
     ("UIViewController", false, "viewDidLayoutSubviews", noop),
-    ("UIViewController", false, "setModalPresentationStyle:", noop),
     ("UIViewController", false, "presentedViewController", ret_zero),
     ("UIViewController", false, "presentingViewController", ret_zero),
-    ("UIViewController", false, "parentViewController", ret_zero),
-    ("UIViewController", false, "childViewControllers", |e| {
-        let a = foundation::new_array_of(e, &[])?;
-        e.ret(a);
-        Ok(())
-    }),
     ("UIViewController", false, "traitCollection", trait_collection),
     ("UIColor", true, "colorWithRed:green:blue:alpha:", color_rgba),
     ("UIColor", false, "initWithRed:green:blue:alpha:", color_rgba),

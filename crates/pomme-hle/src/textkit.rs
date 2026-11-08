@@ -86,6 +86,17 @@ fn emoji_advance(emu: &mut Emu, ch: char) -> Option<f64> {
     Some(face.glyph_hor_advance(g)? as f64 / face.units_per_em() as f64)
 }
 
+/// One line of text as glyphs from `x` along `baseline`, and its width.
+pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, color: [f64; 4], x: f64, baseline: f64) -> (Vec<crate::render::Glyph>, f64) {
+    let mut pen = x;
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size, weight, color });
+        pen += advance(emu, ch, size, weight);
+    }
+    (out, pen - x)
+}
+
 /// Advance width of `ch` in points.
 fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
     let wght = ot_weight(weight).round() as u16;

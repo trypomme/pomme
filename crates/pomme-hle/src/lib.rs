@@ -30,6 +30,7 @@ mod textkit;
 mod nsvalue;
 mod json;
 mod regex;
+pub mod navigation;
 mod image;
 mod nstimer;
 pub mod net;
@@ -196,6 +197,7 @@ pub struct Emu {
     images: image::State,
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
+    pub(crate) nav: navigation::State,
     bundle: bundle::State,
 }
 
@@ -256,6 +258,7 @@ impl Emu {
             timers: Default::default(),
             images: Default::default(),
             regex: Default::default(),
+            nav: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;

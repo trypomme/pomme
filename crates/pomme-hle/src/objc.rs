@@ -49,6 +49,8 @@ pub struct Objc {
     sel_names: HashMap<Sel, String>,
     cache: HashMap<(u64, Sel), Imp>,
     pub associated: HashMap<(u64, u64), u64>,
+    /// Properties set on permissive objects: (object, property) → (x2, d0).
+    bag: HashMap<(u64, String), (u64, u128)>,
     /// Class → is it a native Swift class (cache for retains).
     native_swift: HashMap<u64, bool>,
     swift_retain: u64,
@@ -105,6 +107,15 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
+    // Navigation chrome configuration (react-native-screens' header config):
+    // stored and read back, mostly not drawn yet.
+    "UINavigationItem",
+    "UINavigationBar",
+    "UIBarAppearance",
+    "UIBarButtonItem",
+    "UIBarButtonItemAppearance",
+    "UIBarButtonItemStateAppearance",
+    "UIBlurEffect",
 ];
 
 fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
@@ -122,6 +133,24 @@ fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
     let meta = emu.objc.classes.get(&cls).is_some_and(|c| c.meta);
     if emu.trace {
         println!("{:>10}   (permissive: {}[{} {sel}] answered generically)", emu.cpu.steps, if meta { '+' } else { '-' }, emu.objc.class_name(cls));
+    }
+    // Instances are property bags: `setFoo:` stores, `foo` / `isFoo` reads back.
+    if !meta {
+        let obj = emu.cpu.x[0];
+        if let Some(name) = sel.strip_prefix("set").and_then(|r| r.strip_suffix(':')).filter(|n| !n.contains(':') && !n.is_empty()) {
+            let key = name[..1].to_ascii_lowercase() + &name[1..];
+            emu.objc.bag.insert((obj, key), (emu.cpu.x[2], emu.cpu.q[0]));
+            return Ok(());
+        }
+        if !sel.contains(':') {
+            let is = sel.strip_prefix("is").filter(|r| r.starts_with(|c: char| c.is_ascii_uppercase()));
+            let key = is.map_or_else(|| sel.to_string(), |r| r[..1].to_ascii_lowercase() + &r[1..]);
+            if let Some(&(x, q)) = emu.objc.bag.get(&(obj, key)) {
+                emu.ret(x);
+                emu.cpu.q[0] = q;
+                return Ok(());
+            }
+        }
     }
     let r = if !meta && sel.starts_with("init") {
         emu.cpu.x[0] // initializers return self
@@ -236,6 +265,18 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UIVisualEffectView", "UIView"),
     ("UIStackView", "UIView"),
     ("UINavigationBar", "UIView"),
+    ("UINavigationItem", "NSObject"),
+    ("UIViewLayoutRegion", "NSObject"),
+    ("UIScrollEdgeEffectStyle", "NSObject"),
+    ("UIBarAppearance", "NSObject"),
+    ("UINavigationBarAppearance", "UIBarAppearance"),
+    ("UIToolbarAppearance", "UIBarAppearance"),
+    ("UITabBarAppearance", "UIBarAppearance"),
+    ("UIBarItem", "NSObject"),
+    ("UIBarButtonItem", "UIBarItem"),
+    ("UIBarButtonItemAppearance", "NSObject"),
+    ("UIVisualEffect", "NSObject"),
+    ("UIBlurEffect", "UIVisualEffect"),
     ("UIToolbar", "UIView"),
     ("UIInputView", "UIView"),
     ("UIGestureRecognizer", "NSObject"),
@@ -320,6 +361,8 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::json::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(EXCEPTION_METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::nsvalue::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::navigation::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -357,7 +400,8 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, EXCEPTION_METHODS] {
+    let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {

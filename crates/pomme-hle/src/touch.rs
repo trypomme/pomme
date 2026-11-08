@@ -193,6 +193,11 @@ fn recognizers_for(emu: &mut Emu, mut v: u64) -> Vec<u64> {
 }
 
 /// Deliver one touch phase at a window point.
+/// Where the finger being delivered is, in window coordinates.
+pub(crate) fn active_location(emu: &Emu) -> Option<[f64; 2]> {
+    emu.touch.touches.get(&emu.touch.active).map(|t| t.location)
+}
+
 pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
     let window = if emu.ui.key_window != 0 { emu.ui.key_window } else { emu.ui.windows.first().copied().unwrap_or(0) };
     if window == 0 {

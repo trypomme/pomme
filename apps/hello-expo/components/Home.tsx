@@ -1,28 +1,29 @@
-import { nativeFetch } from './mocks';
+import { nativeFetch } from '../mocks';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import useSWR from 'swr';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
+import { Link } from 'expo-router';
 import { CodedError, EventEmitter, Platform, requireOptionalNativeModule, uuid } from 'expo';
 import { fetch as expoFetch } from 'expo/fetch';
 
-// pomme's test app: a tap counter, data fetching three ways (SWR, TanStack
+// The home screen: a tap counter, data fetching three ways (SWR, TanStack
 // Query, plain Promise.all) against the GitHub API, a request mocked with MSW,
 // and checks of the `expo` package's APIs.
 
-type Repo = { full_name: string; stargazers_count: number };
+export type Repo = { full_name: string; stargazers_count: number };
 
-const API = 'https://api.github.com/repos/';
+export const API = 'https://api.github.com/repos/';
 
-const fetchRepo = async (url: string): Promise<Repo> => {
+export const fetchRepo = async (url: string): Promise<Repo> => {
   const res = await nativeFetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 };
 
 // Thousands separators without Intl (keeps the app independent of locale data).
-const group = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+export const group = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 const describe = (data?: Repo, error?: Error | null) =>
   error ? `Couldn't load: ${error.message}` : data ? `${data.full_name} ★ ${group(data.stargazers_count)}` : 'Loading…';
@@ -49,9 +50,14 @@ function QueryStars() {
     <View style={styles.card}>
       <Text style={styles.cardTitle}>TanStack Query</Text>
       <Text testID="query-status" style={styles.cardText}>{describe(data, error)}</Text>
-      <Pressable testID="query-refresh" onPress={() => refetch()} style={styles.refresh}>
-        <Text style={styles.refreshLabel}>{isFetching ? 'Refreshing…' : 'Refresh'}</Text>
-      </Pressable>
+      <View style={styles.row}>
+        <Pressable testID="query-refresh" onPress={() => refetch()} style={styles.refresh}>
+          <Text style={styles.refreshLabel}>{isFetching ? 'Refreshing…' : 'Refresh'}</Text>
+        </Pressable>
+        <Link testID="query-details" href="/repo/TanStack/query" style={styles.refresh}>
+          <Text style={styles.refreshLabel}>Details</Text>
+        </Link>
+      </View>
     </View>
   );
 }
@@ -154,33 +160,29 @@ function MswGreeting() {
   return <Text testID="msw-status" style={styles.small}>{text}</Text>;
 }
 
-const queryClient = new QueryClient();
-
-export default function App() {
+export default function Home() {
   const [taps, setTaps] = useState(0);
   return (
-    <QueryClientProvider client={queryClient}>
-      <View style={styles.container}>
-        <Text>Hello from pomme 🍎</Text>
-        <Pressable
-          testID="tap-button"
-          onPress={() => setTaps((n) => n + 1)}
-          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-        >
-          <Text style={styles.label}>Tapped {taps} {taps === 1 ? 'time' : 'times'}</Text>
-        </Pressable>
-        <SwrStars />
-        <QueryStars />
-        <AllStars />
-        <MswGreeting />
-        <SdkChecks />
-        <StatusBar style="auto" />
-      </View>
-    </QueryClientProvider>
+    <View style={styles.container}>
+      <Text>Hello from pomme 🍎</Text>
+      <Pressable
+        testID="tap-button"
+        onPress={() => setTaps((n) => n + 1)}
+        style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+      >
+        <Text style={styles.label}>Tapped {taps} {taps === 1 ? 'time' : 'times'}</Text>
+      </Pressable>
+      <SwrStars />
+      <QueryStars />
+      <AllStars />
+      <MswGreeting />
+      <SdkChecks />
+      <StatusBar style="auto" />
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
+export const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
@@ -228,6 +230,10 @@ const styles = StyleSheet.create({
   refreshLabel: {
     color: '#007aff',
     fontSize: 15,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 8,
   },
   small: {
     fontSize: 13,

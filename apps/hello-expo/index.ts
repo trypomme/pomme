@@ -1,8 +1,4 @@
-import { registerRootComponent } from 'expo';
-
-import App from './App';
-
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately
-registerRootComponent(App);
+// Polyfills and MSW load before the app (MSW's globals must exist first);
+// expo-router/entry comes last, as Expo Router's docs recommend for setup code.
+import './mocks';
+import 'expo-router/entry';

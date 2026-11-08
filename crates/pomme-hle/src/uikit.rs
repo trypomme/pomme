@@ -164,6 +164,8 @@ fn ca_current_media_time(emu: &mut Emu) -> Result<()> {
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CACurrentMediaTime", ca_current_media_time),
+    // CAFrameRateRange is three floats in, the same three out (s0-s2).
+    ("_CAFrameRateRangeMake", |_| Ok(())),
     ("_$s5UIKit17UIApplicationMainys5Int32VAD_SpySpys4Int8VGGSgSSSgAJtF", swift_application_main),
     ("_UIApplicationMain", c_application_main),
 ];
