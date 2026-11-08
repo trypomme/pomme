@@ -7,6 +7,11 @@
 #   - Swift runtime: libswiftCore, libswift_Concurrency, libswiftSwiftOnoneSupport
 #     (swiftlang/swift, via its standalone runtime build in Runtimes/)
 #   - libc++ and libc++abi (swiftlang/llvm-project, Apple's LLVM fork)
+#   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
+#     (swiftlang/swift-foundation-icu). Built for arm64 *macOS*: its Darwin code
+#     paths assume macOS APIs that the iOS SDK hides, and the machine code and
+#     ABI are the same; pomme's loader doesn't care which Apple platform a
+#     dylib names.
 #
 # Sparse checkouts (~300 MB total) and a few minutes; no toolchain build.
 # The tag must match `xcrun swift --version`: the stdlib has to be built by
@@ -64,4 +69,49 @@ cmake -G Ninja -S "$VENDOR/llvm-project/runtimes" -B "$VENDOR/build/libcxx" \
 ninja -C "$VENDOR/build/libcxx" cxx cxxabi
 ninja -C "$VENDOR/build/libcxx" install-cxx install-cxxabi
 
-echo "installed into $VENDOR/sysroot/usr"
+# ICU, then CoreFoundation
+MAC_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+MAC_TARGET="arm64-apple-macos14.0"
+[ -d "$VENDOR/swift-foundation-icu" ] || git clone --depth 1 --branch "$TAG" \
+  https://github.com/swiftlang/swift-foundation-icu.git "$VENDOR/swift-foundation-icu"
+cmake -G Ninja -S "$VENDOR/swift-foundation-icu" -B "$VENDOR/build/icu-macos" \
+  -DCMAKE_BUILD_TYPE=MinSizeRel -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_C_COMPILER="$(xcrun -f clang)" -DCMAKE_CXX_COMPILER="$(xcrun -f clang++)" \
+  -DCMAKE_OSX_SYSROOT="$MAC_SDK" -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+  -DCMAKE_C_COMPILER_TARGET="$MAC_TARGET" -DCMAKE_CXX_COMPILER_TARGET="$MAC_TARGET"
+ninja -C "$VENDOR/build/icu-macos"
+
+if [ ! -d "$VENDOR/swift-corelibs-foundation" ]; then
+  git clone --depth 1 --branch "$TAG" --filter=blob:none --sparse \
+    https://github.com/swiftlang/swift-corelibs-foundation.git "$VENDOR/swift-corelibs-foundation"
+  git -C "$VENDOR/swift-corelibs-foundation" sparse-checkout set Sources/CoreFoundation
+  git -C "$VENDOR/swift-corelibs-foundation" apply "$ROOT/scripts/sysroot/corefoundation.patch"
+fi
+CF_SRC="$VENDOR/swift-corelibs-foundation/Sources/CoreFoundation"
+CF_OBJ="$VENDOR/build/corefoundation"
+CF_FW="$VENDOR/sysroot/System/Library/Frameworks/CoreFoundation.framework"
+mkdir -p "$CF_OBJ" "$CF_FW"
+SHIMS="$ROOT/scripts/sysroot"
+CFLAGS=(-target "$MAC_TARGET" -isysroot "$MAC_SDK" -Os -fblocks -std=gnu11 -Wno-everything
+  -I"$SHIMS/cf-shims" -I"$CF_SRC/include" -I"$CF_SRC/internalInclude"
+  -I"$VENDOR/swift-foundation-icu/icuSources/include"
+  -include "$SHIMS/cf-prefix.h" -include "$CF_SRC/internalInclude/CoreFoundation_Prefix.h"
+  # Apple's object layout ({isa, info}), which the app's constant CFStrings use;
+  # the default (1) is Swift Foundation's layout with an extra refcount word.
+  -DDEPLOYMENT_RUNTIME_SWIFT=0
+  -DCF_BUILDING_CF -DDEPLOYMENT_ENABLE_LIBDISPATCH -DU_SHOW_DRAFT_API -DU_SHOW_INTERNAL_API)
+for f in "$CF_SRC"/*.c "$SHIMS/cf-pomme.c"; do
+  o="$CF_OBJ/$(basename "${f%.c}").o"
+  xcrun clang "${CFLAGS[@]}" -c "$f" -o "$o" &
+done
+wait
+# CF declares its legacy constant names as __attribute__((alias)), which Mach-O
+# doesn't support; Apple's build uses a linker alias list instead.
+grep -ho 'CFStringRef const k[A-Za-z0-9]* __attribute__((alias ("[A-Za-z0-9]*")))' "$CF_SRC/CFLocaleKeys.c" |
+  sed -E 's/.*const (k[A-Za-z0-9]*) .*alias \("([A-Za-z0-9]*)".*/_\2 _\1/' > "$CF_OBJ/aliases.txt"
+xcrun clang++ -dynamiclib -target "$MAC_TARGET" -isysroot "$MAC_SDK" -Wl,-alias_list,"$CF_OBJ/aliases.txt" \
+  -install_name /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation \
+  "$CF_OBJ"/*.o "$VENDOR/build/icu-macos/lib/lib_FoundationICU.a" -lobjc \
+  -o "$CF_FW/CoreFoundation"
+
+echo "installed into $VENDOR/sysroot"

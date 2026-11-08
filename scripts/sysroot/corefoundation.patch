@@ -1,0 +1,26 @@
+diff --git a/Sources/CoreFoundation/CFRuntime.c b/Sources/CoreFoundation/CFRuntime.c
+index 3336852..07987f4 100644
+--- a/Sources/CoreFoundation/CFRuntime.c
++++ b/Sources/CoreFoundation/CFRuntime.c
+@@ -623,6 +623,12 @@ CF_PRIVATE void _CFRuntimeSetInstanceTypeIDAndIsa(CFTypeRef cf, CFTypeID newType
+     if (_CFTypeGetClass(cf) != __CFISAForTypeID(newTypeID)) {
+         ((CFSwiftRef)cf)->isa = (uintptr_t)__CFISAForTypeID(newTypeID);
+     }
++#else
++    // pomme: keep the isa in step with the type, so toll-free bridging works
++    // without the Swift runtime (as Apple's CF does under its ObjC runtime).
++    if (_CFTypeGetClass(cf) != __CFISAForTypeID(newTypeID)) {
++        ((CFRuntimeBase *)cf)->_cfisa = __CFISAForTypeID(newTypeID);
++    }
+ #endif
+ }
+ 
+@@ -1717,7 +1723,7 @@ static void _CFRelease(CFTypeRef CF_RELEASES_ARGUMENT cf) {
+             allocator = CFGetAllocator(cf);
+             usesSystemDefaultAllocator = _CFAllocatorIsSystemDefault(allocator);
+ 
+-            if (__kCFAllocatorTypeID_CONST != __CFGenericTypeID_inline(cf)) {
++            if (_kCFRuntimeIDCFAllocator != __CFGenericTypeID_inline(cf)) {
+                 allocatorToRelease = (CFAllocatorRef _Nonnull)__CFGetAllocator(cf);
+             }
+ 	}

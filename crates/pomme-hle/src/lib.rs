@@ -14,6 +14,7 @@ pub mod objc;
 mod foundation;
 mod libc;
 pub mod libsystem;
+mod posix;
 mod printf;
 mod swift;
 mod uikit;
@@ -33,6 +34,9 @@ pub const TLS_SIZE: u64 = 64 << 10;
 pub const THUNK_BASE: u64 = 0x6_8000_0000;
 const THUNK_SLOTS: u64 = 4096;
 const THUNK_INSN: u32 = 0xd420_0000 | (0x5f << 5);
+/// Planted over the first instruction of a hooked guest function.
+const HOOK_IMM: u16 = 0x60;
+const HOOK_INSN: u32 = 0xd420_0000 | ((HOOK_IMM as u32) << 5);
 /// Generated guest code (trampolines).
 pub const CODE_BASE: u64 = 0x6_9000_0000;
 const CODE_SIZE: u64 = 1 << 20;
@@ -105,6 +109,12 @@ pub struct Emu {
     pub sys: libsystem::State,
     thunks: Vec<HostFn>,
     code_next: u64,
+    /// Hooked guest functions: entry address → (host function, trampoline that runs the original).
+    hooks: HashMap<u64, (HostFn, u64)>,
+    /// While a hook runs: where `continue_original` jumps.
+    hook_original: u64,
+    /// Host-side state for Foundation (CF bridge).
+    pub fnd: foundation::State,
 }
 
 impl Emu {
@@ -114,7 +124,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, printf::FUNCS, swift::FUNCS, uikit::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, printf::FUNCS, swift::FUNCS, uikit::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -140,6 +150,9 @@ impl Emu {
             sys: Default::default(),
             thunks: Vec::new(),
             code_next: CODE_BASE,
+            hooks: HashMap::new(),
+            hook_original: 0,
+            fnd: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
         for slot in thunks.data.chunks_exact_mut(4) {
@@ -174,6 +187,10 @@ impl Emu {
     pub fn run_initializers(&mut self) -> Result<()> {
         let (argc, argv) = (self.argc, self.argv);
         for i in self.init_order() {
+            if let Some(init) = self.p.images[i].symbol("___CFInitialize") {
+                self.call(init, &[])?;
+                foundation::bridge(self, i)?;
+            }
             for list in ["__objc_nlclslist", "__objc_nlcatlist"] {
                 let Some((addr, size)) = self.p.images[i].section("__DATA", list) else { continue };
                 for at in (addr..addr + size).step_by(8) {
@@ -269,6 +286,12 @@ impl Emu {
             match self.cpu.run(&mut self.p.memory, budget) {
                 Exit::Returned => return Ok(()),
                 Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch()?,
+                Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
+                    let (f, original) = self.hooks[&self.cpu.pc];
+                    self.hook_original = original;
+                    self.cpu.pc = self.cpu.x[30];
+                    f(self)?
+                }
                 Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
                     let f = self.thunks[((self.cpu.pc - THUNK_BASE) / 4) as usize];
                     self.cpu.pc = self.cpu.x[30];
@@ -309,6 +332,69 @@ impl Emu {
         }
         self.thunks.push(f);
         Ok(THUNK_BASE + (self.thunks.len() as u64 - 1) * 4)
+    }
+
+    /// Hook the guest function at `addr`: calls to it run `f` instead, which
+    /// returns to the caller like a stub, or calls [`continue_original`](Self::continue_original)
+    /// to run the real function with the arguments untouched.
+    pub fn hook(&mut self, addr: u64, f: HostFn) -> Result<()> {
+        if self.hooks.contains_key(&addr) {
+            return Ok(());
+        }
+        let insn = self.p.memory.read_u32(addr)?;
+        let resume = addr + 4;
+        let sext = |v: u32, bits: u32| ((v << (32 - bits)) as i32 >> (32 - bits)) as i64;
+        // Conditional branches are relocated: the copy branches to a long jump to the original target.
+        let cond = if insn & 0x7e00_0000 == 0x3400_0000 || insn & 0xff00_0010 == 0x5400_0000 {
+            // CBZ/CBNZ, B.cond: imm19 at [23:5]
+            Some((addr.wrapping_add((sext((insn >> 5) & 0x7ffff, 19) * 4) as u64), (insn & !(0x7ffff << 5)) | (4 << 5)))
+        } else if insn & 0x7e00_0000 == 0x3600_0000 {
+            // TBZ/TBNZ: imm14 at [18:5]
+            Some((addr.wrapping_add((sext((insn >> 5) & 0x3fff, 14) * 4) as u64), (insn & !(0x3fff << 5)) | (4 << 5)))
+        } else {
+            None
+        };
+        let other_pc_relative = insn & 0x1f00_0000 == 0x1000_0000 // ADR/ADRP
+            || insn & 0x7c00_0000 == 0x1400_0000 // B/BL
+            || insn & 0x3b00_0000 == 0x1800_0000; // LDR literal
+        if other_pc_relative {
+            return Err(Stop::Unsupported(format!("can't hook {}: first instruction {insn:#010x} is PC-relative", self.symbolize(addr))));
+        }
+        const LDR_X16: u32 = 0x5800_0010; // ldr x16, #imm19*4
+        const BR_X16: u32 = 0xd61f_0200;
+        const NOP: u32 = 0xd503_201f;
+        let original = match cond {
+            None => self.emit_code(&[
+                insn,                  // the displaced first instruction
+                LDR_X16 | (3 << 5),    // ldr x16, resume
+                BR_X16,                // (x16 is scratch at function entry)
+                NOP,                   // keeps the literal 8-byte aligned
+                resume as u32,
+                (resume >> 32) as u32,
+            ])?,
+            Some((target, branch)) => self.emit_code(&[
+                branch,             // 0: the condition, retargeted to word 4
+                LDR_X16 | (7 << 5), // 1: not taken: ldr x16, resume (word 8)
+                BR_X16,             // 2
+                NOP,                // 3
+                LDR_X16 | (6 << 5), // 4: taken: ldr x16, target (word 10)
+                BR_X16,             // 5
+                NOP,                // 6
+                NOP,                // 7
+                resume as u32,      // 8
+                (resume >> 32) as u32,
+                target as u32,      // 10
+                (target >> 32) as u32,
+            ])?,
+        };
+        self.p.memory.write_u32(addr, HOOK_INSN)?;
+        self.hooks.insert(addr, (f, original));
+        Ok(())
+    }
+
+    /// From inside a hook: run the hooked function's original code.
+    pub fn continue_original(&mut self) {
+        self.cpu.pc = self.hook_original;
     }
 
     /// The host function behind a thunk address, if it is one.

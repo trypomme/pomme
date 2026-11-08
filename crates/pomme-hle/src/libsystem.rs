@@ -24,6 +24,7 @@ pub struct State {
     pub queue: VecDeque<(u64, u64)>,
     queue_specific: HashMap<(u64, u64), u64>,
     data: HashMap<&'static str, u64>,
+    pub next_port: u64,
 }
 
 // ---- data symbols ----
@@ -41,6 +42,12 @@ const DATA: &[(&str, u64)] = &[
     ("__dispatch_data_empty", 64),
     ("__dispatch_queue_attr_concurrent", 64),
     ("__dispatch_source_type_timer", 64),
+    ("_vm_page_size", 8),
+    ("_vm_kernel_page_size", 8),
+    ("__os_log_default", 64),
+    ("_timezone", 8),
+    ("_tzname", 16),
+    ("_daylight", 8),
 ];
 
 pub(crate) fn init(emu: &mut Emu) -> Result<()> {
@@ -59,6 +66,12 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
                 emu.write_u64(addr, s)?;
             }
             "__dispatch_main_q" => emu.write_u64(addr, queue_cls)?,
+            "_vm_page_size" | "_vm_kernel_page_size" => emu.write_u64(addr, pomme_mem::PAGE_SIZE)?,
+            "_tzname" => {
+                let utc = emu.alloc_cstr("UTC")?;
+                emu.write_u64(addr, utc)?;
+                emu.write_u64(addr + 8, utc)?;
+            }
             "___stderrp" | "___stdoutp" | "___stdinp" => {
                 // A FILE: we only need a distinct non-null pointer; store the fd.
                 let file = emu.alloc(256)?;

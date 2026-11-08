@@ -12,7 +12,7 @@ replacements (HLE) for the iOS system libraries the app calls into.
 | `crates/pomme-loader` | Our `dyld`: maps the app and its bundled frameworks into guest memory and links them. System libraries found in the sysroot are loaded as guest code; every other system symbol binds to a trapping HLE stub. |
 | `crates/pomme-mem` | Guest address space shared by the loader and CPU. |
 | `crates/pomme-hle` | pomme's own system libraries, in Rust: stub dispatch and image initializers, a deterministic heap, an Objective-C runtime (classes from the app's metadata, synthesized system classes, `objc_msgSend`, reflection and Swift hooks), most of the libSystem the app and runtimes use (strings, libm, printf, time, dispatch, TLS, dyld queries), and the first bits of Foundation and UIKit. |
-| `vendor/sysroot` | (built, not committed) Open-source system libraries compiled for arm64 iOS and run as guest code: the Swift runtime and libc++. See `scripts/build-sysroot.sh`. |
+| `vendor/sysroot` | (built, not committed) Open-source system libraries compiled for arm64 and run as guest code: the Swift runtime, libc++, and CoreFoundation with ICU. See `scripts/build-sysroot.sh`; `scripts/sysroot/` holds the small shims and patch CoreFoundation needs. |
 | `crates/pomme-cpu` | arm64 user-mode interpreter: integer, loads/stores, atomics, scalar FP and a NEON lane engine. Deterministic; instruction count is the clock. |
 | `crates/pomme-cli` | `pomme` command-line tool. |
 | `apps/hello-expo` | Skeleton Expo app — the first guest we want to boot. |
@@ -22,7 +22,7 @@ replacements (HLE) for the iOS system libraries the app calls into.
 
 ```bash
 scripts/build-hello-expo.sh            # needs the iOS platform installed in Xcode
-scripts/build-sysroot.sh               # Swift runtime + libc++ from source (~300 MB checkout, a few minutes)
+scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation + ICU from source (~600 MB, ~10 min)
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --trace
@@ -48,9 +48,11 @@ DOSBox or SameBoy. Every system library the app touches is pomme's own code.
    - Objective-C runtime (HLE) ✅
    - Swift runtime and libc++, built from source into the sysroot ✅
    - libSystem (HLE): the common parts ✅; files, sockets, threads, C++ exceptions still to do
-   - image initializers (`+load`, static constructors) before `main` ✅ — hello-expo runs ~21k
-     instructions of them and stops at Foundation collections (`NSMutableSet`)
-   - Foundation / CoreFoundation ← *next*
+   - image initializers (`+load`, static constructors) before `main` ✅
+   - CoreFoundation, built from source, with Foundation's collection, string and number classes
+     bridged to it toll-free ✅ — hello-expo runs ~36k instructions of initializers and stops at
+     Swift Foundation (`URL`)
+   - Swift Foundation (`URL`, `Data`, `Date`, bridging to their ObjC classes) ← *next*
    - UIKit, rendering to a host canvas
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,

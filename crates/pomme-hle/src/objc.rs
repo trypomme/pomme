@@ -71,6 +71,16 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSMutableString", "NSString"),
     ("__NSCFString", "NSMutableString"),
     ("__NSCFConstantString", "__NSCFString"),
+    // Toll-free bridged CoreFoundation types.
+    ("__NSCFArray", "NSMutableArray"),
+    ("__NSCFDictionary", "NSMutableDictionary"),
+    ("__NSCFSet", "NSMutableSet"),
+    ("__NSCFNumber", "NSNumber"),
+    ("__NSCFBoolean", "NSNumber"),
+    ("__NSCFData", "NSMutableData"),
+    ("__NSDate", "NSDate"),
+    ("__NSCFAttributedString", "NSMutableAttributedString"),
+    ("__NSCFCharacterSet", "NSMutableCharacterSet"),
     ("NSArray", "NSObject"),
     ("NSMutableArray", "NSArray"),
     ("NSDictionary", "NSObject"),
@@ -1548,3 +1558,34 @@ pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
     ("_objc_exception_rethrow", exceptions_unsupported),
     ("_objc_terminate", exceptions_unsupported),
 ];
+
+/// Make the guest memory at `at` a class: a method-less subclass of `base`
+/// with the same name. Used for `__CFConstantStringClassReference`, whose
+/// address is the `isa` of every string literal compiled into the app.
+pub fn alias_class(emu: &mut Emu, at: u64, base: u64) -> Result<()> {
+    let (name, meta, size) = {
+        let b = &emu.objc.classes[&base];
+        (b.name.clone(), b.isa, b.instance_size)
+    };
+    let ro = emu.read_u64(base + 32)?;
+    emu.write_u64(at, meta)?;
+    emu.write_u64(at + 8, base)?;
+    emu.write_u64(at + 16, 0)?;
+    emu.write_u64(at + 24, 0)?;
+    emu.write_u64(at + 32, ro)?;
+    emu.objc.classes.insert(
+        at,
+        Class {
+            name,
+            meta: false,
+            isa: meta,
+            superclass: base,
+            methods: HashMap::new(),
+            instance_size: size,
+            host: true,
+            initialized: false,
+            protocols: Vec::new(),
+        },
+    );
+    Ok(())
+}
