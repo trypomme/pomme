@@ -34,6 +34,8 @@ pub mod navigation;
 pub mod system;
 mod coretext;
 pub mod metal;
+#[cfg(feature = "gpu")]
+mod metal_gpu;
 mod image;
 mod nstimer;
 pub mod net;

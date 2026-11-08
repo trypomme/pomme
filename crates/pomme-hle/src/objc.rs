@@ -163,6 +163,11 @@ pub(crate) fn bag_get(emu: &Emu, obj: u64, key: &str) -> Option<u64> {
     emu.objc.bag.get(&(obj, key.to_string())).map(|&(x, _)| x)
 }
 
+/// A floating-point property stored on a permissive object (passed in d0).
+pub(crate) fn bag_get_f64(emu: &Emu, obj: u64, key: &str) -> Option<f64> {
+    emu.objc.bag.get(&(obj, key.to_string())).map(|&(_, q)| f64::from_bits(q as u64))
+}
+
 /// Copy every stored property of `from` onto `to` (copy initializers).
 pub(crate) fn bag_copy(emu: &mut Emu, from: u64, to: u64) {
     let entries: Vec<_> = emu.objc.bag.iter().filter(|((o, _), _)| *o == from).map(|((_, k), v)| (k.clone(), *v)).collect();

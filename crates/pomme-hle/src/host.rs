@@ -108,6 +108,13 @@ pub(crate) fn install(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Something drew outside layout (a Metal frame): the next idle moment shows it.
+pub(crate) fn frame_changed(emu: &mut Emu) {
+    if emu.live.host.is_some() {
+        emu.live.frame_pending = true;
+    }
+}
+
 /// After the layout pass: render a frame if one is due.
 pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
     if emu.live.host.is_none() {

@@ -35,3 +35,32 @@ fn skia_draws_through_metal() {
     assert!(m.sources.iter().any(|s| s.contains("fragment Outputs fragmentMain")));
     assert!(m.presented >= 1, "no frame presented\n{}", pomme_hle::metal::report(&emu));
 }
+
+/// Skia's frame runs on the host GPU (Metal → wgpu, shaders MSL → WGSL) and
+/// shows in the canvas: the dark rounded rectangle, and the circle's gradient
+/// from rose (top left) to amber (bottom right).
+#[test]
+fn skia_frame_renders_on_the_gpu() {
+    let Some(mut emu) = boot() else { return };
+    emu.time_limit_ns = Some(6_000_000_000);
+    let _ = emu.run_main();
+    if let Some(e) = &emu.metal.gpu_error {
+        eprintln!("skipping: no GPU here ({e})");
+        return;
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    // The canvas is at (45, 290.3) pt; read pixels at 3×.
+    let at = |x: f64, y: f64| {
+        let c = pix.pixel(((45.0 + x) * 3.0) as u32, ((290.3 + y) * 3.0) as u32).unwrap();
+        (c.red(), c.green(), c.blue())
+    };
+    let near = |(r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)| r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12;
+    // The rounded rect (#1e293b), inside its corner radius.
+    assert!(near(at(40.0, 150.0), (0x1e, 0x29, 0x3b)), "rect: {:?}", at(40.0, 150.0));
+    // Outside the rect's rounded corner: the white page.
+    assert!(near(at(21.0, 21.0), (255, 255, 255)), "corner: {:?}", at(21.0, 21.0));
+    // The circle's gradient: rose near the start, amber near the end.
+    let (start, end) = (at(110.0, 85.0), at(190.0, 165.0));
+    assert!(start.0 > 220 && start.1 < 110 && start.2 > 60, "gradient start: {start:?}");
+    assert!(end.0 > 220 && end.1 > 120 && end.2 < 60, "gradient end: {end:?}");
+}

@@ -1,11 +1,12 @@
 //! Metal: devices, queues, command buffers and encoders, buffers, textures,
 //! shader libraries and pipelines, and CAMetalLayer drawables.
 //!
-//! This is the bring-up stage. Objects behave like Metal's (buffers' contents
-//! live in guest memory, descriptors are property bags, encoders record what
-//! the app asks for), shader sources are captured (`POMME_DUMP_MSL=dir`), and
-//! nothing is executed yet: execution on wgpu, with MSL translated to naga IR,
-//! comes next.
+//! Objects behave like Metal's: buffers' contents live in guest memory,
+//! descriptors are property bags (snapshotted when a pipeline, sampler or
+//! depth-stencil state is made from them), and encoders record commands into
+//! their command buffer. `commit` runs them (metal_gpu.rs, on wgpu, with the
+//! shaders translated by pomme-msl) and presents drawables into their
+//! CAMetalLayer's contents. Shader sources can be dumped with POMME_DUMP_MSL=dir.
 
 use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result, foundation};
@@ -22,9 +23,9 @@ pub enum Obj {
     Texture(Texture),
     Library { source: String },
     Function { name: String, library: u64 },
-    Pipeline { descriptor: u64 },
-    Sampler,
-    DepthStencil,
+    Pipeline(Box<PipelineDesc>),
+    Sampler(SamplerDesc),
+    DepthStencil(DepthStencilDesc),
     Drawable { layer: u64, texture: u64 },
 }
 
@@ -34,6 +35,135 @@ pub struct Texture {
     pub height: u64,
     pub format: u64,
     pub usage: u64,
+    pub samples: u64,
+}
+
+/// A render pipeline's descriptor, as it was when the pipeline was made.
+#[derive(Debug, Clone, Default)]
+pub struct PipelineDesc {
+    /// (library, entry point name).
+    pub vertex: Option<(u64, String)>,
+    pub fragment: Option<(u64, String)>,
+    /// (attribute index, MTLVertexFormat, offset, buffer index).
+    pub attributes: Vec<(u32, u64, u64, u32)>,
+    /// (buffer index, stride, MTLVertexStepFunction, step rate).
+    pub layouts: Vec<(u32, u64, u64, u64)>,
+    pub colors: Vec<ColorDesc>,
+    pub depth_format: u64,
+    pub stencil_format: u64,
+    pub samples: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ColorDesc {
+    pub index: u32,
+    pub format: u64,
+    pub blending: bool,
+    /// MTLBlendFactor / MTLBlendOperation: (source RGB, destination RGB, RGB op, source A, destination A, A op).
+    pub blend: [u64; 6],
+    /// MTLColorWriteMask (R 8, G 4, B 2, A 1).
+    pub write_mask: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SamplerDesc {
+    /// MTLSamplerMinMagFilter / MTLSamplerMipFilter.
+    pub min: u64,
+    pub mag: u64,
+    pub mip: u64,
+    /// MTLSamplerAddressMode for s, t.
+    pub address: [u64; 2],
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StencilDesc {
+    pub compare: u64,
+    /// MTLStencilOperation: (stencil fail, depth fail, pass).
+    pub ops: [u64; 3],
+    pub read_mask: u32,
+    pub write_mask: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DepthStencilDesc {
+    pub depth_compare: u64,
+    pub depth_write: bool,
+    pub front: Option<StencilDesc>,
+    pub back: Option<StencilDesc>,
+}
+
+/// Where a draw reads a buffer slot from.
+#[derive(Debug, Clone)]
+pub enum BufRef {
+    /// A Metal buffer at an offset.
+    Buffer(u64, u64),
+    /// `set…Bytes:length:atIndex:` (copied when set).
+    Bytes(Vec<u8>),
+}
+
+/// Encoder state each draw captures.
+#[derive(Debug, Clone, Default)]
+pub struct DrawState {
+    pub pipeline: u64,
+    pub depth_stencil: u64,
+    /// Front, back.
+    pub stencil_ref: [u32; 2],
+    /// x, y, width, height.
+    pub scissor: Option<[u64; 4]>,
+    /// x, y, width, height, near, far.
+    pub viewport: Option<[f64; 6]>,
+    pub cull: u64,
+    pub winding: u64,
+    pub blend_color: [f64; 4],
+    /// Per stage (vertex 0, fragment 1): buffer, texture and sampler slots.
+    pub buffers: [std::collections::BTreeMap<u32, BufRef>; 2],
+    pub textures: [std::collections::BTreeMap<u32, u64>; 2],
+    pub samplers: [std::collections::BTreeMap<u32, u64>; 2],
+}
+
+#[derive(Debug, Clone)]
+pub enum DrawCall {
+    Arrays { start: u64, count: u64, instances: u64, base_instance: u64 },
+    /// MTLIndexType 0 = u16, 1 = u32.
+    Indexed { count: u64, index_type: u64, buffer: u64, offset: u64, instances: u64, base_vertex: i64, base_instance: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct Draw {
+    pub state: DrawState,
+    /// MTLPrimitiveType.
+    pub primitive: u64,
+    pub call: DrawCall,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Attachment {
+    pub texture: u64,
+    pub resolve: u64,
+    /// MTLLoadAction / MTLStoreAction.
+    pub load: u64,
+    pub store: u64,
+    pub clear_color: [f64; 4],
+    pub clear_depth: f64,
+    pub clear_stencil: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Pass {
+    /// (color attachment index, attachment).
+    pub colors: Vec<(u32, Attachment)>,
+    pub depth: Option<Attachment>,
+    pub stencil: Option<Attachment>,
+    pub draws: Vec<Draw>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Cmd {
+    Pass(Pass),
+    CopyBuffer { src: u64, src_offset: u64, dst: u64, dst_offset: u64, size: u64 },
+    /// Buffer → texture: (buffer, offset, bytes per row, texture, origin x, y, width, height).
+    BufferToTexture { buffer: u64, offset: u64, bytes_per_row: u64, texture: u64, origin: [u64; 2], size: [u64; 2] },
+    TextureToTexture { src: u64, src_origin: [u64; 2], size: [u64; 2], dst: u64, dst_origin: [u64; 2] },
 }
 
 #[derive(Default)]
@@ -47,9 +177,22 @@ pub struct State {
     pub calls: HashMap<String, u64>,
     /// Drawables presented by committed command buffers.
     pub presented: u64,
+    /// MTLRenderPassColorAttachmentDescriptor → its clear color (four doubles, d0–d3).
+    clear_colors: HashMap<u64, [f64; 4]>,
     device: u64,
     /// Descriptor arrays → the class of their elements.
     element_class: HashMap<u64, &'static str>,
+    /// Commands recorded into each command buffer.
+    pub cmds: HashMap<u64, Vec<Cmd>>,
+    /// Open render encoders: (command buffer, the pass so far, current state).
+    encoders: HashMap<u64, (u64, Pass, DrawState)>,
+    /// Open blit encoders → their command buffer.
+    blits: HashMap<u64, u64>,
+    /// The GPU, once something runs on it.
+    #[cfg(feature = "gpu")]
+    pub gpu: Option<crate::metal_gpu::Gpu>,
+    /// Why the GPU couldn't start, if it couldn't (reported once).
+    pub gpu_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -130,8 +273,8 @@ fn new_buffer(emu: &mut Emu, bytes: Option<u64>, length: u64) -> Result<()> {
 fn new_texture(emu: &mut Emu) -> Result<()> {
     let desc = emu.arg(2);
     let get = |emu: &Emu, k: &str| objc::bag_get(emu, desc, k).unwrap_or(0);
-    let t = Texture { width: get(emu, "width"), height: get(emu, "height"), format: get(emu, "pixelFormat"), usage: get(emu, "usage") };
-    trace(emu, || format!("texture {}×{} format {}", t.width, t.height, t.format));
+    let t = Texture { width: get(emu, "width"), height: get(emu, "height"), format: get(emu, "pixelFormat"), usage: get(emu, "usage"), samples: get(emu, "sampleCount").max(1) };
+    trace(emu, || format!("texture {}×{} format {} ×{} usage {}", t.width, t.height, t.format, t.samples, t.usage));
     let o = new_obj(emu, "MTLPommeTexture", Obj::Texture(t))?;
     ret(emu, o)
 }
@@ -165,20 +308,108 @@ fn new_function(emu: &mut Emu) -> Result<()> {
     ret(emu, f)
 }
 
+/// A property of a descriptor-bag object, or Metal's default when never set.
+fn prop(emu: &Emu, o: u64, key: &str, default: u64) -> u64 {
+    if o == 0 { default } else { objc::bag_get(emu, o, key).unwrap_or(default) }
+}
+
+/// Element `i` of a descriptor array property (`colorAttachments`, …), if it was ever touched.
+fn element(emu: &Emu, o: u64, key: &str, i: u32) -> u64 {
+    let arr = prop(emu, o, key, 0);
+    prop(emu, arr, &i.to_string(), 0)
+}
+
+fn function_ref(emu: &Emu, f: u64) -> Option<(u64, String)> {
+    match obj(emu, f) {
+        Some(Obj::Function { name, library }) => Some((*library, name.clone())),
+        _ => None,
+    }
+}
+
+fn snapshot_pipeline(emu: &Emu, d: u64) -> PipelineDesc {
+    let vd = prop(emu, d, "vertexDescriptor", 0);
+    let mut p = PipelineDesc {
+        vertex: function_ref(emu, prop(emu, d, "vertexFunction", 0)),
+        fragment: function_ref(emu, prop(emu, d, "fragmentFunction", 0)),
+        depth_format: prop(emu, d, "depthAttachmentPixelFormat", 0),
+        stencil_format: prop(emu, d, "stencilAttachmentPixelFormat", 0),
+        samples: prop(emu, d, "rasterSampleCount", prop(emu, d, "sampleCount", 1)).max(1),
+        ..Default::default()
+    };
+    for i in 0..31 {
+        let a = element(emu, vd, "attributes", i);
+        if a != 0 && prop(emu, a, "format", 0) != 0 {
+            p.attributes.push((i, prop(emu, a, "format", 0), prop(emu, a, "offset", 0), prop(emu, a, "bufferIndex", 0) as u32));
+        }
+        let l = element(emu, vd, "layouts", i);
+        if l != 0 && prop(emu, l, "stride", 0) != 0 {
+            p.layouts.push((i, prop(emu, l, "stride", 0), prop(emu, l, "stepFunction", 1), prop(emu, l, "stepRate", 1)));
+        }
+    }
+    for i in 0..8 {
+        let c = element(emu, d, "colorAttachments", i);
+        let format = prop(emu, c, "pixelFormat", 0);
+        if c == 0 || format == 0 {
+            continue;
+        }
+        p.colors.push(ColorDesc {
+            index: i,
+            format,
+            blending: prop(emu, c, "blendingEnabled", 0) & 0xff != 0,
+            blend: [
+                prop(emu, c, "sourceRGBBlendFactor", 1),
+                prop(emu, c, "destinationRGBBlendFactor", 0),
+                prop(emu, c, "rgbBlendOperation", 0),
+                prop(emu, c, "sourceAlphaBlendFactor", 1),
+                prop(emu, c, "destinationAlphaBlendFactor", 0),
+                prop(emu, c, "alphaBlendOperation", 0),
+            ],
+            write_mask: prop(emu, c, "writeMask", 15),
+        });
+    }
+    p
+}
+
 fn new_pipeline(emu: &mut Emu) -> Result<()> {
     let desc = emu.arg(2);
-    send(emu, desc, "retain", &[])?;
-    let p = new_obj(emu, "MTLPommeRenderPipelineState", Obj::Pipeline { descriptor: desc })?;
-    let names = |emu: &mut Emu, key: &str| -> String {
-        let f = objc::bag_get(emu, desc, key).unwrap_or(0);
-        match obj(emu, f) {
-            Some(Obj::Function { name, .. }) => name.clone(),
-            _ => "-".into(),
-        }
-    };
-    let (v, f) = (names(emu, "vertexFunction"), names(emu, "fragmentFunction"));
-    trace(emu, || format!("pipeline {p:#x}: {v} / {f}"));
+    let d = snapshot_pipeline(emu, desc);
+    let label = format!("{} / {}", d.vertex.as_ref().map_or("-", |v| v.1.as_str()), d.fragment.as_ref().map_or("-", |f| f.1.as_str()));
+    let p = new_obj(emu, "MTLPommeRenderPipelineState", Obj::Pipeline(Box::new(d)))?;
+    trace(emu, || format!("pipeline {p:#x}: {label}"));
     ret(emu, p)
+}
+
+fn new_sampler(emu: &mut Emu) -> Result<()> {
+    let d = emu.arg(2);
+    let desc = SamplerDesc {
+        min: prop(emu, d, "minFilter", 0),
+        mag: prop(emu, d, "magFilter", 0),
+        mip: prop(emu, d, "mipFilter", 0),
+        address: [prop(emu, d, "sAddressMode", 0), prop(emu, d, "tAddressMode", 0)],
+    };
+    let s = new_obj(emu, "MTLPommeSamplerState", Obj::Sampler(desc))?;
+    ret(emu, s)
+}
+
+fn stencil_desc(emu: &Emu, s: u64) -> Option<StencilDesc> {
+    (s != 0).then(|| StencilDesc {
+        compare: prop(emu, s, "stencilCompareFunction", 7),
+        ops: [prop(emu, s, "stencilFailureOperation", 0), prop(emu, s, "depthFailureOperation", 0), prop(emu, s, "depthStencilPassOperation", 0)],
+        read_mask: prop(emu, s, "readMask", 0xffff_ffff) as u32,
+        write_mask: prop(emu, s, "writeMask", 0xffff_ffff) as u32,
+    })
+}
+
+fn new_depth_stencil(emu: &mut Emu) -> Result<()> {
+    let d = emu.arg(2);
+    let desc = DepthStencilDesc {
+        depth_compare: prop(emu, d, "depthCompareFunction", 7),
+        depth_write: prop(emu, d, "depthWriteEnabled", 0) & 0xff != 0,
+        front: stencil_desc(emu, prop(emu, d, "frontFaceStencil", 0)),
+        back: stencil_desc(emu, prop(emu, d, "backFaceStencil", 0)),
+    };
+    let s = new_obj(emu, "MTLPommeDepthStencilState", Obj::DepthStencil(desc))?;
+    ret(emu, s)
 }
 
 /// `newRenderPipelineStateWithDescriptor:completionHandler:` → handler(state, nil).
@@ -199,10 +430,31 @@ fn new_command_buffer(emu: &mut Emu) -> Result<()> {
     ret(emu, b)
 }
 
+fn attachment(emu: &Emu, a: u64) -> Option<Attachment> {
+    let texture = prop(emu, a, "texture", 0);
+    (texture != 0).then(|| Attachment {
+        texture,
+        resolve: prop(emu, a, "resolveTexture", 0),
+        load: prop(emu, a, "loadAction", 0),
+        store: prop(emu, a, "storeAction", 0),
+        clear_color: emu.metal.clear_colors.get(&a).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
+        clear_depth: objc::bag_get_f64(emu, a, "clearDepth").unwrap_or(1.0),
+        clear_stencil: prop(emu, a, "clearStencil", 0) as u32,
+    })
+}
+
 fn render_encoder(emu: &mut Emu) -> Result<()> {
-    let (cb, pass) = (emu.arg(0), emu.arg(2));
-    send(emu, pass, "retain", &[])?;
-    let e = new_obj(emu, "MTLPommeRenderCommandEncoder", Obj::RenderEncoder { buffer: cb, pass })?;
+    let (cb, desc) = (emu.arg(0), emu.arg(2));
+    let mut pass = Pass::default();
+    for i in 0..8 {
+        if let Some(a) = attachment(emu, element(emu, desc, "colorAttachments", i)) {
+            pass.colors.push((i, a));
+        }
+    }
+    pass.depth = attachment(emu, prop(emu, desc, "depthAttachment", 0));
+    pass.stencil = attachment(emu, prop(emu, desc, "stencilAttachment", 0));
+    let e = new_obj(emu, "MTLPommeRenderCommandEncoder", Obj::RenderEncoder { buffer: cb, pass: desc })?;
+    emu.metal.encoders.insert(e, (cb, pass, DrawState { cull: 0, winding: 0, ..Default::default() }));
     count(emu, "renderCommandEncoderWithDescriptor:");
     send(emu, e, "autorelease", &[])?;
     ret(emu, e)
@@ -211,6 +463,7 @@ fn render_encoder(emu: &mut Emu) -> Result<()> {
 fn blit_encoder(emu: &mut Emu) -> Result<()> {
     let cb = emu.arg(0);
     let e = new_obj(emu, "MTLPommeBlitCommandEncoder", Obj::BlitEncoder { buffer: cb })?;
+    emu.metal.blits.insert(e, cb);
     count(emu, "blitCommandEncoder");
     send(emu, e, "autorelease", &[])?;
     ret(emu, e)
@@ -246,6 +499,8 @@ fn commit(emu: &mut Emu) -> Result<()> {
         *committed = true;
     }
     trace(emu, || format!("commit {cb:#x}: {} drawables, {} handlers", present.len(), handlers.len()));
+    let cmds = emu.metal.cmds.remove(&cb).unwrap_or_default();
+    execute(emu, cmds, &present)?;
     emu.metal.presented += present.len() as u64;
     for h in handlers {
         crate::libsystem::call_block(emu, h, &[cb])?;
@@ -253,12 +508,141 @@ fn commit(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// Encoder calls that just get counted for now.
-fn record(emu: &mut Emu) -> Result<()> {
-    let sel = objc::sel_name(emu, emu.cpu.x[1]);
-    count(emu, &sel);
+// ---- recording ----
+
+fn enc_state(emu: &mut Emu) -> Option<&mut DrawState> {
+    let e = emu.arg(0);
+    emu.metal.encoders.get_mut(&e).map(|(_, _, st)| st)
+}
+
+/// The encoder's stage index from a selector prefix (vertex 0, fragment 1).
+fn set_buffer(emu: &mut Emu, stage: usize) -> Result<()> {
+    let (b, off, i) = (emu.arg(2), emu.arg(3), emu.arg(4) as u32);
+    if let Some(st) = enc_state(emu) {
+        st.buffers[stage].insert(i, BufRef::Buffer(b, off));
+    }
     Ok(())
 }
+
+fn set_buffer_offset(emu: &mut Emu, stage: usize) -> Result<()> {
+    let (off, i) = (emu.arg(2), emu.arg(3) as u32);
+    if let Some(st) = enc_state(emu)
+        && let Some(BufRef::Buffer(_, o)) = st.buffers[stage].get_mut(&i)
+    {
+        *o = off;
+    }
+    Ok(())
+}
+
+fn set_bytes(emu: &mut Emu, stage: usize) -> Result<()> {
+    let (p, n, i) = (emu.arg(2), emu.arg(3), emu.arg(4) as u32);
+    let bytes = emu.p.memory.read(p, n as usize)?.to_vec();
+    if let Some(st) = enc_state(emu) {
+        st.buffers[stage].insert(i, BufRef::Bytes(bytes));
+    }
+    Ok(())
+}
+
+fn set_texture(emu: &mut Emu, stage: usize) -> Result<()> {
+    let (t, i) = (emu.arg(2), emu.arg(3) as u32);
+    if let Some(st) = enc_state(emu) {
+        st.textures[stage].insert(i, t);
+    }
+    Ok(())
+}
+
+fn set_sampler(emu: &mut Emu, stage: usize) -> Result<()> {
+    let (t, i) = (emu.arg(2), emu.arg(3) as u32);
+    if let Some(st) = enc_state(emu) {
+        st.samplers[stage].insert(i, t);
+    }
+    Ok(())
+}
+
+fn push_draw(emu: &mut Emu, primitive: u64, call: DrawCall) -> Result<()> {
+    let e = emu.arg(0);
+    count(emu, "draw");
+    if let Some((_, pass, st)) = emu.metal.encoders.get_mut(&e) {
+        pass.draws.push(Draw { state: st.clone(), primitive, call });
+    }
+    Ok(())
+}
+
+fn draw_arrays(emu: &mut Emu, with_instances: bool, with_base: bool) -> Result<()> {
+    let (prim, start, n) = (emu.arg(2), emu.arg(3), emu.arg(4));
+    let instances = if with_instances { emu.arg(5) } else { 1 };
+    let base_instance = if with_base { emu.arg(6) } else { 0 };
+    push_draw(emu, prim, DrawCall::Arrays { start, count: n, instances, base_instance })
+}
+
+fn draw_indexed(emu: &mut Emu, with_instances: bool, with_bases: bool) -> Result<()> {
+    let (prim, n, index_type, buffer, offset) = (emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5), emu.arg(6));
+    let instances = if with_instances { emu.arg(7) } else { 1 };
+    // The ninth and tenth arguments (base vertex, base instance) are on the stack.
+    let (base_vertex, base_instance) = if with_bases { (emu.read_u64(emu.cpu.sp)? as i64, emu.read_u64(emu.cpu.sp + 8)?) } else { (0, 0) };
+    push_draw(emu, prim, DrawCall::Indexed { count: n, index_type, buffer, offset, instances, base_vertex, base_instance })
+}
+
+fn end_render_encoding(emu: &mut Emu) -> Result<()> {
+    let e = emu.arg(0);
+    if let Some((cb, pass, _)) = emu.metal.encoders.remove(&e) {
+        trace(emu, || format!("pass: {} draws", pass.draws.len()));
+        emu.metal.cmds.entry(cb).or_default().push(Cmd::Pass(pass));
+    }
+    Ok(())
+}
+
+fn blit_cmd(emu: &mut Emu, cmd: Cmd) {
+    let e = emu.arg(0);
+    if let Some(&cb) = emu.metal.blits.get(&e) {
+        emu.metal.cmds.entry(cb).or_default().push(cmd);
+    }
+}
+
+/// Three NSUIntegers (MTLOrigin / MTLSize), passed by reference.
+fn triple(emu: &Emu, p: u64) -> Result<[u64; 3]> {
+    Ok([emu.read_u64(p)?, emu.read_u64(p + 8)?, emu.read_u64(p + 16)?])
+}
+
+/// Run a committed command buffer's commands, then present its drawables.
+fn execute(emu: &mut Emu, cmds: Vec<Cmd>, present: &[u64]) -> Result<()> {
+    #[cfg(feature = "gpu")]
+    {
+        if let Err(e) = crate::metal_gpu::execute(emu, &cmds, present)
+            && emu.metal.gpu_error.as_deref() != Some(e.as_str())
+        {
+            println!("[metal] {e}");
+            emu.metal.gpu_error = Some(e);
+        }
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        let _ = present;
+        // Without a GPU, still do what the CPU can see: buffer copies.
+        for c in &cmds {
+            if let Cmd::CopyBuffer { src, src_offset, dst, dst_offset, size } = c {
+                copy_buffer(emu, *src, *src_offset, *dst, *dst_offset, *size)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A buffer → buffer copy, in guest memory (where buffers live).
+pub(crate) fn copy_buffer(emu: &mut Emu, src: u64, src_offset: u64, dst: u64, dst_offset: u64, size: u64) -> Result<()> {
+    let (Some(Obj::Buffer { contents: s, .. }), Some(Obj::Buffer { contents: d, .. })) = (obj(emu, src).cloned(), obj(emu, dst).cloned()) else { return Ok(()) };
+    let bytes = emu.p.memory.read(s + src_offset, size as usize)?.to_vec();
+    emu.p.memory.write(d + dst_offset, &bytes)?;
+    Ok(())
+}
+
+/// A buffer's bytes (in guest memory) from `offset`, at most `len`.
+pub fn buffer_bytes(emu: &Emu, b: u64, offset: u64, len: u64) -> Option<Vec<u8>> {
+    let Some(Obj::Buffer { contents, length }) = obj(emu, b) else { return None };
+    let n = len.min(length.saturating_sub(offset));
+    emu.p.memory.read(contents + offset, n as usize).ok().map(<[u8]>::to_vec)
+}
+
 
 // ---- CAMetalLayer ----
 
@@ -269,7 +653,7 @@ fn metal_layer(emu: &mut Emu, l: u64) -> &mut MetalLayer {
 fn next_drawable(emu: &mut Emu) -> Result<()> {
     let l = emu.arg(0);
     let ml = metal_layer(emu, l).clone();
-    let t = Texture { width: ml.drawable_size[0] as u64, height: ml.drawable_size[1] as u64, format: ml.pixel_format, usage: 4 };
+    let t = Texture { width: ml.drawable_size[0] as u64, height: ml.drawable_size[1] as u64, format: ml.pixel_format, usage: 4, samples: 1 };
     trace(emu, || format!("nextDrawable {}×{}", t.width, t.height));
     let tex = new_obj(emu, "MTLPommeTexture", Obj::Texture(t))?;
     let dr = new_obj(emu, "CAMetalDrawable", Obj::Drawable { layer: l, texture: tex })?;
@@ -343,6 +727,31 @@ fn array_set_at(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `replaceRegion:mipmapLevel:withBytes:bytesPerRow:`: the CPU writes texels now.
+fn replace_region(emu: &mut Emu) -> Result<()> {
+    let (t, region, bytes, bpr) = (emu.arg(0), emu.arg(2), emu.arg(4), emu.arg(5));
+    let o = triple(emu, region)?;
+    let sz = triple(emu, region + 24)?;
+    let data = emu.p.memory.read(bytes, (bpr * sz[1]) as usize)?.to_vec();
+    #[cfg(feature = "gpu")]
+    if let Err(e) = crate::metal_gpu::write_texture(emu, t, [o[0], o[1]], [sz[0], sz[1]], bpr, &data) {
+        println!("[metal] replaceRegion: {e}");
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = (t, o, data);
+    Ok(())
+}
+
+/// Show a presented drawable: its pixels become the CAMetalLayer's contents.
+pub(crate) fn show_frame(emu: &mut Emu, layer: u64, pix: tiny_skia::Pixmap) -> Result<()> {
+    let scale = crate::uikit::SCREEN_SCALE;
+    let size = [pix.width() as f64 / scale, pix.height() as f64 / scale];
+    let img = crate::image::new_image(emu, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4] })?;
+    crate::calayer::layer_mut(emu, layer).contents = img;
+    crate::host::frame_changed(emu);
+    Ok(())
+}
+
 /// The bring-up report: what the app compiled and encoded.
 pub fn report(emu: &Emu) -> String {
     let mut calls: Vec<_> = emu.metal.calls.iter().collect();
@@ -356,6 +765,8 @@ pub fn report(emu: &Emu) -> String {
 }
 
 const DEV: &str = "MTLPommeDevice";
+const RE: &str = "MTLPommeRenderCommandEncoder";
+const BE: &str = "MTLPommeBlitCommandEncoder";
 const ML: &str = "CAMetalLayer";
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
@@ -408,14 +819,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (DEV, false, "newLibraryWithSource:options:completionHandler:", new_library_async),
     (DEV, false, "newRenderPipelineStateWithDescriptor:error:", new_pipeline),
     (DEV, false, "newRenderPipelineStateWithDescriptor:completionHandler:", new_pipeline_async),
-    (DEV, false, "newSamplerStateWithDescriptor:", |e| {
-        let s = new_obj(e, "MTLPommeSamplerState", Obj::Sampler)?;
-        ret(e, s)
-    }),
-    (DEV, false, "newDepthStencilStateWithDescriptor:", |e| {
-        let s = new_obj(e, "MTLPommeDepthStencilState", Obj::DepthStencil)?;
-        ret(e, s)
-    }),
+    (DEV, false, "newSamplerStateWithDescriptor:", new_sampler),
+    (DEV, false, "newDepthStencilStateWithDescriptor:", new_depth_stencil),
     // A recent Apple GPU: every family through Apple 9, common (3) and Metal 3.
     (DEV, false, "supportsFamily:", |e| {
         let f = e.arg(2) as i64;
@@ -455,8 +860,140 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, if done { 4 } else { 0 }) // MTLCommandBufferStatusCompleted / NotEnqueued
     }),
     ("MTLPommeCommandBuffer", false, "error", |e| ret(e, 0)),
-    ("MTLPommeRenderCommandEncoder", false, "endEncoding", record),
-    ("MTLPommeBlitCommandEncoder", false, "endEncoding", record),
+    ("MTLPommeRenderCommandEncoder", false, "endEncoding", end_render_encoding),
+    ("MTLPommeBlitCommandEncoder", false, "endEncoding", |e| {
+        let enc = e.arg(0);
+        e.metal.blits.remove(&enc);
+        Ok(())
+    }),
+    (RE, false, "setRenderPipelineState:", |e| {
+        let p = e.arg(2);
+        if let Some(st) = enc_state(e) {
+            st.pipeline = p;
+        }
+        Ok(())
+    }),
+    (RE, false, "setDepthStencilState:", |e| {
+        let p = e.arg(2);
+        if let Some(st) = enc_state(e) {
+            st.depth_stencil = p;
+        }
+        Ok(())
+    }),
+    (RE, false, "setStencilReferenceValue:", |e| {
+        let v = e.arg(2) as u32;
+        if let Some(st) = enc_state(e) {
+            st.stencil_ref = [v, v];
+        }
+        Ok(())
+    }),
+    (RE, false, "setStencilFrontReferenceValue:backReferenceValue:", |e| {
+        let (f, b) = (e.arg(2) as u32, e.arg(3) as u32);
+        if let Some(st) = enc_state(e) {
+            st.stencil_ref = [f, b];
+        }
+        Ok(())
+    }),
+    (RE, false, "setScissorRect:", |e| {
+        let p = e.arg(2);
+        let r = [e.read_u64(p)?, e.read_u64(p + 8)?, e.read_u64(p + 16)?, e.read_u64(p + 24)?];
+        if let Some(st) = enc_state(e) {
+            st.scissor = Some(r);
+        }
+        Ok(())
+    }),
+    (RE, false, "setViewport:", |e| {
+        let p = e.arg(2);
+        let mut v = [0f64; 6];
+        for (i, x) in v.iter_mut().enumerate() {
+            *x = f64::from_bits(e.read_u64(p + i as u64 * 8)?);
+        }
+        if let Some(st) = enc_state(e) {
+            st.viewport = Some(v);
+        }
+        Ok(())
+    }),
+    (RE, false, "setCullMode:", |e| {
+        let v = e.arg(2);
+        if let Some(st) = enc_state(e) {
+            st.cull = v;
+        }
+        Ok(())
+    }),
+    (RE, false, "setFrontFacingWinding:", |e| {
+        let v = e.arg(2);
+        if let Some(st) = enc_state(e) {
+            st.winding = v;
+        }
+        Ok(())
+    }),
+    (RE, false, "setBlendColorRed:green:blue:alpha:", |e| {
+        let c = [0, 1, 2, 3].map(|i| f32::from_bits(e.cpu.q[i] as u32) as f64);
+        if let Some(st) = enc_state(e) {
+            st.blend_color = c;
+        }
+        Ok(())
+    }),
+    (RE, false, "setTriangleFillMode:", |_| Ok(())),
+    (RE, false, "setVertexBuffer:offset:atIndex:", |e| set_buffer(e, 0)),
+    (RE, false, "setFragmentBuffer:offset:atIndex:", |e| set_buffer(e, 1)),
+    (RE, false, "setVertexBufferOffset:atIndex:", |e| set_buffer_offset(e, 0)),
+    (RE, false, "setFragmentBufferOffset:atIndex:", |e| set_buffer_offset(e, 1)),
+    (RE, false, "setVertexBytes:length:atIndex:", |e| set_bytes(e, 0)),
+    (RE, false, "setFragmentBytes:length:atIndex:", |e| set_bytes(e, 1)),
+    (RE, false, "setVertexTexture:atIndex:", |e| set_texture(e, 0)),
+    (RE, false, "setFragmentTexture:atIndex:", |e| set_texture(e, 1)),
+    (RE, false, "setVertexSamplerState:atIndex:", |e| set_sampler(e, 0)),
+    (RE, false, "setFragmentSamplerState:atIndex:", |e| set_sampler(e, 1)),
+    (RE, false, "drawPrimitives:vertexStart:vertexCount:", |e| draw_arrays(e, false, false)),
+    (RE, false, "drawPrimitives:vertexStart:vertexCount:instanceCount:", |e| draw_arrays(e, true, false)),
+    (RE, false, "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:", |e| draw_arrays(e, true, true)),
+    (RE, false, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", |e| draw_indexed(e, false, false)),
+    (RE, false, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:", |e| draw_indexed(e, true, false)),
+    (RE, false, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:", |e| draw_indexed(e, true, true)),
+    (BE, false, "copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:", |e| {
+        let cmd = Cmd::CopyBuffer { src: e.arg(2), src_offset: e.arg(3), dst: e.arg(4), dst_offset: e.arg(5), size: e.arg(6) };
+        blit_cmd(e, cmd);
+        Ok(())
+    }),
+    (BE, false, "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:", |e| {
+        let size = triple(e, e.arg(6))?;
+        let origin_ptr = e.read_u64(e.cpu.sp + 16)?;
+        let origin = triple(e, origin_ptr)?;
+        let cmd = Cmd::BufferToTexture { buffer: e.arg(2), offset: e.arg(3), bytes_per_row: e.arg(4), texture: e.arg(7), origin: [origin[0], origin[1]], size: [size[0], size[1]] };
+        blit_cmd(e, cmd);
+        Ok(())
+    }),
+    (BE, false, "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:", |e| {
+        let (so, sz) = (triple(e, e.arg(5))?, triple(e, e.arg(6))?);
+        let dptr = e.read_u64(e.cpu.sp + 16)?;
+        let d = triple(e, dptr)?;
+        let cmd = Cmd::TextureToTexture { src: e.arg(2), src_origin: [so[0], so[1]], size: [sz[0], sz[1]], dst: e.arg(7), dst_origin: [d[0], d[1]] };
+        blit_cmd(e, cmd);
+        Ok(())
+    }),
+    (BE, false, "fillBuffer:range:value:", |e| {
+        let (b, loc, len, v) = (e.arg(2), e.arg(3), e.arg(4), e.arg(5) as u8);
+        if let Some(Obj::Buffer { contents, .. }) = obj(e, b).cloned() {
+            e.p.memory.write(contents + loc, &vec![v; len as usize])?;
+        }
+        Ok(())
+    }),
+    (BE, false, "synchronizeResource:", |_| Ok(())),
+    (BE, false, "generateMipmapsForTexture:", |_| Ok(())),
+    ("MTLPommeTexture", false, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", replace_region),
+    ("MTLRenderPassColorAttachmentDescriptor", false, "setClearColor:", |e| {
+        let (a, c) = (e.arg(0), [d(e, 0), d(e, 1), d(e, 2), d(e, 3)]);
+        e.metal.clear_colors.insert(a, c);
+        Ok(())
+    }),
+    ("MTLRenderPassColorAttachmentDescriptor", false, "clearColor", |e| {
+        let c = e.metal.clear_colors.get(&e.arg(0)).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        for (i, v) in c.iter().enumerate() {
+            e.cpu.q[i] = v.to_bits() as u128;
+        }
+        Ok(())
+    }),
     ("MTLPommeBuffer", false, "contents", buffer_contents),
     ("MTLPommeBuffer", false, "length", buffer_length),
     ("MTLPommeBuffer", false, "didModifyRange:", |_| Ok(())),
