@@ -7,6 +7,8 @@
 #   - Swift runtime: libswiftCore, libswift_Concurrency, libswiftSwiftOnoneSupport
 #     (swiftlang/swift, via its standalone runtime build in Runtimes/)
 #   - libc++ and libc++abi (swiftlang/llvm-project, Apple's LLVM fork)
+#   - Swift Foundation (swiftlang/swift-foundation) built as module `Foundation`,
+#     with pomme's Objective-C bridging overlay (scripts/sysroot/build-swift-foundation.sh)
 #   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
 #     (swiftlang/swift-foundation-icu). Built for arm64 *macOS*: its Darwin code
 #     paths assume macOS APIs that the iOS SDK hides, and the machine code and
@@ -113,5 +115,8 @@ xcrun clang++ -dynamiclib -target "$MAC_TARGET" -isysroot "$MAC_SDK" -Wl,-alias_
   -install_name /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation \
   "$CF_OBJ"/*.o "$VENDOR/build/icu-macos/lib/lib_FoundationICU.a" -lobjc \
   -o "$CF_FW/CoreFoundation"
+
+# Swift Foundation (swift-foundation, as module `Foundation`, plus pomme's bridging overlay)
+VENDOR="$VENDOR" TAG="$TAG" "$ROOT/scripts/sysroot/build-swift-foundation.sh"
 
 echo "installed into $VENDOR/sysroot"

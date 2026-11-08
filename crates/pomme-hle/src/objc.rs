@@ -65,6 +65,9 @@ const FAST_DATA_MASK: u64 = 0x0000_7fff_ffff_fff8;
 const SMALL_METHOD_LIST: u32 = 0x8000_0000;
 const DIRECT_SELECTORS: u32 = 0x4000_0000;
 
+/// Instance sizes of host classes that store fields in the object (isa + fields).
+const HOST_SIZES: &[(&str, u64)] = &[("NSSortDescriptor", 32)];
+
 /// Superclasses of system classes. Anything not listed inherits from NSObject.
 const HIERARCHY: &[(&str, &str)] = &[
     ("NSString", "NSObject"),
@@ -212,9 +215,16 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
                 .map(str::to_string)
         })
         .collect();
+    // Classes that must exist even if the app never names them (looked up by
+    // name, e.g. by the Swift runtime when it reparents its native NS* classes).
+    names.extend(
+        ["NSObject", "NSString", "NSMutableString", "NSArray", "NSMutableArray", "NSDictionary", "NSMutableDictionary", "NSSet", "NSMutableSet", "NSEnumerator", "NSNumber", "NSNull"]
+            .map(str::to_string),
+    );
     names.extend(HOST_METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::foundation::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::uikit::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::bundle::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -243,7 +253,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     }
 
     // 2. Host method implementations.
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -327,6 +337,9 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
         emu.p.memory.write_u32(ro + 8, 8)?;
         emu.write_u64(ro + 24, name_ptr)?;
     }
+    // Host classes that keep state in the object itself declare their size.
+    let own_size = HOST_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s);
+    let size = own_size.unwrap_or_else(|| emu.objc.classes.get(&superclass).map_or(8, |k| k.instance_size));
     for (c, isa, sup, is_meta) in [(cls, meta, superclass, false), (meta, root_meta, super_meta, true)] {
         emu.objc.classes.insert(
             c,
@@ -336,7 +349,7 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
                 isa,
                 superclass: sup,
                 methods: HashMap::new(),
-                instance_size: 8,
+                instance_size: if is_meta { 8 } else { size },
                 host: true,
                 initialized: false,
                 protocols: Vec::new(),
@@ -361,8 +374,24 @@ fn guest_class(emu: &mut Emu, cls: u64) -> Result<()> {
         let superclass = emu.read_u64(c + 8)?;
         let ro = emu.read_u64(c + 32)? & FAST_DATA_MASK;
         let flags = emu.p.memory.read_u32(ro)?;
-        let instance_size = emu.p.memory.read_u32(ro + 8)? as u64;
-        let name = emu.cstr(emu.read_u64(ro + 24)?)?;
+        let mut instance_size = emu.p.memory.read_u32(ro + 8)? as u64;
+        if flags & RO_META == 0 && superclass != 0 {
+            instance_size = slide_ivars(emu, ro, superclass, instance_size)?;
+        }
+        let name_ptr = emu.read_u64(ro + 24)?;
+        let name = if name_ptr != 0 {
+            emu.cstr(name_ptr)?
+        } else {
+            // Classes the Swift runtime builds at run time are named lazily
+            // through the hook it registered (objc_setHook_lazyClassNamer).
+            match emu.objc.hooks.get("lazyClassNamer").copied() {
+                Some(hook) => {
+                    let p = emu.call(hook, &[cls])?;
+                    if p == 0 { format!("<class {cls:#x}>") } else { emu.cstr(p)? }
+                }
+                None => format!("<class {cls:#x}>"),
+            }
+        };
         let mut methods = HashMap::new();
         read_methods(emu, emu.read_u64(ro + 32)?, &mut methods)?;
         let mut protocols = Vec::new();
@@ -377,6 +406,45 @@ fn guest_class(emu: &mut Emu, cls: u64) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Non-fragile ivars: a class is compiled assuming its superclass's size; if
+/// the superclass is bigger at run time, move this class's ivars after it (as
+/// the Objective-C runtime does when it realizes the class). Returns the
+/// class's real instance size.
+fn slide_ivars(emu: &mut Emu, ro: u64, superclass: u64, instance_size: u64) -> Result<u64> {
+    if !emu.objc.classes.contains_key(&superclass) {
+        guest_class(emu, superclass)?;
+    }
+    let super_size = emu.objc.classes.get(&superclass).map_or(0, |k| k.instance_size);
+    let start = emu.p.memory.read_u32(ro + 4)? as u64;
+    let ivars = emu.read_u64(ro + 48)?;
+    // Keep the ivars' alignment.
+    let mut align = 8u64;
+    let (entsize, count) = if ivars == 0 {
+        (0, 0)
+    } else {
+        (emu.p.memory.read_u32(ivars)? as u64, emu.p.memory.read_u32(ivars + 4)? as u64)
+    };
+    for i in 0..count {
+        let raw = emu.p.memory.read_u32(ivars + 8 + i * entsize + 24)?;
+        if raw != u32::MAX && raw < 16 {
+            align = align.max(1 << raw);
+        }
+    }
+    let super_end = (super_size + align - 1) & !(align - 1);
+    if super_end <= start {
+        return Ok(instance_size);
+    }
+    let diff = super_end - start;
+    for i in 0..count {
+        let offset_var = emu.read_u64(ivars + 8 + i * entsize)?;
+        if offset_var != 0 {
+            let v = emu.p.memory.read_u32(offset_var)? as u64;
+            emu.p.memory.write_u32(offset_var, (v + diff) as u32)?;
+        }
+    }
+    Ok(instance_size + diff)
 }
 
 fn read_methods(emu: &mut Emu, list: u64, out: &mut HashMap<Sel, Imp>) -> Result<()> {
@@ -638,12 +706,33 @@ pub(crate) fn call_own_method(emu: &mut Emu, cls: u64, meta: u64, entry: u64, is
     Ok(())
 }
 
-/// Allocate a zeroed instance of `cls`.
+/// Allocate a zeroed instance of `cls`, running C++ ivar constructors.
 pub fn create_instance(emu: &mut Emu, cls: u64, extra: u64) -> Result<u64> {
     let size = emu.objc.classes.get(&cls).map_or(16, |c| c.instance_size).max(8) + extra;
     let obj = emu.alloc(size)?;
     emu.write_u64(obj, cls)?;
+    cxx_construct(emu, obj, cls)?;
     Ok(obj)
+}
+
+/// Ivars of C++ type are built by a compiler-generated `.cxx_construct` method
+/// on each class that has them: call each class's own one, base class first.
+fn cxx_construct(emu: &mut Emu, obj: u64, cls: u64) -> Result<()> {
+    let sel = intern(emu, ".cxx_construct")?;
+    let mut chain = Vec::new();
+    let mut c = cls;
+    while let Some(k) = emu.objc.classes.get(&c) {
+        if let Some(Imp::Guest(imp)) = k.methods.get(&sel) {
+            chain.push(*imp);
+        }
+        c = k.superclass;
+    }
+    for imp in chain.into_iter().rev() {
+        let saved = save_args(emu);
+        emu.call(imp, &[obj, sel])?;
+        restore_args(emu, saved);
+    }
+    Ok(())
 }
 
 pub fn is_kind_of(emu: &mut Emu, obj: u64, cls: u64) -> Result<bool> {
@@ -820,8 +909,10 @@ fn class_get_name(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) fn object_get_class(emu: &mut Emu) -> Result<()> {
+    // Just the isa, like the real one: the Swift runtime calls this on classes
+    // whose metaclass it is still filling in.
     let obj = emu.cpu.x[0];
-    let c = if obj == 0 { 0 } else { class_of(emu, obj)? };
+    let c = if obj == 0 { 0 } else { emu.read_u64(obj)? };
     emu.ret(c);
     Ok(())
 }
@@ -1075,7 +1166,22 @@ fn nsobject_perform_selector(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Key-value coding, the basic case: `valueForKey:` calls the getter named `key`.
+fn nsobject_value_for_key(emu: &mut Emu) -> Result<()> {
+    let (obj, key) = (emu.cpu.x[0], emu.cpu.x[2]);
+    let name = crate::foundation::nsstring(emu, key)?;
+    let sel = intern(emu, &name)?;
+    if !responds(emu, obj, sel)? {
+        let k = instance_class(emu, obj)?;
+        return Err(Stop::Unsupported(format!("valueForKey: {} has no getter `{name}` (KVC beyond getters isn't implemented)", emu.objc.class_name(k))));
+    }
+    let r = send(emu, obj, &name, &[])?;
+    emu.ret(r);
+    Ok(())
+}
+
 pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSObject", false, "valueForKey:", nsobject_value_for_key),
     ("NSObject", true, "alloc", nsobject_alloc),
     ("NSObject", true, "allocWithZone:", nsobject_alloc),
     ("NSObject", true, "new", nsobject_new),
@@ -1353,6 +1459,7 @@ fn objc_construct_instance(emu: &mut Emu) -> Result<()> {
     let (cls, bytes) = (emu.arg(0), emu.arg(1));
     if bytes != 0 {
         emu.write_u64(bytes, cls)?;
+        cxx_construct(emu, bytes, cls)?;
     }
     emu.ret(bytes);
     Ok(())

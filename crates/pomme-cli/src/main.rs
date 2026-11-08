@@ -183,6 +183,23 @@ fn load(path: &Path, show_stubs: bool) -> Result<()> {
     Ok(())
 }
 
+/// A hook for POMME_BREAK: print the call, then run the function normally.
+fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
+    let c = &emu.cpu;
+    println!(
+        "[break] {} from {}  x0={:#x} x1={:#x} x2={:#x} x3={:#x} d0={}",
+        emu.symbolize(emu.hook_target()),
+        emu.symbolize(c.x[30].wrapping_sub(4)),
+        c.x[0],
+        c.x[1],
+        c.x[2],
+        c.x[3],
+        f64::from_bits(c.q[0] as u64)
+    );
+    emu.continue_original();
+    Ok(())
+}
+
 fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
@@ -196,6 +213,15 @@ fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
     emu.trace = trace;
+    // Debugging aid: POMME_BREAK=_sym1,_sym2 prints the arguments of every call to those guest functions.
+    if let Ok(list) = std::env::var("POMME_BREAK") {
+        for sym in list.split(',') {
+            match emu.p.images.iter().find_map(|i| i.symbol(sym)) {
+                Some(addr) => emu.hook(addr, print_call).map_err(|e| anyhow::anyhow!("{e}"))?,
+                None => println!("POMME_BREAK: no guest symbol {sym}"),
+            }
+        }
+    }
     println!(
         "running {} ({} classes, {} host functions bound)",
         emu.p.bundle_id.as_deref().unwrap_or(&emu.p.main().name),
@@ -222,6 +248,20 @@ fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
             }
             let c = &emu.cpu;
             println!("  pc {:#x}  lr {:#x} ({})  sp {:#x}", c.pc, c.x[30], emu.symbolize(c.x[30]), c.sp);
+            // Backtrace: arm64 Darwin code keeps a frame-pointer chain of (fp, lr) pairs.
+            println!("  backtrace:");
+            let mut fp = c.x[29];
+            for _ in 0..16 {
+                let (Ok(next), Ok(ret)) = (emu.p.memory.read_u64(fp), emu.p.memory.read_u64(fp + 8)) else { break };
+                if ret == 0 || ret == pomme_cpu::HOST_RETURN {
+                    break;
+                }
+                println!("    {}", emu.symbolize(ret.wrapping_sub(4)));
+                if next <= fp {
+                    break;
+                }
+                fp = next;
+            }
             for r in (0..8).step_by(4) {
                 println!(
                     "  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}  x{:<2} {:#018x}",

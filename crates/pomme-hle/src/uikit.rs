@@ -34,7 +34,9 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
         }
     }
     emu.ui.launched = true;
-    Err(Stop::Unsupported("UIApplicationMain: launched; the event loop isn't implemented yet".into()))
+    Err(Stop::Unsupported(
+        "UIApplicationMain: launch finished (didFinishLaunchingWithOptions returned); scene connection and the event loop aren't implemented yet".into(),
+    ))
 }
 
 fn class_named(emu: &Emu, name: &str) -> Result<u64> {

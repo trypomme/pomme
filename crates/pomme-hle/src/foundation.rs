@@ -250,9 +250,23 @@ pub fn nsstring(emu: &mut Emu, obj: u64) -> Result<String> {
         return read_host_string(emu, obj);
     }
     if !is_cf(emu, obj) {
-        // A guest NSString subclass, or a Swift string bridged as an object.
-        let p = send(emu, obj, "UTF8String", &[])?;
-        return emu.cstr(p);
+        // A guest NSString subclass, e.g. a Swift string bridged as an object.
+        // Read it through the NSString primitives it must implement.
+        let len = send(emu, obj, "length", &[])?;
+        let buf = emu.alloc(len * 2 + 2)?;
+        let sel = objc::intern(emu, "getCharacters:range:")?;
+        if objc::responds(emu, obj, sel)? {
+            send(emu, obj, "getCharacters:range:", &[buf, 0, len])?;
+        } else {
+            for i in 0..len {
+                let c = send(emu, obj, "characterAtIndex:", &[i])?;
+                emu.p.memory.write_u16(buf + i * 2, c as u16)?;
+            }
+        }
+        let bytes = emu.p.memory.read(buf, (len * 2) as usize)?;
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        emu.heap.free(&emu.p.memory, buf)?;
+        return Ok(String::from_utf16_lossy(&units));
     }
     let len = cf(emu, "_CFStringGetLength", &[obj])?;
     let size = cf(emu, "_CFStringGetMaximumSizeForEncoding", &[len, UTF8])? + 1;
@@ -429,6 +443,12 @@ fn string_is_equal(emu: &mut Emu) -> Result<()> {
 }
 
 fn string_hash(emu: &mut Emu) -> Result<()> {
+    if have_cf(emu) && is_cf(emu, emu.arg(0)) {
+        // CF's hash, so Objective-C and CF collections agree.
+        let h = cf(emu, "_CFHash", &[emu.arg(0)])?;
+        emu.ret(h);
+        return Ok(());
+    }
     // FNV-1a over UTF-8: stable across runs.
     let s = nsstring(emu, emu.arg(0))?;
     let h = s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
@@ -625,6 +645,97 @@ fn get_cstring(emu: &mut Emu) -> Result<()> {
 fn length_of_bytes(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(0))?;
     emu.ret(s.len() as u64);
+    Ok(())
+}
+
+// ---- the selectors the Swift standard library uses to read foreign strings ----
+
+const CF_ASCII: u64 = 0x0600;
+
+/// NSStringEncoding → CFStringEncoding for the encodings the stdlib asks for.
+fn cf_encoding(ns: u64) -> u64 {
+    match ns {
+        1 => CF_ASCII,     // NSASCIIStringEncoding
+        4 => UTF8,         // NSUTF8StringEncoding
+        5 => 0x0201,       // NSISOLatin1StringEncoding → kCFStringEncodingISOLatin1
+        10 => 0x0100,      // NSUnicodeStringEncoding → kCFStringEncodingUnicode
+        other => other,
+    }
+}
+
+/// `-_fastCStringContents:(BOOL)nulTerminated` → ASCII bytes, or NULL.
+fn fast_cstring_contents(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFStringGetCStringPtr", &[emu.arg(0), CF_ASCII])?;
+    emu.ret(p);
+    Ok(())
+}
+
+/// `-_fastCharacterContents` → UTF-16 buffer, or NULL.
+fn fast_character_contents(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFStringGetCharactersPtr", &[emu.arg(0)])?;
+    emu.ret(p);
+    Ok(())
+}
+
+/// `-getCharacters:(unichar *)buffer range:(NSRange)range`
+fn get_characters_range(emu: &mut Emu) -> Result<()> {
+    let (s, buf, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
+    cf(emu, "_CFStringGetCharacters", &[s, loc, len, buf])?;
+    Ok(())
+}
+
+/// `-getBytes:maxLength:usedLength:encoding:options:range:remainingRange:`.
+/// x2..x6 hold the first five; the 16-byte NSRange doesn't fit in x7, so it
+/// and `remainingRange` are on the stack.
+fn get_bytes(emu: &mut Emu) -> Result<()> {
+    let (s, buf, max, used, enc) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5));
+    let sp = emu.cpu.sp;
+    let loc = emu.read_u64(sp)?;
+    let len = emu.read_u64(sp + 8)?;
+    let remaining = emu.read_u64(sp + 16)?;
+    // CFStringGetBytes(str, range, encoding, lossByte, isExternalRepresentation, buffer, maxBufLen,
+    // usedBufLen): usedBufLen would be a 9th (stack) argument, which emu.call doesn't pass, so it
+    // gets NULL and the byte count is measured separately.
+    let converted = cf(emu, "_CFStringGetBytes", &[s, loc, len, cf_encoding(enc), 0, 0, buf, max])?;
+    if used != 0 {
+        let n = cf_get_bytes_len(emu, s, loc, converted, enc)?;
+        emu.write_u64(used, n)?;
+    }
+    if remaining != 0 {
+        emu.write_u64(remaining, loc + converted)?;
+        emu.write_u64(remaining + 8, len - converted.min(len))?;
+    }
+    emu.ret((converted > 0 || len == 0) as u64);
+    Ok(())
+}
+
+/// Bytes needed to encode `count` UTF-16 units starting at `loc`.
+fn cf_get_bytes_len(emu: &mut Emu, s: u64, loc: u64, count: u64, enc: u64) -> Result<u64> {
+    let text = nsstring(emu, s)?;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let end = (loc + count).min(units.len() as u64) as usize;
+    let part = String::from_utf16_lossy(&units[loc.min(end as u64) as usize..end]);
+    Ok(match enc {
+        10 => (part.encode_utf16().count() * 2) as u64,
+        _ => part.len() as u64,
+    })
+}
+
+/// `-compare:options:range:locale:` → NSComparisonResult
+fn compare_options_range(emu: &mut Emu) -> Result<()> {
+    let (s, other, options, loc, len, locale) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5), emu.arg(6));
+    let r = cf(emu, "_CFStringCompareWithOptionsAndLocale", &[s, other, loc, len, options, locale])?;
+    emu.ret(r);
+    Ok(())
+}
+
+fn ret_nil(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+fn ret_yes(emu: &mut Emu) -> Result<()> {
+    emu.ret(1);
     Ok(())
 }
 
@@ -1316,7 +1427,125 @@ fn cf_description(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+// ---- NSSortDescriptor: {isa, key, ascending, selector} ----
+
+fn sort_descriptor_init(emu: &mut Emu) -> Result<()> {
+    let (obj, key, asc) = (emu.arg(0), emu.arg(2), emu.arg(3) & 0xff);
+    let sel = objc::intern(emu, "compare:")?;
+    emu.write_u64(obj + 8, key)?;
+    emu.write_u64(obj + 16, asc)?;
+    emu.write_u64(obj + 24, sel)?;
+    emu.ret(obj);
+    Ok(())
+}
+
+fn sort_descriptor_init_selector(emu: &mut Emu) -> Result<()> {
+    let sel = emu.arg(4);
+    sort_descriptor_init(emu)?;
+    emu.write_u64(emu.cpu.x[0] + 24, sel)
+}
+
+fn sort_descriptor_new(emu: &mut Emu) -> Result<()> {
+    let obj = objc::create_instance(emu, emu.arg(0), 0)?;
+    emu.cpu.x[0] = obj;
+    sort_descriptor_init(emu)
+}
+
+fn sort_descriptor_key(emu: &mut Emu) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + 8)?;
+    emu.ret(v);
+    Ok(())
+}
+
+fn sort_descriptor_ascending(emu: &mut Emu) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + 16)?;
+    emu.ret(v);
+    Ok(())
+}
+
+/// Order `objs` by `descriptors` (an NSArray of NSSortDescriptor). A stable
+/// merge sort; keys come from `valueForKey:`, comparison from the
+/// descriptor's selector (`compare:`).
+fn sort_by_descriptors(emu: &mut Emu, objs: Vec<u64>, descriptors: u64) -> Result<Vec<u64>> {
+    let mut descs = Vec::new();
+    for d in array_values(emu, descriptors)? {
+        let key = emu.read_u64(d + 8)?;
+        let asc = emu.read_u64(d + 16)? != 0;
+        let sel = emu.read_u64(d + 24)?;
+        descs.push((nsstring(emu, key)?, asc, objc::sel_name(emu, sel)));
+    }
+    // Precompute each object's sort keys.
+    let mut keyed = Vec::new();
+    for o in objs {
+        let mut keys = Vec::new();
+        for (key, _, _) in &descs {
+            let k = new_nsstring(emu, key)?;
+            keys.push(send(emu, o, "valueForKey:", &[k])?);
+        }
+        keyed.push((o, keys));
+    }
+    // Merge sort with a fallible comparator.
+    fn cmp(emu: &mut Emu, a: &[u64], b: &[u64], descs: &[(String, bool, String)]) -> Result<i64> {
+        for (i, (_, asc, sel)) in descs.iter().enumerate() {
+            let r = if a[i] == 0 || b[i] == 0 { (a[i] != 0) as i64 - (b[i] != 0) as i64 } else { send(emu, a[i], sel, &[b[i]])? as i64 };
+            if r != 0 {
+                return Ok(if *asc { r } else { -r });
+            }
+        }
+        Ok(0)
+    }
+    let mut v = keyed;
+    let mut width = 1;
+    while width < v.len() {
+        let mut out = Vec::with_capacity(v.len());
+        for chunk in v.chunks(width * 2) {
+            let (l, r) = chunk.split_at(width.min(chunk.len()));
+            let (mut i, mut j) = (0, 0);
+            while i < l.len() && j < r.len() {
+                if cmp(emu, &r[j].1, &l[i].1, &descs)? < 0 {
+                    out.push(r[j].clone());
+                    j += 1;
+                } else {
+                    out.push(l[i].clone());
+                    i += 1;
+                }
+            }
+            out.extend_from_slice(&l[i..]);
+            out.extend_from_slice(&r[j..]);
+        }
+        v = out;
+        width *= 2;
+    }
+    Ok(v.into_iter().map(|(o, _)| o).collect())
+}
+
+fn sort_using_descriptors(emu: &mut Emu) -> Result<()> {
+    let (a, descs) = (emu.arg(0), emu.arg(2));
+    let objs = array_values(emu, a)?;
+    let sorted = sort_by_descriptors(emu, objs, descs)?;
+    for (i, o) in sorted.into_iter().enumerate() {
+        cf(emu, "_CFArraySetValueAtIndex", &[a, i as u64, o])?;
+    }
+    Ok(())
+}
+
+fn sorted_using_descriptors(emu: &mut Emu) -> Result<()> {
+    let (a, descs) = (emu.arg(0), emu.arg(2));
+    let objs = array_values(emu, a)?;
+    let sorted = sort_by_descriptors(emu, objs, descs)?;
+    let r = array_from(emu, &sorted)?;
+    emu.ret(r);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSMutableArray", false, "sortUsingDescriptors:", sort_using_descriptors),
+    ("NSArray", false, "sortedArrayUsingDescriptors:", sorted_using_descriptors),
+    ("NSSortDescriptor", false, "initWithKey:ascending:", sort_descriptor_init),
+    ("NSSortDescriptor", false, "initWithKey:ascending:selector:", sort_descriptor_init_selector),
+    ("NSSortDescriptor", true, "sortDescriptorWithKey:ascending:", sort_descriptor_new),
+    ("NSSortDescriptor", false, "key", sort_descriptor_key),
+    ("NSSortDescriptor", false, "ascending", sort_descriptor_ascending),
     // class clusters
     ("NSString", true, "alloc", cluster_alloc),
     ("NSString", true, "allocWithZone:", cluster_alloc),
@@ -1368,6 +1597,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "lengthOfBytesUsingEncoding:", length_of_bytes),
     ("NSString", false, "cStringUsingEncoding:", utf8_string),
     ("NSMutableString", false, "appendString:", append_string),
+    ("NSString", false, "_fastCStringContents:", fast_cstring_contents),
+    ("NSString", false, "_fastCharacterContents", fast_character_contents),
+    ("NSString", false, "getCharacters:range:", get_characters_range),
+    ("NSString", false, "getBytes:maxLength:usedLength:encoding:options:range:remainingRange:", get_bytes),
+    ("NSString", false, "compare:options:range:locale:", compare_options_range),
+    ("NSString", true, "newTaggedNSStringWithASCIIBytes_:length_:", ret_nil),
+    ("NSString", false, "isNSString__", ret_yes),
     // NSArray
     ("NSArray", true, "array", array_empty),
     ("NSArray", true, "new", array_empty),
@@ -1499,3 +1735,37 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // Every other CF type
     ("__NSCFType", false, "description", cf_description),
 ];
+
+// ---- helpers for other modules ----
+
+pub fn boolean(emu: &Emu, b: bool) -> u64 {
+    if b { emu.fnd.true_obj } else { emu.fnd.false_obj }
+}
+
+pub fn null(emu: &Emu) -> u64 {
+    emu.fnd.null_obj
+}
+
+pub fn new_number_i64(emu: &mut Emu, v: i64) -> Result<u64> {
+    number_create(emu, NUMBER_SINT64, v as u64)
+}
+
+pub fn new_number_f64(emu: &mut Emu, v: f64) -> Result<u64> {
+    number_create(emu, NUMBER_FLOAT64, v.to_bits())
+}
+
+pub fn new_array_of(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
+    array_from(emu, objs)
+}
+
+pub fn new_dict_of(emu: &mut Emu, pairs: &[(u64, u64)]) -> Result<u64> {
+    let d = new_dict(emu)?;
+    for &(k, v) in pairs {
+        cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
+    }
+    Ok(d)
+}
+
+pub fn dict_get(emu: &mut Emu, d: u64, k: u64) -> Result<u64> {
+    cf(emu, "_CFDictionaryGetValue", &[d, k])
+}

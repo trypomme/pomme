@@ -9,6 +9,7 @@
 //! calling the app delegate.
 
 pub mod heap;
+mod bundle;
 pub mod objc;
 
 mod foundation;
@@ -111,10 +112,12 @@ pub struct Emu {
     code_next: u64,
     /// Hooked guest functions: entry address → (host function, trampoline that runs the original).
     hooks: HashMap<u64, (HostFn, u64)>,
-    /// While a hook runs: where `continue_original` jumps.
+    /// While a hook runs: where `continue_original` jumps, and the hooked function.
     hook_original: u64,
+    hook_target: u64,
     /// Host-side state for Foundation (CF bridge).
     pub fnd: foundation::State,
+    bundle: bundle::State,
 }
 
 impl Emu {
@@ -152,7 +155,9 @@ impl Emu {
             code_next: CODE_BASE,
             hooks: HashMap::new(),
             hook_original: 0,
+            hook_target: 0,
             fnd: Default::default(),
+            bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
         for slot in thunks.data.chunks_exact_mut(4) {
@@ -289,6 +294,7 @@ impl Emu {
                 Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
                     let (f, original) = self.hooks[&self.cpu.pc];
                     self.hook_original = original;
+                    self.hook_target = self.cpu.pc;
                     self.cpu.pc = self.cpu.x[30];
                     f(self)?
                 }
@@ -390,6 +396,11 @@ impl Emu {
         self.p.memory.write_u32(addr, HOOK_INSN)?;
         self.hooks.insert(addr, (f, original));
         Ok(())
+    }
+
+    /// From inside a hook: the hooked function's address.
+    pub fn hook_target(&self) -> u64 {
+        self.hook_target
     }
 
     /// From inside a hook: run the hooked function's original code.

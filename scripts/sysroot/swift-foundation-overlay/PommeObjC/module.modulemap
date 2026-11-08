@@ -1,0 +1,4 @@
+module PommeObjC {
+  header "PommeObjC.h"
+  export *
+}

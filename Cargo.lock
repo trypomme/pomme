@@ -229,6 +229,7 @@ dependencies = [
 name = "pomme-hle"
 version = "0.1.0"
 dependencies = [
+ "plist",
  "pomme-cpu",
  "pomme-loader",
  "pomme-mem",

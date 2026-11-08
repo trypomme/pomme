@@ -256,6 +256,21 @@ impl Cpu {
                     self.exclusive = None;
                 }
             }
+            // CASP / CASPA / CASPL / CASPAL: compare-and-swap a register pair.
+            // Bit 31 is 0 and bit 30 picks 32- or 64-bit elements (not the size field).
+            (false, true) if insn >> 31 == 0 && rt2 == 0b11111 => {
+                let eb = if bit(insn, 30) { 8 } else { 4 };
+                let m = mask(eb);
+                let next = |r: u32| if r == 31 { 31 } else { r + 1 };
+                let old_lo = load(mem, addr, eb)? as u64;
+                let old_hi = load(mem, addr.wrapping_add(eb as u64), eb)? as u64;
+                if old_lo == self.xr(rs) & m && old_hi == self.xr(next(rs)) & m {
+                    store(mem, addr, eb, (self.xr(rt) & m) as u128)?;
+                    store(mem, addr.wrapping_add(eb as u64), eb, (self.xr(next(rt)) & m) as u128)?;
+                }
+                self.set_xr(rs, old_lo);
+                self.set_xr(next(rs), old_hi);
+            }
             // LDXP/LDAXP, STXP/STLXP (32- and 64-bit only)
             (false, true) if size >= 2 => {
                 if l {
