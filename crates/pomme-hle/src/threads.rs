@@ -317,8 +317,9 @@ fn fire_timers(emu: &mut Emu) {
     }
 }
 
-/// When nothing can run: skip virtual time to the earliest deadline. False if there is none.
-fn advance_time(emu: &mut Emu, own: Option<u64>) -> bool {
+/// When nothing can run: skip virtual time to the earliest deadline. False if
+/// there is none; [`Stop::TimeLimit`] if it's past the run's time limit.
+fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
     let mut next = own;
     let mut consider = |d: Option<u64>| {
         if let Some(d) = d {
@@ -333,13 +334,18 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> bool {
     for p in emu.th.ports.values() {
         consider(p.timer);
     }
-    let Some(target) = next else { return false };
+    let Some(target) = next else { return Ok(false) };
+    if let Some(limit) = emu.time_limit_ns
+        && target > limit
+    {
+        return Err(Stop::TimeLimit(limit));
+    }
     let now = now_ns(emu);
     if target > now {
         emu.cpu.clock_offset += ns_to_ticks(target - now);
     }
     fire_timers(emu);
-    true
+    Ok(true)
 }
 
 /// Block the current thread until `wait` completes; returns the call's result
@@ -362,7 +368,7 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
         if schedule_round(emu)? {
             continue;
         }
-        if !advance_time(emu, wait.deadline()) {
+        if !advance_time(emu, wait.deadline())? {
             break Err(Stop::Idle(describe(emu, me, &wait)));
         }
     };

@@ -28,6 +28,10 @@ pub struct State {
     pub key_window: u64,
     pub windows: Vec<u64>,
     pub views: crate::uiview::Views,
+    /// CGColorGetComponents buffers, per colour.
+    pub color_components: std::collections::HashMap<u64, u64>,
+    /// The one RGB colour space.
+    pub rgb_space: u64,
 }
 
 fn class_named(emu: &mut Emu, name: &str) -> Result<u64> {
@@ -111,6 +115,14 @@ fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
 fn run_loop(emu: &mut Emu) -> Result<()> {
     crate::libsystem::drain_queue(emu)?;
     let mode = foundation::cf_data_pub(emu, "_kCFRunLoopDefaultMode")?;
+    // Lay out dirty views whenever the loop is about to sleep, like CoreAnimation's commit observer.
+    const BEFORE_WAITING: u64 = 1 << 5;
+    const EXIT: u64 = 1 << 7;
+    let callout = emu.host_thunk(crate::uiview::layout_windows)?;
+    let observer = foundation::cf_call(emu, "_CFRunLoopObserverCreate", &[0, BEFORE_WAITING | EXIT, 1, 2_000_000, callout, 0])?;
+    let rl = foundation::cf_call(emu, "_CFRunLoopGetMain", &[])?;
+    let common = foundation::cf_data_pub(emu, "_kCFRunLoopCommonModes")?;
+    foundation::cf_call(emu, "_CFRunLoopAddObserver", &[rl, observer, common])?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
         let r = foundation::cf_call(emu, "_CFRunLoopRunInMode", &[mode, 0])?;

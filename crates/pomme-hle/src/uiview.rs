@@ -30,6 +30,8 @@ pub struct View {
     pub autoresizing: u64,
     pub content_mode: u64,
     pub window: u64,
+    /// `layoutSubviews` is due at the next layout pass.
+    pub needs_layout: bool,
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +45,8 @@ pub struct Views {
     /// UIColor objects: rgba.
     pub colors: HashMap<u64, [f64; 4]>,
     pub device: u64,
+    /// Layer state (see calayer.rs).
+    pub layers: HashMap<u64, crate::calayer::Layer>,
 }
 
 impl Views {
@@ -59,22 +63,25 @@ fn rect_arg(emu: &Emu) -> [f64; 4] {
     [f(emu, 0), f(emu, 1), f(emu, 2), f(emu, 3)]
 }
 
-fn view_mut(emu: &mut Emu, v: u64) -> &mut View {
-    emu.ui.views.views.entry(v).or_insert_with(|| View { alpha: 1.0, user_interaction: true, ..Default::default() })
+pub(crate) fn view_mut(emu: &mut Emu, v: u64) -> &mut View {
+    emu.ui.views.views.entry(v).or_insert_with(|| View { alpha: 1.0, user_interaction: true, needs_layout: true, ..Default::default() })
 }
 
-fn view(emu: &mut Emu, v: u64) -> View {
+pub(crate) fn view(emu: &mut Emu, v: u64) -> View {
     view_mut(emu, v).clone()
 }
 
-fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
+pub(crate) fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
     let vw = view_mut(emu, v);
+    if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
+        vw.needs_layout = true;
+    }
     vw.bounds[2] = r[2];
     vw.bounds[3] = r[3];
     vw.center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
 }
 
-fn frame_of(emu: &mut Emu, v: u64) -> [f64; 4] {
+pub(crate) fn frame_of(emu: &mut Emu, v: u64) -> [f64; 4] {
     let vw = view(emu, v);
     [vw.center[0] - vw.bounds[2] / 2.0, vw.center[1] - vw.bounds[3] / 2.0, vw.bounds[2], vw.bounds[3]]
 }
@@ -87,9 +94,13 @@ fn view_init_with_frame(emu: &mut Emu) -> Result<()> {
     Ok(()) // returns self
 }
 
+/// `-init` is `-initWithFrame:CGRectZero`, so subclasses' initWithFrame: runs.
 fn view_init(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
     view_mut(emu, v);
+    emu.cpu.q[..4].fill(0);
+    let r = send(emu, v, "initWithFrame:", &[])?;
+    emu.ret(r);
     Ok(())
 }
 
@@ -113,7 +124,11 @@ fn view_bounds(emu: &mut Emu) -> Result<()> {
 
 fn view_set_bounds(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
-    view_mut(emu, v).bounds = r;
+    let vw = view_mut(emu, v);
+    if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
+        vw.needs_layout = true;
+    }
+    vw.bounds = r;
     Ok(())
 }
 
@@ -153,7 +168,9 @@ fn insert_subview(emu: &mut Emu, parent: u64, child: u64, index: Option<usize>) 
     let p = view_mut(emu, parent);
     let i = index.unwrap_or(p.subviews.len()).min(p.subviews.len());
     p.subviews.insert(i, child);
+    p.needs_layout = true;
     view_mut(emu, child).superview = parent;
+    view_mut(emu, child).needs_layout = true;
     let w = view(emu, parent).window;
     set_window_recursive(emu, child, w);
     for (sel, arg) in [("didMoveToSuperview", None), ("didMoveToWindow", None), ("didAddSubview:", Some(child))] {
@@ -318,7 +335,9 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
     let mut l = view(emu, v).layer;
     if l == 0 {
-        let cls = host_class(emu, "CALayer")?;
+        // +layerClass: views can ask for CAShapeLayer, CAGradientLayer, ...
+        let vcls = emu.read_u64(v)?;
+        let cls = send(emu, vcls, "layerClass", &[])?;
         l = objc::create_instance(emu, cls, 0)?;
         view_mut(emu, v).layer = l;
         emu.ui.views.layer_view.insert(l, v);
@@ -327,16 +346,33 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// `-layoutIfNeeded`: run `layoutSubviews` on this view and its subviews.
-fn layout_if_needed(emu: &mut Emu) -> Result<()> {
-    fn layout(emu: &mut Emu, v: u64) -> Result<()> {
+/// Run `layoutSubviews` on every view in the tree that needs it, parents first.
+pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<()> {
+    if std::mem::take(&mut view_mut(emu, v).needs_layout) {
         send(emu, v, "layoutSubviews", &[])?;
-        for s in view(emu, v).subviews {
-            layout(emu, s)?;
-        }
-        Ok(())
     }
-    layout(emu, emu.arg(0))
+    for s in view(emu, v).subviews {
+        layout_tree(emu, s)?;
+    }
+    Ok(())
+}
+
+/// UIKit's layout pass before each frame (CoreAnimation's commit): every window.
+pub fn layout_windows(emu: &mut Emu) -> Result<()> {
+    for w in emu.ui.windows.clone() {
+        layout_tree(emu, w)?;
+    }
+    Ok(())
+}
+
+fn layout_if_needed(emu: &mut Emu) -> Result<()> {
+    layout_tree(emu, emu.arg(0))
+}
+
+fn set_needs_layout(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    view_mut(emu, v).needs_layout = true;
+    Ok(())
 }
 
 fn size_that_fits(emu: &mut Emu) -> Result<()> {
@@ -511,6 +547,31 @@ fn color_white(emu: &mut Emu) -> Result<()> {
     ret_color(emu, [w, w, w, a])
 }
 
+fn color_dynamic(emu: &mut Emu) -> Result<()> {
+    let block = emu.arg(2);
+    let cls = host_class(emu, "UITraitCollection")?;
+    let traits = objc::create_instance(emu, cls, 0)?;
+    let c = crate::libsystem::call_block(emu, block, &[traits])?;
+    emu.ret(c);
+    Ok(())
+}
+
+fn color_hsba(emu: &mut Emu) -> Result<()> {
+    let (h, s, v, a) = (f(emu, 0), f(emu, 1), f(emu, 2), f(emu, 3));
+    let h6 = (h.fract() + if h < 0.0 { 1.0 } else { 0.0 }) * 6.0;
+    let (i, fr) = (h6.floor() as i32 % 6, h6 - h6.floor());
+    let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * fr), v * (1.0 - s * (1.0 - fr)));
+    let (r, g, b) = match i {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    ret_color(emu, [r, g, b, a])
+}
+
 fn color_cg(_: &mut Emu) -> Result<()> {
     Ok(()) // the UIColor stands in for its CGColor
 }
@@ -531,14 +592,6 @@ fn color_get_rgba(emu: &mut Emu) -> Result<()> {
         }
     }
     emu.ret(1);
-    Ok(())
-}
-
-// ---- CALayer (state only, no compositing yet) ----
-
-fn layer_delegate(emu: &mut Emu) -> Result<()> {
-    let v = emu.ui.views.layer_view.get(&emu.arg(0)).copied().unwrap_or(0);
-    emu.ret(v);
     Ok(())
 }
 
@@ -686,7 +739,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "invalidateIntrinsicContentSize", noop),
     ("UIView", false, "setNeedsUpdateConstraints", noop),
     ("UIView", false, "updateConstraintsIfNeeded", noop),
-    ("UIView", false, "setTransform:", noop),
     ("UIView", false, "setSemanticContentAttribute:", noop),
     ("UIView", false, "semanticContentAttribute", ret_zero),
     ("UIView", false, "setInsetsLayoutMarginsFromSafeArea:", noop),
@@ -766,7 +818,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "directionalLayoutMargins", layout_margins),
     ("UIView", false, "init", view_init),
     ("UIView", false, "initWithFrame:", view_init_with_frame),
-    ("UIView", false, "initWithCoder:", view_init),
+    ("UIView", false, "initWithCoder:", |e| {
+        let v = e.arg(0);
+        view_mut(e, v);
+        Ok(())
+    }),
     ("UIView", false, "frame", view_frame),
     ("UIView", false, "setFrame:", view_set_frame),
     ("UIView", false, "bounds", view_bounds),
@@ -799,7 +855,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "contentMode", content_mode),
     ("UIView", false, "setContentMode:", set_content_mode),
     ("UIView", false, "layer", view_layer),
-    ("UIView", false, "setNeedsLayout", noop),
+    ("UIView", true, "layerClass", |e| {
+        let c = host_class(e, "CALayer")?;
+        e.ret(c);
+        Ok(())
+    }),
+    ("UIView", false, "setNeedsLayout", set_needs_layout),
     ("UIView", false, "setNeedsDisplay", noop),
     ("UIView", false, "layoutSubviews", noop),
     ("UIView", false, "layoutIfNeeded", layout_if_needed),
@@ -877,11 +938,47 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "grayColor", |e| ret_color(e, [0.5, 0.5, 0.5, 1.0])),
     ("UIColor", true, "redColor", |e| ret_color(e, [1.0, 0.0, 0.0, 1.0])),
     ("UIColor", false, "CGColor", color_cg),
+    ("UIColor", false, "resolvedColorWithTraitCollection:", color_cg),
+    ("UIColor", true, "colorWithCGColor:", |e| {
+        let c = e.arg(2);
+        e.ret(c);
+        Ok(())
+    }),
+    ("UIColor", false, "initWithCGColor:", |e| {
+        let c = e.arg(2);
+        e.ret(c);
+        Ok(())
+    }),
+    // Dynamic colours resolve once, against the light-mode traits.
+    ("UIColor", true, "colorWithDynamicProvider:", color_dynamic),
+    ("UIColor", false, "initWithDynamicProvider:", color_dynamic),
+    ("UIColor", true, "colorWithHue:saturation:brightness:alpha:", color_hsba),
+    ("UIColor", false, "initWithWhite:alpha:", color_white),
+    ("UIColor", true, "colorNamed:", ret_zero),
+    ("UIColor", true, "secondarySystemBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
+    ("UIColor", true, "secondaryLabelColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.6])),
+    ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),
+    ("UIColor", true, "linkColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    ("UIColor", true, "systemBlueColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    ("UIColor", true, "systemGrayColor", |e| ret_color(e, [0.557, 0.557, 0.576, 1.0])),
+    ("UIColor", true, "darkGrayColor", |e| ret_color(e, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0])),
+    ("UIColor", true, "lightGrayColor", |e| ret_color(e, [2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0])),
+    ("UIColor", true, "blueColor", |e| ret_color(e, [0.0, 0.0, 1.0, 1.0])),
+    ("UIColor", true, "greenColor", |e| ret_color(e, [0.0, 1.0, 0.0, 1.0])),
+    ("UIColor", false, "isEqual:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let ca = e.ui.views.colors.get(&a).copied();
+        let eq = a == b || (ca.is_some() && ca == e.ui.views.colors.get(&b).copied());
+        e.ret(eq as u64);
+        Ok(())
+    }),
+    ("UIColor", false, "alphaComponent", |e| {
+        let a = e.ui.views.colors.get(&e.arg(0)).map_or(0.0, |c| c[3]);
+        ret_f64(e, a);
+        Ok(())
+    }),
     ("UIColor", false, "colorWithAlphaComponent:", color_with_alpha),
     ("UIColor", false, "getRed:green:blue:alpha:", color_get_rgba),
-    ("CALayer", false, "delegate", layer_delegate),
-    ("CALayer", false, "setNeedsDisplay", noop),
-    ("CALayer", false, "setNeedsLayout", noop),
     ("UITraitCollection", true, "currentTraitCollection", trait_collection),
     ("UITraitCollection", true, "setCurrentTraitCollection:", noop),
     ("UITraitCollection", false, "userInterfaceStyle", ret_one), // light
@@ -902,3 +999,69 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("UITraitCollection", false, "layoutDirection", ret_zero),
 ];
+
+// ---- inspection ----
+
+/// The window hierarchy as indented text: class, frame, colour, text.
+pub fn describe_tree(emu: &mut Emu) -> Result<String> {
+    fn rgba_hex(emu: &Emu, c: u64) -> Option<String> {
+        let [r, g, b, a] = *emu.ui.views.colors.get(&c)?;
+        let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Some(format!("#{:02x}{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b), byte(a)))
+    }
+    fn text_of(emu: &mut Emu, v: u64) -> Result<Option<String>> {
+        for sel in ["attributedText", "text"] {
+            let s = objc::intern(emu, sel)?;
+            if !objc::responds(emu, v, s)? {
+                continue;
+            }
+            let t = send(emu, v, sel, &[])?;
+            if t == 0 {
+                continue;
+            }
+            let t = if sel == "attributedText" { send(emu, t, "string", &[])? } else { t };
+            if t != 0 {
+                return Ok(Some(foundation::nsstring(emu, t)?));
+            }
+        }
+        Ok(None)
+    }
+    fn walk(emu: &mut Emu, v: u64, depth: usize, out: &mut String) -> Result<()> {
+        let vw = view(emu, v);
+        let f = frame_of(emu, v);
+        let cls = emu.read_u64(v).map(|isa| emu.objc.class_name(isa)).unwrap_or_default();
+        let mut line = format!("{}{cls} ({:.1}, {:.1}, {:.1}×{:.1})", "  ".repeat(depth), f[0], f[1], f[2], f[3]);
+        if let Some(c) = rgba_hex(emu, vw.background) {
+            line += &format!(" bg {c}");
+        }
+        if vw.hidden {
+            line += " hidden";
+        }
+        if vw.alpha < 1.0 {
+            line += &format!(" alpha {:.2}", vw.alpha);
+        }
+        if vw.layer != 0 {
+            let l = crate::calayer::layer(emu, vw.layer);
+            if l.corner_radius > 0.0 {
+                line += &format!(" radius {}", l.corner_radius);
+            }
+            if l.border_width > 0.0 {
+                line += &format!(" border {}{}", l.border_width, rgba_hex(emu, l.border_color).map(|c| format!(" {c}")).unwrap_or_default());
+            }
+        }
+        if let Some(t) = text_of(emu, v)? {
+            line += &format!(" {t:?}");
+        }
+        out.push_str(&line);
+        out.push('\n');
+        for s in vw.subviews {
+            walk(emu, s, depth + 1, out)?;
+        }
+        Ok(())
+    }
+    let mut out = String::new();
+    for w in emu.ui.windows.clone() {
+        walk(emu, w, 0, &mut out)?;
+    }
+    Ok(out)
+}

@@ -26,6 +26,12 @@ enum Cmd {
         /// Stop after this many instructions.
         #[arg(long, default_value_t = 50_000_000)]
         steps: u64,
+        /// Stop once the app is idle past this many seconds of virtual time.
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+        /// Print the view hierarchy when the run stops.
+        #[arg(long)]
+        views: bool,
         /// Print every system call and Objective-C message as it happens.
         #[arg(long)]
         trace: bool,
@@ -46,7 +52,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Run { path, steps, trace, sysroot } => run(&path, steps, trace, &sysroot),
+        Cmd::Run { path, steps, seconds, views, trace, sysroot } => run(&path, steps, seconds, views, trace, &sysroot),
     }
 }
 
@@ -200,7 +206,7 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &sysroot.canonicalize().unwrap_or_else(|_| sysroot.to_path_buf());
@@ -212,6 +218,7 @@ fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
+    emu.time_limit_ns = Some((seconds * 1e9) as u64);
     emu.trace = trace;
     // Debugging aid: POMME_BREAK=_sym1,_sym2 prints the arguments of every call to those guest functions.
     if let Ok(list) = std::env::var("POMME_BREAK") {
@@ -275,6 +282,12 @@ fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
     println!("\n{} distinct system functions called (top 15):", calls.len());
     for (name, n) in calls.iter().take(15) {
         println!("  {n:>7}  {name}");
+    }
+    if views {
+        // Lift the limits so describing the views can message guest code.
+        emu.max_steps = u64::MAX;
+        emu.time_limit_ns = None;
+        println!("\nviews:\n{}", emu.describe_views());
     }
     Ok(())
 }

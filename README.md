@@ -25,7 +25,7 @@ scripts/build-hello-expo.sh            # needs the iOS platform installed in Xco
 scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation + ICU from source (~600 MB, ~10 min)
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
-cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --trace
+cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --views
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
@@ -40,6 +40,8 @@ DOSBox or SameBoy. Every system library the app touches is pomme's own code.
 (Building the `.app` still needs Xcode, once, e.g. in CI.)
 
 Debugging:
+- `pomme run … --views` prints the view hierarchy (class, frame, colours, text) when the run stops;
+  `--seconds N` stops once the app is idle past N seconds of virtual time (default 10).
 - `pomme run … --trace` prints system calls, messages, thread switches and Mach traffic.
 - `POMME_BREAK=_sym1,_sym2 pomme run …` prints every call to those guest functions.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
@@ -73,9 +75,17 @@ Debugging:
      compile-time literals, system data constants; a read-only virtual filesystem for the app
      bundle — hello-expo runs ~8.6M instructions on three threads (main, React Native's JS
      thread, Hermes's GC thread): Hermes is up and React Native is installing native modules
-   - Swift overlays ← *next*: Expo needs `os` (Logger), `Dispatch`, `_StringProcessing`,
-     `RegexBuilder`, `Darwin`, `ObjectiveC`, `CoreGraphics`, … — most are open source
-   - Then: loading and running the JS bundle, rendering the view tree
+   - Swift overlays ✅ from Apple's open-source sources (`ObjectiveC`, `Darwin`, `Dispatch`, `os`,
+     `CoreFoundation` with `CGFloat`, `CoreGraphics`); `NSInvocation`; balanced Swift/block
+     reference counting — React Native evaluates the JS bundle
+   - Text ✅: `NSAttributedString` on CFAttributedString; TextKit (`NSTextStorage`,
+     `NSLayoutManager`, `NSTextContainer`) with greedy line breaking and glyph advances from Inter
+     (SIL OFL, close to SF Pro's metrics) — text measures like on a device
+   - Mounting ✅: `CALayer` state, CoreGraphics geometry, a layout pass before each frame —
+     **hello-expo mounts its React tree**: "Hello from pomme 🍎" centred in a white root view,
+     then idles on its 60 Hz frame timer (~51M instructions, about a second)
+   - Next: rendering the view and layer tree to pixels, then touch input
+   - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,
    arm64 → WebAssembly translation in the browser (as v86 does for x86). It must count

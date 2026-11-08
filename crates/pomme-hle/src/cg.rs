@@ -184,6 +184,50 @@ fn concat_fn(emu: &mut Emu) -> Result<()> {
     ret_affine(emu, concat(a, b))
 }
 
+// ---- CGColor: pomme's UIColor objects are their own CGColors ----
+
+fn rgba(emu: &Emu, c: u64) -> [f64; 4] {
+    emu.ui.views.colors.get(&c).copied().unwrap_or([0.0; 4])
+}
+
+/// `CGColorGetComponents` → `const CGFloat *` (r, g, b, a), allocated once per colour.
+fn color_components(emu: &mut Emu) -> Result<()> {
+    let c = emu.arg(0);
+    let p = match emu.ui.color_components.get(&c) {
+        Some(&p) => p,
+        None => {
+            let p = emu.alloc(32)?;
+            emu.ui.color_components.insert(c, p);
+            p
+        }
+    };
+    for (i, v) in rgba(emu, c).iter().enumerate() {
+        emu.write_u64(p + i as u64 * 8, v.to_bits())?;
+    }
+    emu.ret(if c == 0 { 0 } else { p });
+    Ok(())
+}
+
+fn color_alpha(emu: &mut Emu) -> Result<()> {
+    let a = rgba(emu, emu.arg(0))[3];
+    ret_f(emu, a)
+}
+
+fn color_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(1));
+    let eq = a == b || (a != 0 && b != 0 && rgba(emu, a) == rgba(emu, b));
+    ret_bool(emu, eq)
+}
+
+/// One device RGB colour space (any non-null pointer will do).
+fn color_space(emu: &mut Emu) -> Result<()> {
+    if emu.ui.rgb_space == 0 {
+        emu.ui.rgb_space = emu.alloc(16)?;
+    }
+    emu.ret(emu.ui.rgb_space);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGRectGetMinX", |e| get(e, |r| r[0])),
     ("_CGRectGetMinY", |e| get(e, |r| r[1])),
@@ -219,6 +263,26 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         let r = standardize(rect_arg(e, 0));
         ret_r(e, r)
     }),
+    ("_CGColorGetComponents", color_components),
+    ("_CGColorGetAlpha", color_alpha),
+    ("_CGColorGetNumberOfComponents", |e| {
+        e.ret(4);
+        Ok(())
+    }),
+    ("_CGColorEqualToColor", color_equal),
+    ("_CGColorGetColorSpace", color_space),
+    ("_CGColorSpaceCreateDeviceRGB", color_space),
+    ("_CGColorSpaceGetModel", |e| {
+        e.ret(1); // kCGColorSpaceModelRGB
+        Ok(())
+    }),
+    ("_CGColorSpaceGetName", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_CGColorSpaceRelease", |_| Ok(())),
+    ("_CGColorRetain", |_| Ok(())),
+    ("_CGColorRelease", |_| Ok(())),
     ("_CGAffineTransformMakeTranslation", make_translation),
     ("_CGAffineTransformMakeScale", make_scale),
     ("_CGAffineTransformTranslate", translate),

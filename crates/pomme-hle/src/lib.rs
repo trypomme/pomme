@@ -10,6 +10,7 @@
 
 pub mod heap;
 mod bundle;
+mod calayer;
 mod cg;
 mod constants;
 mod attributed;
@@ -91,6 +92,8 @@ pub enum Stop {
     Blocked,
     /// Every thread is waiting and nothing is scheduled to wake any of them.
     Idle(String),
+    /// Virtual time reached [`Emu::time_limit_ns`] with every thread waiting.
+    TimeLimit(u64),
 }
 
 impl From<MemError> for Stop {
@@ -115,6 +118,7 @@ impl fmt::Display for Stop {
             Stop::Unsupported(what) => write!(f, "unsupported: {what}"),
             Stop::Blocked => write!(f, "thread blocked"),
             Stop::Idle(what) => write!(f, "idle: {what}"),
+            Stop::TimeLimit(ns) => write!(f, "reached the time limit ({:.1} s of virtual time), idle", *ns as f64 / 1e9),
         }
     }
 }
@@ -130,6 +134,8 @@ pub struct Emu {
     handlers: Vec<Option<HostFn>>,
     /// Instruction budget for the whole run.
     pub max_steps: u64,
+    /// Stop once virtual time passes this while every thread waits (ns since boot).
+    pub time_limit_ns: Option<u64>,
     /// Print every system call and message send.
     pub trace: bool,
     /// Count of host calls by name, for reports.
@@ -196,6 +202,7 @@ impl Emu {
             objc: Objc::default(),
             handlers,
             max_steps: u64::MAX,
+            time_limit_ns: None,
             trace: false,
             calls: HashMap::new(),
             argc: 0,
@@ -235,6 +242,11 @@ impl Emu {
         foundation::init(&mut emu)?;
         libsystem::init(&mut emu)?;
         Ok(emu)
+    }
+
+    /// The UIKit window hierarchy as indented text (for reports and tests).
+    pub fn describe_views(&mut self) -> String {
+        uiview::describe_tree(self).unwrap_or_else(|e| format!("(couldn't describe the views: {e})"))
     }
 
     /// Images in initialization order: every library before the images that link it.
