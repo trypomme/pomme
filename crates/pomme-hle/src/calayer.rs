@@ -43,6 +43,8 @@ pub struct Layer {
     pub contents: u64,
     pub contents_scale: f64,
     pub contents_gravity: u64,
+    /// Unit rectangle: the stretchable part of `contents`.
+    pub contents_center: [f64; 4],
     pub mask: u64,
     pub name: u64,
     pub delegate: u64,
@@ -75,6 +77,7 @@ impl Default for Layer {
             contents: 0,
             contents_scale: 1.0,
             contents_gravity: 0,
+            contents_center: [0.0, 0.0, 1.0, 1.0],
             mask: 0,
             name: 0,
             delegate: 0,
@@ -553,6 +556,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "setContents:", set_contents),
     (L, false, "contentsScale", contents_scale),
     (L, false, "setContentsScale:", set_contents_scale),
+    (L, false, "contentsCenter", |e| {
+        let c = layer(e, e.arg(0)).contents_center;
+        ret_rect(e, c);
+        Ok(())
+    }),
+    (L, false, "setContentsCenter:", |e| {
+        let (l, c) = (e.arg(0), [d(e, 0), d(e, 1), d(e, 2), d(e, 3)]);
+        layer_mut(e, l).contents_center = c;
+        Ok(())
+    }),
     (L, false, "contentsGravity", contents_gravity),
     (L, false, "setContentsGravity:", set_contents_gravity),
     (L, false, "mask", mask),

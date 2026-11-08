@@ -27,6 +27,10 @@ mod printf;
 pub mod render;
 mod swift;
 mod textkit;
+mod regex;
+mod image;
+mod nstimer;
+pub mod net;
 pub mod host;
 pub mod touch;
 mod uikit;
@@ -182,6 +186,14 @@ pub struct Emu {
     pub touch: touch::State,
     /// A live host (browser, window) and its frames and input.
     pub live: host::State,
+    /// The network (see net.rs) and URL-loading objects.
+    pub net: net::State,
+    /// NSTimer targets and blocks.
+    timers: nstimer::State,
+    /// Image renderers and their formats.
+    images: image::State,
+    /// Compiled NSRegularExpressions and match results.
+    regex: regex::State,
     bundle: bundle::State,
 }
 
@@ -192,7 +204,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -238,6 +250,10 @@ impl Emu {
             render: Default::default(),
             touch: Default::default(),
             live: Default::default(),
+            net: Default::default(),
+            timers: Default::default(),
+            images: Default::default(),
+            regex: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
@@ -503,6 +519,12 @@ impl Emu {
         if self.hooks.contains_key(&addr) {
             return Ok(());
         }
+        // Only code: a breakpoint written into data (type descriptors live in
+        // __TEXT too) would corrupt it.
+        let in_text = self.p.images.iter().any(|i| i.section("__TEXT", "__text").is_some_and(|(a, n)| addr >= a && addr < a + n));
+        if !in_text {
+            return Err(Stop::Unsupported(format!("can't hook {}: not in an image's __text", self.symbolize(addr))));
+        }
         let insn = self.p.memory.read_u32(addr)?;
         let resume = addr + 4;
         let sext = |v: u32, bits: u32| ((v << (32 - bits)) as i32 >> (32 - bits)) as i64;
@@ -516,17 +538,16 @@ impl Emu {
         } else {
             None
         };
-        let other_pc_relative = insn & 0x1f00_0000 == 0x1000_0000 // ADR/ADRP
-            || insn & 0x7c00_0000 == 0x1400_0000 // B/BL
-            || insn & 0x3b00_0000 == 0x1800_0000; // LDR literal
-        if other_pc_relative {
-            return Err(Stop::Unsupported(format!("can't hook {}: first instruction {insn:#010x} is PC-relative", self.symbolize(addr))));
+        if insn & 0x3b00_0000 == 0x1800_0000 {
+            return Err(Stop::Unsupported(format!("can't hook {}: first instruction {insn:#010x} is a PC-relative load", self.symbolize(addr))));
         }
+        let relocated = relocate_pc_relative(insn, addr, resume);
         const LDR_X16: u32 = 0x5800_0010; // ldr x16, #imm19*4
         const BR_X16: u32 = 0xd61f_0200;
         const NOP: u32 = 0xd503_201f;
-        let original = match cond {
-            None => self.emit_code(&[
+        let original = match (relocated, cond) {
+            (Some(words), _) => self.emit_code(&words)?,
+            (None, None) => self.emit_code(&[
                 insn,                  // the displaced first instruction
                 LDR_X16 | (3 << 5),    // ldr x16, resume
                 BR_X16,                // (x16 is scratch at function entry)
@@ -534,7 +555,7 @@ impl Emu {
                 resume as u32,
                 (resume >> 32) as u32,
             ])?,
-            Some((target, branch)) => self.emit_code(&[
+            (None, Some((target, branch))) => self.emit_code(&[
                 branch,             // 0: the condition, retargeted to word 4
                 LDR_X16 | (7 << 5), // 1: not taken: ldr x16, resume (word 8)
                 BR_X16,             // 2
@@ -630,5 +651,72 @@ impl Emu {
     /// Describe a guest address for humans.
     pub fn symbolize(&self, addr: u64) -> String {
         self.p.symbolize(addr)
+    }
+}
+
+/// A hooked function's first instruction, when it's PC-relative (ADR, ADRP,
+/// B, BL: common at Swift function entry), rewritten for the trampoline to
+/// load its absolute target from a literal and then continue at `resume`.
+/// None: the instruction can run anywhere as is (or is a conditional branch).
+fn relocate_pc_relative(insn: u32, addr: u64, resume: u64) -> Option<Vec<u32>> {
+    const LDR_X16: u32 = 0x5800_0010; // ldr x16, #imm19*4
+    const BR_X16: u32 = 0xd61f_0200;
+    const BLR_X16: u32 = 0xd63f_0200;
+    const NOP: u32 = 0xd503_201f;
+    let sext = |v: u32, bits: u32| ((v << (32 - bits)) as i32 >> (32 - bits)) as i64;
+    let lo = |v: u64| v as u32;
+    let hi = |v: u64| (v >> 32) as u32;
+    if insn & 0x1f00_0000 == 0x1000_0000 {
+        // ADR / ADRP xd: the address it computes, from a literal.
+        let imm = sext(((insn >> 5) & 0x7ffff) << 2 | (insn >> 29) & 3, 21);
+        let value = if insn & 0x8000_0000 != 0 { (addr & !0xfff).wrapping_add((imm << 12) as u64) } else { addr.wrapping_add(imm as u64) };
+        let rd = insn & 31;
+        Some(vec![
+            0x5800_0000 | (4 << 5) | rd, // 0: ldr xd, value (word 4)
+            LDR_X16 | (5 << 5),          // 1: ldr x16, resume (word 6)
+            BR_X16,                      // 2
+            NOP,                         // 3
+            lo(value),
+            hi(value), // 4
+            lo(resume),
+            hi(resume), // 6
+        ])
+    } else if insn & 0x7c00_0000 == 0x1400_0000 {
+        let target = addr.wrapping_add((sext(insn & 0x3ff_ffff, 26) * 4) as u64);
+        if insn & 0x8000_0000 != 0 {
+            // BL: call the target, then come back and jump to the rest of the function.
+            Some(vec![LDR_X16 | (4 << 5), BLR_X16, LDR_X16 | (4 << 5), BR_X16, lo(target), hi(target), lo(resume), hi(resume)])
+        } else {
+            // B: a tail jump.
+            Some(vec![LDR_X16 | (4 << 5), BR_X16, NOP, NOP, lo(target), hi(target)])
+        }
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::relocate_pc_relative;
+
+    #[test]
+    fn relocates_pc_relative_entries() {
+        let at = 0x1_0000_1234;
+        // adrp x8, #+2 pages → (at & !0xfff) + 0x2000, loaded into x8.
+        let adrp = 0x9000_0008 | (2 << 29); // immlo = 2
+        let w = relocate_pc_relative(adrp, at, at + 4).unwrap();
+        assert_eq!(w[0], 0x5800_0000 | (4 << 5) | 8);
+        assert_eq!((w[4] as u64) | ((w[5] as u64) << 32), (at & !0xfff) + 0x2000);
+        assert_eq!((w[6] as u64) | ((w[7] as u64) << 32), at + 4);
+        // bl #-8 → calls at - 8, returns into the trampoline, then resumes.
+        let bl = 0x9400_0000 | (0x3ff_ffff & (-2i32 as u32));
+        let w = relocate_pc_relative(bl, at, at + 4).unwrap();
+        assert_eq!((w[4] as u64) | ((w[5] as u64) << 32), at - 8);
+        assert_eq!(w[1], 0xd63f_0200);
+        // b #+16 → a jump to at + 16.
+        let w = relocate_pc_relative(0x1400_0004, at, at + 4).unwrap();
+        assert_eq!((w[4] as u64) | ((w[5] as u64) << 32), at + 16);
+        // add x0, x0, #1 isn't PC-relative.
+        assert!(relocate_pc_relative(0x9100_0400, at, at + 4).is_none());
     }
 }

@@ -26,6 +26,14 @@ impl std::fmt::Display for Prot {
 
 pub const PAGE_SIZE: u64 = 0x4000; // arm64 iOS uses 16 KiB pages.
 
+/// arm64 Darwin runs user space with Top Byte Ignore: data accesses ignore
+/// address bits 56–63, and compilers rely on it (Swift keeps spare bits there
+/// and LLVM leaves out the masking). Every data access goes through this.
+#[inline(always)]
+pub fn untag(addr: u64) -> u64 {
+    addr & 0x00ff_ffff_ffff_ffff
+}
+
 pub fn page_align_up(x: u64) -> u64 {
     (x + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
@@ -95,12 +103,14 @@ impl Memory {
     }
 
     pub fn read(&self, addr: u64, len: usize) -> Result<&[u8], MemError> {
+        let addr = untag(addr);
         let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
         let off = (addr - r.base) as usize;
         r.data.get(off..off + len).ok_or(MemError::Unmapped(addr + len as u64))
     }
 
     pub fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), MemError> {
+        let addr = untag(addr);
         let r = self.region_of_mut(addr).ok_or(MemError::Unmapped(addr))?;
         let off = (addr - r.base) as usize;
         let dst = r

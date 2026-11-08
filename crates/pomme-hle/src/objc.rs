@@ -80,11 +80,18 @@ const PERMISSIVE: &[&str] = &[
     "NSCache",
     "CALayer",
     "CATransaction",
+    "UIGraphicsImageRendererFormat",
+    "UIGraphicsImageRenderer",
+    "UIGraphicsImageRendererContext",
+    "UIImage",
     "UIView",
     "NSLayoutManager",
     "NSTextContainer",
     "NSURLSessionConfiguration",
     "NSURLSession",
+    "NSURLSessionTask",
+    "NSURLRequest",
+    "NSURLResponse",
     "NSURLCache",
     "NSHTTPCookieStorage",
     "NSOperationQueue",
@@ -184,6 +191,8 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSException", "NSObject"),
     ("NSError", "NSObject"),
     ("NSMutableURLRequest", "NSURLRequest"),
+    ("NSHTTPURLResponse", "NSURLResponse"),
+    ("__NSCFTimer", "NSTimer"),
     ("NSMutableCharacterSet", "NSCharacterSet"),
     ("NSMutableIndexSet", "NSIndexSet"),
     ("NSMutableOrderedSet", "NSOrderedSet"),
@@ -304,6 +313,10 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::textkit::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::calayer::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::touch::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::net::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::nstimer::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::image::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::regex::METHODS.iter().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -341,7 +354,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS] {
+    for tables in [HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -1152,8 +1165,17 @@ fn objc_store_weak(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `objc_loadWeak`: the object (+0).
 fn objc_load_weak(emu: &mut Emu) -> Result<()> {
     let v = emu.read_u64(emu.cpu.x[0])?;
+    emu.ret(v);
+    Ok(())
+}
+
+/// `objc_loadWeakRetained`: the object, +1 (the caller releases it).
+fn objc_load_weak_retained(emu: &mut Emu) -> Result<()> {
+    let v = emu.read_u64(emu.cpu.x[0])?;
+    objc_retain_obj(emu, v)?;
     emu.ret(v);
     Ok(())
 }
@@ -1340,7 +1362,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_objc_storeStrong", objc_store_strong),
     ("_objc_storeWeak", objc_store_weak),
     ("_objc_initWeak", objc_store_weak),
-    ("_objc_loadWeakRetained", objc_load_weak),
+    ("_objc_loadWeakRetained", objc_load_weak_retained),
     ("_objc_loadWeak", objc_load_weak),
     ("_objc_destroyWeak", objc_destroy_weak),
     ("_objc_copyWeak", objc_copy_weak),

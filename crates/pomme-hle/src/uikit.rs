@@ -373,6 +373,24 @@ fn display_link_fire(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Run `callout(timer, info)` once on the main run loop, `delay_s` of virtual time from now.
+pub fn after_on_main(emu: &mut Emu, delay_s: f64, callout: HostFn, info: u64) -> Result<()> {
+    let callout = emu.host_thunk(callout)?;
+    let rl = foundation::cf_call(emu, "_CFRunLoopGetMain", &[])?;
+    let common = foundation::cf_data_pub(emu, "_kCFRunLoopCommonModes")?;
+    foundation::cf_call(emu, "_CFAbsoluteTimeGetCurrent", &[])?;
+    let fire = f64::from_bits(emu.last_q0 as u64) + delay_s;
+    // CFRunLoopTimerContext {version, info, retain, release, copyDescription}
+    let ctx = emu.alloc(40)?;
+    emu.write_u64(ctx + 8, info)?;
+    emu.cpu.q[0] = fire.to_bits() as u128;
+    emu.cpu.q[1] = 0f64.to_bits() as u128;
+    let timer = foundation::cf_call(emu, "_CFRunLoopTimerCreate", &[0, 0, 0, callout, ctx])?;
+    foundation::cf_call(emu, "_CFRunLoopAddTimer", &[rl, timer, common])?;
+    foundation::cf_call(emu, "_CFRelease", &[timer])?;
+    Ok(())
+}
+
 /// `-addToRunLoop:forMode:` — a repeating CFRunLoopTimer at 60 Hz.
 fn display_link_add(emu: &mut Emu) -> Result<()> {
     let (link, run_loop, mode) = (emu.arg(0), emu.arg(2), emu.arg(3));

@@ -10,7 +10,7 @@
 //! Everything is integer-free floating-point math on the host with no system
 //! libraries involved, so the same app state gives the same pixels anywhere.
 //! Not yet: images, shadows, gradients, group opacity (alpha multiplies down
-//! instead), path clips other than rectangles, emoji (Inter has none).
+//! instead), emoji (Inter has none).
 
 use crate::calayer::{self, Layer};
 use crate::objc::{self, Imp};
@@ -37,11 +37,14 @@ pub struct Glyph {
     pub color: [f64; 4],
 }
 
+/// Clip paths in force (in the context's base coordinates; even-odd flag), all intersected.
+type Clip = Vec<(Vec<El>, bool)>;
+
 #[derive(Clone, Debug)]
-enum Op {
-    Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Option<[f32; 4]> },
-    Stroke { path: Vec<El>, color: [f32; 4], width: f32, clip: Option<[f32; 4]> },
-    Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Option<[f32; 4]> },
+pub(crate) enum Op {
+    Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Clip },
+    Stroke { path: Vec<El>, color: [f32; 4], width: f32, clip: Clip },
+    Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Clip },
 }
 
 #[derive(Clone, Debug)]
@@ -50,13 +53,12 @@ struct GState {
     fill: [f32; 4],
     stroke: [f32; 4],
     line_width: f32,
-    /// Clip rectangle in the context's base coordinates.
-    clip: Option<[f32; 4]>,
+    clip: Clip,
 }
 
 impl Default for GState {
     fn default() -> Self {
-        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, clip: None }
+        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, clip: Vec::new() }
     }
 }
 
@@ -68,8 +70,20 @@ struct Ctx {
     path: Vec<El>,
 }
 
+/// A bitmap image (UIImage / CGImage: pomme's UIImage objects are their own CGImages).
+#[derive(Clone)]
+pub struct Image {
+    pub pix: std::rc::Rc<Pixmap>,
+    /// In points.
+    pub size: [f64; 2],
+    pub scale: f64,
+    /// UIEdgeInsets (top, left, bottom, right) for resizable images.
+    pub caps: [f64; 4],
+}
+
 #[derive(Default)]
 pub struct State {
+    pub images: HashMap<u64, Image>,
     contexts: HashMap<u64, Ctx>,
     /// UIGraphicsPushContext stack; the top is the current context.
     stack: Vec<u64>,
@@ -190,14 +204,14 @@ fn ctx_mut(emu: &mut Emu, c: u64) -> Option<&mut Ctx> {
 }
 
 /// Start a recording context and make it current.
-fn begin_context(emu: &mut Emu) -> Result<u64> {
+pub(crate) fn begin_context(emu: &mut Emu) -> Result<u64> {
     let c = emu.alloc(16)?;
     emu.render.contexts.insert(c, Ctx::default());
     emu.render.stack.push(c);
     Ok(c)
 }
 
-fn end_context(emu: &mut Emu, c: u64) -> Vec<Op> {
+pub(crate) fn end_context(emu: &mut Emu, c: u64) -> Vec<Op> {
     emu.render.stack.retain(|&x| x != c);
     emu.render.contexts.remove(&c).map(|x| x.ops).unwrap_or_default()
 }
@@ -206,7 +220,7 @@ fn end_context(emu: &mut Emu, c: u64) -> Vec<Op> {
 pub fn draw_glyphs(emu: &mut Emu, glyphs: Vec<Glyph>) {
     let Some(&c) = emu.render.stack.last() else { return };
     if let Some(ctx) = ctx_mut(emu, c) {
-        let (ctm, clip) = (ctx.gs.ctm, ctx.gs.clip);
+        let (ctm, clip) = (ctx.gs.ctm, ctx.gs.clip.clone());
         ctx.ops.push(Op::Glyphs { glyphs, ctm, clip });
     }
 }
@@ -227,7 +241,7 @@ fn add_path_els(ctx: &mut Ctx, els: &[El]) {
 fn fill(emu: &mut Emu, even_odd: bool) -> Result<()> {
     with_ctx(emu, |ctx| {
         let path = std::mem::take(&mut ctx.path);
-        ctx.ops.push(Op::Fill { path, color: ctx.gs.fill, even_odd, clip: ctx.gs.clip });
+        ctx.ops.push(Op::Fill { path, color: ctx.gs.fill, even_odd, clip: ctx.gs.clip.clone() });
     })
 }
 
@@ -240,17 +254,16 @@ fn current_context(emu: &mut Emu) -> Result<()> {
 fn clip_to_rect(emu: &mut Emu) -> Result<()> {
     let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
     with_ctx(emu, |ctx| {
-        let (x0, y0) = apply(&ctx.gs.ctm, r[0], r[1]);
-        let (x1, y1) = apply(&ctx.gs.ctm, r[0] + r[2], r[1] + r[3]);
-        let new = [x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs()];
-        ctx.gs.clip = Some(match ctx.gs.clip {
-            None => new,
-            Some(c) => {
-                let (ax, ay) = (c[0].max(new[0]), c[1].max(new[1]));
-                let (bx, by) = ((c[0] + c[2]).min(new[0] + new[2]), (c[1] + c[3]).min(new[1] + new[3]));
-                [ax, ay, (bx - ax).max(0.0), (by - ay).max(0.0)]
-            }
-        });
+        let els = transform_els(&rect_els(r[0], r[1], r[2], r[3]), &ctx.gs.ctm);
+        ctx.gs.clip.push((els, false));
+    })
+}
+
+/// `CGContextClip` / `CGContextEOClip`: the current path becomes part of the clip.
+fn clip_to_path(emu: &mut Emu, even_odd: bool) -> Result<()> {
+    with_ctx(emu, |ctx| {
+        let path = std::mem::take(&mut ctx.path);
+        ctx.gs.clip.push((path, even_odd));
     })
 }
 
@@ -381,17 +394,14 @@ impl Painter<'_> {
 
     fn ops(&mut self, ops: &[Op], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         for op in ops {
-            let clipped;
-            let (clip, m) = match op {
-                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } => (clip, mask),
+            let clip = match op {
+                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } => clip,
             };
-            let m = match clip {
-                Some(r) => {
-                    clipped = self.intersect(mask, &rect_els(r[0], r[1], r[2], r[3]), t);
-                    clipped.as_ref()
-                }
-                None => m,
-            };
+            let mut clipped: Option<Mask> = None;
+            for (els, even_odd) in clip {
+                clipped = self.intersect_rule(clipped.as_ref().or(mask), els, *even_odd, t);
+            }
+            let m = if clip.is_empty() { mask } else { clipped.as_ref() };
             match op {
                 Op::Fill { path, color, even_odd, .. } => self.fill(path, *color, alpha, *even_odd, t, m),
                 Op::Stroke { path, color, width, .. } => self.stroke(path, *color, alpha, *width, t, m),
@@ -402,6 +412,10 @@ impl Painter<'_> {
 
     /// `mask` ∩ the path's area.
     fn intersect(&self, mask: Option<&Mask>, els: &[El], t: &[f32; 6]) -> Option<Mask> {
+        self.intersect_rule(mask, els, false, t)
+    }
+
+    fn intersect_rule(&self, mask: Option<&Mask>, els: &[El], even_odd: bool, t: &[f32; 6]) -> Option<Mask> {
         let path = build(els)?;
         let mut m = match mask {
             Some(m) => m.clone(),
@@ -411,7 +425,7 @@ impl Painter<'_> {
                 m
             }
         };
-        m.intersect_path(&path, FillRule::Winding, true, ts(t));
+        m.intersect_path(&path, if even_odd { FillRule::EvenOdd } else { FillRule::Winding }, true, ts(t));
         Some(m)
     }
 }
@@ -485,6 +499,9 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
         let a = alpha * ly.opacity;
         let (w, h) = (frame[2] as f32, frame[3] as f32);
         draw_layer_box(p, &ly, ly.background, &emu.ui.views.colors, w, h, a, &lt, mask);
+        if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
+            draw_contents(p, &img, ly.contents_center, w, h, a, &lt, mask);
+        }
         let inner = [1.0, 0.0, 0.0, 1.0, -ly.bounds[0] as f32, -ly.bounds[1] as f32];
         draw_sublayers(emu, p, s, a, &concat(&inner, &lt), mask);
         draw_border(p, &ly, &emu.ui.views.colors, w, h, a, &lt, mask);
@@ -502,6 +519,9 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     let vt = concat(&placement(frame, &ly), t);
     let (w, h) = (frame[2] as f32, frame[3] as f32);
     draw_layer_box(p, &ly, vw.background, &emu.ui.views.colors, w, h, a, &vt, mask);
+    if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
+        draw_contents(p, &img, ly.contents_center, w, h, a, &vt, mask);
+    }
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
     let clipped = if vw.clips { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &vt) } else { None };
     let m = if vw.clips { clipped.as_ref() } else { mask };
@@ -515,6 +535,49 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
         draw_view(emu, p, s, a, &inner, m);
     }
     draw_border(p, &ly, &emu.ui.views.colors, w, h, a, &vt, mask);
+}
+
+/// Draw recorded ops into a new transparent bitmap of `size` points at `scale`.
+pub(crate) fn rasterize(emu: &mut Emu, ops: &[Op], size: [f64; 2], scale: f64) -> Result<Pixmap> {
+    let (w, h) = (((size[0] * scale).ceil() as u32).max(1), ((size[1] * scale).ceil() as u32).max(1));
+    let pix = Pixmap::new(w, h).ok_or_else(|| Stop::Unsupported(format!("can't make a {w}×{h} bitmap")))?;
+    let font = crate::textkit::font_bytes(emu).map(|f| f.to_vec());
+    let mut p = Painter { pix, font: font.as_deref() };
+    let s = scale as f32;
+    p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None);
+    Ok(p.pix)
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Draw a layer's `contents` image into its bounds, nine-slicing by `contentsCenter`.
+fn draw_contents(p: &mut Painter, img: &Image, center: [f64; 4], w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let (pw, ph) = (img.pix.width() as f32, img.pix.height() as f32);
+    let unit = center == [0.0, 0.0, 1.0, 1.0];
+    // Source cuts in pixels, destination cuts in points.
+    let (sx, sy) = if unit { ([0.0, 0.0, pw, pw], [0.0, 0.0, ph, ph]) } else {
+        let (x0, x1) = (center[0] as f32 * pw, (center[0] + center[2]) as f32 * pw);
+        let (y0, y1) = (center[1] as f32 * ph, (center[1] + center[3]) as f32 * ph);
+        ([0.0, x0, x1, pw], [0.0, y0, y1, ph])
+    };
+    let sc = img.scale as f32;
+    let (dx, dy) = if unit { ([0.0, 0.0, w, w], [0.0, 0.0, h, h]) } else {
+        ([0.0, sx[1] / sc, w - (pw - sx[2]) / sc, w], [0.0, sy[1] / sc, h - (ph - sy[2]) / sc, h])
+    };
+    let mut paint = tiny_skia::PixmapPaint { opacity: alpha.clamp(0.0, 1.0), ..Default::default() };
+    paint.quality = tiny_skia::FilterQuality::Bilinear;
+    for i in 0..3 {
+        for j in 0..3 {
+            let (sw, sh) = (sx[i + 1] - sx[i], sy[j + 1] - sy[j]);
+            let (dw, dh) = (dx[i + 1] - dx[i], dy[j + 1] - dy[j]);
+            if sw < 0.5 || sh < 0.5 || dw <= 0.0 || dh <= 0.0 {
+                continue;
+            }
+            let rect = tiny_skia::IntRect::from_xywh(sx[i] as i32, sy[j] as i32, sw.round() as u32, sh.round() as u32);
+            let Some(part) = rect.and_then(|r| img.pix.clone_rect(r)) else { continue };
+            let place = [dw / part.width() as f32, 0.0, 0.0, dh / part.height() as f32, dx[i], dy[j]];
+            p.pix.draw_pixmap(0, 0, part.as_ref(), &paint, ts(&concat(&place, t)), mask);
+        }
+    }
 }
 
 /// Render the visible windows at `scale` pixels per point.
@@ -615,9 +678,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         concat_ctm(e, [x, 0.0, 0.0, y, 0.0, 0.0])
     }),
     ("_CGContextClipToRect", clip_to_rect),
-    // Path clips: not yet (the path is consumed and ignored).
-    ("_CGContextClip", |e| with_ctx(e, |c| c.path.clear())),
-    ("_CGContextEOClip", |e| with_ctx(e, |c| c.path.clear())),
+    ("_CGContextClip", |e| clip_to_path(e, false)),
+    ("_CGContextEOClip", |e| clip_to_path(e, true)),
     ("_CGContextBeginPath", |e| with_ctx(e, |c| c.path.clear())),
     ("_CGContextClosePath", |e| with_ctx(e, |c| c.path.push(El::Close))),
     ("_CGContextMoveToPoint", |e| {
@@ -656,7 +718,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         with_ctx(e, |ctx| {
             let path = std::mem::take(&mut ctx.path);
             let width = ctx.gs.line_width * ctx.gs.ctm[0].abs().max(ctx.gs.ctm[3].abs());
-            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, clip: ctx.gs.clip });
+            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, clip: ctx.gs.clip.clone() });
         })
     }),
     ("_CGContextFillRect", |e| {
@@ -664,7 +726,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         with_ctx(e, |c| {
             add_path_els(c, &rect_els(r[0], r[1], r[2], r[3]));
             let path = std::mem::take(&mut c.path);
-            c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd: false, clip: c.gs.clip });
+            c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone() });
         })
     }),
     ("_CGPathCreateMutable", |e| {

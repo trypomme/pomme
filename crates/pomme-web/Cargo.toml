@@ -13,3 +13,4 @@ js-sys = "0.3.107"
 pomme-hle = { version = "0.1.0", path = "../pomme-hle" }
 pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 wasm-bindgen = "0.2.130"
+web-sys = { version = "0.3.107", features = ["XmlHttpRequest", "XmlHttpRequestResponseType"] }

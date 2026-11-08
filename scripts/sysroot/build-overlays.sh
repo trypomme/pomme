@@ -93,3 +93,52 @@ overlay CoreFoundation swiftCoreFoundation -import-underlying-module -- "$OUT/Co
 overlay CoreGraphics swiftCoreGraphics -import-underlying-module -L "$LIB" -Xlinker -reexport-lswiftCoreFoundation -- \
   "$HERE/overlays/CoreGraphics/CoreGraphics.swift"
 
+
+# Regex: _RegexParser, _StringProcessing (with its C Unicode tables) and
+# RegexBuilder, from swiftlang/swift-experimental-string-processing at the
+# toolchain's tag, built the way Runtimes/Supplemental/StringProcessing does:
+# against our own stdlib build (they use its SPI, which the SDK hides), for iOS.
+SP="$VENDOR/swift-string-processing"
+[ -d "$SP" ] || git clone -q --depth 1 --branch "${TAG:-swift-6.3.2-RELEASE}" \
+  https://github.com/swiftlang/swift-experimental-string-processing.git "$SP"
+IOS_TARGET="arm64-apple-ios26.0"
+IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+REGEX_OUT="$VENDOR/build/regex"
+mkdir -p "$REGEX_OUT/cunicode"
+# stdlib_module <Module> <libname> <extra swiftc flags...> -- <sources...>
+stdlib_module() {
+  local module=$1 lib=$2
+  shift 2
+  local flags=()
+  while [ "$1" != "--" ]; do flags+=("$1"); shift; done
+  shift
+  echo "stdlib module $module → lib$lib.dylib"
+  xcrun --sdk iphoneos swiftc -target "$IOS_TARGET" -sdk "$IOS_SDK" -O -wmo -parse-as-library \
+    -nostdlibimport -I "$VENDOR/build/swift-core/Core" -I "$VENDOR/swift/stdlib/public/SwiftShims/swift/shims" \
+    -I "$REGEX_OUT" -L "$LIB" -L "$VENDOR/build/swift-core/Core" \
+    -Xfrontend -disable-implicit-string-processing-module-import \
+    -Xfrontend -disable-implicit-concurrency-module-import \
+    -Xfrontend -define-availability -Xfrontend "SwiftStdlib 5.7:macOS 13.0, iOS 16.0, watchOS 9.0, tvOS 16.0" \
+    -Xfrontend -define-availability -Xfrontend "SwiftStdlib 5.8:macOS 13.3, iOS 16.4, watchOS 9.4, tvOS 16.4" \
+    -Xfrontend -define-availability -Xfrontend "SwiftStdlib 5.9:macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0" \
+    -Xfrontend -define-availability -Xfrontend "SwiftStdlib 5.10:macOS 14.4, iOS 17.4, watchOS 10.4, tvOS 17.4" \
+    -Xfrontend -define-availability -Xfrontend "SwiftStdlib 6.0:macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0" \
+    -module-name "$module" -enable-library-evolution \
+    -emit-module -emit-module-path "$REGEX_OUT/$module.swiftmodule" \
+    -emit-library -o "$LIB/lib$lib.dylib" \
+    -Xlinker -install_name -Xlinker "/usr/lib/swift/lib$lib.dylib" \
+    -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
+    "${flags[@]}" "$@"
+}
+for c in UnicodeData UnicodeScalarProps; do
+  xcrun --sdk iphoneos clang -target "$IOS_TARGET" -isysroot "$IOS_SDK" -Os -I "$SP/Sources/_CUnicode/include" \
+    -c "$SP/Sources/_CUnicode/$c.c" -o "$REGEX_OUT/$c.o"
+done
+cp "$SP/Sources/_CUnicode/include/"*.h "$REGEX_OUT/cunicode/"
+printf 'module _CUnicode {\n  header "UnicodeData.h"\n  export *\n}\n' > "$REGEX_OUT/cunicode/module.modulemap"
+stdlib_module _RegexParser swift_RegexParser -- $(find "$SP/Sources/_RegexParser" -name '*.swift' | sort)
+stdlib_module _StringProcessing swift_StringProcessing -I "$REGEX_OUT/cunicode" -lswift_RegexParser \
+  -Xlinker "$REGEX_OUT/UnicodeData.o" -Xlinker "$REGEX_OUT/UnicodeScalarProps.o" -- \
+  $(find "$SP/Sources/_StringProcessing" -name '*.swift' | sort)
+stdlib_module RegexBuilder swiftRegexBuilder -lswift_RegexParser -lswift_StringProcessing -- \
+  $(find "$SP/Sources/RegexBuilder" -name '*.swift' | sort)

@@ -11,3 +11,4 @@ pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
 pomme-hle = { version = "0.1.0", path = "../pomme-hle" }
 pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }
+ureq = "3.5.1"

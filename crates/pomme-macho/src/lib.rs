@@ -197,6 +197,9 @@ pub struct Image<'a> {
     pub imports: Vec<Import>,
     pub fixups: Vec<Fixup>,
     pub exports: Vec<Export>,
+    /// Every function and data symbol the symbol table defines (locals too):
+    /// (unslid vmaddr, name), sorted by address. For symbolizing and breakpoints.
+    pub symbols: Vec<(u64, String)>,
     pub uses_chained_fixups: bool,
 }
 
@@ -374,6 +377,15 @@ impl<'a> Image<'a> {
             None => Vec::new(),
         };
 
+        let mut symbols: Vec<(u64, String)> = m
+            .symbols()
+            .flatten()
+            .filter(|(name, n)| !n.is_stab() && n.get_type() == goblin::mach::symbols::N_SECT && !name.is_empty() && !name.starts_with("ltmp"))
+            .map(|(name, n)| (n.n_value, name.to_string()))
+            .collect();
+        symbols.sort();
+        symbols.dedup_by_key(|s| s.0);
+
         Ok(Image {
             cpu,
             file_type,
@@ -387,6 +399,7 @@ impl<'a> Image<'a> {
             imports,
             fixups,
             exports,
+            symbols,
             uses_chained_fixups: chained_data.is_some(),
         })
     }

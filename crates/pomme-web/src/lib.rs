@@ -90,6 +90,44 @@ impl Host for WebHost {
     }
 }
 
+/// The network: synchronous XMLHttpRequest (fine in a worker), so CORS applies.
+struct XhrNet;
+
+/// Headers a browser won't let scripts set.
+fn forbidden(name: &str) -> bool {
+    const NAMES: &[&str] = &["accept-charset", "accept-encoding", "connection", "content-length", "cookie", "date", "host", "keep-alive", "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade", "user-agent", "via"];
+    let n = name.to_ascii_lowercase();
+    NAMES.contains(&n.as_str()) || n.starts_with("sec-") || n.starts_with("proxy-")
+}
+
+impl pomme_hle::net::Net for XhrNet {
+    fn fetch(&mut self, req: &pomme_hle::net::Request) -> Result<pomme_hle::net::Response, String> {
+        let err = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
+        let xhr = web_sys::XmlHttpRequest::new().map_err(err)?;
+        xhr.open_with_async(&req.method, &req.url, false).map_err(err)?;
+        xhr.set_response_type(web_sys::XmlHttpRequestResponseType::Arraybuffer);
+        for (k, v) in &req.headers {
+            if !forbidden(k) {
+                xhr.set_request_header(k, v).map_err(err)?;
+            }
+        }
+        let sent = if req.body.is_empty() { xhr.send() } else { xhr.send_with_opt_u8_array(Some(&req.body)) };
+        sent.map_err(|e| format!("{} {}: {}", req.method, req.url, err(e)))?;
+        let status = xhr.status().map_err(err)?;
+        if status == 0 {
+            return Err(format!("{} {}: network error (offline, or blocked by CORS)", req.method, req.url));
+        }
+        let headers = xhr
+            .get_all_response_headers()
+            .map_err(err)?
+            .lines()
+            .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .collect();
+        let body = xhr.response().map(|b| js_sys::Uint8Array::new(&b).to_vec()).unwrap_or_default();
+        Ok(pomme_hle::net::Response { status, headers, body })
+    }
+}
+
 /// The `.app` directory inside a bundle (its first path under /app/).
 fn app_path(bytes: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into_owned();
@@ -115,6 +153,7 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32) -> Result<S
     let p = pomme_loader::load_with(app.as_ref(), &opts).map_err(|e| e.to_string())?;
     let mut emu = Emu::new(p).map_err(|e| e.to_string())?;
     emu.live.scale = scale;
+    emu.net.client = Some(Box::new(XhrNet));
     emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
     pomme_log("running");
     let r = emu.run_main();

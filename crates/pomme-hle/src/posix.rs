@@ -711,9 +711,15 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_asl_send", ret_zero),
     ("_asl_free", noop),
     ("_asl_close", noop),
-    ("__os_log_debug_impl", noop),
-    ("__os_log_error_impl", noop),
-    ("__os_log_fault_impl", noop),
+    ("__os_log_debug_impl", os_log),
+    ("__os_log_error_impl", os_log),
+    ("__os_log_fault_impl", os_log),
+    ("__os_log_impl", os_log),
+    ("_os_log_type_enabled", |e| {
+        // Debug messages (type 2) stay off; info, default, error and fault print.
+        e.ret((e.arg(1) != 2) as u64);
+        Ok(())
+    }),
     ("_writev", writev),
     ("_fsync", ret_zero),
     ("_select", ret_zero),
@@ -749,3 +755,78 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_getsockname", fail),
     ("_getpeername", fail),
 ];
+
+/// `_os_log_impl(dso, log, type, format, buf, size)`: the arguments come packed
+/// in os_log's buffer ({summary, count} then {descriptor, size, bytes} per
+/// item). Unpack them into 8-byte slots and format like printf, minus the
+/// `{public}`/`{private}` annotations.
+fn os_log(emu: &mut Emu) -> Result<()> {
+    let (kind, fmt, buf, size) = (emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5));
+    let fmt = emu.cstr(fmt)?;
+    let clean = strip_privacy(&fmt);
+    let bytes = emu.p.memory.read(buf, size.min(4096) as usize)?.to_vec();
+    let args = os_log_args(&bytes);
+    let slots = emu.alloc(args.len() as u64 * 8 + 8)?;
+    for (k, v) in args.iter().enumerate() {
+        emu.write_u64(slots + k as u64 * 8, *v)?;
+    }
+    let text = crate::printf::format(emu, clean.as_bytes(), &mut crate::printf::Args::new(slots))?;
+    let level = match kind {
+        0x01 => "info",
+        0x10 => "error",
+        0x11 => "fault",
+        _ => "log",
+    };
+    println!("[os_log {level}] {}", String::from_utf8_lossy(&text));
+    Ok(())
+}
+
+/// `%{public}s` → `%s`: os_log's privacy annotations, which printf doesn't know.
+fn strip_privacy(fmt: &str) -> String {
+    let mut clean = String::with_capacity(fmt.len());
+    let mut rest = fmt;
+    while let Some(i) = rest.find("%{") {
+        clean.push_str(&rest[..i + 1]);
+        rest = rest[i + 2..].split_once('}').map_or("", |(_, r)| r);
+    }
+    clean.push_str(rest);
+    clean
+}
+
+/// The arguments packed in an os_log buffer, each widened to an 8-byte slot
+/// (signed, as printf reads them).
+fn os_log_args(bytes: &[u8]) -> Vec<u64> {
+    let count = bytes.get(1).copied().unwrap_or(0) as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut at = 2;
+    for _ in 0..count {
+        let Some(&n) = bytes.get(at + 1) else { break };
+        let data = bytes.get(at + 2..at + 2 + n as usize).unwrap_or(&[]);
+        out.push(match data.len() {
+            1 => data[0] as i8 as i64 as u64,
+            2 => i16::from_le_bytes([data[0], data[1]]) as i64 as u64,
+            4 => i32::from_le_bytes(data.try_into().unwrap()) as i64 as u64,
+            8 => u64::from_le_bytes(data.try_into().unwrap()),
+            _ => 0,
+        });
+        at += 2 + n as usize;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn os_log_buffers() {
+        assert_eq!(strip_privacy("%{public}s took %{private}d ms (%d%%)"), "%s took %d ms (%d%%)");
+        // {summary, count}, then {descriptor, size, bytes}: an int (-2) and a pointer.
+        let mut buf = vec![0x02, 2, 0x00, 4];
+        buf.extend_from_slice(&(-2i32).to_le_bytes());
+        buf.extend_from_slice(&[0x22, 8]);
+        buf.extend_from_slice(&0x1234_5678u64.to_le_bytes());
+        assert_eq!(os_log_args(&buf), vec![(-2i64) as u64, 0x1234_5678]);
+        assert!(os_log_args(&[0, 3, 0]).is_empty());
+    }
+}

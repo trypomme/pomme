@@ -64,6 +64,8 @@ pub struct LoadedImage {
     exports: HashMap<String, ExportKind>,
     /// Sections as `(segment, section)`, with slid addresses.
     pub sections: Vec<(String, pomme_macho::Section)>,
+    /// Symbol-table symbols (locals too), slid and sorted by address.
+    pub symbols: Vec<(u64, String)>,
 }
 
 impl LoadedImage {
@@ -73,6 +75,18 @@ impl LoadedImage {
             .iter()
             .find(|(seg, sec)| sec.name == name && (seg == segment || (segment == "__DATA" && seg.starts_with("__DATA"))))
             .map(|(_, sec)| (sec.addr, sec.size))
+    }
+
+    /// Slid address of any symbol-table symbol (local functions too).
+    pub fn local_symbol(&self, name: &str) -> Option<u64> {
+        self.symbols.iter().find(|(_, n)| n == name).map(|(a, _)| *a)
+    }
+
+    /// The symbol containing `addr` (the nearest one at or below it).
+    pub fn symbol_at(&self, addr: u64) -> Option<(u64, &str)> {
+        let i = self.symbols.partition_point(|(a, _)| *a <= addr).checked_sub(1)?;
+        let (a, n) = &self.symbols[i];
+        Some((*a, n.as_str()))
     }
 
     /// Slid address of an exported symbol defined directly in this image.
@@ -209,6 +223,9 @@ impl Process {
             return format!("stub {} ({})", stub.symbol, stub.library);
         }
         let Some(img) = self.image_at(addr) else { return format!("{addr:#x}") };
+        if let Some((a, name)) = img.symbol_at(addr) {
+            return format!("{} {name}+{:#x}", img.name, addr - a);
+        }
         let nearest = img
             .exports
             .keys()
@@ -328,6 +345,7 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
             dylibs: img.dylibs.clone(),
             deps: std::mem::take(&mut deps[i]),
             exports: img.exports.iter().map(|e| (e.name.clone(), e.kind.clone())).collect(),
+            symbols: img.symbols.iter().map(|(a, n)| (a.wrapping_add(slide), n.clone())).collect(),
             sections: img
                 .segments
                 .iter()

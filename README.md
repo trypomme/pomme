@@ -44,7 +44,9 @@ Debugging:
 - `pomme run … --views` prints the view hierarchy (class, frame, colours, text) when the run stops;
   `--seconds N` stops once the app is idle past N seconds of virtual time (default 10).
 - `pomme run … --trace` prints system calls, messages, thread switches and Mach traffic.
-- `POMME_BREAK=_sym1,_sym2 pomme run …` prints every call to those guest functions.
+- `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
+  local (non-exported) ones too, by name or by the address `nm` prints.
+- `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - Every stop prints a backtrace; C++ exceptions are reported with their type and `what()`.
 
@@ -100,6 +102,15 @@ Debugging:
      taps go through a SharedArrayBuffer and frames come back to a canvas. Virtual time follows
      the wall clock while the app idles. `scripts/build-web.sh && scripts/serve-web.py`, then open
      http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps
+   - Networking ✅: `NSURLRequest`, `NSURLSession` data tasks (delegate and completion-handler),
+     `NSHTTPURLResponse`, through one `Net` interface: real HTTP in the CLI (`--offline`, and
+     `--fixture URL=FILE` for deterministic runs), synchronous XHR in the browser, `Fixtures` in
+     tests. Responses arrive on the main run loop a little later in virtual time, one delegate
+     callback per turn, as on a device. With `NSTimer`, `NSRegularExpression` (Rust `regex`),
+     `UIGraphicsImageRenderer`, path clipping, more of the Foundation overlay (`CharacterSet`,
+     `URLRequest`, `URLError`, NSError bridging) and `_StringProcessing`/`RegexBuilder` built from
+     source, hello-expo loads data with **SWR, TanStack Query and `Promise.all`**, live or from
+     fixtures, natively and in the browser
    - Next: a native window host; a faster virtual CPU clock (startup takes ~2 s
      of virtual time: one instruction is one 24 MHz tick)
    - Gaps: KVO is a no-op; `NSURLSession` and friends answer generically (no networking yet)

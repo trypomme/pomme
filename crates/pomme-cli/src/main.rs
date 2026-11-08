@@ -47,6 +47,12 @@ enum Cmd {
         /// Run from a bundle made by `pomme bundle` instead of the disk (PATH is then ignored).
         #[arg(long)]
         bundle: Option<PathBuf>,
+        /// No network: every request fails as if the device were offline.
+        #[arg(long)]
+        offline: bool,
+        /// Answer requests for URL (or URL prefix ending in `*`) with FILE: `--fixture 'https://api.x/*=x.json'`.
+        #[arg(long, value_parser = parse_fixture)]
+        fixture: Vec<(String, PathBuf)>,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -71,7 +77,8 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture } => {
+            let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -81,7 +88,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net)
         }
     }
 }
@@ -316,6 +323,51 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     Ok(())
 }
 
+/// `URL=FILE`
+fn parse_fixture(s: &str) -> std::result::Result<(String, PathBuf), String> {
+    let (url, file) = s.rsplit_once('=').ok_or("expected URL=FILE")?;
+    Ok((url.to_string(), PathBuf::from(file)))
+}
+
+/// Real HTTP for whatever the fixtures don't answer.
+struct LiveNet {
+    fixtures: pomme_hle::net::Fixtures,
+    agent: ureq::Agent,
+}
+
+impl pomme_hle::net::Net for LiveNet {
+    fn fetch(&mut self, req: &pomme_hle::net::Request) -> std::result::Result<pomme_hle::net::Response, String> {
+        if let Some(r) = self.fixtures.lookup(&req.url) {
+            return Ok(r.clone());
+        }
+        let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(&req.url);
+        for (k, v) in &req.headers {
+            b = b.header(k, v);
+        }
+        let request = b.body(req.body.clone()).map_err(|e| e.to_string())?;
+        let request = self.agent.configure_request(request).http_status_as_error(false).build();
+        let mut response = self.agent.run(request).map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let headers = response.headers().iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
+        let body = response.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        Ok(pomme_hle::net::Response { status, headers, body })
+    }
+}
+
+fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<dyn pomme_hle::net::Net>>> {
+    let mut f = pomme_hle::net::Fixtures::default();
+    for (url, file) in fixtures {
+        let body = std::fs::read(file).with_context(|| format!("reading fixture {}", file.display()))?;
+        let ct = if file.extension().is_some_and(|e| e == "json") { "application/json; charset=utf-8" } else { "application/octet-stream" };
+        f.0.push((url.clone(), pomme_hle::net::Response { status: 200, headers: vec![("Content-Type".into(), ct.into())], body }));
+    }
+    Ok(if offline {
+        (!fixtures.is_empty()).then(|| Box::new(f) as Box<dyn pomme_hle::net::Net>)
+    } else {
+        Some(Box::new(LiveNet { fixtures: f, agent: ureq::Agent::new_with_defaults() }))
+    })
+}
+
 /// `x,y@seconds`
 fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
     let (xy, t) = s.split_once('@').ok_or("expected x,y@seconds")?;
@@ -325,7 +377,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -338,6 +390,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
+    emu.net.client = net;
     for &(x, y, t) in taps {
         // A tap: down, then up 80 ms later.
         let at = (t * 1e9) as u64;
@@ -345,11 +398,21 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         emu.touch.script.push(pomme_hle::touch::Input { at_ns: at + 80_000_000, phase: pomme_hle::touch::ENDED, x, y });
     }
     emu.trace = trace;
-    // Debugging aid: POMME_BREAK=_sym1,_sym2 prints the arguments of every call to those guest functions.
+    // Debugging aid: POMME_BREAK=_sym1,Image:0xaddr,... prints the arguments of every call to those guest functions.
     if let Ok(list) = std::env::var("POMME_BREAK") {
         for sym in list.split(',') {
-            match emu.p.images.iter().find_map(|i| i.symbol(sym)) {
-                Some(addr) => emu.hook(addr, print_call).map_err(|e| anyhow::anyhow!("{e}"))?,
+            // `Image:0xADDR` (an unslid address as `nm` prints it) reaches local functions too.
+            let at = sym.split_once(":0x").and_then(|(img, a)| {
+                let i = emu.p.images.iter().find(|i| i.name == img)?;
+                u64::from_str_radix(a, 16).ok().map(|a| a + i.slide)
+            });
+            let named = || emu.p.images.iter().find_map(|i| i.symbol(sym).or_else(|| i.local_symbol(sym)));
+            match at.or_else(named) {
+                Some(addr) => {
+                    if let Err(e) = emu.hook(addr, print_call) {
+                        println!("POMME_BREAK: {e}");
+                    }
+                }
                 None => println!("POMME_BREAK: no guest symbol {sym}"),
             }
         }

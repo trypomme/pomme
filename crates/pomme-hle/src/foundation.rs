@@ -141,6 +141,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         ("_CFNullGetTypeID", "NSNull"),
         ("_CFDateGetTypeID", "__NSDate"),
         ("_CFAttributedStringGetTypeID", "__NSCFAttributedString"),
+        ("_CFRunLoopTimerGetTypeID", "__NSCFTimer"),
         ("_CFURLGetTypeID", "NSURL"),
         ("_CFCharacterSetGetTypeID", "__NSCFCharacterSet"),
     ];
@@ -2136,7 +2137,7 @@ pub fn new_date(emu: &mut Emu, abs: f64) -> Result<u64> {
     cf(emu, "_CFDateCreate", &[0])
 }
 
-fn date_value(emu: &mut Emu, d: u64) -> Result<f64> {
+pub(crate) fn date_value(emu: &mut Emu, d: u64) -> Result<f64> {
     cf(emu, "_CFDateGetAbsoluteTime", &[d])?;
     Ok(f64::from_bits(emu.last_q0 as u64))
 }

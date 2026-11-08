@@ -141,6 +141,20 @@ fn cbytes(emu: &Emu, addr: u64) -> Result<Vec<u8>> {
 }
 
 /// Call a block with arguments after the block pointer itself.
+/// A global block whose invoke is the host function `f` (it gets the block in x0, then the arguments).
+pub fn host_block(emu: &mut Emu, f: HostFn) -> Result<u64> {
+    let invoke = emu.host_thunk(f)?;
+    // Block_layout {isa, flags, reserved, invoke, descriptor}; descriptor {reserved, size}.
+    let b = emu.alloc(48)?;
+    let isa = crate::objc::host_class(emu, "__NSGlobalBlock__")?;
+    emu.write_u64(b, isa)?;
+    emu.p.memory.write_u32(b + 8, 1 << 28)?; // BLOCK_IS_GLOBAL
+    emu.write_u64(b + 16, invoke)?;
+    emu.write_u64(b + 24, b + 32)?;
+    emu.write_u64(b + 40, 32)?;
+    Ok(b)
+}
+
 pub fn call_block(emu: &mut Emu, block: u64, args: &[u64]) -> Result<u64> {
     let invoke = emu.read_u64(block + 16)?;
     let mut all = vec![block];
@@ -1093,8 +1107,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_write", write_fd),
     ("_isatty", ret_zero),
     ("_os_log_create", ret_one),
-    ("_os_log_type_enabled", ret_zero),
-    ("__os_log_impl", noop),
     ("_os_signpost_enabled", ret_zero),
     ("_os_signpost_id_make_with_pointer", ret_one),
     ("__os_signpost_emit_with_name_impl", noop),
