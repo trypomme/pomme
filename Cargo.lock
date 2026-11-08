@@ -212,6 +212,7 @@ dependencies = [
  "clap",
  "plist",
  "pomme-cpu",
+ "pomme-hle",
  "pomme-loader",
  "pomme-macho",
 ]
@@ -220,6 +221,15 @@ dependencies = [
 name = "pomme-cpu"
 version = "0.1.0"
 dependencies = [
+ "pomme-loader",
+ "pomme-mem",
+]
+
+[[package]]
+name = "pomme-hle"
+version = "0.1.0"
+dependencies = [
+ "pomme-cpu",
  "pomme-loader",
  "pomme-mem",
 ]

@@ -61,9 +61,19 @@ pub struct LoadedImage {
     /// For each entry in `dylibs`, the index of the loaded image (bundled libs only).
     pub deps: Vec<Option<usize>>,
     exports: HashMap<String, ExportKind>,
+    /// Sections as `(segment, section)`, with slid addresses.
+    pub sections: Vec<(String, pomme_macho::Section)>,
 }
 
 impl LoadedImage {
+    /// A section's slid `(addr, size)`. `"__DATA"` also matches `__DATA_CONST` etc.
+    pub fn section(&self, segment: &str, name: &str) -> Option<(u64, u64)> {
+        self.sections
+            .iter()
+            .find(|(seg, sec)| sec.name == name && (seg == segment || (segment == "__DATA" && seg.starts_with("__DATA"))))
+            .map(|(_, sec)| (sec.addr, sec.size))
+    }
+
     /// Slid address of an exported symbol defined directly in this image.
     pub fn symbol(&self, name: &str) -> Option<u64> {
         match self.exports.get(name)? {
@@ -84,6 +94,8 @@ pub struct Stub {
 pub struct Stubs {
     list: Vec<Stub>,
     index: HashMap<Stub, usize>,
+    /// For each stub, the pointers bound to it: (location, addend).
+    sites: Vec<Vec<(u64, u64)>>,
 }
 
 impl Stubs {
@@ -93,6 +105,7 @@ impl Stubs {
         let i = *self.index.entry(key.clone()).or_insert(n);
         if i == n {
             self.list.push(key);
+            self.sites.push(Vec::new());
         }
         STUB_BASE + i as u64 * STUB_SIZE
     }
@@ -107,6 +120,17 @@ impl Stubs {
 
     pub fn iter(&self) -> impl Iterator<Item = (u64, &Stub)> {
         self.list.iter().enumerate().map(|(i, s)| (STUB_BASE + i as u64 * STUB_SIZE, s))
+    }
+
+    /// Addresses of the stubs for a symbol (from any library).
+    pub fn find(&self, symbol: &str) -> Vec<u64> {
+        self.iter().filter(|(_, s)| s.symbol == symbol).map(|(a, _)| a).collect()
+    }
+
+    /// Index of the stub at a guest address.
+    pub fn index_of(&self, addr: u64) -> Option<usize> {
+        let i = (addr.checked_sub(STUB_BASE)? / STUB_SIZE) as usize;
+        (i < self.list.len()).then_some(i)
     }
 
     /// The stub at a guest address, if it is one.
@@ -149,6 +173,25 @@ pub struct Process {
 }
 
 impl Process {
+    /// Point every pointer bound to the stub at `stub_addr` at `target` instead
+    /// (keeping each site's addend). Used by HLE to give data symbols such as
+    /// `_OBJC_CLASS_$_NSObject` real backing objects. Returns the sites rewritten.
+    pub fn rebind(&mut self, stub_addr: u64, target: u64) -> Result<usize> {
+        let i = ((stub_addr - STUB_BASE) / STUB_SIZE) as usize;
+        let sites = std::mem::take(&mut self.stubs.sites[i]);
+        for &(at, addend) in &sites {
+            self.memory.write_u64(at, target.wrapping_add(addend))?;
+        }
+        let n = sites.len();
+        self.stubs.sites[i] = sites;
+        Ok(n)
+    }
+
+    /// Pointers bound to the stub at `stub_addr`, as (location, addend).
+    pub fn bind_sites(&self, stub_addr: u64) -> &[(u64, u64)] {
+        &self.stubs.sites[((stub_addr - STUB_BASE) / STUB_SIZE) as usize]
+    }
+
     pub fn main(&self) -> &LoadedImage {
         &self.images[0]
     }
@@ -258,6 +301,17 @@ pub fn load(path: &Path) -> Result<Process> {
             dylibs: img.dylibs.clone(),
             deps: std::mem::take(&mut deps[i]),
             exports: img.exports.iter().map(|e| (e.name.clone(), e.kind.clone())).collect(),
+            sections: img
+                .segments
+                .iter()
+                .flat_map(|seg| {
+                    seg.sections.iter().map(move |sec| {
+                        let mut sec = sec.clone();
+                        sec.addr = sec.addr.wrapping_add(slide);
+                        (seg.name.clone(), sec)
+                    })
+                })
+                .collect(),
         });
     }
 
@@ -275,7 +329,12 @@ pub fn load(path: &Path) -> Result<Process> {
                 Fixup::Bind { import, addend, .. } => {
                     let imp = &img.imports[import];
                     let base = linker.bind(i, img, imp.ordinal, &imp.name, imp.weak);
-                    if base == 0 { 0 } else { base.wrapping_add(imp.addend as u64).wrapping_add(addend as u64) }
+                    let add = (imp.addend as u64).wrapping_add(addend as u64);
+                    if base >= STUB_BASE && linker.stubs.at(base).is_some() {
+                        let idx = ((base - STUB_BASE) / STUB_SIZE) as usize;
+                        linker.stubs.sites[idx].push((fixup.location().wrapping_add(slide), add));
+                    }
+                    if base == 0 { 0 } else { base.wrapping_add(add) }
                 }
             };
             memory.write_u64(fixup.location().wrapping_add(slide), value)?;

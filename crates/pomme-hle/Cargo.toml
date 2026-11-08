@@ -1,0 +1,10 @@
+[package]
+name = "pomme-hle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
+pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
+pomme-mem = { version = "0.1.0", path = "../pomme-mem" }

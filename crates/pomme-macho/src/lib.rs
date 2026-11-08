@@ -161,6 +161,15 @@ pub struct Segment<'a> {
     pub prot: Prot,
     /// File contents (`filesize` bytes); the rest of `vmsize` is zero-fill.
     pub data: &'a [u8],
+    pub sections: Vec<Section>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Section {
+    pub name: String,
+    /// Unslid vmaddr.
+    pub addr: u64,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +242,16 @@ impl<'a> Image<'a> {
         map
     }
 
+    /// Find a section by segment and section name, e.g. `("__DATA", "__objc_classlist")`.
+    /// Also matches `__DATA_CONST` / `__DATA_DIRTY` when asked for `__DATA`.
+    pub fn section(&self, segment: &str, name: &str) -> Option<&Section> {
+        self.segments
+            .iter()
+            .filter(|s| s.name == segment || (segment == "__DATA" && s.name.starts_with("__DATA")))
+            .flat_map(|s| &s.sections)
+            .find(|sec| sec.name == name)
+    }
+
     /// Segments that are actually mapped (skips `__PAGEZERO`).
     pub fn mapped_segments(&self) -> impl Iterator<Item = &Segment<'a>> {
         self.segments.iter().filter(|s| s.vmsize > 0 && !(s.vmaddr == 0 && s.name == "__PAGEZERO"))
@@ -275,6 +294,11 @@ impl<'a> Image<'a> {
                 vmsize: s.vmsize,
                 prot: Prot::from_raw(s.initprot),
                 data,
+                sections: s
+                    .sections()?
+                    .iter()
+                    .map(|(sec, _)| Section { name: sec.name().unwrap_or("?").to_string(), addr: sec.addr, size: sec.size })
+                    .collect(),
             });
         }
         let header_vmaddr = segments
