@@ -8,7 +8,8 @@ replacements (HLE) for the iOS system libraries the app calls into.
 
 | Path | What |
 | --- | --- |
-| `crates/pomme-macho` | Mach-O parsing: platform, segments, dylibs, imports (incl. chained fixups). Becomes the loader. |
+| `crates/pomme-macho` | Mach-O parsing: segments, dylibs, imports, fixups (chained + dyld_info), export trie. |
+| `crates/pomme-loader` | Our `dyld`: maps the app and its bundled frameworks into guest memory and links them. System symbols bind to trapping HLE stubs. |
 | `crates/pomme-cli` | `pomme` command-line tool. |
 | `apps/hello-expo` | Skeleton Expo app — the first guest we want to boot. |
 | `scripts/` | Build helpers. |
@@ -18,15 +19,35 @@ replacements (HLE) for the iOS system libraries the app calls into.
 ```bash
 scripts/build-hello-expo.sh            # needs the iOS platform installed in Xcode
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
+cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
+cargo test           # loader fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
 `inspect` lists every image in the bundle and the **HLE surface**: the system
 libraries and symbols pomme has to implement for the app to run.
 
+## MVP
+
+Open hello-expo's `.app` on a machine with **no Apple software behind it**
+(Windows, Linux, a browser tab) and see it render and respond to taps — like
+DOSBox or SameBoy. Every system library the app touches is pomme's own code.
+(Building the `.app` still needs Xcode, once, e.g. in CI.)
+
 ## Rough roadmap
 
-1. Inspect guest binaries ← *here*
-2. Loader: map segments into a guest address space, apply chained fixups, bind imports to stubs
-3. CPU: arm64 user-mode interpreter, trap on HLE stubs
+1. Inspect guest binaries ✅
+2. Loader: map segments, apply fixups, bind system imports to HLE stubs ✅
+3. CPU: arm64 user-mode interpreter, trap on HLE stubs ← *next*
 4. HLE: libSystem → libobjc runtime → CoreFoundation/Foundation → UIKit (render to a host canvas)
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
+
+## Design constraints (keep these true)
+
+These keep deterministic replay and rr-style time-travel debugging cheap to add later:
+
+- **One host thread runs all guest threads**, switched by a deterministic scheduler
+  every N instructions.
+- **Instruction count is the clock** for scheduling and replay positions.
+- **Every source of non-determinism goes through one HLE layer**: time, randomness,
+  network, filesystem, input events. A recording is just that layer's inputs.
+- **Guest memory is snapshottable** (plain owned buffers, no host pointers into it).

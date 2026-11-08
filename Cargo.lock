@@ -211,7 +211,17 @@ dependencies = [
  "anyhow",
  "clap",
  "plist",
+ "pomme-loader",
  "pomme-macho",
+]
+
+[[package]]
+name = "pomme-loader"
+version = "0.1.0"
+dependencies = [
+ "plist",
+ "pomme-macho",
+ "thiserror",
 ]
 
 [[package]]
