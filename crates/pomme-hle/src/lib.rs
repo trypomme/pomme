@@ -213,6 +213,7 @@ pub struct Emu {
     pub metal: metal::State,
     pub(crate) pointer_arrays: pointer_array::State,
     pub(crate) locales: locale::State,
+    pub(crate) coretext: coretext::State,
     bundle: bundle::State,
 }
 
@@ -279,6 +280,7 @@ impl Emu {
             metal: Default::default(),
             pointer_arrays: Default::default(),
             locales: Default::default(),
+            coretext: Default::default(),
             bundle: Default::default(),
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;

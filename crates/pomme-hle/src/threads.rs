@@ -165,6 +165,9 @@ fn switch_to(emu: &mut Emu, tid: usize) {
     emu.cpu.steps = steps;
     emu.cpu.clock_offset = offset;
     emu.th.current = tid;
+    if emu.trace {
+        println!("{:>10} --- thread {tid} ---", steps);
+    }
 }
 
 /// Create a thread that starts at `pc` with `x0 = arg` and returns to the host.
@@ -296,9 +299,9 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
 
 /// Give every other thread that can run one slice. Returns whether any ran.
 fn schedule_round(emu: &mut Emu) -> Result<bool> {
-    fire_timers(emu);
+    // A timer that fires is progress: its message may be what this thread waits for.
+    let mut progressed = fire_timers(emu);
     let me = emu.th.current;
-    let mut progressed = false;
     for tid in 0..emu.th.threads.len() {
         if tid == me {
             continue;
@@ -326,15 +329,21 @@ fn schedule_round(emu: &mut Emu) -> Result<bool> {
     Ok(progressed)
 }
 
-/// Fire due mk_timers: each sends a message to its port.
-fn fire_timers(emu: &mut Emu) {
+/// Fire due mk_timers: each sends a message to its port. Whether any fired.
+fn fire_timers(emu: &mut Emu) -> bool {
     let now = now_ns(emu);
+    let mut fired = false;
     for (&name, port) in emu.th.ports.iter_mut() {
         if port.timer.is_some_and(|t| now >= t) {
+            if emu.trace {
+                println!("{:>10}   mk_timer {name:#x} fires", emu.cpu.steps);
+            }
             port.timer = None;
             port.queue.push_back(message(name, 0));
+            fired = true;
         }
     }
+    fired
 }
 
 /// When nothing can run: skip virtual time to the earliest deadline. False if
@@ -346,6 +355,9 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
         && target > limit
     {
         return Err(Stop::TimeLimit(limit));
+    }
+    if emu.trace {
+        println!("{:>10}   [time] idle: skip to {:.3} ms", emu.cpu.steps, target as f64 / 1e6);
     }
     advance_to(emu, target);
     Ok(true)
@@ -409,6 +421,31 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
     };
     emu.th.threads[me].run = Run::Runnable;
     result
+}
+
+/// Every other thread: what it waits on and where (a few frames of its fp chain).
+pub fn report(emu: &Emu) -> String {
+    let mut s = String::new();
+    for (i, t) in emu.th.threads.iter().enumerate() {
+        if i == emu.th.current {
+            continue;
+        }
+        let c = &t.cpu;
+        s += &format!("  thread {i} ({}): {:?}\n    at {}\n", t.name, t.run, emu.symbolize(c.x[30].wrapping_sub(4)));
+        let mut fp = c.x[29];
+        for _ in 0..6 {
+            let (Ok(next), Ok(ret)) = (emu.p.memory.read_u64(fp), emu.p.memory.read_u64(fp + 8)) else { break };
+            if ret == 0 || ret == pomme_cpu::HOST_RETURN {
+                break;
+            }
+            s += &format!("    {}\n", emu.symbolize(ret.wrapping_sub(4)));
+            if next <= fp {
+                break;
+            }
+            fp = next;
+        }
+    }
+    s
 }
 
 fn describe(emu: &Emu, me: usize, wait: &Wait) -> String {
@@ -511,7 +548,11 @@ fn mk_timer_create(emu: &mut Emu) -> Result<()> {
 /// `mk_timer_arm(port, uint64_t fire_time)` — fire time in mach ticks.
 fn mk_timer_arm(emu: &mut Emu) -> Result<()> {
     let (port, at) = (emu.arg(0) as u32, emu.arg(1));
-    let ns = at * NS_PER_TICK_NUM / NS_PER_TICK_DEN;
+    let ns = (at as u128 * NS_PER_TICK_NUM as u128 / NS_PER_TICK_DEN as u128).min(u64::MAX as u128) as u64;
+    if emu.trace {
+        let now = now_ns(emu);
+        println!("{:>10}   mk_timer {port:#x} armed for +{:.3} ms", emu.cpu.steps, (ns as f64 - now as f64) / 1e6);
+    }
     if let Some(p) = emu.th.ports.get_mut(&port) {
         p.timer = Some(ns);
     }

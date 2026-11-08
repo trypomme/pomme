@@ -873,19 +873,32 @@ fn run(g: &mut Gpu, emu: &mut Emu, cmds: &[Cmd], present: &[u64]) -> R<()> {
     }
     for &d in present {
         let Some(Obj::Drawable { layer, texture: t }) = emu.metal.objects.get(&d).cloned() else { continue };
-        let format = texture(g, emu, t)?.format;
-        let (mut px, w, h) = read_texture(g, emu, t)?;
-        if matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
-            for p in px.chunks_exact_mut(4) {
-                p.swap(0, 2);
-            }
-        }
-        // Metal drawables hold premultiplied colors, as tiny-skia does.
-        let size = tiny_skia::IntSize::from_wh(w, h).ok_or("empty drawable")?;
-        let pix = tiny_skia::Pixmap::from_vec(px, size).ok_or("bad drawable pixels")?;
+        let pix = pixmap(g, emu, t)?;
         metal::show_frame(emu, layer, pix).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// A texture's pixels, as a premultiplied RGBA pixmap.
+fn pixmap(g: &mut Gpu, emu: &Emu, t: u64) -> R<tiny_skia::Pixmap> {
+    let format = texture(g, emu, t)?.format;
+    let (mut px, w, h) = read_texture(g, emu, t)?;
+    if matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+        for p in px.chunks_exact_mut(4) {
+            p.swap(0, 2);
+        }
+    }
+    // Metal drawables hold premultiplied colors, as tiny-skia does.
+    let size = tiny_skia::IntSize::from_wh(w, h).ok_or("empty drawable")?;
+    tiny_skia::Pixmap::from_vec(px, size).ok_or_else(|| "bad drawable pixels".to_string())
+}
+
+/// A texture's current pixels (an IOSurface a layer shows).
+pub(crate) fn texture_pixmap(emu: &mut Emu, t: u64) -> R<tiny_skia::Pixmap> {
+    let mut g = gpu(emu)?;
+    let r = pixmap(&mut g, emu, t);
+    emu.metal.gpu = Some(g);
+    r
 }
 
 /// Write a texture as a PNG (debugging).

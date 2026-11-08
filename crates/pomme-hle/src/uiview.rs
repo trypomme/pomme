@@ -384,6 +384,15 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
         l = objc::create_instance(emu, cls, 0)?;
         view_mut(emu, v).layer = l;
         emu.ui.views.layer_view.insert(l, v);
+        // `[[layerClass alloc] init]`: an app's own layer class sets itself up
+        // there (FlutterMetalLayer picks its device and pixel format).
+        let inited = send(emu, l, "init", &[])?;
+        if inited != 0 && inited != l {
+            emu.ui.views.layer_view.remove(&l);
+            l = inited;
+            view_mut(emu, v).layer = l;
+            emu.ui.views.layer_view.insert(l, v);
+        }
     }
     emu.ret(l);
     Ok(())

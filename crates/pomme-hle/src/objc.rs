@@ -107,6 +107,15 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
+    // Interactions (scribble, pointer, edit menus…): configured, never triggered.
+    "UIIndirectScribbleInteraction",
+    "UIScribbleInteraction",
+    "UIPointerInteraction",
+    "UIEditMenuInteraction",
+    "UIContextMenuInteraction",
+    "UIDragInteraction",
+    "UIDropInteraction",
+    "UITextInteraction",
     // Navigation chrome configuration (react-native-screens' header config):
     // stored and read back, mostly not drawn yet.
     "UINavigationItem",
@@ -148,6 +157,9 @@ const PERMISSIVE: &[&str] = &[
     "MTLCompileOptions",
     "MTLCommandBufferDescriptor",
     "MTLFunctionConstantValues",
+    // GPU frame capture: never capturing.
+    "MTLCaptureManager",
+    "MTLCaptureScope",
 ];
 
 fn permissive_class(emu: &Emu, mut cls: u64) -> bool {

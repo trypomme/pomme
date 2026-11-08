@@ -514,6 +514,9 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
                     r, c.x[r], r + 1, c.x[r + 1], r + 2, c.x[r + 2], r + 3, c.x[r + 3]
                 );
             }
+            if trace || std::env::var_os("POMME_THREADS").is_some() {
+                print!("other threads:\n{}", pomme_hle::threads::report(&emu));
+            }
         }
     }
     let mut calls: Vec<_> = emu.calls.iter().collect();

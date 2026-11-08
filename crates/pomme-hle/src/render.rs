@@ -45,6 +45,68 @@ pub(crate) enum Op {
     Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Clip },
     Stroke { path: Vec<El>, color: [f32; 4], width: f32, clip: Clip },
     Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Clip },
+    /// CTFontDrawGlyphs: glyph ids, each with its font-units → context-base transform.
+    FontGlyphs { font: FontRef, glyphs: Vec<(u16, [f32; 6])>, color: [f32; 4], clip: Clip },
+}
+
+/// A font file and the variation it's drawn at.
+#[derive(Clone)]
+pub(crate) struct FontRef {
+    pub bytes: std::rc::Rc<Vec<u8>>,
+    pub index: u32,
+    pub color: bool,
+    pub vars: Vec<([u8; 4], f32)>,
+}
+
+impl std::fmt::Debug for FontRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "FontRef({} bytes, {:?})", self.bytes.len(), self.vars)
+    }
+}
+
+/// Collects a glyph outline as path elements (quadratics raised to cubics).
+#[derive(Default)]
+pub(crate) struct ElBuilder {
+    pub els: Vec<El>,
+    last: (f32, f32),
+}
+
+impl ttf_parser::OutlineBuilder for ElBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.els.push(El::Move(x, y));
+        self.last = (x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.els.push(El::Line(x, y));
+        self.last = (x, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (x0, y0) = self.last;
+        let c1 = (x0 + 2.0 / 3.0 * (x1 - x0), y0 + 2.0 / 3.0 * (y1 - y0));
+        let c2 = (x + 2.0 / 3.0 * (x1 - x), y + 2.0 / 3.0 * (y1 - y));
+        self.els.push(El::Cubic(c1.0, c1.1, c2.0, c2.1, x, y));
+        self.last = (x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.els.push(El::Cubic(x1, y1, x2, y2, x, y));
+        self.last = (x, y);
+    }
+    fn close(&mut self) {
+        self.els.push(El::Close);
+    }
+}
+
+/// A CGBitmapContext's pixels in guest memory.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Bitmap {
+    pub data: u64,
+    pub w: u32,
+    pub h: u32,
+    pub bpr: u64,
+    /// Bytes per pixel (1 or 4).
+    pub bpp: u32,
+    /// CGBitmapInfo.
+    pub info: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +150,7 @@ pub struct State {
     /// UIGraphicsPushContext stack; the top is the current context.
     stack: Vec<u64>,
     paths: HashMap<u64, Vec<El>>,
+    bitmaps: HashMap<u64, Bitmap>,
     /// What each view drew in its last `drawRect:`.
     content: HashMap<u64, Vec<Op>>,
 }
@@ -97,13 +160,13 @@ fn apply(m: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
 }
 
 /// `m1` then `m2`.
-fn concat(m1: &[f32; 6], m2: &[f32; 6]) -> [f32; 6] {
+pub(crate) fn concat(m1: &[f32; 6], m2: &[f32; 6]) -> [f32; 6] {
     let [a, b, c, d, tx, ty] = *m1;
     let [a2, b2, c2, d2, tx2, ty2] = *m2;
     [a * a2 + b * c2, a * b2 + b * d2, c * a2 + d * c2, c * b2 + d * d2, tx * a2 + ty * c2 + tx2, tx * b2 + ty * d2 + ty2]
 }
 
-fn transform_els(els: &[El], m: &[f32; 6]) -> Vec<El> {
+pub(crate) fn transform_els(els: &[El], m: &[f32; 6]) -> Vec<El> {
     els.iter()
         .map(|e| match *e {
             El::Move(x, y) => {
@@ -230,7 +293,198 @@ fn with_ctx(emu: &mut Emu, f: impl FnOnce(&mut Ctx)) -> Result<()> {
     if let Some(ctx) = ctx_mut(emu, c) {
         f(ctx);
     }
+    flush_bitmap(emu, c)
+}
+
+// ---- bitmap contexts: drawing lands in guest memory right away ----
+
+/// (r, g, b, a) byte offsets in a 4-byte pixel, and whether alpha is ignored.
+fn layout(info: u32) -> ([usize; 4], bool) {
+    let alpha = info & 0x1f;
+    let little = info & 0x7000 == 0x2000;
+    let first = matches!(alpha, 2 | 4 | 6); // PremultipliedFirst, First, NoneSkipFirst
+    let skip = matches!(alpha, 0 | 5 | 6);
+    // In big-endian order: ARGB (first) or RGBA (last); little-endian reverses.
+    let big = if first { [1, 2, 3, 0] } else { [0, 1, 2, 3] };
+    (if little { big.map(|i| 3 - i) } else { big }, skip)
+}
+
+fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
+    let Some(b) = emu.render.bitmaps.get(&c).copied() else { return Ok(()) };
+    let ops = match emu.render.contexts.get_mut(&c) {
+        Some(x) if !x.ops.is_empty() => std::mem::take(&mut x.ops),
+        _ => return Ok(()),
+    };
+    let Some(mut pix) = Pixmap::new(b.w, b.h) else { return Ok(()) };
+    let alpha_only = b.bpp == 1 && b.info & 0x1f == 7;
+    let (order, skip) = layout(b.info);
+    for y in 0..b.h {
+        let row = emu.p.memory.read(b.data + y as u64 * b.bpr, (b.w * b.bpp) as usize)?.to_vec();
+        for x in 0..b.w as usize {
+            let px = if b.bpp == 1 {
+                let v = row[x];
+                if alpha_only { tiny_skia::PremultipliedColorU8::from_rgba(0, 0, 0, v) } else { tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255) }
+            } else {
+                let p = &row[x * 4..x * 4 + 4];
+                let a = if skip { 255 } else { p[order[3]] };
+                tiny_skia::PremultipliedColorU8::from_rgba(p[order[0]].min(a), p[order[1]].min(a), p[order[2]].min(a), a)
+            };
+            if let Some(px) = px {
+                pix.pixels_mut()[y as usize * b.w as usize + x] = px;
+            }
+        }
+    }
+    let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    p.ops(&ops, 1.0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None);
+    for y in 0..b.h {
+        let mut row = vec![0u8; (b.w * b.bpp) as usize];
+        for x in 0..b.w as usize {
+            let c = p.pix.pixels()[y as usize * b.w as usize + x];
+            if b.bpp == 1 {
+                row[x] = if alpha_only {
+                    c.alpha()
+                } else {
+                    // Gray: luminance over black.
+                    ((c.red() as u32 * 77 + c.green() as u32 * 150 + c.blue() as u32 * 29) >> 8) as u8
+                };
+            } else {
+                let px = &mut row[x * 4..x * 4 + 4];
+                px[order[0]] = c.red();
+                px[order[1]] = c.green();
+                px[order[2]] = c.blue();
+                px[order[3]] = if skip { 255 } else { c.alpha() };
+            }
+        }
+        emu.p.memory.write(b.data + y as u64 * b.bpr, &row)?;
+    }
     Ok(())
+}
+
+/// `CGBitmapContextCreate(data, width, height, bitsPerComponent, bytesPerRow, space, bitmapInfo)`.
+fn bitmap_create(emu: &mut Emu) -> Result<()> {
+    let (data, w, h, bpc, bpr, info) = (emu.arg(0), emu.arg(1) as u32, emu.arg(2) as u32, emu.arg(3), emu.arg(4), emu.arg(6) as u32);
+    if w == 0 || h == 0 || bpc != 8 {
+        emu.ret(0);
+        return Ok(());
+    }
+    // One component: alpha-only (kCGImageAlphaOnly) or gray with no alpha.
+    let bpp = if info & 0x1f == 7 || (bpr != 0 && bpr < w as u64 * 4 && bpr >= w as u64) { 1 } else { 4 };
+    let bpr = if bpr == 0 { w as u64 * bpp as u64 } else { bpr };
+    let data = if data == 0 {
+        let d = emu.alloc(bpr * h as u64)?;
+        emu.p.memory.write(d, &vec![0; (bpr * h as u64) as usize])?;
+        d
+    } else {
+        data
+    };
+    let cls = objc::host_class(emu, "CGContext")?;
+    let c = objc::create_instance(emu, cls, 0)?;
+    let mut ctx = Ctx::default();
+    // CoreGraphics' origin is bottom-left.
+    ctx.gs.ctm = [1.0, 0.0, 0.0, -1.0, 0.0, h as f32];
+    emu.render.contexts.insert(c, ctx);
+    emu.render.bitmaps.insert(c, Bitmap { data, w, h, bpr, bpp, info });
+    emu.ret(c);
+    Ok(())
+}
+
+fn bitmap_get(emu: &mut Emu, f: fn(&Bitmap) -> u64) -> Result<()> {
+    let v = emu.render.bitmaps.get(&emu.arg(0)).map_or(0, f);
+    emu.ret(v);
+    Ok(())
+}
+
+/// `CTFontDrawGlyphs` into a context: `glyphs` are (id, x, y) in user space.
+pub(crate) fn draw_font_glyphs(emu: &mut Emu, c: u64, face: &crate::coretext::Face, font: &crate::coretext::Font, glyphs: &[(u16, f64, f64)]) -> Result<()> {
+    let Ok(parsed) = ttf_parser::Face::parse(&face.bytes, face.index) else { return Ok(()) };
+    let s = (font.size / parsed.units_per_em() as f64) as f32;
+    let m = font.matrix.map(|v| v as f32);
+    let vars = if face.variable_weight {
+        vec![(*b"wght", crate::textkit::ot_weight(font.weight) as f32), (*b"opsz", font.size.clamp(14.0, 32.0) as f32)]
+    } else {
+        Vec::new()
+    };
+    let fr = FontRef { bytes: face.bytes.clone(), index: face.index, color: face.color, vars };
+    let Some(ctx) = ctx_mut(emu, c) else { return Ok(()) };
+    let glyph = [m[0] * s, m[1] * s, m[2] * s, m[3] * s, m[4], m[5]];
+    let list = glyphs.iter().map(|&(g, x, y)| (g, concat(&concat(&glyph, &[1.0, 0.0, 0.0, 1.0, x as f32, y as f32]), &ctx.gs.ctm))).collect();
+    ctx.ops.push(Op::FontGlyphs { font: fr, glyphs: list, color: ctx.gs.fill, clip: ctx.gs.clip.clone() });
+    flush_bitmap(emu, c)
+}
+
+/// `CGPathApply(path, info, function)`: the function gets each CGPathElement {type, points}.
+fn path_apply(emu: &mut Emu) -> Result<()> {
+    let (p, info, f) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let els = path_els(emu, p);
+    let el = emu.alloc(16)?;
+    let pts = emu.alloc(48)?;
+    emu.write_u64(el + 8, pts)?;
+    for e in els {
+        let (ty, coords): (u32, Vec<f32>) = match e {
+            El::Move(x, y) => (0, vec![x, y]),
+            El::Line(x, y) => (1, vec![x, y]),
+            El::Cubic(a, b, c, d, x, y) => (3, vec![a, b, c, d, x, y]),
+            El::Close => (4, vec![]),
+        };
+        emu.p.memory.write_u32(el, ty)?;
+        for (i, v) in coords.iter().enumerate() {
+            emu.write_u64(pts + i as u64 * 8, (*v as f64).to_bits())?;
+        }
+        emu.call(f, &[info, el])?;
+    }
+    emu.heap.free(&emu.p.memory, el)?;
+    emu.heap.free(&emu.p.memory, pts)?;
+    Ok(())
+}
+
+fn path_bounds(els: &[El]) -> [f64; 4] {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let mut add = |x: f32, y: f32| {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    };
+    for e in els {
+        match *e {
+            El::Move(x, y) | El::Line(x, y) => add(x, y),
+            El::Cubic(a, b, c, d, x, y) => {
+                add(a, b);
+                add(c, d);
+                add(x, y);
+            }
+            El::Close => {}
+        }
+    }
+    if x0 > x1 {
+        // CGRectNull
+        return [f64::INFINITY, f64::INFINITY, 0.0, 0.0];
+    }
+    [x0 as f64, y0 as f64, (x1 - x0) as f64, (y1 - y0) as f64]
+}
+
+fn ret_rect(emu: &mut Emu, r: [f64; 4]) -> Result<()> {
+    for (i, v) in r.iter().enumerate() {
+        emu.cpu.q[i] = v.to_bits() as u128;
+    }
+    Ok(())
+}
+
+fn last_point(els: &[El]) -> (f32, f32) {
+    let mut start = (0.0, 0.0);
+    let mut cur = (0.0, 0.0);
+    for e in els {
+        match *e {
+            El::Move(x, y) => {
+                start = (x, y);
+                cur = (x, y);
+            }
+            El::Line(x, y) | El::Cubic(.., x, y) => cur = (x, y),
+            El::Close => cur = start,
+        }
+    }
+    cur
 }
 
 fn add_path_els(ctx: &mut Ctx, els: &[El]) {
@@ -285,8 +539,9 @@ fn path_els(emu: &Emu, p: u64) -> Vec<El> {
     emu.render.paths.get(&p).cloned().unwrap_or_default()
 }
 
-fn new_path(emu: &mut Emu, els: Vec<El>) -> Result<u64> {
-    let p = emu.alloc(16)?;
+pub(crate) fn new_path(emu: &mut Emu, els: Vec<El>) -> Result<u64> {
+    let cls = objc::host_class(emu, "CGPath")?;
+    let p = objc::create_instance(emu, cls, 0)?;
     emu.render.paths.insert(p, els);
     Ok(p)
 }
@@ -397,6 +652,29 @@ impl Painter<'_> {
         }
     }
 
+    fn font_glyphs(&mut self, font: &FontRef, glyphs: &[(u16, [f32; 6])], color: [f32; 4], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let Ok(mut face) = ttf_parser::Face::parse(&font.bytes, font.index) else { return };
+        for (tag, v) in &font.vars {
+            face.set_variation(ttf_parser::Tag::from_bytes(tag), *v);
+        }
+        for (g, place) in glyphs {
+            let gid = ttf_parser::GlyphId(*g);
+            let base = ts(&concat(place, t));
+            if font.color && face.is_color_glyph(gid) {
+                let mut painter = ColrPainter { face: &face, pix: &mut self.pix, base, transforms: Vec::new(), clips: Vec::new(), outline: None, alpha, mask };
+                face.paint_color_glyph(gid, 0, ttf_parser::RgbaColor::new(0, 0, 0, 255), &mut painter);
+                continue;
+            }
+            let mut b = Outline(PathBuilder::new());
+            if face.outline_glyph(gid, &mut b).is_none() {
+                continue;
+            }
+            if let (Some(path), Some(p)) = (b.0.finish(), paint(color, alpha)) {
+                self.pix.fill_path(&path, &p, FillRule::Winding, base, mask);
+            }
+        }
+    }
+
     /// A color glyph from the emoji font, painted layer by layer.
     fn emoji_glyph(&mut self, g: &Glyph, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         let Some(data) = self.emoji else { return };
@@ -420,7 +698,7 @@ impl Painter<'_> {
     fn ops(&mut self, ops: &[Op], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         for op in ops {
             let clip = match op {
-                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } => clip,
+                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } | Op::FontGlyphs { clip, .. } => clip,
             };
             let mut clipped: Option<Mask> = None;
             for (els, even_odd) in clip {
@@ -431,6 +709,7 @@ impl Painter<'_> {
                 Op::Fill { path, color, even_odd, .. } => self.fill(path, *color, alpha, *even_odd, t, m),
                 Op::Stroke { path, color, width, .. } => self.stroke(path, *color, alpha, *width, t, m),
                 Op::Glyphs { glyphs, ctm, .. } => self.glyphs(glyphs, alpha, &concat(ctm, t), m),
+                Op::FontGlyphs { font, glyphs, color, .. } => self.font_glyphs(font, glyphs, *color, alpha, t, m),
             }
         }
     }
@@ -966,6 +1245,137 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGPathCloseSubpath", |e| {
         let p = e.arg(0);
         path_add(e, p, vec![El::Close], None);
+        Ok(())
+    }),
+    ("_CGPathApply", path_apply),
+    ("_CGPathGetBoundingBox", |e| {
+        let r = path_bounds(&path_els(e, e.arg(0)));
+        ret_rect(e, r)
+    }),
+    ("_CGPathGetPathBoundingBox", |e| {
+        let r = path_bounds(&path_els(e, e.arg(0)));
+        ret_rect(e, r)
+    }),
+    ("_CGPathIsEmpty", |e| {
+        let empty = path_els(e, e.arg(0)).is_empty();
+        e.ret(empty as u64);
+        Ok(())
+    }),
+    ("_CGPathGetCurrentPoint", |e| {
+        let (x, y) = last_point(&path_els(e, e.arg(0)));
+        ret_rect(e, [x as f64, y as f64, 0.0, 0.0])
+    }),
+    ("_CGPathCreateCopy", |e| {
+        let els = path_els(e, e.arg(0));
+        let p = new_path(e, els)?;
+        e.ret(p);
+        Ok(())
+    }),
+    ("_CGPathCreateMutableCopy", |e| {
+        let els = path_els(e, e.arg(0));
+        let p = new_path(e, els)?;
+        e.ret(p);
+        Ok(())
+    }),
+    ("_CGPathCreateCopyByTransformingPath", |e| {
+        let els = path_els(e, e.arg(0));
+        let m = optional_affine(e, e.arg(1))?;
+        let p = new_path(e, m.map_or(els.clone(), |m| transform_els(&els, &m)))?;
+        e.ret(p);
+        Ok(())
+    }),
+    ("_CGPathMoveToPoint", |e| {
+        let (p, m) = (e.arg(0), optional_affine(e, e.arg(1))?);
+        path_add(e, p, vec![El::Move(d(e, 0), d(e, 1))], m);
+        Ok(())
+    }),
+    ("_CGPathAddLineToPoint", |e| {
+        let (p, m) = (e.arg(0), optional_affine(e, e.arg(1))?);
+        path_add(e, p, vec![El::Line(d(e, 0), d(e, 1))], m);
+        Ok(())
+    }),
+    ("_CGPathAddCurveToPoint", |e| {
+        let (p, m) = (e.arg(0), optional_affine(e, e.arg(1))?);
+        path_add(e, p, vec![El::Cubic(d(e, 0), d(e, 1), d(e, 2), d(e, 3), d(e, 4), d(e, 5))], m);
+        Ok(())
+    }),
+    ("_CGPathAddQuadCurveToPoint", |e| {
+        let (p, m) = (e.arg(0), optional_affine(e, e.arg(1))?);
+        let (x0, y0) = last_point(&path_els(e, p));
+        // Into the path's space first: the start point is already there.
+        let id = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let (cx, cy) = apply(m.as_ref().unwrap_or(&id), d(e, 0), d(e, 1));
+        let (x, y) = apply(m.as_ref().unwrap_or(&id), d(e, 2), d(e, 3));
+        let c1 = (x0 + 2.0 / 3.0 * (cx - x0), y0 + 2.0 / 3.0 * (cy - y0));
+        let c2 = (x + 2.0 / 3.0 * (cx - x), y + 2.0 / 3.0 * (cy - y));
+        path_add(e, p, vec![El::Cubic(c1.0, c1.1, c2.0, c2.1, x, y)], None);
+        Ok(())
+    }),
+    ("_CGBitmapContextCreate", bitmap_create),
+    ("_CGBitmapContextCreateWithData", bitmap_create),
+    ("_CGBitmapContextGetData", |e| bitmap_get(e, |b| b.data)),
+    ("_CGBitmapContextGetWidth", |e| bitmap_get(e, |b| b.w as u64)),
+    ("_CGBitmapContextGetHeight", |e| bitmap_get(e, |b| b.h as u64)),
+    ("_CGBitmapContextGetBytesPerRow", |e| bitmap_get(e, |b| b.bpr)),
+    ("_CGBitmapContextGetBitsPerPixel", |e| bitmap_get(e, |b| b.bpp as u64 * 8)),
+    ("_CGBitmapContextGetBitsPerComponent", |e| bitmap_get(e, |_| 8)),
+    ("_CGBitmapContextGetBitmapInfo", |e| bitmap_get(e, |b| b.info as u64)),
+    ("_CGBitmapContextGetAlphaInfo", |e| bitmap_get(e, |b| (b.info & 0x1f) as u64)),
+    ("_CGContextSetGrayFillColor", |e| {
+        let (g, a) = (d(e, 0), d(e, 1));
+        with_ctx(e, |c| c.gs.fill = [g, g, g, a])
+    }),
+    ("_CGContextSetGrayStrokeColor", |e| {
+        let (g, a) = (d(e, 0), d(e, 1));
+        with_ctx(e, |c| c.gs.stroke = [g, g, g, a])
+    }),
+    ("_CGContextSetFillColor", |e| {
+        let p = e.arg(1);
+        let mut col = [0.0f32; 4];
+        for (i, v) in col.iter_mut().enumerate() {
+            *v = f64::from_bits(e.read_u64(p + i as u64 * 8)?) as f32;
+        }
+        with_ctx(e, |c| c.gs.fill = col)
+    }),
+    ("_CGContextSetFillColorSpace", nothing),
+    ("_CGContextSetStrokeColorSpace", nothing),
+    ("_CGContextSetBlendMode", nothing),
+    ("_CGContextSetTextDrawingMode", nothing),
+    ("_CGContextSetTextMatrix", nothing),
+    ("_CGContextSetTextPosition", nothing),
+    ("_CGContextSetFontSmoothingStyle", nothing),
+    ("_CGContextSetShouldSubpixelPositionFonts", nothing),
+    ("_CGContextSetShouldSubpixelQuantizeFonts", nothing),
+    ("_CGContextSetAllowsFontSubpixelPositioning", nothing),
+    ("_CGContextSetAllowsFontSubpixelQuantization", nothing),
+    ("_CGContextSetAllowsFontSmoothing", nothing),
+    ("_CGContextSetInterpolationQuality", nothing),
+    ("_CGContextFlush", nothing),
+    ("_CGContextSynchronize", nothing),
+    ("_CGContextGetCTM", |e| {
+        let m = e.render.contexts.get(&e.arg(0)).map_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], |c| c.gs.ctm);
+        let out = e.cpu.x[8];
+        for (i, v) in m.iter().enumerate() {
+            e.write_u64(out + i as u64 * 8, (*v as f64).to_bits())?;
+        }
+        Ok(())
+    }),
+    ("_CGContextClearRect", |e| {
+        // Transparent black over the rect (a copy, not a blend).
+        let (c, r) = (e.arg(0), [d(e, 0), d(e, 1), d(e, 2), d(e, 3)]);
+        flush_bitmap(e, c)?;
+        let (Some(b), Some(ctx)) = (e.render.bitmaps.get(&c).copied(), e.render.contexts.get(&c)) else { return Ok(()) };
+        let m = ctx.gs.ctm;
+        let (ax, ay) = apply(&m, r[0], r[1]);
+        let (bx, by) = apply(&m, r[0] + r[2], r[1] + r[3]);
+        let (x0, x1) = (ax.min(bx).max(0.0) as u64, (ax.max(bx).min(b.w as f32)) as u64);
+        let (y0, y1) = (ay.min(by).max(0.0) as u64, (ay.max(by).min(b.h as f32)) as u64);
+        if x1 > x0 {
+            let zeros = vec![0u8; ((x1 - x0) * b.bpp as u64) as usize];
+            for y in y0..y1 {
+                e.p.memory.write(b.data + y * b.bpr + x0 * b.bpp as u64, &zeros)?;
+            }
+        }
         Ok(())
     }),
     ("_CGPathRelease", nothing),

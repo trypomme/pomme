@@ -1694,6 +1694,12 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         println!("[syslog] {}", String::from_utf8_lossy(&msg).trim_end());
         Ok(())
     }),
+    ("_vsyslog", |e| {
+        let fmt = e.cstr(e.arg(1))?.into_bytes();
+        let msg = crate::printf::format(e, &fmt, &mut crate::printf::Args::new(e.arg(2)))?;
+        println!("[syslog] {}", String::from_utf8_lossy(&msg).trim_end());
+        Ok(())
+    }),
     ("_closelog", noop),
     ("__dyld_is_objc_constant", ret_zero),
 ];

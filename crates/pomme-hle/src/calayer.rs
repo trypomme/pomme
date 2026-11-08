@@ -562,7 +562,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "sublayerTransform", |e| get_transform(e, true)),
     (L, false, "setSublayerTransform:", |e| set_transform(e, true)),
     (L, false, "contents", contents),
-    (L, false, "setContents:", set_contents),
+    (L, false, "setContents:", |e| {
+        set_contents(e)?;
+        let (l, c) = (e.arg(0), e.arg(2));
+        crate::metal::contents_set(e, l, c)
+    }),
     (L, false, "contentsScale", contents_scale),
     (L, false, "setContentsScale:", set_contents_scale),
     (L, false, "contentsCenter", |e| {

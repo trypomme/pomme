@@ -34,6 +34,8 @@ pub struct State {
     pub color_components: std::collections::HashMap<u64, u64>,
     /// The one RGB colour space.
     pub rgb_space: u64,
+    /// `performSelector:withObject:afterDelay:` requests not yet run: {target, sel, arg}.
+    pub delayed_performs: Vec<u64>,
 }
 
 fn class_named(emu: &mut Emu, name: &str) -> Result<u64> {
@@ -68,11 +70,25 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
         call_if_implemented(emu, d, sel, &[app, 0])?;
     }
     emu.ui.launched = true;
+    foundation::post_named(emu, "UIApplicationDidFinishLaunchingNotification", app)?;
 
+    // A window the app delegate made visible itself (no scenes) appears now.
+    let mut roots = Vec::new();
+    if scene_delegate_class(emu).is_none() {
+        roots.extend(window_roots(emu));
+        for &vc in &roots {
+            crate::navigation::appearance(emu, vc, "viewWillAppear:", false)?;
+        }
+    }
     if let Some(delegate_class) = scene_delegate_class(emu) {
-        connect_scene(emu, &delegate_class)?;
+        roots.extend(connect_scene(emu, &delegate_class)?);
     }
     call_if_implemented(emu, d, "applicationDidBecomeActive:", &[app])?;
+    foundation::post_named(emu, "UIApplicationDidBecomeActiveNotification", app)?;
+    // The first frame is on screen: the root view controllers have appeared.
+    for vc in roots {
+        crate::navigation::appearance(emu, vc, "viewDidAppear:", false)?;
+    }
     run_loop(emu)
 }
 
@@ -93,8 +109,24 @@ fn scene_delegate_class(emu: &Emu) -> Option<String> {
     first.get("UISceneDelegateClassName")?.as_string().map(str::to_string)
 }
 
-/// Connect the app's one window scene: what UIKit does after launch.
-fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
+/// The root view controllers of the visible windows.
+fn window_roots(emu: &mut Emu) -> Vec<u64> {
+    let windows = emu.ui.windows.clone();
+    let mut roots = Vec::new();
+    for w in windows {
+        if !crate::uiview::view(emu, w).hidden
+            && let Some(&vc) = emu.ui.views.root_vc.get(&w)
+            && vc != 0
+        {
+            roots.push(vc);
+        }
+    }
+    roots
+}
+
+/// Connect the app's one window scene: what UIKit does after launch. Returns
+/// the root view controllers that will appear.
+fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<Vec<u64>> {
     let session = new_object(emu, "UISceneSession")?;
     let scene = new_object(emu, "UIWindowScene")?;
     let options = new_object(emu, "UISceneConnectionOptions")?;
@@ -119,13 +151,20 @@ fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<()> {
             call_if_implemented(emu, d, "setWindow:", &[window])?;
         }
     }
+    foundation::post_named(emu, "UISceneWillConnectNotification", scene)?;
     call_if_implemented(emu, d, "scene:willConnectToSession:options:", &[scene, session, options])?;
     if window != 0 {
         send(emu, window, "makeKeyAndVisible", &[])?;
     }
+    let roots = window_roots(emu);
+    for &vc in &roots {
+        crate::navigation::appearance(emu, vc, "viewWillAppear:", false)?;
+    }
     call_if_implemented(emu, d, "sceneWillEnterForeground:", &[scene])?;
+    foundation::post_named(emu, "UISceneWillEnterForegroundNotification", scene)?;
     call_if_implemented(emu, d, "sceneDidBecomeActive:", &[scene])?;
-    Ok(())
+    foundation::post_named(emu, "UISceneDidActivateNotification", scene)?;
+    Ok(roots)
 }
 
 /// The main run loop: CoreFoundation's own, run until nothing can happen.
@@ -433,6 +472,57 @@ pub fn after_on_main(emu: &mut Emu, delay_s: f64, callout: HostFn, info: u64) ->
     Ok(())
 }
 
+// ---- -performSelector:withObject:afterDelay: (on the current run loop: the main one) ----
+
+fn perform_after_delay(emu: &mut Emu) -> Result<()> {
+    let (target, sel, arg) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let delay = f64::from_bits(emu.cpu.q[0] as u64).max(0.0);
+    let req = emu.alloc(24)?;
+    emu.write_u64(req, target)?;
+    emu.write_u64(req + 8, sel)?;
+    emu.write_u64(req + 16, arg)?;
+    // The target and argument are retained until the request runs.
+    send(emu, target, "retain", &[])?;
+    if arg != 0 {
+        send(emu, arg, "retain", &[])?;
+    }
+    emu.ui.delayed_performs.push(req);
+    after_on_main(emu, delay, perform_fire, req)
+}
+
+fn perform_fire(emu: &mut Emu) -> Result<()> {
+    let req = emu.arg(1);
+    let Some(i) = emu.ui.delayed_performs.iter().position(|&r| r == req) else { return Ok(()) }; // cancelled
+    emu.ui.delayed_performs.remove(i);
+    let (target, sel, arg) = (emu.read_u64(req)?, emu.read_u64(req + 8)?, emu.read_u64(req + 16)?);
+    let name = objc::sel_name(emu, sel);
+    send(emu, target, &name, &[arg])?;
+    send(emu, target, "release", &[])?;
+    if arg != 0 {
+        send(emu, arg, "release", &[])?;
+    }
+    Ok(())
+}
+
+/// `+cancelPreviousPerformRequestsWithTarget:[selector:object:]`
+fn cancel_performs(emu: &mut Emu) -> Result<()> {
+    let target = emu.arg(2);
+    let only = objc::sel_name(emu, emu.arg(1)).contains("selector:").then(|| (emu.arg(3), emu.arg(4)));
+    let reqs = emu.ui.delayed_performs.clone();
+    for req in reqs {
+        let (t, sel, arg) = (emu.read_u64(req)?, emu.read_u64(req + 8)?, emu.read_u64(req + 16)?);
+        let matches = t == target && only.is_none_or(|(s, a)| s == sel && a == arg);
+        if matches {
+            emu.ui.delayed_performs.retain(|&r| r != req);
+            send(emu, t, "release", &[])?;
+            if arg != 0 {
+                send(emu, arg, "release", &[])?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `-addToRunLoop:forMode:` — a repeating CFRunLoopTimer at 60 Hz.
 fn display_link_add(emu: &mut Emu) -> Result<()> {
     let (link, run_loop, mode) = (emu.arg(0), emu.arg(2), emu.arg(3));
@@ -483,6 +573,10 @@ fn display_link_target_timestamp(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSObject", false, "performSelector:withObject:afterDelay:", perform_after_delay),
+    ("NSObject", false, "performSelector:withObject:afterDelay:inModes:", perform_after_delay),
+    ("NSObject", true, "cancelPreviousPerformRequestsWithTarget:", cancel_performs),
+    ("NSObject", true, "cancelPreviousPerformRequestsWithTarget:selector:object:", cancel_performs),
     ("CADisplayLink", true, "displayLinkWithTarget:selector:", display_link_new),
     ("CADisplayLink", false, "addToRunLoop:forMode:", display_link_add),
     ("CADisplayLink", false, "removeFromRunLoop:forMode:", display_link_invalidate),

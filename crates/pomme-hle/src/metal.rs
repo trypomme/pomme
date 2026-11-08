@@ -30,6 +30,9 @@ pub enum Obj {
     Sampler(SamplerDesc),
     DepthStencil(DepthStencilDesc),
     Drawable { layer: u64, texture: u64 },
+    /// An IOSurface: its size and, once a texture is made on it, that texture
+    /// (whose pixels are the surface's: shown when a layer's contents is set to it).
+    Surface { width: u64, height: u64, bytes_per_row: u64, alloc: u64, texture: u64 },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -178,6 +181,8 @@ pub struct State {
     pub sources: Vec<String>,
     /// Encoder calls by selector, for the bring-up report.
     pub calls: HashMap<String, u64>,
+    /// The one MTLCaptureManager.
+    pub capture_manager: u64,
     /// Drawables presented by committed command buffers.
     pub presented: u64,
     /// MTLFunctionConstantValues → the values set on it (index → value).
@@ -293,6 +298,86 @@ fn new_texture(emu: &mut Emu) -> Result<()> {
     trace(emu, || format!("texture {}×{} format {} ×{} usage {}", t.width, t.height, t.format, t.samples, t.usage));
     let o = new_obj(emu, "MTLPommeTexture", Obj::Texture(t))?;
     ret(emu, o)
+}
+
+/// `newTextureWithDescriptor:iosurface:plane:`: a texture whose storage is the surface.
+fn new_texture_on_surface(emu: &mut Emu) -> Result<()> {
+    let surface = emu.arg(3);
+    new_texture(emu)?;
+    let t = emu.cpu.x[0];
+    if let Some(Obj::Surface { texture, .. }) = emu.metal.objects.get_mut(&surface) {
+        *texture = t;
+    }
+    ret(emu, t)
+}
+
+// ---- IOSurface (Flutter's FlutterMetalLayer renders into them) ----
+
+/// A number from an IOSurface properties dictionary, by key name.
+fn dict_number(emu: &mut Emu, dict: u64, key: &str) -> Result<u64> {
+    let k = foundation::new_nsstring(emu, key)?;
+    let v = send(emu, dict, "objectForKey:", &[k])?;
+    if v == 0 {
+        return Ok(0);
+    }
+    send(emu, v, "unsignedLongLongValue", &[])
+}
+
+fn iosurface_create(emu: &mut Emu) -> Result<()> {
+    let dict = emu.arg(0);
+    let width = dict_number(emu, dict, "kIOSurfaceWidth")?;
+    let height = dict_number(emu, dict, "kIOSurfaceHeight")?;
+    let bpe = dict_number(emu, dict, "kIOSurfaceBytesPerElement")?.max(1);
+    let bytes_per_row = dict_number(emu, dict, "kIOSurfaceBytesPerRow")?.max(width * bpe);
+    let alloc = dict_number(emu, dict, "kIOSurfaceAllocSize")?.max(bytes_per_row * height);
+    if width == 0 || height == 0 {
+        return ret(emu, 0);
+    }
+    trace(emu, || format!("IOSurface {width}×{height}, {bytes_per_row} bytes per row"));
+    let o = new_obj(emu, "IOSurface", Obj::Surface { width, height, bytes_per_row, alloc, texture: 0 })?;
+    ret(emu, o)
+}
+
+fn surface_field(emu: &mut Emu, f: fn(&Obj) -> u64) -> Result<()> {
+    let v = obj(emu, emu.arg(0)).map_or(0, f);
+    ret(emu, v)
+}
+
+fn surface_width(o: &Obj) -> u64 {
+    if let Obj::Surface { width, .. } = o { *width } else { 0 }
+}
+fn surface_height(o: &Obj) -> u64 {
+    if let Obj::Surface { height, .. } = o { *height } else { 0 }
+}
+fn surface_bpr(o: &Obj) -> u64 {
+    if let Obj::Surface { bytes_per_row, .. } = o { *bytes_per_row } else { 0 }
+}
+fn surface_alloc(o: &Obj) -> u64 {
+    if let Obj::Surface { alloc, .. } = o { *alloc } else { 0 }
+}
+
+/// `IOSurfaceAlignProperty(key, value)`: rows and sizes rounded up as the GPU wants.
+fn iosurface_align(emu: &mut Emu) -> Result<()> {
+    let (key, v) = (emu.arg(0), emu.arg(1));
+    let k = foundation::nsstring(emu, key).unwrap_or_default();
+    let a = if k.contains("AllocSize") { 16384 } else if k.contains("BytesPerRow") { 64 } else { 1 };
+    ret(emu, v.div_ceil(a) * a)
+}
+
+/// A layer's contents was set to `contents`: an IOSurface shows its texture's pixels.
+pub(crate) fn contents_set(emu: &mut Emu, layer: u64, contents: u64) -> Result<()> {
+    let Some(Obj::Surface { texture, .. }) = obj(emu, contents).cloned() else { return Ok(()) };
+    if texture == 0 {
+        return Ok(());
+    }
+    #[cfg(feature = "gpu")]
+    match crate::metal_gpu::texture_pixmap(emu, texture) {
+        Ok(pix) => show_frame(emu, layer, pix)?,
+        Err(e) => println!("[metal] can't show IOSurface: {e}"),
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = layer;
+    Ok(())
 }
 
 fn new_library_with_source(emu: &mut Emu) -> Result<()> {
@@ -602,6 +687,12 @@ fn commit(emu: &mut Emu) -> Result<()> {
     let cmds = emu.metal.cmds.remove(&cb).unwrap_or_default();
     execute(emu, cmds, &present)?;
     emu.metal.presented += present.len() as u64;
+    // An app's own CAMetalDrawable (Flutter's FlutterDrawable) presents itself.
+    for &d in &present {
+        if !matches!(obj(emu, d), Some(Obj::Drawable { .. })) {
+            send(emu, d, "present", &[])?;
+        }
+    }
     for h in handlers {
         crate::libsystem::call_block(emu, h, &[cb])?;
     }
@@ -916,6 +1007,33 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         new_buffer(e, Some(p), n)
     }),
     (DEV, false, "newTextureWithDescriptor:", new_texture),
+    (DEV, false, "newTextureWithDescriptor:iosurface:plane:", new_texture_on_surface),
+    ("MTLCaptureManager", true, "sharedCaptureManager", |e| {
+        if e.metal.capture_manager == 0 {
+            let cls = host_class(e, "MTLCaptureManager")?;
+            e.metal.capture_manager = objc::create_instance(e, cls, 0)?;
+        }
+        let m = e.metal.capture_manager;
+        ret(e, m)
+    }),
+    ("MTLTextureDescriptor", true, "texture2DDescriptorWithPixelFormat:width:height:mipmapped:", |e| {
+        let (cls, format, w, h, mip) = (e.arg(0), e.arg(2), e.arg(3), e.arg(4), e.arg(5) & 0xff != 0);
+        let d = send(e, cls, "alloc", &[])?;
+        let d = send(e, d, "init", &[])?;
+        let levels = if mip { 64 - w.max(h).max(1).leading_zeros() as u64 } else { 1 };
+        for (k, v) in [("pixelFormat", format), ("width", w), ("height", h), ("depth", 1), ("mipmapLevelCount", levels), ("sampleCount", 1), ("textureType", 2), ("usage", 1), ("arrayLength", 1)] {
+            objc::bag_set(e, d, k, v);
+        }
+        send(e, d, "autorelease", &[])?;
+        ret(e, d)
+    }),
+    ("IOSurface", false, "width", |e| surface_field(e, surface_width)),
+    ("IOSurface", false, "height", |e| surface_field(e, surface_height)),
+    ("IOSurface", false, "bytesPerRow", |e| surface_field(e, surface_bpr)),
+    ("IOSurface", false, "allocationSize", |e| surface_field(e, surface_alloc)),
+    ("IOSurface", false, "isInUse", |e| ret(e, 0)),
+    ("IOSurface", false, "incrementUseCount", |_| Ok(())),
+    ("IOSurface", false, "decrementUseCount", |_| Ok(())),
     (DEV, false, "newLibraryWithSource:options:error:", new_library_with_source),
     (DEV, false, "newLibraryWithData:error:", new_library_with_data),
     (DEV, false, "newLibraryWithSource:options:completionHandler:", new_library_async),
@@ -957,7 +1075,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("MTLPommeCommandBuffer", false, "blitCommandEncoder", blit_encoder),
     ("MTLPommeCommandBuffer", false, "presentDrawable:", present_drawable),
     ("MTLPommeCommandBuffer", false, "addCompletedHandler:", add_completed_handler),
-    ("MTLPommeCommandBuffer", false, "addScheduledHandler:", |_| Ok(())),
+    // Scheduled and completed are the same moment here: the buffer runs at commit.
+    ("MTLPommeCommandBuffer", false, "addScheduledHandler:", add_completed_handler),
     ("MTLPommeCommandBuffer", false, "commit", commit),
     ("MTLPommeCommandBuffer", false, "enqueue", |_| Ok(())),
     ("MTLPommeCommandBuffer", false, "waitUntilCompleted", |_| Ok(())),
@@ -1255,6 +1374,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_MTLCreateSystemDefaultDevice", system_default_device),
+    ("_IOSurfaceCreate", iosurface_create),
+    ("_IOSurfaceAlignProperty", iosurface_align),
+    ("_IOSurfaceSetValue", |_| Ok(())),
+    ("_IOSurfaceGetWidth", |e| surface_field(e, surface_width)),
+    ("_IOSurfaceGetHeight", |e| surface_field(e, surface_height)),
+    ("_IOSurfaceGetBytesPerRow", |e| surface_field(e, surface_bpr)),
+    ("_IOSurfaceGetAllocSize", |e| surface_field(e, surface_alloc)),
+    ("_IOSurfaceIsInUse", |e| ret(e, 0)),
+    ("_IOSurfaceIncrementUseCount", |_| Ok(())),
+    ("_IOSurfaceDecrementUseCount", |_| Ok(())),
     // CVMetalTextureCache (external textures: video, camera). A cache object
     // exists; making textures from pixel buffers isn't supported yet.
     ("_CVMetalTextureCacheCreate", |e| {

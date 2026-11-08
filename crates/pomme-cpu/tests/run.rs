@@ -410,3 +410,24 @@ fn hle_stub_trap_and_resume() {
         assert_eq!(g.cpu.x[0] as u32, msg.len() as u32 + 2, "[{v}]");
     });
 }
+
+#[test]
+fn half_precision_conversions() {
+    // 1.0, -2.5, 65504 (the largest half), 0.1 (rounded) → their binary16 bits.
+    let packed = 0x3c00u64 | (0xc100 << 16) | (0x7bff << 32) | (0x2e66 << 48);
+    check_int("to_halves", &[F(1.0), F(-2.5), F(65504.0), F(0.1)], packed);
+    // Overflow is infinity; 1e-7 is the subnormal 2·2⁻²⁴; -0 keeps its sign.
+    let packed = 0x7c00u64 | (0x0002 << 16) | (0x8000 << 32) | (0x3555 << 48);
+    check_int("to_halves", &[F(70000.0), F(1e-7), F(-0.0), F(1.0 / 3.0)], packed);
+    // And back: 1 + 2·(-2.5) + 4·65504 + 8·0.0999755859375.
+    let back = 1.0f32 + 2.0 * -2.5 + 4.0 * 65504.0 + 8.0 * 0.099_975_586;
+    check_f32("from_halves", &[I(0x3c00 | (0xc100 << 16) | (0x7bff << 32) | (0x2e66 << 48))], back);
+}
+
+#[test]
+fn rounding_conversions() {
+    // floor(-1.5) = -2, floor(2.5) = 2, ceil(-1.5) = -1, nearest-even(2.5) = 2.
+    check_int("round_lanes", &[F(-1.5), F(2.5)], (-2i64 * 1_000_000 + 2 * 10_000 - 100 + 2) as u64);
+    // floor(3.7) = 3, floor(-0.5) = -1, ceil(3.7) = 4, nearest-even(-0.5) = -0.
+    check_int("round_lanes", &[F(3.7), F(-0.5)], (3i64 * 1_000_000 - 10_000 + 4 * 100) as u64);
+}

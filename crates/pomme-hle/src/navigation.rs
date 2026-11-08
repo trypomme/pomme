@@ -95,6 +95,19 @@ fn nav_mut(emu: &mut Emu, nc: u64) -> &mut Nav {
 
 // ---- containment ----
 
+/// An appearance callback (`viewWillAppear:` …) on `vc` and, as UIKit forwards
+/// them, its visible children: a navigation controller's top, every child of
+/// other containers.
+pub fn appearance(emu: &mut Emu, vc: u64, sel: &str, animated: bool) -> Result<()> {
+    send(emu, vc, sel, &[animated as u64])?;
+    let children = emu.nav.children.get(&vc).cloned().unwrap_or_default();
+    let visible: Vec<u64> = if emu.nav.navs.contains_key(&vc) { emu.nav.navs[&vc].stack.last().copied().into_iter().collect() } else { children };
+    for c in visible {
+        appearance(emu, c, sel, animated)?;
+    }
+    Ok(())
+}
+
 fn add_child(emu: &mut Emu, parent: u64, child: u64) -> Result<()> {
     if child == 0 || emu.nav.parent.get(&child) == Some(&parent) {
         return Ok(());

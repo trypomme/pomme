@@ -228,6 +228,48 @@ fn mach_vm_allocate(emu: &mut Emu) -> Result<()> {
     ret_zero(emu)
 }
 
+/// `vm_map(task, vm_address_t *addr, size, mask, flags, object, offset, copy, cur, max, inherit)`:
+/// fresh zeroed memory (anywhere), aligned to `mask + 1`.
+fn vm_map(emu: &mut Emu) -> Result<()> {
+    let (out, size, mask) = (emu.arg(1), emu.arg(2), emu.arg(3));
+    let align = (mask + 1).max(pomme_mem::PAGE_SIZE).next_power_of_two();
+    alloc_aligned(emu, align, size)?;
+    let p = emu.cpu.x[0];
+    emu.p.memory.write(p, &vec![0; size as usize])?;
+    emu.write_u64(out, p)?;
+    ret_zero(emu)
+}
+
+// ---- setjmp / longjmp ----
+// jmp_buf: x19…x28, fp, lr, sp, then d8…d15. The host stub returns through x30,
+// so longjmp lands at setjmp's return address with the saved registers.
+
+fn setjmp(emu: &mut Emu) -> Result<()> {
+    let buf = emu.arg(0);
+    for i in 0..12 {
+        let v = emu.cpu.x[19 + i];
+        emu.write_u64(buf + i as u64 * 8, v)?;
+    }
+    emu.write_u64(buf + 96, emu.cpu.sp)?;
+    for i in 0..8 {
+        let v = emu.cpu.q[8 + i] as u64;
+        emu.write_u64(buf + 104 + i as u64 * 8, v)?;
+    }
+    ret_zero(emu)
+}
+
+fn longjmp(emu: &mut Emu) -> Result<()> {
+    let (buf, val) = (emu.arg(0), emu.arg(1) as u32);
+    for i in 0..12 {
+        emu.cpu.x[19 + i] = emu.read_u64(buf + i as u64 * 8)?;
+    }
+    emu.cpu.sp = emu.read_u64(buf + 96)?;
+    for i in 0..8 {
+        emu.cpu.q[8 + i] = emu.read_u64(buf + 104 + i as u64 * 8)? as u128;
+    }
+    ret(emu, if val == 0 { 1 } else { val as u64 })
+}
+
 // ---- time ----
 
 /// Days since 1970-01-01 → (year, month 1-12, day 1-31). (Howard Hinnant's civil_from_days.)
@@ -644,6 +686,16 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_mprotect", ret_zero),
     ("_mach_vm_allocate", mach_vm_allocate),
     ("_mach_vm_deallocate", ret_zero),
+    ("_vm_map", vm_map),
+    ("_setjmp", setjmp),
+    ("__setjmp", setjmp),
+    ("_sigsetjmp", setjmp),
+    ("_longjmp", longjmp),
+    ("__longjmp", longjmp),
+    ("_siglongjmp", longjmp),
+    ("_mach_vm_map", vm_map),
+    ("_vm_allocate", mach_vm_allocate),
+    ("_vm_deallocate", ret_zero),
     ("_mach_vm_region", ret_one), // KERN_INVALID_ADDRESS
     ("_vm_purgable_control", ret_zero),
     ("_localtime_r", localtime_r),

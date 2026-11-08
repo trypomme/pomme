@@ -399,6 +399,8 @@ impl Cpu {
                 // FCVT between precisions
                 0b000100 => self.set_s(rd, a as f32),
                 0b000101 => self.set_d(rd, a),
+                // FCVT Hd, Sn/Dn
+                0b000111 => self.q[rd as usize] = crate::neon::f32_to_f16(a as f32) as u128,
                 // FRINT{N,P,M,Z,A,X,I}
                 0b001000 => self.set_fp(t, rd, a.round_ties_even()),
                 0b001001 => self.set_fp(t, rd, a.ceil()),

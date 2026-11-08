@@ -488,6 +488,11 @@ impl Cpu {
             (true, false, 0b11101) => Some(self.convert_lanes(vn, fp_esize, fp_n, true, false)),
             (false, true, 0b11011) => Some(self.convert_lanes(vn, fp_esize, fp_n, false, true)),
             (true, true, 0b11011) => Some(self.convert_lanes(vn, fp_esize, fp_n, false, false)),
+            // FCVTNS/NU (nearest, ties even), FCVTMS/MU (−∞), FCVTAS/AU (ties away), FCVTPS/PU (+∞)
+            (_, false, 0b11010) => Some(convert_rounded(vn, fp_esize, fp_n, !u, f64::round_ties_even)),
+            (_, false, 0b11011) => Some(convert_rounded(vn, fp_esize, fp_n, !u, f64::floor)),
+            (_, false, 0b11100) => Some(convert_rounded(vn, fp_esize, fp_n, !u, f64::round)),
+            (_, true, 0b11010) => Some(convert_rounded(vn, fp_esize, fp_n, !u, f64::ceil)),
             (false, true, 0b01111) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.abs())),
             (true, true, 0b01111) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| -a)),
             (true, true, 0b11111) => Some(fp_lanes!(fp_esize, fp_n, vn, vn, vd, |a, _b, _d| a.sqrt())),
@@ -504,7 +509,24 @@ impl Cpu {
             (false, true, 0b01110) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a < 0.0)),
             (true, true, 0b01100) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a >= 0.0)),
             (true, true, 0b01101) => Some(fp_cmp_lanes!(fp_esize, fp_n, vn, vn, |a, _b| a <= 0.0)),
-            // FCVTL: widen single -> double (or half -> single: unsupported)
+            // FCVTL: widen half -> single
+            (false, false, 0b10111) if size & 1 == 0 && !scalar => {
+                let src = half(vn, q);
+                let mut r = 0u128;
+                for i in 0..4 {
+                    r = put(r, 32, i, f16_to_f32(el(src, 16, i) as u16).to_bits() as u64);
+                }
+                Some(r)
+            }
+            // FCVTN: narrow single -> half
+            (false, false, 0b10110) if size & 1 == 0 && !scalar => {
+                let mut r = 0u128;
+                for i in 0..4 {
+                    r = put(r, 16, i, f32_to_f16(f32::from_bits(el(vn, 32, i) as u32)) as u64);
+                }
+                Some(if q { (vd & u64::MAX as u128) | (r << 64) } else { r })
+            }
+            // FCVTL: widen single -> double
             (false, false, 0b10111) if size & 1 == 1 && !scalar => {
                 let src = half(vn, q);
                 let mut r = 0u128;
@@ -842,3 +864,72 @@ impl Cpu {
         Ok(())
     }
 }
+
+/// IEEE half → single (exact).
+pub(crate) fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h >> 15) as u32) << 31;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let frac = (h & 0x3ff) as u32;
+    let bits = match (exp, frac) {
+        (0, 0) => sign,
+        (0, f) => {
+            // Subnormal: normalize.
+            let shift = f.leading_zeros() - 21;
+            let f = (f << shift) & 0x3ff;
+            sign | ((127 - 15 + 1 - shift) << 23) | (f << 13)
+        }
+        (0x1f, f) => sign | 0x7f80_0000 | (f << 13) | if f != 0 { 0x40_0000 } else { 0 },
+        (e, f) => sign | ((e + 127 - 15) << 23) | (f << 13),
+    };
+    f32::from_bits(bits)
+}
+
+/// Single → IEEE half, rounding to nearest even (overflow → infinity).
+pub(crate) fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let frac = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if frac != 0 { 0x200 | (frac >> 13) as u16 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    // Mantissa with the implicit bit, and how far to shift it down to 10 bits.
+    let (m, shift) = if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        (frac | 0x80_0000, (14 - e) as u32)
+    } else {
+        (frac, 13)
+    };
+    let mut v = m >> shift;
+    let rem = m & ((1 << shift) - 1);
+    let halfway = 1 << (shift - 1);
+    if rem > halfway || (rem == halfway && v & 1 == 1) {
+        v += 1;
+    }
+    let out = if e <= 0 { v } else { ((e as u32) << 10) + v };
+    sign | out as u16
+}
+
+/// FP → integer lane-wise after `round` (saturating, NaN → 0, like the hardware).
+fn convert_rounded(v: u128, esize: u32, n: u32, signed: bool, round: fn(f64) -> f64) -> u128 {
+    let mut r = 0u128;
+    for i in 0..n {
+        let x = el(v, esize, i);
+        let f = round(if esize == 32 { f32::from_bits(x as u32) as f64 } else { f64::from_bits(x) });
+        let out = match (esize, signed) {
+            (32, true) => f as i32 as u32 as u64,
+            (32, false) => f as u32 as u64,
+            (_, true) => f as i64 as u64,
+            (_, false) => f as u64,
+        };
+        r = put(r, esize, i, out);
+    }
+    r
+}
+

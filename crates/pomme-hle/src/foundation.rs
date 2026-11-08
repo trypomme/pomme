@@ -290,7 +290,16 @@ fn hook_get_type_id(emu: &mut Emu) -> Result<()> {
         emu.continue_original();
         return Ok(());
     }
-    emu.ret(1); // _kCFRuntimeIDCFType
+    let isa = emu.read_u64(obj).unwrap_or(0);
+    let name = if isa != 0 { emu.objc.class_name(isa) } else { String::new() };
+    let id = match name.as_str() {
+        "CTFont" => crate::coretext::CTFONT_TYPE_ID,
+        "CTFontDescriptor" => crate::coretext::CTFONT_DESCRIPTOR_TYPE_ID,
+        "CGPath" => crate::coretext::CGPATH_TYPE_ID,
+        "CGContext" => crate::coretext::CGCONTEXT_TYPE_ID,
+        _ => 1, // _kCFRuntimeIDCFType
+    };
+    emu.ret(id);
     Ok(())
 }
 
@@ -2474,6 +2483,13 @@ fn deliver(emu: &mut Emu, note: u64) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Post the notification named `name` (constants are their own names) from `object`.
+pub fn post_named(emu: &mut Emu, name: &str, object: u64) -> Result<()> {
+    let name = new_nsstring(emu, name)?;
+    let n = new_notification(emu, name, object, 0)?;
+    deliver(emu, n)
 }
 
 fn post_notification(emu: &mut Emu) -> Result<()> {

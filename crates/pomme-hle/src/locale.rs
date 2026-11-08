@@ -100,6 +100,20 @@ fn object_for_key(emu: &mut Emu) -> Result<()> {
 
 const L: &str = "NSLocale";
 
+/// `+[NSDateFormatter dateFormatFromTemplate:options:locale:]` for en-US: the
+/// hour skeleton `j` is the 12-hour clock with a day period (`h a`), as
+/// Flutter's `alwaysUse24HourFormat` check expects; other letters pass through.
+pub fn date_format_from_template(template: &str) -> String {
+    let mut out = String::new();
+    for c in template.chars() {
+        match c {
+            'j' => out.push_str("h a"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, true, "preferredLanguages", |e| {
         let mut v = Vec::new();
@@ -173,6 +187,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "decimalSeparator", |e| ret_str(e, Some("."))),
     (L, false, "groupingSeparator", |e| ret_str(e, Some(","))),
     (L, false, "usesMetricSystem", |e| ret(e, 0)),
+    ("NSDateFormatter", true, "dateFormatFromTemplate:options:locale:", |e| {
+        let t = nsstring(e, e.arg(2))?;
+        let f = date_format_from_template(&t);
+        ret_str(e, Some(&f))
+    }),
 ];
 
 #[cfg(test)]
@@ -185,5 +204,11 @@ mod tests {
         assert_eq!(parse("zh-Hans-CN"), Parts { language: "zh".into(), script: Some("Hans".into()), region: Some("CN".into()), variant: None });
         assert_eq!(parse("en_US_POSIX").variant.as_deref(), Some("POSIX"));
         assert_eq!(parse("es-419").region.as_deref(), Some("419"));
+    }
+
+    #[test]
+    fn twelve_hour_clock() {
+        assert_eq!(date_format_from_template("j"), "h a");
+        assert!(date_format_from_template("j").contains('a'));
     }
 }

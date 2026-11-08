@@ -184,6 +184,33 @@ fn concat_fn(emu: &mut Emu) -> Result<()> {
     ret_affine(emu, concat(a, b))
 }
 
+/// The inverse, or `t` itself when it isn't invertible (as CoreGraphics does).
+fn invert(t: Affine) -> Affine {
+    let [a, b, c, d, tx, ty] = t;
+    let det = a * d - b * c;
+    if det == 0.0 {
+        return t;
+    }
+    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+    [ia, ib, ic, id, -(tx * ia + ty * ic), -(tx * ib + ty * id)]
+}
+
+fn rotation(angle: f64) -> Affine {
+    let (s, c) = angle.sin_cos();
+    [c, s, -s, c, 0.0, 0.0]
+}
+
+fn apply_point(t: &Affine, x: f64, y: f64) -> (f64, f64) {
+    (t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5])
+}
+
+fn ret_ds(emu: &mut Emu, v: &[f64]) -> Result<()> {
+    for (i, x) in v.iter().enumerate() {
+        emu.cpu.q[i] = x.to_bits() as u128;
+    }
+    Ok(())
+}
+
 // ---- CGColor: pomme's UIColor objects are their own CGColors ----
 
 fn rgba(emu: &Emu, c: u64) -> [f64; 4] {
@@ -281,6 +308,36 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         Ok(())
     }),
     ("_CGColorSpaceRelease", |_| Ok(())),
+    ("_CGColorSpaceRetain", |_| Ok(())),
+    ("_CGColorSpaceCreateWithName", color_space),
+    ("_CGColorSpaceCreateDeviceGray", color_space),
+    // `CGColorCreate(space, const CGFloat components[])`: RGB + alpha (pomme's one space).
+    ("_CGColorCreate", |e| {
+        let p = e.arg(1);
+        let mut c = [0.0; 4];
+        for (i, v) in c.iter_mut().enumerate() {
+            *v = f64::from_bits(e.read_u64(p + i as u64 * 8)?);
+        }
+        let col = crate::uiview::new_color(e, c)?;
+        e.ret(col);
+        Ok(())
+    }),
+    ("_CGColorCreateSRGB", |e| {
+        let col = crate::uiview::new_color(e, [d(e, 0), d(e, 1), d(e, 2), d(e, 3)])?;
+        e.ret(col);
+        Ok(())
+    }),
+    ("_CGColorCreateGenericRGB", |e| {
+        let col = crate::uiview::new_color(e, [d(e, 0), d(e, 1), d(e, 2), d(e, 3)])?;
+        e.ret(col);
+        Ok(())
+    }),
+    ("_CGColorCreateGenericGray", |e| {
+        let (g, a) = (d(e, 0), d(e, 1));
+        let col = crate::uiview::new_color(e, [g, g, g, a])?;
+        e.ret(col);
+        Ok(())
+    }),
     ("_CGColorRetain", |_| Ok(())),
     ("_CGColorRelease", |_| Ok(())),
     ("_CGAffineTransformMakeTranslation", make_translation),
@@ -288,6 +345,52 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGAffineTransformTranslate", translate),
     ("_CGAffineTransformScale", scale_by),
     ("_CGAffineTransformConcat", concat_fn),
+    ("_CGAffineTransformInvert", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        ret_affine(e, invert(t))
+    }),
+    ("_CGAffineTransformMakeRotation", |e| {
+        let t = rotation(d(e, 0));
+        ret_affine(e, t)
+    }),
+    ("_CGAffineTransformRotate", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        let r = concat(rotation(d(e, 0)), t);
+        ret_affine(e, r)
+    }),
+    ("_CGAffineTransformIsIdentity", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        e.ret((t == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) as u64);
+        Ok(())
+    }),
+    ("_CGAffineTransformEqualToTransform", |e| {
+        let (a, b) = (read_affine(e, e.arg(0))?, read_affine(e, e.arg(1))?);
+        e.ret((a == b) as u64);
+        Ok(())
+    }),
+    ("_CGAffineTransformMake", |e| {
+        let t = [d(e, 0), d(e, 1), d(e, 2), d(e, 3), d(e, 4), d(e, 5)];
+        ret_affine(e, t)
+    }),
+    ("_CGPointApplyAffineTransform", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        let (x, y) = apply_point(&t, d(e, 0), d(e, 1));
+        ret_ds(e, &[x, y])
+    }),
+    ("_CGSizeApplyAffineTransform", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        let (w, h) = (d(e, 0), d(e, 1));
+        ret_ds(e, &[t[0] * w + t[2] * h, t[1] * w + t[3] * h])
+    }),
+    ("_CGRectApplyAffineTransform", |e| {
+        let t = read_affine(e, e.arg(0))?;
+        let (x, y, w, h) = (d(e, 0), d(e, 1), d(e, 2), d(e, 3));
+        let pts = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)].map(|(px, py)| apply_point(&t, px, py));
+        let (x0, x1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let (y0, y1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        ret_ds(e, &[x0, y0, x1 - x0, y1 - y0])
+    }),
+
 ];
 
 #[cfg(test)]
@@ -300,6 +403,15 @@ mod tests {
         assert_eq!(intersection([0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 10.0, 10.0]), [5.0, 5.0, 5.0, 5.0]);
         assert!(is_null(intersection([0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 1.0, 1.0])));
         assert_eq!(standardize([10.0, 10.0, -5.0, -5.0]), [5.0, 5.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn inverts() {
+        let t = concat(concat(scale(2.0, 3.0), rotation(0.7)), translation(5.0, -4.0));
+        let r = concat(t, invert(t));
+        for (x, y) in r.iter().zip([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) {
+            assert!((x - y).abs() < 1e-9, "{r:?}");
+        }
     }
 
     #[test]

@@ -207,3 +207,23 @@ float scale_by_lane(float a, float b, float c) {
     double y = vmuld_laneq_f64((double)x, halves, 1);
     return (float)y;
 }
+
+// FCVTN / FCVTL with half precision (Impeller packs vertex data as halves).
+uint64_t to_halves(float a, float b, float c, float d) {
+    float32x4_t v = {a, b, c, d};
+    float16x4_t h = vcvt_f16_f32(v);
+    return vget_lane_u64(vreinterpret_u64_f16(h), 0);
+}
+
+float from_halves(uint64_t bits) {
+    float16x4_t h = vreinterpret_f16_u64(vcreate_u64(bits));
+    float32x4_t v = vcvt_f32_f16(h);
+    return vgetq_lane_f32(v, 0) + 2 * vgetq_lane_f32(v, 1) + 4 * vgetq_lane_f32(v, 2) + 8 * vgetq_lane_f32(v, 3);
+}
+
+// FCVTMS / FCVTPS / FCVTNS (vector): floor, ceil and nearest-even to integers.
+int64_t round_lanes(float a, float b) {
+    float32x2_t v = {a, b};
+    int32x2_t m = vcvtm_s32_f32(v), p = vcvtp_s32_f32(v), n = vcvtn_s32_f32(v);
+    return (int64_t)vget_lane_s32(m, 0) * 1000000 + vget_lane_s32(m, 1) * 10000 + vget_lane_s32(p, 0) * 100 + vget_lane_s32(n, 1);
+}

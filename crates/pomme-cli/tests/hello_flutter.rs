@@ -32,3 +32,34 @@ fn engine_boots_and_builds_impeller_pipelines() {
     assert!(m.sources.len() >= 40, "only {} shader functions made ({stop:?})\n{}", m.sources.len(), pomme_hle::metal::report(&emu));
     assert!(m.sources.iter().any(|s| s.contains("imp_solid_fill_vertex_main")));
 }
+
+/// The first frame reaches the screen: the root view controller appears (so
+/// the framework enables frames), the display link drives a frame, Impeller
+/// renders it on the host GPU into FlutterMetalLayer's IOSurface, and the
+/// layer shows it: the white page and the slate rounded square (300 pt,
+/// centered at 3×).
+#[test]
+fn first_frame_renders() {
+    let Some(mut emu) = boot() else { return };
+    emu.time_limit_ns = Some(3_000_000_000);
+    match emu.run_main() {
+        Err(pomme_hle::Stop::TimeLimit(_)) => {}
+        other => panic!("expected the app to idle until the time limit, got {other:?}\n{}", pomme_hle::metal::report(&emu)),
+    }
+    if let Some(e) = &emu.metal.gpu_error {
+        eprintln!("skipping: no GPU here ({e})");
+        return;
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let at = |x: f64, y: f64| {
+        let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
+        (c.red(), c.green(), c.blue())
+    };
+    let near = |(r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)| r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12;
+    // The square spans (45, 272)–(345, 572) pt.
+    assert!(near(at(60.0, 300.0), (0x1e, 0x29, 0x3b)), "square: {:?}", at(60.0, 300.0));
+    assert!(near(at(330.0, 550.0), (0x1e, 0x29, 0x3b)), "square: {:?}", at(330.0, 550.0));
+    // Outside it: the page; and just outside its rounded corner.
+    assert!(near(at(195.0, 100.0), (255, 255, 255)), "page: {:?}", at(195.0, 100.0));
+    assert!(near(at(47.0, 274.0), (255, 255, 255)), "corner: {:?}", at(47.0, 274.0));
+}
