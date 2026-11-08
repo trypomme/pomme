@@ -47,6 +47,14 @@ pub struct Objc {
     sel_names: HashMap<Sel, String>,
     cache: HashMap<(u64, Sel), Imp>,
     pub associated: HashMap<(u64, u64), u64>,
+    /// Type encoding (C string address) by selector, as seen in method lists.
+    types: HashMap<Sel, u64>,
+    /// `Method` structs handed to the guest: address → (class, selector).
+    method_objs: HashMap<u64, (u64, Sel)>,
+    method_by_key: HashMap<(u64, Sel), u64>,
+    /// Protocol objects by name, from every image's `__objc_protolist`.
+    pub protocols: HashMap<String, u64>,
+    hooks: HashMap<&'static str, u64>,
 }
 
 // Guest structure layouts (arm64, non-pointer isa not used).
@@ -249,6 +257,16 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         }
     }
 
+    // Protocols by name.
+    let protolists: Vec<_> = emu.p.images.iter().filter_map(|i| i.section("__DATA", "__objc_protolist")).collect();
+    for (addr, size) in protolists {
+        for at in (addr..addr + size).step_by(8) {
+            let proto = emu.read_u64(at)?;
+            let name = emu.cstr(emu.read_u64(proto + 8)?)?;
+            emu.objc.protocols.entry(name).or_insert(proto);
+        }
+    }
+
     // 4. Guest classes, then categories (which override class methods).
     for &(_, classlist, _) in &images {
         let Some((addr, size)) = classlist else { continue };
@@ -360,17 +378,18 @@ fn read_methods(emu: &mut Emu, list: u64, out: &mut HashMap<Sel, Imp>) -> Result
     let entsize = (flags & 0xfffc) as u64;
     for i in 0..count {
         let e = list + 8 + i * entsize;
-        let (name, imp) = if flags & SMALL_METHOD_LIST != 0 {
+        let (name, types, imp) = if flags & SMALL_METHOD_LIST != 0 {
             let rel = |emu: &Emu, at: u64| -> Result<u64> { Ok(at.wrapping_add(emu.p.memory.read_u32(at)? as i32 as i64 as u64)) };
             let name_ref = rel(emu, e)?;
             let name_ptr = if flags & DIRECT_SELECTORS != 0 { name_ref } else { emu.read_u64(name_ref)? };
-            (emu.cstr(name_ptr)?, rel(emu, e + 8)?)
+            (emu.cstr(name_ptr)?, rel(emu, e + 4)?, rel(emu, e + 8)?)
         } else {
-            (emu.cstr(emu.read_u64(e)?)?, emu.read_u64(e + 16)?)
+            (emu.cstr(emu.read_u64(e)?)?, emu.read_u64(e + 8)?, emu.read_u64(e + 16)?)
         };
         if imp != 0 {
             let sel = intern(emu, &name)?;
             out.insert(sel, Imp::Guest(imp));
+            emu.objc.types.entry(sel).or_insert(types);
         }
     }
     Ok(())
@@ -580,6 +599,35 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
     }
 }
 
+/// Call `sel` as defined directly by a class (or by one category on it), not
+/// inherited: how dyld runs `+load`. `meta` holds the class methods.
+pub(crate) fn call_own_method(emu: &mut Emu, cls: u64, meta: u64, entry: u64, is_category: bool, sel: &str) -> Result<()> {
+    let sel_addr = intern(emu, sel)?;
+    let imp = if is_category {
+        let mut methods = HashMap::new();
+        read_methods(emu, emu.read_u64(entry + 24)?, &mut methods)?;
+        methods.get(&sel_addr).copied()
+    } else {
+        guest_class(emu, cls)?;
+        emu.objc.classes.get(&meta).and_then(|c| c.methods.get(&sel_addr).copied())
+    };
+    match imp {
+        Some(Imp::Guest(addr)) => {
+            if emu.trace {
+                println!("{:>10} +[{} {sel}]", emu.cpu.steps, emu.objc.class_name(cls));
+            }
+            emu.call(addr, &[cls, sel_addr])?;
+        }
+        Some(Imp::Host(f)) => {
+            emu.cpu.x[0] = cls;
+            emu.cpu.x[1] = sel_addr;
+            f(emu)?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 /// Allocate a zeroed instance of `cls`.
 pub fn create_instance(emu: &mut Emu, cls: u64, extra: u64) -> Result<u64> {
     let size = emu.objc.classes.get(&cls).map_or(16, |c| c.instance_size).max(8) + extra;
@@ -735,7 +783,7 @@ fn objc_move_weak(emu: &mut Emu) -> Result<()> {
 
 fn objc_get_class(emu: &mut Emu) -> Result<()> {
     let name = emu.cstr(emu.cpu.x[0])?;
-    let c = emu.objc.by_name.get(&name).copied().unwrap_or(0);
+    let c = class_by_name(emu, &name)?;
     emu.ret(c);
     Ok(())
 }
@@ -1047,4 +1095,456 @@ pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSObject", false, "performSelector:", nsobject_perform_selector),
     ("NSObject", false, "performSelector:withObject:", nsobject_perform_selector),
     ("NSObject", false, "performSelector:withObject:withObject:", nsobject_perform_selector),
+];
+
+// ---- reflection and runtime hooks (used by the Swift runtime and by swizzling code) ----
+
+fn imp_addr(emu: &mut Emu, imp: Imp) -> Result<u64> {
+    match imp {
+        Imp::Guest(a) => Ok(a),
+        Imp::Host(f) => emu.host_thunk(f),
+    }
+}
+
+fn imp_from_addr(emu: &Emu, addr: u64) -> Imp {
+    match emu.thunk_at(addr) {
+        Some(f) => Imp::Host(f),
+        None => Imp::Guest(addr),
+    }
+}
+
+/// The `Method` struct {SEL name; const char *types; IMP imp} for (cls, sel).
+fn method_obj(emu: &mut Emu, cls: u64, sel: Sel, imp: Imp) -> Result<u64> {
+    if let Some(&m) = emu.objc.method_by_key.get(&(cls, sel)) {
+        return Ok(m);
+    }
+    let m = emu.alloc(24)?;
+    let types = emu.objc.types.get(&sel).copied().unwrap_or(0);
+    let addr = imp_addr(emu, imp)?;
+    emu.write_u64(m, sel)?;
+    emu.write_u64(m + 8, types)?;
+    emu.write_u64(m + 16, addr)?;
+    emu.objc.method_by_key.insert((cls, sel), m);
+    emu.objc.method_objs.insert(m, (cls, sel));
+    Ok(m)
+}
+
+/// Find the class that actually defines `sel` for `cls` (walking superclasses).
+fn defining_class(emu: &mut Emu, cls: u64, sel: Sel) -> Result<Option<(u64, Imp)>> {
+    let mut c = cls;
+    while c != 0 {
+        if !emu.objc.classes.contains_key(&c) {
+            guest_class(emu, c)?;
+        }
+        let class = &emu.objc.classes[&c];
+        if let Some(&imp) = class.methods.get(&sel) {
+            return Ok(Some((c, imp)));
+        }
+        c = class.superclass;
+    }
+    Ok(None)
+}
+
+fn get_method(emu: &mut Emu, cls: u64) -> Result<()> {
+    let sel = emu.arg(1);
+    let m = match (cls != 0).then_some(()).map(|_| defining_class(emu, cls, sel)) {
+        Some(r) => match r? {
+            Some((c, imp)) => method_obj(emu, c, sel, imp)?,
+            None => 0,
+        },
+        None => 0,
+    };
+    emu.ret(m);
+    Ok(())
+}
+
+fn class_get_instance_method(emu: &mut Emu) -> Result<()> {
+    get_method(emu, emu.arg(0))
+}
+
+fn class_get_class_method(emu: &mut Emu) -> Result<()> {
+    let cls = emu.arg(0);
+    let meta = if cls == 0 { 0 } else { class_of(emu, cls)? };
+    get_method(emu, meta)
+}
+
+fn method_get_name(emu: &mut Emu) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0))?;
+    emu.ret(v);
+    Ok(())
+}
+
+fn method_get_type_encoding(emu: &mut Emu) -> Result<()> {
+    let v = emu.read_u64(emu.arg(0) + 8)?;
+    emu.ret(v);
+    Ok(())
+}
+
+fn method_get_implementation(emu: &mut Emu) -> Result<()> {
+    let m = emu.arg(0);
+    let v = if m == 0 { 0 } else { emu.read_u64(m + 16)? };
+    emu.ret(v);
+    Ok(())
+}
+
+fn set_imp(emu: &mut Emu, cls: u64, sel: Sel, addr: u64) {
+    let imp = imp_from_addr(emu, addr);
+    if let Some(c) = emu.objc.classes.get_mut(&cls) {
+        c.methods.insert(sel, imp);
+    }
+    emu.objc.cache.clear();
+}
+
+fn method_set_implementation(emu: &mut Emu) -> Result<()> {
+    let (m, imp) = (emu.arg(0), emu.arg(1));
+    let old = emu.read_u64(m + 16)?;
+    emu.write_u64(m + 16, imp)?;
+    if let Some(&(cls, sel)) = emu.objc.method_objs.get(&m) {
+        set_imp(emu, cls, sel, imp);
+    }
+    emu.ret(old);
+    Ok(())
+}
+
+fn method_exchange_implementations(emu: &mut Emu) -> Result<()> {
+    let (m1, m2) = (emu.arg(0), emu.arg(1));
+    let i1 = emu.read_u64(m1 + 16)?;
+    let i2 = emu.read_u64(m2 + 16)?;
+    emu.write_u64(m1 + 16, i2)?;
+    emu.write_u64(m2 + 16, i1)?;
+    for (m, imp) in [(m1, i2), (m2, i1)] {
+        if let Some(&(cls, sel)) = emu.objc.method_objs.get(&m) {
+            set_imp(emu, cls, sel, imp);
+        }
+    }
+    Ok(())
+}
+
+fn forward_missing(emu: &mut Emu) -> Result<()> {
+    let (recv, sel) = (emu.arg(0), emu.arg(1));
+    let k = instance_class(emu, recv)?;
+    Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel_name(emu, sel), class_method: false, caller: emu.cpu.x[30] })
+}
+
+fn class_get_method_implementation(emu: &mut Emu) -> Result<()> {
+    let (cls, sel) = (emu.arg(0), emu.arg(1));
+    let imp = if cls == 0 { None } else { lookup(emu, cls, sel)? };
+    let a = match imp {
+        Some(imp) => imp_addr(emu, imp)?,
+        None => emu.host_thunk(forward_missing)?,
+    };
+    emu.ret(a);
+    Ok(())
+}
+
+fn own_imp(emu: &Emu, cls: u64, sel: Sel) -> Option<Imp> {
+    emu.objc.classes.get(&cls).and_then(|c| c.methods.get(&sel).copied())
+}
+
+/// `class_addMethod(cls, sel, imp, types)`: fails if the class itself already has it.
+fn class_add_method(emu: &mut Emu) -> Result<()> {
+    let (cls, sel, imp, types) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    if own_imp(emu, cls, sel).is_some() {
+        emu.ret(0);
+        return Ok(());
+    }
+    emu.objc.types.entry(sel).or_insert(types);
+    set_imp(emu, cls, sel, imp);
+    emu.ret(1);
+    Ok(())
+}
+
+fn class_replace_method(emu: &mut Emu) -> Result<()> {
+    let (cls, sel, imp, types) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    let old = match own_imp(emu, cls, sel) {
+        Some(i) => imp_addr(emu, i)?,
+        None => 0,
+    };
+    emu.objc.types.entry(sel).or_insert(types);
+    set_imp(emu, cls, sel, imp);
+    if let Some(&m) = emu.objc.method_by_key.get(&(cls, sel)) {
+        emu.write_u64(m + 16, imp)?;
+    }
+    emu.ret(old);
+    Ok(())
+}
+
+fn class_copy_method_list(emu: &mut Emu) -> Result<()> {
+    let (cls, out_count) = (emu.arg(0), emu.arg(1));
+    let mut own: Vec<(String, Sel, Imp)> = match emu.objc.classes.get(&cls) {
+        Some(c) => c.methods.iter().map(|(&s, &i)| (String::new(), s, i)).collect(),
+        None => Vec::new(),
+    };
+    for m in &mut own {
+        m.0 = sel_name(emu, m.1);
+    }
+    own.sort_by(|a, b| a.0.cmp(&b.0)); // deterministic order
+    let list = emu.alloc((own.len() as u64 + 1) * 8)?;
+    for (i, (_, sel, imp)) in own.iter().enumerate() {
+        let m = method_obj(emu, cls, *sel, *imp)?;
+        emu.write_u64(list + i as u64 * 8, m)?;
+    }
+    if out_count != 0 {
+        emu.p.memory.write_u32(out_count, own.len() as u32)?;
+    }
+    emu.ret(list);
+    Ok(())
+}
+
+fn class_copy_ivar_list(emu: &mut Emu) -> Result<()> {
+    if emu.arg(1) != 0 {
+        emu.p.memory.write_u32(emu.arg(1), 0)?;
+    }
+    emu.ret(0);
+    Ok(())
+}
+
+/// `imp_implementationWithBlock(block)`: an IMP that calls `block(self, args...)`.
+fn imp_implementation_with_block(emu: &mut Emu) -> Result<()> {
+    crate::libc::block_copy(emu)?;
+    let block = emu.arg(0);
+    let code = emu.emit_code(&[
+        0xaa00_03e1, // mov x1, x0          (self becomes the block's first argument)
+        0x5800_0060, // ldr x0, #12         (the block)
+        0xf940_0810, // ldr x16, [x0, #16]  (its invoke function)
+        0xd61f_0200, // br x16
+        block as u32,
+        (block >> 32) as u32,
+    ])?;
+    emu.ret(code);
+    Ok(())
+}
+
+fn realize_class(emu: &mut Emu) -> Result<()> {
+    guest_class(emu, emu.arg(0))?;
+    Ok(()) // returns the class, already in x0
+}
+
+fn class_get_instance_size(emu: &mut Emu) -> Result<()> {
+    let s = emu.objc.classes.get(&emu.arg(0)).map_or(0, |c| c.instance_size);
+    emu.ret(s);
+    Ok(())
+}
+
+fn class_is_meta_class(emu: &mut Emu) -> Result<()> {
+    let m = emu.objc.classes.get(&emu.arg(0)).is_some_and(|c| c.meta);
+    emu.ret(m as u64);
+    Ok(())
+}
+
+fn class_create_instance(emu: &mut Emu) -> Result<()> {
+    let (cls, extra) = (emu.arg(0), emu.arg(1));
+    let o = if cls == 0 { 0 } else { create_instance(emu, cls, extra)? };
+    emu.ret(o);
+    Ok(())
+}
+
+fn objc_construct_instance(emu: &mut Emu) -> Result<()> {
+    let (cls, bytes) = (emu.arg(0), emu.arg(1));
+    if bytes != 0 {
+        emu.write_u64(bytes, cls)?;
+    }
+    emu.ret(bytes);
+    Ok(())
+}
+
+fn object_set_class(emu: &mut Emu) -> Result<()> {
+    let (obj, cls) = (emu.arg(0), emu.arg(1));
+    if obj == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
+    let old = emu.read_u64(obj)?;
+    emu.write_u64(obj, cls)?;
+    emu.ret(old);
+    Ok(())
+}
+
+fn class_set_superclass(emu: &mut Emu) -> Result<()> {
+    let (cls, sup) = (emu.arg(0), emu.arg(1));
+    let old = emu.read_u64(cls + 8)?;
+    emu.write_u64(cls + 8, sup)?;
+    if let Some(c) = emu.objc.classes.get_mut(&cls) {
+        c.superclass = sup;
+    }
+    emu.objc.cache.clear();
+    emu.ret(old);
+    Ok(())
+}
+
+fn protocol_name(emu: &Emu, proto: u64) -> Result<String> {
+    if proto == 0 { Ok(String::new()) } else { emu.cstr(emu.read_u64(proto + 8)?) }
+}
+
+fn class_conforms_to_protocol(emu: &mut Emu) -> Result<()> {
+    let name = protocol_name(emu, emu.arg(1))?;
+    emu.ret(conforms(emu, emu.arg(0), &name) as u64);
+    Ok(())
+}
+
+fn protocol_get_name(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(0);
+    let n = if p == 0 { 0 } else { emu.read_u64(p + 8)? };
+    emu.ret(n);
+    Ok(())
+}
+
+fn protocol_conforms_to_protocol(emu: &mut Emu) -> Result<()> {
+    let (p, other) = (emu.arg(0), emu.arg(1));
+    let target = protocol_name(emu, other)?;
+    let mut names = vec![protocol_name(emu, p)?];
+    if p != 0 {
+        read_protocols(emu, emu.read_u64(p + 16)?, &mut names, 0)?;
+    }
+    emu.ret((p != 0 && other != 0 && names.contains(&target)) as u64);
+    Ok(())
+}
+
+fn objc_get_protocol(emu: &mut Emu) -> Result<()> {
+    let name = emu.cstr(emu.arg(0))?;
+    emu.ret(emu.objc.protocols.get(&name).copied().unwrap_or(0));
+    Ok(())
+}
+
+/// `objc_allocateClassPair(superclass, name, extraBytes)`
+fn objc_allocate_class_pair(emu: &mut Emu) -> Result<()> {
+    let (sup, name_ptr) = (emu.arg(0), emu.arg(1));
+    let name = emu.cstr(name_ptr)?;
+    if emu.objc.by_name.contains_key(&name) {
+        emu.ret(0);
+        return Ok(());
+    }
+    // Build it like a host class, then point it at the requested superclass.
+    let cls = host_class(emu, &name)?;
+    let meta = emu.objc.classes[&cls].isa;
+    let sup_meta = if sup == 0 { cls } else { emu.objc.classes.get(&sup).map_or(0, |c| c.isa) };
+    let root_meta = if sup == 0 { meta } else { emu.objc.classes.get(&sup_meta).map_or(meta, |c| c.isa) };
+    let size = emu.objc.classes.get(&sup).map_or(8, |c| c.instance_size);
+    emu.write_u64(cls + 8, sup)?;
+    emu.write_u64(meta, root_meta)?;
+    emu.write_u64(meta + 8, sup_meta)?;
+    for (c, s) in [(cls, sup), (meta, sup_meta)] {
+        let k = emu.objc.classes.get_mut(&c).unwrap();
+        k.superclass = s;
+        k.host = false;
+        k.instance_size = size;
+    }
+    emu.objc.classes.get_mut(&meta).unwrap().isa = root_meta;
+    emu.ret(cls);
+    Ok(())
+}
+
+/// The default `getClass` hook: plain lookup by name. `BOOL (const char *name, Class *out)`
+fn default_get_class_hook(emu: &mut Emu) -> Result<()> {
+    let (name, out) = (emu.cstr(emu.arg(0))?, emu.arg(1));
+    let c = emu.objc.by_name.get(&name).copied().unwrap_or(0);
+    emu.write_u64(out, c)?;
+    emu.ret((c != 0) as u64);
+    Ok(())
+}
+
+/// The default `getImageName` hook: `BOOL (Class, const char **out)` → NO.
+fn default_get_image_name_hook(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+fn set_hook(emu: &mut Emu, name: &'static str, default: HostFn) -> Result<()> {
+    let (new, old_out) = (emu.arg(0), emu.arg(1));
+    let old = match emu.objc.hooks.get(name) {
+        Some(&h) => h,
+        None => emu.host_thunk(default)?,
+    };
+    if old_out != 0 {
+        emu.write_u64(old_out, old)?;
+    }
+    emu.objc.hooks.insert(name, new);
+    Ok(())
+}
+
+fn objc_set_hook_get_class(emu: &mut Emu) -> Result<()> {
+    set_hook(emu, "getClass", default_get_class_hook)
+}
+
+fn objc_set_hook_get_image_name(emu: &mut Emu) -> Result<()> {
+    set_hook(emu, "getImageName", default_get_image_name_hook)
+}
+
+fn objc_set_hook_lazy_class_namer(emu: &mut Emu) -> Result<()> {
+    emu.objc.hooks.insert("lazyClassNamer", emu.arg(0));
+    Ok(())
+}
+
+/// Look a class up by name, asking the guest's `getClass` hook (Swift) on a miss.
+pub fn class_by_name(emu: &mut Emu, name: &str) -> Result<u64> {
+    if let Some(&c) = emu.objc.by_name.get(name) {
+        return Ok(c);
+    }
+    let Some(&hook) = emu.objc.hooks.get("getClass") else { return Ok(0) };
+    if emu.thunk_at(hook).is_some() {
+        return Ok(0);
+    }
+    let name_ptr = emu.alloc_cstr(name)?;
+    let out = emu.alloc(8)?;
+    emu.call(hook, &[name_ptr, out])?;
+    let c = emu.read_u64(out)?;
+    if c != 0 {
+        guest_class(emu, c)?;
+    }
+    Ok(c)
+}
+
+/// `objc_addLoadImageFunc(fn)`: call `fn(mach_header)` for every loaded image now.
+fn objc_add_load_image_func(emu: &mut Emu) -> Result<()> {
+    let f = emu.arg(0);
+    let headers: Vec<u64> = emu.p.images.iter().map(|i| i.header).collect();
+    for h in headers {
+        emu.call(f, &[h])?;
+    }
+    Ok(())
+}
+
+fn exceptions_unsupported(_: &mut Emu) -> Result<()> {
+    Err(Stop::Unsupported("Objective-C/C++ exception handling isn't implemented yet".into()))
+}
+
+pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
+    ("_class_getInstanceMethod", class_get_instance_method),
+    ("_class_getClassMethod", class_get_class_method),
+    ("_method_getName", method_get_name),
+    ("_method_getTypeEncoding", method_get_type_encoding),
+    ("_method_getImplementation", method_get_implementation),
+    ("_method_setImplementation", method_set_implementation),
+    ("_method_exchangeImplementations", method_exchange_implementations),
+    ("_class_getMethodImplementation", class_get_method_implementation),
+    ("_class_addMethod", class_add_method),
+    ("_class_replaceMethod", class_replace_method),
+    ("_class_copyMethodList", class_copy_method_list),
+    ("_class_copyIvarList", class_copy_ivar_list),
+    ("_imp_implementationWithBlock", imp_implementation_with_block),
+    ("__objc_realizeClassFromSwift", realize_class),
+    ("_objc_readClassPair", realize_class),
+    ("_class_getInstanceSize", class_get_instance_size),
+    ("_class_isMetaClass", class_is_meta_class),
+    ("_class_createInstance", class_create_instance),
+    ("_objc_constructInstance", objc_construct_instance),
+    ("_objc_destructInstance", ret_self),
+    ("_object_dispose", ret_zero),
+    ("_object_setClass", object_set_class),
+    ("_class_setSuperclass", class_set_superclass),
+    ("_class_conformsToProtocol", class_conforms_to_protocol),
+    ("_protocol_getName", protocol_get_name),
+    ("_protocol_conformsToProtocol", protocol_conforms_to_protocol),
+    ("_objc_getProtocol", objc_get_protocol),
+    ("_objc_allocateClassPair", objc_allocate_class_pair),
+    ("_objc_registerClassPair", noop),
+    ("__objc_rootAutorelease", ret_self),
+    ("_objc_setHook_getClass", objc_set_hook_get_class),
+    ("_objc_setHook_getImageName", objc_set_hook_get_image_name),
+    ("_objc_setHook_lazyClassNamer", objc_set_hook_lazy_class_namer),
+    ("_objc_addLoadImageFunc", objc_add_load_image_func),
+    ("_objc_begin_catch", exceptions_unsupported),
+    ("_objc_end_catch", exceptions_unsupported),
+    ("_objc_exception_rethrow", exceptions_unsupported),
+    ("_objc_terminate", exceptions_unsupported),
 ];

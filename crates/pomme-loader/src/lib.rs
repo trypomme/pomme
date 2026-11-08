@@ -225,8 +225,27 @@ impl Process {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// A directory mirroring the iOS filesystem with pomme-built system
+    /// libraries (e.g. `<sysroot>/usr/lib/swift/libswiftCore.dylib`). A system
+    /// dylib found here is loaded and linked as guest code instead of being
+    /// replaced by HLE stubs.
+    pub sysroot: Option<PathBuf>,
+}
+
 /// Load an `.app` bundle directory, or a bare executable.
 pub fn load(path: &Path) -> Result<Process> {
+    load_with(path, &LoadOptions::default())
+}
+
+/// The sysroot copy of a system library, if there is one.
+fn sysroot_dylib(sysroot: Option<&Path>, install: &str) -> Option<PathBuf> {
+    let file = sysroot?.join(install.trim_start_matches('/'));
+    file.is_file().then(|| file.canonicalize().unwrap_or(file))
+}
+
+pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
     let (bundle_id, exe, app_dir) = locate_executable(path)?;
 
     // Discover images: the executable, then bundled dylibs breadth-first.
@@ -241,11 +260,18 @@ pub fn load(path: &Path) -> Result<Process> {
         let image = parse(&paths[i], &bytes)?;
         let mut img_deps = Vec::new();
         for d in &image.dylibs {
-            if d.kind == DylibKind::System {
-                img_deps.push(None);
-                continue;
-            }
-            let Some(file) = resolve_dylib_path(&d.path, &paths[i], &app_dir, &image.rpaths) else {
+            let found = if d.kind == DylibKind::System {
+                match sysroot_dylib(opts.sysroot.as_deref(), &d.path) {
+                    Some(f) => Some(f),
+                    None => {
+                        img_deps.push(None);
+                        continue;
+                    }
+                }
+            } else {
+                resolve_dylib_path(&d.path, &paths[i], &app_dir, &image.rpaths)
+            };
+            let Some(file) = found else {
                 if d.weak {
                     img_deps.push(None);
                     continue;
@@ -482,8 +508,9 @@ fn resolve_dylib_path(install: &str, loader: &Path, app_dir: &Path, rpaths: &[St
         rpaths
             .iter()
             .map(|r| expand(r).join(rest))
-            // Apps almost always use @executable_path/Frameworks; try it even if the rpath is missing.
-            .chain([app_dir.join("Frameworks").join(rest)])
+            // Apps almost always use @executable_path/Frameworks; try it even if the rpath is
+            // missing. Libraries also often find siblings next to themselves.
+            .chain([app_dir.join("Frameworks").join(rest), loader_dir.join(rest)])
             .collect()
     } else {
         vec![expand(install)]

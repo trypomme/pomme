@@ -32,7 +32,7 @@ fn malloc_size(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn memmove(emu: &mut Emu) -> Result<()> {
+pub(crate) fn memmove(emu: &mut Emu) -> Result<()> {
     let (dst, src, n) = (emu.arg(0), emu.arg(1), emu.arg(2) as usize);
     if n > 0 {
         let bytes = emu.p.memory.read(src, n)?.to_vec();

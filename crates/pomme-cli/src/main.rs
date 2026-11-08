@@ -29,6 +29,9 @@ enum Cmd {
         /// Print every system call and Objective-C message as it happens.
         #[arg(long)]
         trace: bool,
+        /// Directory of pomme-built system libraries (see scripts/build-sysroot.sh).
+        #[arg(long, default_value = "vendor/sysroot")]
+        sysroot: PathBuf,
     },
     /// Load and link a .app into guest memory, and report the result.
     Load {
@@ -43,7 +46,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Run { path, steps, trace } => run(&path, steps, trace),
+        Cmd::Run { path, steps, trace, sysroot } => run(&path, steps, trace, &sysroot),
     }
 }
 
@@ -142,7 +145,8 @@ fn print_image(path: &Path, img: &Image<'_>, show_symbols: bool) {
 
 fn load(path: &Path, show_stubs: bool) -> Result<()> {
     let start = std::time::Instant::now();
-    let p = pomme_loader::load(path)?;
+    let sysroot = Path::new("vendor/sysroot").canonicalize().ok();
+    let p = pomme_loader::load_with(path, &pomme_loader::LoadOptions { sysroot })?;
     let elapsed = start.elapsed();
 
     if let Some(id) = &p.bundle_id {
@@ -179,10 +183,16 @@ fn load(path: &Path, show_stubs: bool) -> Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, max_steps: u64, trace: bool) -> Result<()> {
+fn run(path: &Path, max_steps: u64, trace: bool, sysroot: &Path) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
-    let p = pomme_loader::load(path)?;
+    let sysroot = &sysroot.canonicalize().unwrap_or_else(|_| sysroot.to_path_buf());
+    let opts = pomme_loader::LoadOptions { sysroot: sysroot.is_dir().then(|| sysroot.to_path_buf()) };
+    let p = pomme_loader::load_with(path, &opts)?;
+    let system: Vec<_> = p.images.iter().filter(|i| i.path.starts_with(sysroot)).map(|i| i.name.as_str()).collect();
+    if !system.is_empty() {
+        println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
+    }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.max_steps = max_steps;
     emu.trace = trace;

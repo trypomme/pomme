@@ -13,6 +13,8 @@ pub mod objc;
 
 mod foundation;
 mod libc;
+pub mod libsystem;
+mod printf;
 mod swift;
 mod uikit;
 
@@ -27,6 +29,13 @@ pub const STACK_TOP: u64 = 0x3_0000_0000;
 pub const STACK_SIZE: u64 = 8 << 20;
 pub const TLS_BASE: u64 = 0x3_1000_0000;
 pub const TLS_SIZE: u64 = 64 << 10;
+/// Guest-callable host functions created at run time (each slot traps with BRK #0x5f).
+pub const THUNK_BASE: u64 = 0x6_8000_0000;
+const THUNK_SLOTS: u64 = 4096;
+const THUNK_INSN: u32 = 0xd420_0000 | (0x5f << 5);
+/// Generated guest code (trampolines).
+pub const CODE_BASE: u64 = 0x6_9000_0000;
+const CODE_SIZE: u64 = 1 << 20;
 
 /// A host implementation of a system function.
 pub type HostFn = fn(&mut Emu) -> Result<()>;
@@ -92,6 +101,10 @@ pub struct Emu {
     pub depth: usize,
     /// Host-side state for UIKit.
     pub ui: uikit::State,
+    /// Host-side state for libSystem (errno, TLS, dispatch queue, ...).
+    pub sys: libsystem::State,
+    thunks: Vec<HostFn>,
+    code_next: u64,
 }
 
 impl Emu {
@@ -101,7 +114,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, foundation::FUNCS, libc::FUNCS, swift::FUNCS, uikit::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, printf::FUNCS, swift::FUNCS, uikit::FUNCS] {
             registry.extend(table.iter().copied());
         }
         objc::register_reg_variants(&mut registry);
@@ -124,10 +137,74 @@ impl Emu {
             argv: 0,
             depth: 0,
             ui: Default::default(),
+            sys: Default::default(),
+            thunks: Vec::new(),
+            code_next: CODE_BASE,
         };
+        let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
+        for slot in thunks.data.chunks_exact_mut(4) {
+            slot.copy_from_slice(&THUNK_INSN.to_le_bytes());
+        }
+        emu.p.memory.map(CODE_BASE, CODE_SIZE, Prot::RX, "[trampolines]")?;
         objc::init(&mut emu)?;
         foundation::init(&mut emu)?;
+        libsystem::init(&mut emu)?;
         Ok(emu)
+    }
+
+    /// Images in initialization order: every library before the images that link it.
+    fn init_order(&self) -> Vec<usize> {
+        fn visit(p: &Process, i: usize, seen: &mut Vec<bool>, out: &mut Vec<usize>) {
+            if std::mem::replace(&mut seen[i], true) {
+                return;
+            }
+            for d in p.images[i].deps.iter().flatten() {
+                visit(p, *d, seen, out);
+            }
+            out.push(i);
+        }
+        let mut seen = vec![false; self.p.images.len()];
+        let mut out = Vec::new();
+        visit(&self.p, 0, &mut seen, &mut out);
+        out
+    }
+
+    /// What dyld does before `main`: for each image, dependencies first, run
+    /// Objective-C `+load` methods, then C/C++ static initializers.
+    pub fn run_initializers(&mut self) -> Result<()> {
+        let (argc, argv) = (self.argc, self.argv);
+        for i in self.init_order() {
+            for list in ["__objc_nlclslist", "__objc_nlcatlist"] {
+                let Some((addr, size)) = self.p.images[i].section("__DATA", list) else { continue };
+                for at in (addr..addr + size).step_by(8) {
+                    let entry = self.read_u64(at)?;
+                    // A category's class is at +8; a class is itself.
+                    let cls = if list == "__objc_nlcatlist" { self.read_u64(entry + 8)? } else { entry };
+                    let meta = self.read_u64(cls)?;
+                    objc::call_own_method(self, cls, meta, entry, list == "__objc_nlcatlist", "load")?;
+                }
+            }
+            let img = &self.p.images[i];
+            let mut inits = Vec::new();
+            if let Some((addr, size)) = img.section("__DATA", "__mod_init_func") {
+                for at in (addr..addr + size).step_by(8) {
+                    inits.push(self.read_u64(at)?);
+                }
+            }
+            if let Some((addr, size)) = img.section("__TEXT", "__init_offsets") {
+                let header = img.header;
+                for at in (addr..addr + size).step_by(4) {
+                    inits.push(header + self.p.memory.read_u32(at)? as u64);
+                }
+            }
+            for f in inits {
+                if self.trace {
+                    println!("{:>10} initializer {}", self.cpu.steps, self.symbolize(f));
+                }
+                self.call(f, &[argc, argv, argv + 16, argv + 24])?;
+            }
+        }
+        Ok(())
     }
 
     /// Run `main(argc, argv, envp, apple)` to completion.
@@ -145,6 +222,12 @@ impl Emu {
         self.cpu.sp = sp;
         self.argc = 1;
         self.argv = sp;
+        match self.run_initializers() {
+            Ok(()) => {}
+            Err(Stop::Exit(code)) => return Ok(code),
+            Err(e) => return Err(e),
+        }
+        self.cpu.sp = sp;
         match self.call(entry, &[1, sp, sp + 16, sp + 24]) {
             Ok(code) => Ok(code as i32),
             Err(Stop::Exit(code)) => Ok(code),
@@ -186,6 +269,11 @@ impl Emu {
             match self.cpu.run(&mut self.p.memory, budget) {
                 Exit::Returned => return Ok(()),
                 Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch()?,
+                Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
+                    let f = self.thunks[((self.cpu.pc - THUNK_BASE) / 4) as usize];
+                    self.cpu.pc = self.cpu.x[30];
+                    f(self)?
+                }
                 exit => return Err(Stop::Cpu { exit, pc: self.cpu.pc }),
             }
         }
@@ -209,6 +297,37 @@ impl Emu {
         *self.calls.entry(self.p.stubs.at(self.cpu.pc).unwrap().symbol.clone()).or_default() += 1;
         self.cpu.pc = caller;
         f(self)
+    }
+
+    /// A guest function pointer that runs `f` (same calling convention as a stub).
+    pub fn host_thunk(&mut self, f: HostFn) -> Result<u64> {
+        if let Some(i) = self.thunks.iter().position(|&g| std::ptr::fn_addr_eq(g, f)) {
+            return Ok(THUNK_BASE + i as u64 * 4);
+        }
+        if self.thunks.len() as u64 >= THUNK_SLOTS {
+            return Err(Stop::Unsupported("out of host thunk slots".into()));
+        }
+        self.thunks.push(f);
+        Ok(THUNK_BASE + (self.thunks.len() as u64 - 1) * 4)
+    }
+
+    /// The host function behind a thunk address, if it is one.
+    pub fn thunk_at(&self, addr: u64) -> Option<HostFn> {
+        let off = addr.checked_sub(THUNK_BASE)?;
+        self.thunks.get((off / 4) as usize).copied().filter(|_| off % 4 == 0)
+    }
+
+    /// Place generated arm64 code (plus inline data) in guest memory; returns its address.
+    pub fn emit_code(&mut self, words: &[u32]) -> Result<u64> {
+        let at = self.code_next;
+        let len = words.len() as u64 * 4;
+        if at + len > CODE_BASE + CODE_SIZE {
+            return Err(Stop::Unsupported("trampoline space exhausted".into()));
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        self.p.memory.write(at, &bytes)?;
+        self.code_next = (at + len + 15) & !15;
+        Ok(at)
     }
 
     /// How many stubs have a host implementation.
