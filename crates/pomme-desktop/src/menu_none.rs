@@ -12,9 +12,6 @@ impl Menus {
         Menus
     }
     pub(crate) fn install(&self) {}
-    pub(crate) fn owns_shortcuts(&self) -> bool {
-        false
-    }
     pub(crate) fn pop_up(&self, _window: &Window) {}
     pub(crate) fn toggled_enrolled(&self) {}
 }

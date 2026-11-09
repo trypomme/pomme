@@ -62,6 +62,8 @@ enum ToWindow {
     Ended,
     /// A menu item was chosen.
     Menu(Action),
+    /// A Face ID prompt is waiting (true) or was answered (false).
+    FaceId(bool),
 }
 
 /// The latest frame from the emulator, waiting for the window.
@@ -135,6 +137,11 @@ impl Host for DesktopHost {
     fn biometry_prompt(&mut self, reason: &str) {
         let reason = if reason.is_empty() { String::new() } else { format!(" ({reason})") };
         eprintln!("Face ID is asking{reason}: Features ▸ Face ID ▸ Matching Face (⌥⌘M) or Non-matching Face (⌥⌘N)");
+        let _ = self.proxy.send_event(ToWindow::FaceId(true));
+    }
+
+    fn biometry_answered(&mut self) {
+        let _ = self.proxy.send_event(ToWindow::FaceId(false));
     }
 
     fn frame(&mut self, f: Frame<'_>) {
@@ -166,6 +173,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         ended: false,
         menus: None,
         shell: None,
+        face_id: false,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -197,6 +205,8 @@ struct App {
     /// How the phone is held now.
     held: Orientation,
     menus: Option<menu::Menus>,
+    /// A Face ID prompt is waiting: the sheet is up.
+    face_id: bool,
     /// The phone's body for the last (orientation, scale bits) a frame came in.
     shell: Option<((Orientation, u32), pomme_hle::render::Shell)>,
 }
@@ -269,7 +279,14 @@ impl App {
     fn draw(&mut self) {
         let Some(phone) = self.phone.as_ref() else { return };
         let Some(fit) = self.fit(phone) else { return };
-        let (data, w, h) = (phone.pix.data(), phone.pix.width(), phone.pix.height());
+        // The system's Face ID sheet over the app while a prompt waits, as on iOS.
+        let sheet = self.face_id.then(|| {
+            let mut pix = phone.pix.clone();
+            face_id_sheet(&mut pix, phone.screen, phone.scale);
+            pix
+        });
+        let pix = sheet.as_ref().unwrap_or(&phone.pix);
+        let (data, w, h) = (pix.data(), pix.width(), pix.height());
         if let Some(p) = self.presenter.as_mut() {
             p.present(data, w, h, fit);
         }
@@ -304,6 +321,57 @@ impl App {
         self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
         self.events = None; // the host sees the channel close
         event_loop.exit();
+    }
+}
+
+/// iOS's Face ID sheet, centred on the screen (`screen`: x, y, w, h in
+/// pixels at `scale` pixels per point): a dark rounded square with the Face
+/// ID glyph, shown while the system waits for a face.
+fn face_id_sheet(pix: &mut Pixmap, screen: [f32; 4], scale: f32) {
+    use tiny_skia::{LineCap, Paint, PathBuilder, Stroke, Transform};
+    let [sx, sy, sw, sh] = screen;
+    let (cx, cy) = (sx + sw / 2.0, sy + sh / 2.0);
+    // Points to pixels, around the centre.
+    let t = Transform::from_row(scale, 0.0, 0.0, scale, cx, cy);
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    paint.set_color_rgba8(28, 28, 30, 225);
+    // A rounded square (radius 30 pt).
+    let mut pb = PathBuilder::new();
+    let (r, h) = (30.0, 80.0);
+    pb.move_to(-h + r, -h);
+    pb.line_to(h - r, -h);
+    pb.quad_to(h, -h, h, -h + r);
+    pb.line_to(h, h - r);
+    pb.quad_to(h, h, h - r, h);
+    pb.line_to(-h + r, h);
+    pb.quad_to(-h, h, -h, h - r);
+    pb.line_to(-h, -h + r);
+    pb.quad_to(-h, -h, -h + r, -h);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pix.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+    }
+    // The glyph: four corner brackets, eyes, nose and smile (white strokes).
+    paint.set_color_rgba8(255, 255, 255, 235);
+    let stroke = Stroke { width: 4.0, line_cap: LineCap::Round, ..Default::default() };
+    let mut g = PathBuilder::new();
+    let (e, l) = (32.0f32, 13.0f32); // bracket corner and arm length
+    for (dx, dy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        g.move_to(dx * e, dy * (e - l));
+        g.quad_to(dx * e, dy * e, dx * (e - l), dy * e);
+    }
+    for x in [-11.0f32, 11.0] {
+        g.move_to(x, -10.0);
+        g.line_to(x, -4.0);
+    }
+    g.move_to(1.0, -9.0);
+    g.line_to(1.0, 5.0);
+    g.line_to(-3.0, 5.0);
+    g.move_to(-11.0, 13.0);
+    g.quad_to(0.0, 21.0, 11.0, 13.0);
+    if let Some(path) = g.finish() {
+        pix.stroke_path(&path, &paint, &stroke, t, None);
     }
 }
 
@@ -442,6 +510,12 @@ impl ApplicationHandler<ToWindow> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ToWindow) {
         match event {
             ToWindow::Menu(a) => self.act(event_loop, a),
+            ToWindow::FaceId(up) => {
+                self.face_id = up;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             ToWindow::Frame => self.take_frame(),
             ToWindow::Ended => {
                 self.ended = true;
@@ -511,10 +585,8 @@ impl ApplicationHandler<ToWindow> for App {
             },
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } if event.state == ElementState::Pressed => {
                 let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
-                // The menu bar has these shortcuts (macOS): it acts on them, not the window.
-                if command && self.menus.as_ref().is_some_and(|m| m.owns_shortcuts()) {
-                    return;
-                }
+                // On macOS the menu bar has these shortcuts too. AppKit gives a key
+                // to the menu or the window, never both: whichever gets it acts.
                 // ⌥ changes the character (⌥M is µ on a Mac): the Face ID shortcuts go by the key.
                 if command && self.modifiers.alt_key() {
                     if let PhysicalKey::Code(code) = event.physical_key
@@ -548,5 +620,23 @@ impl ApplicationHandler<ToWindow> for App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod sheet_tests {
+    /// The Face ID sheet lands in the middle of the screen and leaves the rest alone.
+    #[test]
+    fn sheet_is_centred_on_the_screen() {
+        let mut pix = tiny_skia::Pixmap::new(400, 800).unwrap();
+        pix.fill(tiny_skia::Color::WHITE);
+        super::face_id_sheet(&mut pix, [0.0, 0.0, 400.0, 800.0], 1.0);
+        if let Ok(dir) = std::env::var("POMME_SHEET_PNG") {
+            pix.save_png(dir).unwrap();
+        }
+        let dark = |x, y| pix.pixel(x, y).unwrap().red() < 100;
+        assert!(dark(200 - 70, 400), "the card's edge");
+        assert!(!dark(200 - 90, 400) && !dark(10, 10), "outside the card");
+        assert!(!dark(200 - 32, 400 - 25), "the glyph's white bracket");
     }
 }

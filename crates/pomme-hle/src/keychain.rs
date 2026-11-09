@@ -162,6 +162,9 @@ pub(crate) fn present(emu: &mut Emu, face: Face) -> Result<()> {
 
 /// Answer every waiting prompt.
 fn answer_all(emu: &mut Emu, matched: bool) -> Result<()> {
+    if emu.keychain.prompts.iter().any(|p| p.1.is_none()) {
+        crate::host::biometry_answered(emu);
+    }
     for i in 0..emu.keychain.prompts.len() {
         let (prompt, answered) = emu.keychain.prompts[i];
         if answered.is_some() {

@@ -81,12 +81,6 @@ impl Menus {
         self.menu.init_for_nsapp();
     }
 
-    /// Whether the menus handle this key themselves (their shortcuts, on macOS),
-    /// so the window mustn't act on it too.
-    pub(crate) fn owns_shortcuts(&self) -> bool {
-        cfg!(target_os = "macos")
-    }
-
     /// Show the menus at the cursor (a right-click on the bezel, where there's no menu bar).
     #[allow(unused_variables)]
     pub(crate) fn pop_up(&self, window: &Window) {

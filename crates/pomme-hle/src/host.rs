@@ -56,6 +56,8 @@ pub trait Host {
     fn frame(&mut self, frame: Frame<'_>);
     /// A Face ID prompt is up, waiting for a face, with the app's reason.
     fn biometry_prompt(&mut self, _reason: &str) {}
+    /// The waiting Face ID prompts were answered (or failed): the sheet goes.
+    fn biometry_answered(&mut self) {}
 }
 
 #[derive(Default)]
@@ -162,6 +164,13 @@ pub(crate) fn install(emu: &mut Emu) -> Result<()> {
 pub(crate) fn biometry_prompt(emu: &mut Emu, reason: &str) {
     if let Some(host) = emu.live.host.as_mut() {
         host.biometry_prompt(reason);
+    }
+}
+
+/// Tell the host the waiting biometry prompts were answered.
+pub(crate) fn biometry_answered(emu: &mut Emu) {
+    if let Some(host) = emu.live.host.as_mut() {
+        host.biometry_answered();
     }
 }
 
