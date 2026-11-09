@@ -53,7 +53,7 @@ pub struct Objc {
     cache: HashMap<(u64, Sel), Imp>,
     pub associated: HashMap<(u64, u64), u64>,
     /// Properties set on permissive objects: (object, property) → (x2, d0).
-    bag: HashMap<(u64, String), (u64, u128)>,
+    pub(crate) bag: HashMap<(u64, String), (u64, u128)>,
     /// Class → is it a native Swift class (cache for retains).
     native_swift: HashMap<u64, bool>,
     swift_retain: u64,
@@ -91,6 +91,16 @@ const PERMISSIVE: &[&str] = &[
     "NSCache",
     "CALayer",
     "CATransaction",
+    // Animations are configuration objects: their properties are read when
+    // they're added to a layer (see animation.rs).
+    "CAAnimation",
+    "CAPropertyAnimation",
+    "CABasicAnimation",
+    "CAKeyframeAnimation",
+    "CASpringAnimation",
+    "CAAnimationGroup",
+    "CATransition",
+    "CAMediaTimingFunction",
     "UIGraphicsImageRendererFormat",
     "UIGraphicsImageRenderer",
     "UIGraphicsImageRendererContext",
@@ -444,7 +454,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::animation::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();

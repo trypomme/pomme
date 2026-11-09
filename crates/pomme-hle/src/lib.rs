@@ -64,6 +64,7 @@ pub mod operation;
 pub mod uttype;
 pub mod network;
 pub mod keychain;
+pub mod animation;
 mod uikit;
 mod uiview;
 
@@ -243,6 +244,8 @@ pub struct Emu {
     pub(crate) ops: operation::State,
     pub network: network::State,
     pub keychain: keychain::State,
+    /// Core Animation: animations running on layers.
+    pub anim: animation::State,
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
@@ -327,6 +330,7 @@ impl Emu {
             ops: Default::default(),
             network: Default::default(),
             keychain: Default::default(),
+            anim: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
             system: Default::default(),

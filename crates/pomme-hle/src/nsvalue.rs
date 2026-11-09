@@ -12,6 +12,10 @@ const POINT: u64 = 3;
 const SIZE: u64 = 4;
 const RECT: u64 = 5;
 const BYTES: u64 = 6;
+/// A CATransform3D (16 doubles, kept in a buffer of their own: word 0 points to it).
+const TRANSFORM3D: u64 = 7;
+/// A CGAffineTransform (6 doubles, likewise).
+const AFFINE: u64 = 8;
 
 /// The largest `@encode`d value stored inline.
 const MAX_BYTES: usize = 24;
@@ -94,6 +98,53 @@ fn words(emu: &Emu, v: u64) -> Result<(u64, [u64; 4])> {
         *x = emu.read_u64(v + 16 + i as u64 * 8)?;
     }
     Ok((kind, w))
+}
+
+/// A value as Core Animation animates it, if it's a geometry or transform value.
+pub(crate) fn animatable(emu: &mut Emu, v: u64) -> Result<Option<crate::animation::Val>> {
+    use crate::animation::Val;
+    let cls = host_class(emu, "NSValue")?;
+    if !crate::objc::is_kind_of(emu, v, cls)? {
+        return Ok(None);
+    }
+    let (kind, w) = words(emu, v)?;
+    let f = |i: usize| f64::from_bits(w[i]);
+    Ok(match kind {
+        POINT | SIZE => Some(Val::P([f(0), f(1)])),
+        RECT => Some(Val::R([f(0), f(1), f(2), f(3)])),
+        TRANSFORM3D => Some(Val::M(read_doubles::<16>(emu, w[0])?)),
+        AFFINE => Some(Val::M(crate::calayer::transform_of_affine(read_doubles::<6>(emu, w[0])?))),
+        _ => None,
+    })
+}
+
+fn read_doubles<const N: usize>(emu: &Emu, p: u64) -> Result<[f64; N]> {
+    let mut out = [0.0; N];
+    for (i, x) in out.iter_mut().enumerate() {
+        *x = f64::from_bits(emu.read_u64(p + i as u64 * 8)?);
+    }
+    Ok(out)
+}
+
+/// An NSValue holding a struct of `n` doubles at `src` (a transform), in its own buffer.
+fn new_struct_value(emu: &mut Emu, kind: u64, src: u64, n: u64) -> Result<u64> {
+    let buf = emu.alloc(n * 8)?;
+    for i in 0..n {
+        let x = emu.read_u64(src + i * 8)?;
+        emu.write_u64(buf + i * 8, x)?;
+    }
+    new_value(emu, kind, &[buf])
+}
+
+/// Copy a struct value's doubles out to `dst` (an indirect result, x8).
+fn copy_struct_out(emu: &mut Emu, v: u64, n: u64) -> Result<()> {
+    let (_, w) = words(emu, v)?;
+    let dst = emu.cpu.x[8];
+    for i in 0..n {
+        let x = emu.read_u64(w[0] + i * 8)?;
+        emu.write_u64(dst + i * 8, x)?;
+    }
+    Ok(())
 }
 
 /// An NSValue holding a CGPoint.
@@ -228,6 +279,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret_new(e, RECT, &w)
     }),
     (V, true, "valueWithBytes:objCType:", with_bytes),
+    // CATransform3D is 128 bytes and CGAffineTransform 48: both passed by reference (x2), returned through x8.
+    (V, true, "valueWithCATransform3D:", |e| {
+        let v = new_struct_value(e, TRANSFORM3D, e.arg(2), 16)?;
+        e.ret(v);
+        Ok(())
+    }),
+    (V, false, "CATransform3DValue", |e| copy_struct_out(e, e.arg(0), 16)),
+    (V, true, "valueWithCGAffineTransform:", |e| {
+        let v = new_struct_value(e, AFFINE, e.arg(2), 6)?;
+        e.ret(v);
+        Ok(())
+    }),
+    (V, false, "CGAffineTransformValue", |e| copy_struct_out(e, e.arg(0), 6)),
     (V, true, "value:withObjCType:", with_bytes),
     (V, false, "initWithBytes:objCType:", |e| {
         // Replace the alloc'd instance with a filled one (the alloc is leaked).

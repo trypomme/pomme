@@ -33,7 +33,7 @@ fn build_now(name: &str) -> Option<PathBuf> {
     let cxx = dir.join("main.mm").exists();
     let src = dir.join(if cxx { "main.mm" } else { "main.m" });
     let status = Command::new("xcrun")
-        .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation"])
+        .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation", "-framework", "QuartzCore", "-framework", "CoreGraphics"])
         .args(if cxx { &["-lc++", "-std=c++17"][..] } else { &[][..] })
         .arg(&src)
         .arg("-o")

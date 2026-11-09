@@ -14,7 +14,7 @@
 
 use crate::calayer::{self, Layer};
 use crate::objc::{self, Imp};
-use crate::uiview::{frame_of, view};
+use crate::uiview::view;
 use crate::{Emu, HostFn, Result, Stop};
 use std::collections::HashMap;
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -993,9 +993,11 @@ fn placement(frame: [f64; 4], ly: &Layer) -> [f32; 6] {
 
 /// A layer's background, in its corner shape.
 #[allow(clippy::too_many_arguments)]
-fn draw_layer_box(p: &mut Painter, ly: &Layer, bg: u64, colors: &HashMap<u64, [f64; 4]>, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+/// A layer's background: `bg` is the colour (an animated one), or its colour object's.
+#[allow(clippy::too_many_arguments)]
+fn draw_layer_box(p: &mut Painter, ly: &Layer, bg: Option<[f64; 4]>, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
     let shape = rounded_rect(w, h, ly.corner_radius as f32);
-    if let Some(c) = colors.get(&bg) {
+    if let Some(c) = bg {
         p.fill(&shape, c.map(|v| v as f32), alpha, false, t, mask);
     }
 }
@@ -1016,15 +1018,19 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
         if calayer::backing_view(emu, s).is_some() {
             continue;
         }
-        let ly = calayer::layer(emu, s);
+        let mut ly = calayer::layer(emu, s);
+        // What's on screen now: the model with running animations applied.
+        let animated_bg = crate::animation::present_layer(emu, s, &mut ly);
         if ly.hidden || ly.opacity <= 0.0 {
             continue;
         }
-        let frame = calayer::layer_frame(emu, s);
+        let [_, _, lw, lh] = ly.bounds;
+        let frame = [ly.position[0] - ly.anchor[0] * lw, ly.position[1] - ly.anchor[1] * lh, lw, lh];
         let lt = concat(&placement(frame, &ly), t);
         let a = alpha * ly.opacity;
         let (w, h) = (frame[2] as f32, frame[3] as f32);
-        draw_layer_box(p, &ly, ly.background, &emu.ui.views.colors, w, h, a, &lt, mask);
+        let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&ly.background).copied());
+        draw_layer_box(p, &ly, bg, w, h, a, &lt, mask);
         if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
             let r = contents_rect(emu, &ly, &img, w, h);
             let clip = if ly.masks { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &lt) } else { None };
@@ -1038,16 +1044,19 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
 }
 
 fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    let vw = view(emu, v);
+    let mut vw = view(emu, v);
+    let mut ly = if vw.layer != 0 { calayer::layer(emu, vw.layer) } else { Layer::default() };
+    // What's on screen now: the model with running animations applied.
+    let animated_bg = crate::animation::present_view(emu, v, &mut vw, &mut ly);
     let a = alpha * vw.alpha as f32;
     if vw.hidden || a <= 0.0 {
         return;
     }
-    let frame = frame_of(emu, v);
-    let ly = if vw.layer != 0 { calayer::layer(emu, vw.layer) } else { Layer::default() };
+    let frame = [vw.center[0] - vw.bounds[2] / 2.0, vw.center[1] - vw.bounds[3] / 2.0, vw.bounds[2], vw.bounds[3]];
     let vt = concat(&placement(frame, &ly), t);
     let (w, h) = (frame[2] as f32, frame[3] as f32);
-    draw_layer_box(p, &ly, vw.background, &emu.ui.views.colors, w, h, a, &vt, mask);
+    let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&vw.background).copied());
+    draw_layer_box(p, &ly, bg, w, h, a, &vt, mask);
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
     // A text view is a scroll view, which clips to its bounds.
     let text_view = crate::textinput::is_text_view(emu, v);

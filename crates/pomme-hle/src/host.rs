@@ -35,6 +35,8 @@ pub struct Frame<'a> {
     pub width: u32,
     pub height: u32,
     pub orientation: crate::device::Orientation,
+    /// The virtual time it shows (ns).
+    pub at_ns: u64,
 }
 
 /// What the host wants after an idle call.
@@ -87,7 +89,7 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     // frame interval has passed (and wake for it then).
     let now = crate::threads::now_ns(emu);
     let mut next_ns = next_ns;
-    if emu.live.dirty {
+    if emu.live.dirty || crate::animation::animating(emu) {
         let due = emu.live.last_frame.map_or(now, |t| t + FRAME_NS);
         if now >= due {
             draw(emu)?;
@@ -160,6 +162,17 @@ pub(crate) fn install(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// When the next frame is due, if there's a live host and something to draw
+/// (a change, or an animation running): a deadline for the scheduler, so idle
+/// time stops there for the frame instead of jumping past it.
+pub(crate) fn frame_due(emu: &Emu) -> Option<u64> {
+    if emu.live.host.is_none() || !(emu.live.dirty || crate::animation::animating(emu)) {
+        return None;
+    }
+    let now = crate::threads::now_ns(emu);
+    Some(emu.live.last_frame.map_or(now, |t| (t + FRAME_NS).max(now)))
+}
+
 /// Tell the host a biometry prompt is waiting.
 pub(crate) fn biometry_prompt(emu: &mut Emu, reason: &str) {
     if let Some(host) = emu.live.host.as_mut() {
@@ -188,7 +201,7 @@ pub(crate) fn frame_changed(emu: &mut Emu) {
 /// something changed and the frame interval has passed; otherwise the next
 /// idle moment draws it.
 pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
-    if emu.live.host.is_none() || !emu.live.dirty {
+    if emu.live.host.is_none() || !(emu.live.dirty || crate::animation::animating(emu)) {
         return Ok(());
     }
     let now = crate::threads::now_ns(emu);
@@ -204,7 +217,8 @@ fn draw(emu: &mut Emu) -> Result<()> {
     let pix = crate::render::render(emu, emu.live.scale)?;
     let orientation = crate::orientation::current(emu);
     if let Some(mut host) = emu.live.host.take() {
-        host.frame(Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation });
+        let at_ns = crate::threads::now_ns(emu);
+        host.frame(Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns });
         emu.live.host = Some(host);
     }
     Ok(())

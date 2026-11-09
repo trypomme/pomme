@@ -350,7 +350,9 @@ fn view_set_transform(emu: &mut Emu) -> Result<()> {
         *x = f64::from_bits(emu.read_u64(p + i as u64 * 8)?);
     }
     let l = send(emu, v, "layer", &[])?;
+    let old = crate::animation::before(emu, v, crate::animation::Prop::Transform);
     layer_mut(emu, l).transform = transform_of_affine(a);
+    crate::animation::after(emu, v, crate::animation::Prop::Transform, old);
     Ok(())
 }
 
@@ -447,10 +449,6 @@ fn nothing(_: &mut Emu) -> Result<()> {
 
 fn ret_self(_: &mut Emu) -> Result<()> {
     Ok(())
-}
-
-fn zero(emu: &mut Emu) -> Result<()> {
-    ret_x(emu, 0)
 }
 
 fn layer_class_new(emu: &mut Emu) -> Result<()> {
@@ -619,11 +617,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "layoutIfNeeded", nothing),
     (L, false, "layoutSublayers", nothing),
     (L, false, "displayIfNeeded", nothing),
-    (L, false, "addAnimation:forKey:", nothing),
-    (L, false, "removeAnimationForKey:", nothing),
-    (L, false, "removeAllAnimations", nothing),
-    (L, false, "animationForKey:", zero),
-    (L, false, "animationKeys", zero),
     ("UIView", false, "transform", view_transform),
     ("UIView", false, "setTransform:", view_set_transform),
 ];

@@ -99,6 +99,14 @@ pub(crate) fn view(emu: &mut Emu, v: u64) -> View {
 }
 
 pub(crate) fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
+    use crate::animation::{Prop, after, before};
+    let (pos, size) = (before(emu, v, Prop::Position), before(emu, v, Prop::Bounds));
+    set_frame_now(emu, v, r);
+    after(emu, v, Prop::Position, pos);
+    after(emu, v, Prop::Bounds, size);
+}
+
+fn set_frame_now(emu: &mut Emu, v: u64, r: [f64; 4]) {
     let vw = view_mut(emu, v);
     let old = [vw.bounds[2], vw.bounds[3]];
     if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
@@ -152,7 +160,10 @@ pub(crate) fn frame_of(emu: &mut Emu, v: u64) -> [f64; 4] {
 
 fn view_init_with_frame(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
+    // As UIKit does, the view makes its layer as it's initialized (so it can be animated from the start).
+    send(emu, v, "layer", &[])?;
     set_frame_of(emu, v, r);
+    emu.ret(v);
     Ok(()) // returns self
 }
 
@@ -186,6 +197,13 @@ fn view_bounds(emu: &mut Emu) -> Result<()> {
 
 fn view_set_bounds(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
+    let old = crate::animation::before(emu, v, crate::animation::Prop::Bounds);
+    set_bounds_now(emu, v, r);
+    crate::animation::after(emu, v, crate::animation::Prop::Bounds, old);
+    Ok(())
+}
+
+fn set_bounds_now(emu: &mut Emu, v: u64, r: [f64; 4]) {
     let vw = view_mut(emu, v);
     let old = [vw.bounds[2], vw.bounds[3]];
     if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
@@ -193,7 +211,6 @@ fn view_set_bounds(emu: &mut Emu) -> Result<()> {
     }
     vw.bounds = r;
     autoresize_subviews(emu, v, old, [r[2], r[3]]);
-    Ok(())
 }
 
 fn view_center(emu: &mut Emu) -> Result<()> {
@@ -205,7 +222,9 @@ fn view_center(emu: &mut Emu) -> Result<()> {
 
 fn view_set_center(emu: &mut Emu) -> Result<()> {
     let (v, x, y) = (emu.arg(0), f(emu, 0), f(emu, 1));
+    let old = crate::animation::before(emu, v, crate::animation::Prop::Position);
     view_mut(emu, v).center = [x, y];
+    crate::animation::after(emu, v, crate::animation::Prop::Position, old);
     Ok(())
 }
 
@@ -349,7 +368,9 @@ fn background_color(emu: &mut Emu) -> Result<()> {
 
 fn set_background_color(emu: &mut Emu) -> Result<()> {
     let (v, c) = (emu.arg(0), emu.arg(2));
+    let old = crate::animation::before(emu, v, crate::animation::Prop::Background);
     view_mut(emu, v).background = c;
+    crate::animation::after(emu, v, crate::animation::Prop::Background, old);
     Ok(())
 }
 
@@ -373,7 +394,9 @@ fn alpha(emu: &mut Emu) -> Result<()> {
 
 fn set_alpha(emu: &mut Emu) -> Result<()> {
     let (v, a) = (emu.arg(0), f(emu, 0));
+    let old = crate::animation::before(emu, v, crate::animation::Prop::Opacity);
     view_mut(emu, v).alpha = a;
+    crate::animation::after(emu, v, crate::animation::Prop::Opacity, old);
     Ok(())
 }
 
@@ -879,18 +902,45 @@ fn completion_fire(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// Run an animation: the block in x`anim`, the completion (or none) in
-/// x`completion`; duration in d0, the delay in d`delay` if there is one.
-fn animate(emu: &mut Emu, anim: usize, completion: Option<usize>, delay: Option<usize>) -> Result<()> {
+/// Which `+animateWith…` (or transition) form was called: where its arguments are.
+#[derive(Clone, Copy)]
+enum Form {
+    /// `animateWithDuration:animations:[completion:]`: d0, x2, x3.
+    Plain,
+    /// `animateWithDuration:delay:options:animations:completion:`: d0, d1, x2, x3, x4.
+    Options,
+    /// `…usingSpringWithDamping:initialSpringVelocity:options:…`: d0, d1, d2, d3, x2, x3, x4.
+    Spring,
+    /// `animateKeyframesWithDuration:delay:options:animations:completion:`: as Options.
+    Keyframes,
+    /// `transitionWithView:duration:options:animations:completion:`: x2, d0, x3, x4, x5.
+    Transition,
+}
+
+/// Run a UIView animation block: property changes inside it animate (see
+/// animation.rs) from what's on screen to their new values, starting after
+/// the delay; the completion runs (finished = YES) when they're done.
+fn animate(emu: &mut Emu, form: Form, completion: bool) -> Result<()> {
     let duration = f(emu, 0).max(0.0);
-    let delay = delay.map_or(0.0, |i| f(emu, i).max(0.0));
-    let (a, c) = (emu.arg(anim), completion.map_or(0, |i| emu.arg(i)));
-    if a != 0 {
-        crate::libsystem::call_block(emu, a, &[])?;
+    let (delay, options, block, done) = match form {
+        Form::Plain => (0.0, 0, emu.arg(2), if completion { emu.arg(3) } else { 0 }),
+        Form::Options | Form::Keyframes | Form::Spring => (f(emu, 1).max(0.0), emu.arg(2), emu.arg(3), emu.arg(4)),
+        Form::Transition => (0.0, emu.arg(3), emu.arg(4), emu.arg(5)),
+    };
+    let timing = match form {
+        Form::Spring => crate::animation::view_spring(duration, f(emu, 2), f(emu, 3)),
+        // Keyframes run linearly between their keyframes (calculation mode linear).
+        Form::Keyframes => crate::animation::Timing::Linear,
+        _ => crate::animation::block_timing(options),
+    };
+    if block != 0 {
+        crate::animation::in_block(emu, delay, duration, timing, options, |e| crate::libsystem::call_block(e, block, &[]).map(|_| ()))?;
     }
-    if c != 0 {
-        let c = copy_block(emu, c)?;
-        crate::uikit::after_on_main(emu, duration + delay, completion_fire, c)?;
+    // A repeating animation never finishes.
+    if done != 0 && options & (1 << 3) == 0 {
+        let c = copy_block(emu, done)?;
+        let reverses = if options & (1 << 4) != 0 { 2.0 } else { 1.0 };
+        crate::uikit::after_on_main(emu, delay + duration * reverses, completion_fire, c)?;
     }
     Ok(())
 }
@@ -973,21 +1023,20 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "convertPoint:fromView:", |e| convert_point(e, false)),
     ("UIView", false, "convertRect:toView:", |e| convert_rect(e, true)),
     ("UIView", false, "convertRect:fromView:", |e| convert_rect(e, false)),
-    ("UIView", true, "animateWithDuration:animations:", |e| animate(e, 2, None, None)),
-    ("UIView", true, "animateWithDuration:animations:completion:", |e| animate(e, 2, Some(3), None)),
-    ("UIView", true, "animateWithDuration:delay:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
-    ("UIView", true, "animateWithDuration:delay:usingSpringWithDamping:initialSpringVelocity:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
-    ("UIView", true, "animateKeyframesWithDuration:delay:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
-    ("UIView", true, "transitionWithView:duration:options:animations:completion:", |e| animate(e, 4, Some(5), None)),
+    ("UIView", true, "animateWithDuration:animations:", |e| animate(e, Form::Plain, false)),
+    ("UIView", true, "animateWithDuration:animations:completion:", |e| animate(e, Form::Plain, true)),
+    ("UIView", true, "animateWithDuration:delay:options:animations:completion:", |e| animate(e, Form::Options, true)),
+    ("UIView", true, "animateWithDuration:delay:usingSpringWithDamping:initialSpringVelocity:options:animations:completion:", |e| animate(e, Form::Spring, true)),
+    ("UIView", true, "animateKeyframesWithDuration:delay:options:animations:completion:", |e| animate(e, Form::Keyframes, true)),
+    ("UIView", true, "transitionWithView:duration:options:animations:completion:", |e| animate(e, Form::Transition, true)),
+    // Within an animateKeyframes block: this part runs over its share of the whole (d0 start, d1 length).
     ("UIView", true, "addKeyframeWithRelativeStartTime:relativeDuration:animations:", |e| {
-        let b = e.arg(2);
-        crate::libsystem::call_block(e, b, &[])?;
-        Ok(())
+        let (b, start, length) = (e.arg(2), f(e, 0), f(e, 1));
+        crate::animation::in_keyframe(e, start, length, |e| crate::libsystem::call_block(e, b, &[]).map(|_| ()))
     }),
     ("UIView", true, "performWithoutAnimation:", |e| {
         let b = e.arg(2);
-        crate::libsystem::call_block(e, b, &[])?;
-        Ok(())
+        crate::animation::without(e, |e| crate::libsystem::call_block(e, b, &[]).map(|_| ()))
     }),
     ("UIView", false, "convertRect:toCoordinateSpace:", |e| convert_space(e, true, true)),
     ("UIView", false, "convertRect:fromCoordinateSpace:", |e| convert_space(e, true, false)),

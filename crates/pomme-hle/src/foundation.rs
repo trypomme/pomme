@@ -1696,7 +1696,7 @@ pub(crate) fn is_boolean(emu: &Emu, n: u64) -> bool {
 }
 
 /// Read a number as (i64, f64).
-fn number_value(emu: &mut Emu, n: u64) -> Result<(i64, f64)> {
+pub(crate) fn number_value(emu: &mut Emu, n: u64) -> Result<(i64, f64)> {
     if n == 0 {
         return Ok((0, 0.0));
     }

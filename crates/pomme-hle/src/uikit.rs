@@ -234,6 +234,8 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
             let main = foundation::cf_call(e, "_CFRunLoopGetMain", &[])?;
             foundation::cf_call(e, "_CFRunLoopWakeUp", &[main])?;
         }
+        // Core Animation's commit: delegates of animations that stopped hear about it.
+        crate::animation::commit(e)?;
         crate::host::maybe_frame(e)
     })?;
     let observer = foundation::cf_call(emu, "_CFRunLoopObserverCreate", &[0, BEFORE_WAITING | EXIT, 1, 2_000_000, callout, 0])?;

@@ -402,6 +402,7 @@ fn next_deadline(emu: &Emu, own: Option<u64>) -> Option<u64> {
         consider(p.timer);
     }
     consider(crate::keychain::next_face_at(emu));
+    consider(crate::host::frame_due(emu));
     next
 }
 
