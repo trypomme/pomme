@@ -91,4 +91,3 @@ fn locking_to_portrait() {
     assert!(log.starts_with("willTraits v2; willSize 390x844 from 844x390"), "no device notification: the phone didn't move\n{log}");
     assert_eq!(state, "screen 390x844 window 390x844 scene 1 device 3 statusBar 390x47 hidden 0 classes h1 v2");
 }
-

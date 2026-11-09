@@ -530,3 +530,48 @@ fn keyboard_controller_sticky_view() {
     assert!(status.contains("\"keyboard 0 at 0%"), "{status}");
     assert_eq!(down, (0xff, 0xff, 0xff), "page, the sticky view back at the bottom: {down:?}");
 }
+
+/// The rotation screen's lines (size and change count, insets) after
+/// turning the phone at the given times.
+fn rotation_screen(turns: &[(f64, pomme_hle::device::Orientation)], secs: f64) -> Option<(Emu, String, String)> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///rotation".into());
+    emu.ui.rotations = turns.iter().map(|&(t, o)| ((t * 1e9) as u64, o)).collect();
+    let v = run_for(&mut emu, secs);
+    let line = |needle: &str| v.lines().find(|l| l.contains(needle)).map(|l| l.trim().to_string()).unwrap_or_else(|| panic!("no {needle:?} in\n{v}"));
+    let (size, insets) = (line("changes\""), line("\"insets "));
+    Some((emu, size, insets))
+}
+
+/// Turned to landscape: React Native hears the window's new size once
+/// (useWindowDimensions, Dimensions 'change'), react-native-safe-area-context
+/// the new insets (the notch's side and the home indicator), and the
+/// screen's content is laid out inside them; the bar spans the safe width.
+#[test]
+fn rotation_to_landscape() {
+    use pomme_hle::device::Orientation::LandscapeRight;
+    let Some((mut emu, size, insets)) = rotation_screen(&[(3.0, LandscapeRight)], 5.0) else { return };
+    // Inset by the safe area's sides: 47 pt in, 750 pt wide.
+    assert!(size.contains("(47.0, 44.0, 750.0×44.3)") && size.contains("\"landscape 844x390 · 1 changes\""), "{size}");
+    assert!(insets.contains("\"insets 0,47,20,47\""), "{insets}");
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    assert_eq!((pix.width(), pix.height()), (844 * 3, 390 * 3));
+    let at = |x: u32, y: u32| {
+        let c = pix.pixel(x * 3, y * 3).unwrap();
+        (c.red(), c.green(), c.blue())
+    };
+    // The bar (#0f766e) is below the two lines, from x 47 to 797.
+    let y = 44 + 89 + 20;
+    assert_eq!(at(60, y), (0x0f, 0x76, 0x6e));
+    assert_eq!(at(790, y), (0x0f, 0x76, 0x6e));
+    assert_eq!(at(805, y), (255, 255, 255));
+}
+
+/// And back to portrait: a second change, and portrait's insets again.
+#[test]
+fn rotation_and_back() {
+    use pomme_hle::device::Orientation::{LandscapeLeft, Portrait};
+    let Some((_, size, insets)) = rotation_screen(&[(3.0, LandscapeLeft), (5.0, Portrait)], 7.0) else { return };
+    assert!(size.contains("\"portrait 390x844 · 2 changes\""), "{size}");
+    assert!(insets.contains("\"insets 47,0,34,0\""), "{insets}");
+}

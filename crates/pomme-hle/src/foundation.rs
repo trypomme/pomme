@@ -1016,10 +1016,12 @@ fn array_with_objects_varargs(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// `-isEqualToDictionary:`: the same keys, each with an equal value.
+/// `-isEqualToDictionary:` / `-isEqual:`: a dictionary with the same keys,
+/// each with an equal value.
 fn dict_is_equal(emu: &mut Emu) -> Result<()> {
     let (a, b) = (emu.arg(0), emu.arg(2));
-    let eq = a == b || (b != 0 && {
+    let dict = crate::objc::host_class(emu, "NSDictionary")?;
+    let eq = a == b || (b != 0 && send(emu, b, "isKindOfClass:", &[dict])? & 0xff != 0 && {
         let (x, y) = (as_cf_dict(emu, a)?, as_cf_dict(emu, b)?);
         let (px, py) = (dict_pairs(emu, x)?, dict_pairs(emu, y)?);
         let mut same = px.len() == py.len();
@@ -1488,6 +1490,32 @@ fn set_with_object(emu: &mut Emu) -> Result<()> {
     let s = new_set(emu)?;
     cf(emu, "_CFSetAddValue", &[s, emu.arg(2)])?;
     emu.ret(s);
+    Ok(())
+}
+
+/// `-isEqualToSet:` / `-isEqual:`: a set of the same size, each member in it.
+fn set_is_equal(emu: &mut Emu) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    let set = crate::objc::host_class(emu, "NSSet")?;
+    let eq = a == b || (b != 0 && send(emu, b, "isKindOfClass:", &[set])? & 0xff != 0 && {
+        let (x, y) = (set_values(emu, a)?, set_values(emu, b)?.len());
+        let mut same = x.len() == y;
+        for v in x {
+            if !same {
+                break;
+            }
+            same = send(emu, b, "containsObject:", &[v])? & 0xff != 0;
+        }
+        same
+    });
+    emu.ret(eq as u64);
+    Ok(())
+}
+
+/// `-hash` of a collection: its count, as Foundation's is, so equal collections hash alike.
+fn hash_is_count(emu: &mut Emu) -> Result<()> {
+    let n = send(emu, emu.arg(0), "count", &[])?;
+    emu.ret(n);
     Ok(())
 }
 
@@ -3685,6 +3713,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSDictionary", false, "getObjects:andKeys:", dict_get_objects_and_keys),
     ("NSDictionary", false, "keyEnumerator", dict_key_enumerator),
     ("NSDictionary", false, "isEqualToDictionary:", dict_is_equal),
+    ("NSDictionary", false, "isEqual:", dict_is_equal),
+    ("NSDictionary", false, "hash", hash_is_count),
     ("NSDictionary", false, "objectEnumerator", dict_object_enumerator),
     ("NSSet", false, "getObjects:", set_get_objects),
     ("NSSet", false, "getObjects:count:", set_get_objects),
@@ -3817,6 +3847,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("NSDictionary", true, "dictionaryWithObjectsAndKeys:", dict_with_objects_and_keys),
     ("NSArray", false, "isEqual:", array_is_equal),
+    ("NSArray", false, "hash", hash_is_count),
     ("NSArray", true, "arrayWithArray:", array_with_array),
     ("NSArray", false, "initWithArray:", array_with_array),
     ("NSMutableArray", true, "arrayWithCapacity:", array_empty),
@@ -3887,6 +3918,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableSet", false, "initWithCapacity:", set_empty),
     ("NSSet", false, "count", set_count),
     ("NSSet", false, "containsObject:", set_contains),
+    ("NSSet", false, "isEqualToSet:", set_is_equal),
+    ("NSSet", false, "isEqual:", set_is_equal),
+    ("NSSet", false, "hash", hash_is_count),
     ("NSSet", false, "member:", set_member),
     ("NSSet", false, "allObjects", set_all_objects),
     ("NSSet", false, "anyObject", set_any_object),
