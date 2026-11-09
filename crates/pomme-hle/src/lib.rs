@@ -45,6 +45,7 @@ pub mod net;
 pub mod host;
 pub mod touch;
 pub mod textinput;
+pub mod device;
 mod uikit;
 mod uiview;
 
@@ -199,6 +200,8 @@ pub struct Emu {
     /// Touches, gesture recognizers and the input script.
     pub touch: touch::State,
     pub input: textinput::State,
+    /// The iPhone model pomme presents (`--device`).
+    pub device: &'static device::Device,
     /// A live host (browser, window) and its frames and input.
     pub live: host::State,
     /// The network (see net.rs) and URL-loading objects.
@@ -273,6 +276,7 @@ impl Emu {
             render: Default::default(),
             touch: Default::default(),
             input: Default::default(),
+            device: device::default(),
             live: Default::default(),
             net: Default::default(),
             timers: Default::default(),
@@ -322,6 +326,12 @@ impl Emu {
     /// PNG screenshot of the windows at `scale` pixels per point.
     pub fn screenshot_png(&mut self, scale: f32) -> Result<Vec<u8>> {
         render::screenshot_png(self, scale)
+    }
+
+    /// A PNG of the screen inside a plain phone body (see `render::render_shell`).
+    pub fn shell_png(&mut self, scale: f32) -> Result<Vec<u8>> {
+        let pix = render::render_shell(self, scale)?;
+        pix.encode_png().map_err(|e| Stop::Unsupported(format!("PNG encoding: {e}")))
     }
 
     /// The UIKit window hierarchy as indented text (for reports and tests).

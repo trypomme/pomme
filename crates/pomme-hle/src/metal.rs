@@ -936,7 +936,7 @@ fn replace_region(emu: &mut Emu) -> Result<()> {
 
 /// Show a presented drawable: its pixels become the CAMetalLayer's contents.
 pub(crate) fn show_frame(emu: &mut Emu, layer: u64, pix: tiny_skia::Pixmap) -> Result<()> {
-    let scale = crate::uikit::SCREEN_SCALE;
+    let scale = emu.device.scale;
     let size = [pix.width() as f64 / scale, pix.height() as f64 / scale];
     let img = crate::image::new_image(emu, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4] })?;
     crate::calayer::layer_mut(emu, layer).contents = img;

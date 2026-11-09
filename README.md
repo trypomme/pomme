@@ -48,6 +48,11 @@ Debugging:
   `--type 'Ada\n@4'` types on the software keyboard at 4 s (`\n` return, `\b` delete) into
   whatever has focus (tap a text field first with `--tap`). The keyboard reports iOS 26's
   frame (335 pt, measured in the Simulator) with the usual will/did notifications.
+- `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
+  safe area, keyboard height, and its notch or Dynamic Island in screenshots
+  (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the
+  screenshot inside a plain phone body: rounded screen corners, bezel, buttons, home button.
+  The iPhone 17's frame matches the iOS 26 Simulator's, island included.
 - `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
   local (non-exported) ones too, by name or by the address `nm` prints.
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
@@ -58,6 +63,8 @@ Debugging:
 - Every stop prints the failing thread, its registers and a backtrace; C++ exceptions are reported with their type and `what()`.
 
 ![hello-expo rendered by pomme](docs/hello-expo.png)
+
+<img src="docs/hello-expo-iphone-17.png" height="420" alt="hello-expo on an iPhone 17 (--device iphone-17 --shell)"> <img src="docs/hello-expo-iphone-se.png" height="420" alt="hello-expo on an iPhone SE (--device iphone-se --shell)">
 
 ## Targets
 

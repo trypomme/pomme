@@ -31,13 +31,8 @@ pub const EDITING_CHANGED: u64 = 1 << 17;
 pub const EDITING_DID_END: u64 = 1 << 18;
 pub const EDITING_DID_END_ON_EXIT: u64 = 1 << 19;
 
-/// The keyboard's height (portrait, English), as the iOS 26 Simulator reports
-/// it in UIKeyboardFrameEndUserInfoKey on an iPhone 17: 335 pt with the
-/// predictive bar, 304 pt without it (an input with both autocorrection and
-/// spell checking off, as Flutter's `autocorrect: false` asks). And how long it
-/// takes to slide in or out.
-pub const KEYBOARD_HEIGHT: f64 = 335.0;
-pub const KEYBOARD_HEIGHT_NO_PREDICTIONS: f64 = 304.0;
+/// How long the keyboard takes to slide in or out (its height is the
+/// device's: see device.rs).
 pub const KEYBOARD_DURATION: f64 = 0.25;
 /// UIViewAnimationCurve the keyboard animates with (UIKit's private "keyboard" curve).
 const KEYBOARD_CURVE: i64 = 7;
@@ -719,8 +714,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 // ---- the keyboard ----
 
 /// The keyboard's frame in screen coordinates while shown (and below the screen while hidden).
-pub fn keyboard_frame(height: f64, shown: bool) -> [f64; 4] {
-    let (w, h) = (crate::uikit::SCREEN_W, crate::uikit::SCREEN_H);
+pub fn keyboard_frame(device: &crate::device::Device, height: f64, shown: bool) -> [f64; 4] {
+    let (w, h) = (device.width, device.height);
     let y = if shown { h - height } else { h };
     [0.0, y, w, height]
 }
@@ -738,7 +733,7 @@ fn trait_value(emu: &mut Emu, r: u64, name: &str) -> Result<u64> {
 fn keyboard_height_for(emu: &mut Emu, r: u64) -> Result<f64> {
     const NO: u64 = 1;
     let off = trait_value(emu, r, "autocorrectionType")? == NO && trait_value(emu, r, "spellCheckingType")? == NO;
-    Ok(if off { KEYBOARD_HEIGHT_NO_PREDICTIONS } else { KEYBOARD_HEIGHT })
+    Ok(emu.device.keyboard_height(!off))
 }
 
 fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
@@ -763,7 +758,8 @@ fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
 
 fn post_keyboard(emu: &mut Emu, names: &[&str], shown: bool) -> Result<()> {
     let h = emu.input.keyboard_height;
-    let info = keyboard_info(emu, keyboard_frame(h, !shown), keyboard_frame(h, shown))?;
+    let d = emu.device;
+    let info = keyboard_info(emu, keyboard_frame(d, h, !shown), keyboard_frame(d, h, shown))?;
     for n in names {
         foundation::post_named_info(emu, n, 0, info)?;
     }
@@ -906,8 +902,9 @@ mod tests {
 
     #[test]
     fn keyboard_sits_on_the_bottom_edge() {
-        let shown = keyboard_frame(KEYBOARD_HEIGHT, true);
-        assert_eq!(shown[1] + shown[3], crate::uikit::SCREEN_H);
-        assert_eq!(keyboard_frame(KEYBOARD_HEIGHT, false)[1], crate::uikit::SCREEN_H);
+        let d = crate::device::default();
+        let shown = keyboard_frame(d, d.keyboard_height(true), true);
+        assert_eq!(shown[1] + shown[3], d.height);
+        assert_eq!(keyboard_frame(d, d.keyboard_height(true), false)[1], d.height);
     }
 }

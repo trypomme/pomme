@@ -11,9 +11,6 @@ use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result, Stop, foundation, swift};
 
 /// The device we pretend to be: an iPhone with a 390×844 pt screen at 3×.
-pub const SCREEN_W: f64 = 390.0;
-pub const SCREEN_H: f64 = 844.0;
-pub const SCREEN_SCALE: f64 = 3.0;
 
 #[derive(Default)]
 pub struct State {
@@ -439,17 +436,19 @@ pub fn ret_f64(emu: &mut Emu, v: f64) {
 }
 
 fn screen_bounds(emu: &mut Emu) -> Result<()> {
-    ret_rect(emu, [0.0, 0.0, SCREEN_W, SCREEN_H]);
+    let d = emu.device;
+    ret_rect(emu, [0.0, 0.0, d.width, d.height]);
     Ok(())
 }
 
 fn screen_native_bounds(emu: &mut Emu) -> Result<()> {
-    ret_rect(emu, [0.0, 0.0, SCREEN_W * SCREEN_SCALE, SCREEN_H * SCREEN_SCALE]);
+    let d = emu.device;
+    ret_rect(emu, [0.0, 0.0, d.width * d.scale, d.height * d.scale]);
     Ok(())
 }
 
 fn screen_scale(emu: &mut Emu) -> Result<()> {
-    ret_f64(emu, SCREEN_SCALE);
+    ret_f64(emu, emu.device.scale);
     Ok(())
 }
 
@@ -657,7 +656,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
     ("UIApplication", false, "statusBarFrame", |e| {
-        ret_rect(e, [0.0, 0.0, SCREEN_W, crate::uiview::SAFE_AREA[0]]);
+        let d = e.device;
+        ret_rect(e, [0.0, 0.0, d.width, d.safe_top]);
         Ok(())
     }),
     ("UIApplication", false, "isStatusBarHidden", ret_zero),
@@ -692,7 +692,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIStatusBarManager", false, "statusBarFrame", |e| {
-        ret_rect(e, [0.0, 0.0, SCREEN_W, crate::uiview::SAFE_AREA[0]]);
+        let d = e.device;
+        ret_rect(e, [0.0, 0.0, d.width, d.safe_top]);
         Ok(())
     }),
     ("UIStatusBarManager", false, "isStatusBarHidden", ret_zero),

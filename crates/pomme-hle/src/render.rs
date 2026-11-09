@@ -1009,9 +1009,9 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
 /// The software keyboard while it's up: iOS 26's light keyboard panel (its
 /// colour and rounded top corners, sampled from the Simulator) along the bottom
 /// edge. The keys aren't drawn.
-fn draw_keyboard(p: &mut Painter, height: f64, t: &[f32; 6]) {
+fn draw_keyboard(p: &mut Painter, device: &crate::device::Device, height: f64, t: &[f32; 6]) {
     const RADIUS: f32 = 28.0;
-    let [x, y, w, h] = crate::textinput::keyboard_frame(height, true).map(|v| v as f32);
+    let [x, y, w, h] = crate::textinput::keyboard_frame(device, height, true).map(|v| v as f32);
     // Round the top corners only: the bottom ones fall below the screen.
     let panel = transform_els(&rounded_rect(w, h + RADIUS, RADIUS), &[1.0, 0.0, 0.0, 1.0, x, y]);
     p.fill(&panel, [226.0 / 255.0, 228.0 / 255.0, 232.0 / 255.0, 1.0], 1.0, false, t, None);
@@ -1111,7 +1111,7 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     for w in emu.ui.windows.clone() {
         display(emu, w)?;
     }
-    let (sw, sh) = ((crate::uikit::SCREEN_W as f32 * scale) as u32, (crate::uikit::SCREEN_H as f32 * scale) as u32);
+    let (sw, sh) = ((emu.device.width as f32 * scale) as u32, (emu.device.height as f32 * scale) as u32);
     let mut pix = Pixmap::new(sw, sh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
     pix.fill(tiny_skia::Color::BLACK);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
@@ -1121,7 +1121,94 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
         draw_view(emu, &mut p, w, 1.0, &t, None);
     }
     if emu.input.keyboard_shown {
-        draw_keyboard(&mut p, emu.input.keyboard_height, &t);
+        draw_keyboard(&mut p, emu.device, emu.input.keyboard_height, &t);
+    }
+    draw_cutout(&mut p, emu.device, &t);
+    Ok(p.pix)
+}
+
+/// The sensor housing over the screen, as the Simulator draws it into its
+/// screenshots: the Dynamic Island (a black capsule) or the notch.
+fn draw_cutout(p: &mut Painter, d: &crate::device::Device, t: &[f32; 6]) {
+    use crate::device::Cutout;
+    let cx = d.width as f32 / 2.0;
+    let black = [0.0, 0.0, 0.0, 1.0];
+    match d.cutout {
+        Cutout::None => {}
+        Cutout::Island { top, width, height } => {
+            let (w, h) = (width as f32, height as f32);
+            let capsule = transform_els(&rounded_rect(w, h, h / 2.0), &[1.0, 0.0, 0.0, 1.0, cx - w / 2.0, top as f32]);
+            p.fill(&capsule, black, 1.0, false, t, None);
+        }
+        Cutout::Notch { width, height } => {
+            p.fill(&notch_els(cx, width as f32, height as f32), black, 1.0, false, t, None);
+        }
+    }
+}
+
+/// A notch hanging from the top edge: concave shoulders where it meets the
+/// edge, straight sides, rounded bottom corners. `width` includes the shoulders.
+fn notch_els(cx: f32, width: f32, height: f32) -> Vec<El> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    const SHOULDER: f32 = 6.0;
+    let r = (height * 0.6).min(20.0);
+    let (x0, x1) = (cx - width / 2.0 + SHOULDER, cx + width / 2.0 - SHOULDER);
+    // A quarter circle's control-point distance.
+    let k = SHOULDER * 0.5523;
+    let mut out = vec![El::Move(x0 - SHOULDER, 0.0), El::Cubic(x0 - SHOULDER + k, 0.0, x0, SHOULDER - k, x0, SHOULDER), El::Line(x0, height - r)];
+    arc_els(&mut out, x0 + r, height - r, r, PI, FRAC_PI_2, true);
+    out.push(El::Line(x1 - r, height));
+    arc_els(&mut out, x1 - r, height - r, r, FRAC_PI_2, 0.0, true);
+    out.extend([El::Line(x1, SHOULDER), El::Cubic(x1, SHOULDER - k, x1 + SHOULDER - k, 0.0, x1 + SHOULDER, 0.0), El::Close]);
+    out
+}
+
+/// The screen inside a phone body: the device's rounded display corners,
+/// a dark bezel, the side buttons and (on SE-style phones) the home button.
+/// Not a picture of Apple's hardware: a plain stand-in for previews.
+pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
+    let d = emu.device;
+    let screen = render(emu, scale)?;
+    // Bezel around the screen (pt), and room for the buttons at the sides.
+    const BEZEL: f32 = 14.0;
+    const BUTTONS: f32 = 4.0;
+    let (chin, forehead) = if d.home_button { (88.0f32, 88.0f32) } else { (BEZEL, BEZEL) };
+    let (sw, sh) = (d.width as f32, d.height as f32);
+    let (bw, bh) = (sw + 2.0 * BEZEL, sh + forehead + chin);
+    let total = (bw + 2.0 * BUTTONS, bh);
+    let mut pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
+    let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
+    let mut p = Painter { pix: std::mem::replace(&mut pix, Pixmap::new(1, 1).unwrap()), font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
+    let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
+    let body = transform_els(&rounded_rect(bw, bh, body_r), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
+    // Side buttons first, so the body covers their inner edges.
+    let button = |p: &mut Painter, x: f32, y: f32, h: f32| {
+        let b = transform_els(&rounded_rect(BUTTONS + 3.0, h, 2.0), &[1.0, 0.0, 0.0, 1.0, x, y]);
+        p.fill(&b, [0.17, 0.17, 0.18, 1.0], 1.0, false, &t, None);
+    };
+    let top = forehead + if d.home_button { 0.0 } else { 100.0 };
+    button(&mut p, 0.0, top, 32.0); // action / ring
+    button(&mut p, 0.0, top + 56.0, 60.0); // volume up
+    button(&mut p, 0.0, top + 128.0, 60.0); // volume down
+    button(&mut p, total.0 - BUTTONS - 3.0, top + 50.0, 96.0); // side button
+    p.fill(&body, [0.11, 0.11, 0.12, 1.0], 1.0, false, &t, None);
+    p.stroke(&body, [0.35, 0.35, 0.37, 1.0], 1.0, 1.5, &t, None);
+    // The screen, clipped to the display's corners.
+    let (ox, oy) = (BUTTONS + BEZEL, forehead);
+    let screen_shape = transform_els(&rounded_rect(sw, sh, d.corner_radius as f32), &[1.0, 0.0, 0.0, 1.0, ox, oy]);
+    let mask = p.intersect(None, &screen_shape, &t);
+    let pattern = tiny_skia::Pattern::new(screen.as_ref(), tiny_skia::SpreadMode::Pad, tiny_skia::FilterQuality::Nearest, 1.0, Transform::from_translate(ox * scale, oy * scale));
+    let paint = Paint { shader: pattern, anti_alias: true, ..Default::default() };
+    if let Some(r) = tiny_skia::Rect::from_xywh(ox * scale, oy * scale, sw * scale, sh * scale) {
+        p.pix.fill_rect(r, &paint, Transform::identity(), mask.as_ref());
+    }
+    if d.home_button {
+        let (cx, cy, r) = (total.0 / 2.0, bh - chin / 2.0, 22.0);
+        let mut ring = Vec::new();
+        arc_els(&mut ring, cx, cy, r, 0.0, std::f32::consts::TAU, false);
+        ring.push(El::Close);
+        p.stroke(&ring, [0.4, 0.4, 0.42, 1.0], 1.0, 2.0, &t, None);
     }
     Ok(p.pix)
 }

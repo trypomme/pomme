@@ -9,13 +9,19 @@ const APP: &str = "../../apps/hello-flutter/build/ios/iphoneos/Runner.app";
 const SYSROOT: &str = "../../vendor/sysroot";
 
 fn boot() -> Option<Emu> {
+    boot_on(pomme_hle::device::default())
+}
+
+fn boot_on(device: &'static pomme_hle::device::Device) -> Option<Emu> {
     let (app, sysroot) = (Path::new(APP), Path::new(SYSROOT));
     if !app.exists() || !sysroot.join("System/Library/Frameworks/CoreFoundation.framework").exists() || !sysroot.join("pomme/impeller").exists() {
         eprintln!("skipping: build hello-flutter, the sysroot and the Impeller MSL first");
         return None;
     }
     let opts = pomme_loader::LoadOptions { sysroot: Some(sysroot.canonicalize().unwrap()) };
-    Some(Emu::new(pomme_loader::load_with(app, &opts).unwrap()).unwrap())
+    let mut emu = Emu::new(pomme_loader::load_with(app, &opts).unwrap()).unwrap();
+    emu.device = device;
+    Some(emu)
 }
 
 /// The engine starts: App.framework (the Dart AOT snapshot, dlopened by the
@@ -198,4 +204,62 @@ fn text_field_and_keyboard_inset() {
     assert!(!shown, "return should unfocus and lower the keyboard");
     assert!(near(c[0], BORDER), "resting border: {:?}", c[0]);
     assert!(near(c[1], (255, 255, 255)), "page: {:?}", c[1]);
+}
+
+/// Other phones: the app lays out for the device's screen and safe area, and
+/// screenshots carry its sensor housing. On an iPhone 17 (402×874 pt, 62 pt
+/// top inset) the frame matches the iOS 26 Simulator's, Dynamic Island
+/// included (126×37.33 pt, 14 pt from the top); the keyboard lifts the field
+/// as on the 16e. On an iPhone SE (375×667 @2x, home button) there's no
+/// cutout, and the page fills the top of the screen.
+#[test]
+fn other_devices() {
+    let find = |id| pomme_hle::device::find(id).unwrap();
+    let run = |device, focus: bool, scale: f32, points: &[(f64, f64)]| -> Option<(f64, Vec<(u8, u8, u8)>)> {
+        let mut emu = boot_on(device)?;
+        if focus {
+            tap(&mut emu, (201.0, 830.0), 2.0);
+        }
+        emu.time_limit_ns = Some(4_000_000_000);
+        match emu.run_main() {
+            Err(pomme_hle::Stop::TimeLimit(_)) => {}
+            other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        }
+        if emu.metal.gpu_error.is_some() {
+            return None;
+        }
+        let pix = pomme_hle::render::render(&mut emu, scale).unwrap();
+        assert_eq!((pix.width(), pix.height()), ((device.width * scale as f64) as u32, (device.height * scale as f64) as u32));
+        let colors = points
+            .iter()
+            .map(|&(x, y)| {
+                let c = pix.pixel((x * scale as f64) as u32, (y * scale as f64) as u32).unwrap();
+                (c.red(), c.green(), c.blue())
+            })
+            .collect();
+        Some((if emu.input.keyboard_shown { emu.input.keyboard_height } else { 0.0 }, colors))
+    };
+    let near = |(r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)| r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12;
+    const WHITE: (u8, u8, u8) = (255, 255, 255);
+    const BLACK: (u8, u8, u8) = (0, 0, 0);
+    const SLATE: (u8, u8, u8) = (0x1e, 0x29, 0x3b);
+
+    // iPhone 17: the island, the page around it, and the square at (51, 287)–(351, 587) pt as in the Simulator.
+    let points = [(201.0, 32.0), (201.0, 8.0), (130.0, 32.0), (275.0, 32.0), (80.0, 320.0), (322.0, 555.0), (201.0, 270.0), (201.0, 600.0)];
+    let Some((kb, c)) = run(find("iphone-17"), false, 3.0, &points) else { return };
+    assert_eq!(kb, 0.0);
+    assert!(near(c[0], BLACK) && near(c[1], WHITE) && near(c[2], WHITE) && near(c[3], WHITE), "island and page: {:?}", &c[..4]);
+    assert!(near(c[4], SLATE) && near(c[5], SLATE), "square: {:?}", &c[4..6]);
+    assert!(near(c[6], WHITE) && near(c[7], WHITE), "above and below the square: {:?}", &c[6..]);
+
+    // Focused: the 304 pt keyboard (the iPhone 17's, measured) with the field's border 17 pt above it (874 − 304 − 17).
+    let (kb, c) = run(find("iphone-17"), true, 3.0, &[(201.0, 553.0), (201.0, 750.0)]).unwrap();
+    assert_eq!(kb, 304.0);
+    assert!(near(c[0], (103, 80, 164)), "focused border: {:?}", c[0]);
+    assert!(near(c[1], (226, 228, 232)), "keyboard: {:?}", c[1]);
+
+    // iPhone SE: no cutout; the page reaches the top edge; the square is still centered.
+    let (_, c) = run(find("iphone-se"), false, 2.0, &[(187.0, 2.0), (187.0, 20.0), (40.0, 250.0)]).unwrap();
+    assert!(near(c[0], WHITE) && near(c[1], WHITE), "top of an SE: {:?}", &c[..2]);
+    assert_eq!(c.len(), 3);
 }

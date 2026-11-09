@@ -8,7 +8,7 @@
 //! aggregates, passed and returned in d0–d3.
 
 use crate::objc::{self, host_class, send};
-use crate::uikit::{SCREEN_H, SCREEN_W, ret_f64, ret_rect};
+use crate::uikit::{ret_f64, ret_rect};
 use crate::{Emu, HostFn, Result, foundation};
 use std::collections::HashMap;
 
@@ -482,7 +482,8 @@ fn ret_one(emu: &mut Emu) -> Result<()> {
 
 fn window_init_with_scene(emu: &mut Emu) -> Result<()> {
     let w = emu.arg(0);
-    set_frame_of(emu, w, [0.0, 0.0, SCREEN_W, SCREEN_H]);
+    let d = emu.device;
+    set_frame_of(emu, w, [0.0, 0.0, d.width, d.height]);
     view_mut(emu, w).window = w;
     if !emu.ui.windows.contains(&w) {
         emu.ui.windows.push(w);
@@ -565,7 +566,8 @@ fn vc_load_view(emu: &mut Emu) -> Result<()> {
     let vc = emu.arg(0);
     let cls = host_class(emu, "UIView")?;
     let v = send(emu, cls, "alloc", &[])?;
-    emu.cpu.q[..4].copy_from_slice(&[0, 0, SCREEN_W.to_bits() as u128, SCREEN_H.to_bits() as u128]);
+    let d = emu.device;
+    emu.cpu.q[..4].copy_from_slice(&[0, 0, d.width.to_bits() as u128, d.height.to_bits() as u128]);
     let v = send(emu, v, "initWithFrame:", &[])?;
     emu.ui.views.vc_view.insert(vc, v);
     Ok(())
@@ -662,14 +664,11 @@ fn color_get_rgba(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// The device's safe-area insets (top, left, bottom, right) for a 390×844 pt iPhone.
-pub const SAFE_AREA: [f64; 4] = [47.0, 0.0, 34.0, 0.0];
-
 /// `-safeAreaInsets` (UIEdgeInsets, in d0–d3): the device insets for windows
 /// and views that cover the screen; zero for views inside the safe area.
 pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
-    let insets = if emu.ui.windows.contains(&v) { SAFE_AREA } else { crate::navigation::safe_area(emu, v) };
+    let insets = if emu.ui.windows.contains(&v) { emu.device.safe_area() } else { crate::navigation::safe_area(emu, v) };
     ret_rect(emu, insets);
     Ok(())
 }
@@ -837,7 +836,7 @@ fn point_inside(emu: &mut Emu) -> Result<()> {
 }
 
 fn content_scale(emu: &mut Emu) -> Result<()> {
-    ret_f64(emu, crate::uikit::SCREEN_SCALE);
+    ret_f64(emu, emu.device.scale);
     Ok(())
 }
 
@@ -1109,7 +1108,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UITraitCollection", true, "setCurrentTraitCollection:", noop),
     ("UITraitCollection", false, "userInterfaceStyle", ret_one), // light
     ("UITraitCollection", false, "displayScale", |e| {
-        ret_f64(e, crate::uikit::SCREEN_SCALE);
+        ret_f64(e, e.device.scale);
         Ok(())
     }),
     ("UITraitCollection", false, "horizontalSizeClass", ret_one), // compact

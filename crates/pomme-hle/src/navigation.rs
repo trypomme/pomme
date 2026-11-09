@@ -10,8 +10,7 @@
 //! what the screens library turns into React Navigation's events.
 
 use crate::objc::{self, host_class, send};
-use crate::uikit::{SCREEN_H, SCREEN_W};
-use crate::uiview::{SAFE_AREA, set_frame_of, view, view_mut};
+use crate::uiview::{set_frame_of, view, view_mut};
 use crate::{Emu, HostFn, Result, foundation};
 use std::collections::HashMap;
 
@@ -149,7 +148,8 @@ fn ensure_view(emu: &mut Emu, nc: u64) -> Result<u64> {
     }
     let container = new_object(emu, "UIView")?;
     send(emu, container, "init", &[])?;
-    set_frame_of(emu, container, [0.0, 0.0, SCREEN_W, SCREEN_H]);
+    let d = emu.device;
+    set_frame_of(emu, container, [0.0, 0.0, d.width, d.height]);
     let bar = if n.bar != 0 { n.bar } else { new_object(emu, "UINavigationBar")? };
     send(emu, bar, "init", &[])?;
     {
@@ -170,8 +170,9 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     let n = nav(emu, nc);
     let b = view(emu, container).bounds;
     let (w, h) = (b[2], b[3]);
-    let bar_bottom = SAFE_AREA[0] + BAR_HEIGHT;
-    set_frame_of(emu, n.bar, [0.0, SAFE_AREA[0], w, BAR_HEIGHT]);
+    let safe_top = emu.device.safe_top;
+    let bar_bottom = safe_top + BAR_HEIGHT;
+    set_frame_of(emu, n.bar, [0.0, safe_top, w, BAR_HEIGHT]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
     if let Some(&top) = n.stack.last() {
         let v = send(emu, top, "view", &[])?;
@@ -558,7 +559,7 @@ pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
     let o = crate::uiview::window_origin(emu, v);
     let b = view(emu, v).bounds;
     let (top, bottom) = (o[1], o[1] + b[3]);
-    let mut safe_top = SAFE_AREA[0];
+    let mut safe_top = emu.device.safe_top;
     // Inside a navigation controller with a visible bar, the bar covers more.
     let mut cur = v;
     while cur != 0 {
@@ -571,11 +572,11 @@ pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
         }
         cur = view(emu, cur).superview;
     }
-    let screen_h = SCREEN_H;
+    let (screen_h, safe_bottom) = (emu.device.height, emu.device.safe_bottom);
     [
         (safe_top - top).clamp(0.0, b[3]),
         0.0,
-        (bottom - (screen_h - SAFE_AREA[2])).clamp(0.0, b[3]),
+        (bottom - (screen_h - safe_bottom)).clamp(0.0, b[3]),
         0.0,
     ]
 }

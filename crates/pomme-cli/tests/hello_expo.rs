@@ -183,8 +183,8 @@ fn ios_18_has_the_pre_26_navigation_bar() {
 
     let pix = pomme_hle::render::render(&mut emu, 1.0).unwrap();
     let px = |x: u32, y: u32| pix.pixel(x, y).unwrap();
-    // Opaque white bar up under the status bar, hairline at its bottom edge.
-    assert_eq!((px(200, 20).red(), px(200, 20).green(), px(200, 20).blue()), (255, 255, 255));
+    // Opaque white bar up under the status bar (beside the notch), hairline at its bottom edge.
+    assert_eq!((px(60, 20).red(), px(60, 20).green(), px(60, 20).blue()), (255, 255, 255));
     // The hairline is one device pixel: row 273 at 3×.
     let hi = pomme_hle::render::render(&mut emu, 3.0).unwrap();
     let line = hi.pixel(600, 273).unwrap();

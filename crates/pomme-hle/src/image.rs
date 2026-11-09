@@ -7,7 +7,6 @@
 
 use crate::objc::{self, host_class};
 use crate::render::{self, Image};
-use crate::uikit::SCREEN_SCALE;
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
 
@@ -61,7 +60,7 @@ fn image(emu: &Emu, o: u64) -> Option<Image> {
 
 fn format_new(emu: &mut Emu) -> Result<()> {
     let f = new_object(emu, "UIGraphicsImageRendererFormat")?;
-    emu.images.formats.insert(f, SCREEN_SCALE);
+    emu.images.formats.insert(f, emu.device.scale);
     ret(emu, f)
 }
 
@@ -69,14 +68,14 @@ fn format_new(emu: &mut Emu) -> Result<()> {
 
 fn renderer_init(emu: &mut Emu, size: [f64; 2], format: u64) -> Result<()> {
     let r = emu.arg(0);
-    let scale = emu.images.formats.get(&format).copied().unwrap_or(SCREEN_SCALE);
+    let scale = emu.images.formats.get(&format).copied().unwrap_or(emu.device.scale);
     emu.images.renderers.insert(r, Renderer { size, scale });
     ret(emu, r)
 }
 
 /// Run the drawing block against a fresh context and rasterize what it drew.
 fn draw(emu: &mut Emu, renderer: u64, block: u64) -> Result<Image> {
-    let r = emu.images.renderers.get(&renderer).copied().unwrap_or(Renderer { size: [1.0, 1.0], scale: SCREEN_SCALE });
+    let r = emu.images.renderers.get(&renderer).copied().unwrap_or(Renderer { size: [1.0, 1.0], scale: emu.device.scale });
     let cg = render::begin_context(emu)?;
     let rc = new_object(emu, "UIGraphicsImageRendererContext")?;
     emu.images.contexts.insert(rc, cg);
@@ -135,17 +134,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (F, true, "formatForTraitCollection:", format_new),
     (F, false, "init", |e| {
         let f = e.arg(0);
-        e.images.formats.insert(f, SCREEN_SCALE);
+        e.images.formats.insert(f, e.device.scale);
         ret(e, f)
     }),
     (F, false, "scale", |e| {
-        let s = e.images.formats.get(&e.arg(0)).copied().unwrap_or(SCREEN_SCALE);
+        let s = e.images.formats.get(&e.arg(0)).copied().unwrap_or(e.device.scale);
         crate::uikit::ret_f64(e, s);
         Ok(())
     }),
     (F, false, "setScale:", |e| {
         let (f, s) = (e.arg(0), d(e, 0));
-        e.images.formats.insert(f, if s > 0.0 { s } else { SCREEN_SCALE });
+        e.images.formats.insert(f, if s > 0.0 { s } else { e.device.scale });
         Ok(())
     }),
     (R, false, "initWithSize:", |e| {

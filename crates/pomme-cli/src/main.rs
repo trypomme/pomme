@@ -35,9 +35,16 @@ enum Cmd {
         /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
         #[arg(long, value_parser = parse_tap)]
         tap: Vec<(f64, f64, f64)>,
-        /// Write a PNG of the screen (3 px per point) when the run stops.
+        /// Write a PNG of the screen (at the device's scale) when the run stops.
         #[arg(long)]
         screenshot: Option<PathBuf>,
+        /// The iPhone to present: its screen, safe area, notch or Dynamic Island and keyboard
+        /// (`iphone-17-pro-max`, `"iPhone SE (3rd generation)"`; `--device list` lists them).
+        #[arg(long, default_value = pomme_hle::device::DEFAULT, value_parser = parse_device)]
+        device: &'static pomme_hle::device::Device,
+        /// Draw the screenshot inside a phone body (rounded screen corners, bezel, buttons).
+        #[arg(long)]
+        shell: bool,
         /// Print every system call and Objective-C message as it happens.
         #[arg(long)]
         trace: bool,
@@ -91,7 +98,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -102,9 +109,20 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing, url, &typing)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing)
         }
     }
+}
+
+/// `--device`: an id or name from pomme's device table; `list` prints the table.
+fn parse_device(s: &str) -> Result<&'static pomme_hle::device::Device, String> {
+    use pomme_hle::device::{find, DEVICES};
+    let table = || DEVICES.iter().map(|d| format!("  {:<20} {} ({}×{} pt, @{}x)", d.id, d.name, d.width, d.height, d.scale)).collect::<Vec<_>>().join("\n");
+    if s == "list" {
+        println!("{}", table());
+        std::process::exit(0);
+    }
+    find(s).ok_or_else(|| format!("no device {s:?}; one of:\n{}", table()))
 }
 
 /// Where a bundle puts things.
@@ -422,7 +440,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)]) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)]) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -433,6 +451,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
+    emu.device = device;
     emu.ui.launch_url = url;
     for (text, t) in typing {
         emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (t * 1e9) as u64, text: text.clone() });
@@ -550,7 +569,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         println!("\nviews:\n{}", emu.describe_views());
     }
     if let Some(out) = screenshot {
-        match emu.screenshot_png(3.0) {
+        let scale = device.scale as f32;
+        match if shell { emu.shell_png(scale) } else { emu.screenshot_png(scale) } {
             Ok(png) => {
                 std::fs::write(out, png)?;
                 println!("\nscreenshot: {}", out.display());
