@@ -280,6 +280,13 @@ pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) 
     out
 }
 
+/// A path that's a rectangle (as `CGPathCreateWithRect`), for pomme's own layers.
+pub(crate) fn new_rect_path(emu: &mut Emu, r: [f64; 4]) -> Result<u64> {
+    let id = emu.alloc(16)?;
+    emu.render.paths.insert(id, rect_els(r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32));
+    Ok(id)
+}
+
 /// A layer's own shape, `w` × `h`.
 fn layer_shape(ly: &Layer, w: f32, h: f32) -> Vec<El> {
     corner_shape(w, h, ly.corner_radius as f32, ly.masked_corners, ly.continuous_corners)
@@ -1075,17 +1082,27 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
         if calayer::backing_view(emu, s).is_some() {
             continue;
         }
+        draw_layer(emu, p, s, alpha, t, mask, true);
+    }
+}
+
+/// A standalone layer and its sublayers; `cast`: its shadow too.
+fn draw_layer(emu: &mut Emu, p: &mut Painter, s: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
+    {
         let mut ly = calayer::layer(emu, s);
         // What's on screen now: the model with running animations applied.
         let animated_bg = crate::animation::present_layer(emu, s, &mut ly);
         if ly.hidden || ly.opacity <= 0.0 {
-            continue;
+            return;
         }
         let [_, _, lw, lh] = ly.bounds;
         let frame = [ly.position[0] - ly.anchor[0] * lw, ly.position[1] - ly.anchor[1] * lh, lw, lh];
         let lt = concat(&placement(frame, &ly), t);
         let a = alpha * ly.opacity;
         let (w, h) = (frame[2] as f32, frame[3] as f32);
+        if cast && casts_shadow(&ly) {
+            shadow(emu, p, &ly, w, h, &lt, alpha, mask, |emu, off, t2| draw_layer(emu, off, s, 1.0, t2, None, false), t);
+        }
         let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&ly.background).copied());
         draw_layer_box(p, &ly, bg, w, h, a, &lt, mask);
         if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
@@ -1100,7 +1117,112 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
     }
 }
 
+/// Whether a layer has a shadow to draw.
+fn casts_shadow(ly: &Layer) -> bool {
+    ly.shadow_opacity > 0.0
+}
+
+/// A layer's shadow, as Core Animation draws it (measured in the iOS 26
+/// Simulator, scripts/measure/shadows): what the layer draws (or its
+/// `shadowPath`), its alpha blurred by a Gaussian whose standard deviation is
+/// `shadowRadius`, in `shadowColor` (black by default) at `shadowOpacity`
+/// (and the layer's opacity), moved by `shadowOffset`, under the layer.
+/// `source` draws the layer without its shadow, given the parent transform
+/// moved into the offscreen buffer; `lt` is the layer's own transform, `t` its parent's.
+#[allow(clippy::too_many_arguments)]
+fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32; 6], alpha: f32, mask: Option<&Mask>, source: impl FnOnce(&mut Emu, &mut Painter, &[f32; 6]), t: &[f32; 6]) {
+    // Pixels per point here, and the blur and offset in pixels.
+    let k = (lt[0] * lt[0] + lt[1] * lt[1]).sqrt();
+    let sigma = ly.shadow_radius.max(0.0) as f32 * k;
+    let (ox, oy) = (ly.shadow_offset[0] as f32, ly.shadow_offset[1] as f32);
+    let (dx, dy) = (lt[0] * ox + lt[2] * oy, lt[1] * ox + lt[3] * oy);
+    // The layer's box on screen, with room for the blur.
+    let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(lt, x, y));
+    let margin = (3.0 * sigma).ceil() + 1.0;
+    let (pw, ph) = (p.pix.width() as f32, p.pix.height() as f32);
+    let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor().max(-dx.abs() - margin).max(-pw);
+    let y0 = (pts.iter().map(|q| q.1).fold(f32::MAX, f32::min) - margin).floor().max(-dy.abs() - margin).max(-ph);
+    let x1 = (pts.iter().map(|q| q.0).fold(f32::MIN, f32::max) + margin).ceil().min(pw + dx.abs() + margin).min(2.0 * pw);
+    let y1 = (pts.iter().map(|q| q.1).fold(f32::MIN, f32::max) + margin).ceil().min(ph + dy.abs() + margin).min(2.0 * ph);
+    let (bw, bh) = ((x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32);
+    let Some(pix) = Pixmap::new(bw, bh) else { return };
+    let mut off = Painter { pix, font: p.font, emoji: p.emoji };
+    let shift = [1.0, 0.0, 0.0, 1.0, -x0, -y0];
+    match emu.render.paths.get(&ly.shadow_path).cloned() {
+        // The shape the app gave, in the layer's coordinates.
+        Some(els) if ly.shadow_path != 0 => off.fill(&els, [0.0, 0.0, 0.0, 1.0], 1.0, false, &concat(lt, &shift), None),
+        _ => source(emu, &mut off, &concat(t, &shift)),
+    }
+    let mut a: Vec<f32> = off.pix.pixels().iter().map(|c| c.alpha() as f32 / 255.0).collect();
+    gaussian_blur(&mut a, bw as usize, bh as usize, sigma);
+    let color = emu.ui.views.colors.get(&ly.shadow_color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    // The source already carries the layer's own opacity (or a shadow path stands for an opaque shape).
+    let own = if ly.shadow_path != 0 { ly.opacity } else { 1.0 };
+    let strength = ly.shadow_opacity * own * alpha * color[3] as f32;
+    let Some(mut sh) = Pixmap::new(bw, bh) else { return };
+    for (px, &v) in sh.pixels_mut().iter_mut().zip(&a) {
+        let al = (v * strength).clamp(0.0, 1.0);
+        if al > 0.0 {
+            let c = |x: f64| (x as f32 * al * 255.0).round() as u8;
+            *px = tiny_skia::PremultipliedColorU8::from_rgba(c(color[0]), c(color[1]), c(color[2]), (al * 255.0).round() as u8).unwrap_or(*px);
+        }
+    }
+    let paint = tiny_skia::PixmapPaint::default();
+    p.pix.draw_pixmap(0, 0, sh.as_ref(), &paint, Transform::from_translate(x0 + dx, y0 + dy), mask);
+}
+
+/// Blur `a` (w × h, row-major) by a Gaussian of standard deviation `sigma`
+/// (pixels): three box blurs each way, the usual close approximation.
+fn gaussian_blur(a: &mut [f32], w: usize, h: usize, sigma: f32) {
+    if sigma < 0.3 {
+        return;
+    }
+    // Box sizes whose three passes give this sigma (W. Jarosz, "Fast image convolutions").
+    let n = 3.0f32;
+    let ideal = (12.0 * sigma * sigma / n + 1.0).sqrt();
+    let mut wl = ideal.floor() as i32;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wu = wl + 2;
+    let m = ((12.0 * sigma * sigma - n * (wl * wl) as f32 - 4.0 * n * wl as f32 - 3.0 * n) / (-4.0 * wl as f32 - 4.0)).round() as i32;
+    let sizes: Vec<i32> = (0..3).map(|i| if i < m { wl } else { wu }).collect();
+    let mut tmp = vec![0.0f32; a.len()];
+    for &size in &sizes {
+        let r = ((size - 1) / 2) as usize;
+        box_pass(a, &mut tmp, w, h, r, true);
+        box_pass(&tmp, a, w, h, r, false);
+    }
+}
+
+/// One box blur of radius `r` along rows (`horizontal`) or columns, `src` → `dst`; outside is 0.
+fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize, horizontal: bool) {
+    let (lines, len) = if horizontal { (h, w) } else { (w, h) };
+    let at = |line: usize, i: usize| if horizontal { line * w + i } else { i * w + line };
+    let norm = 1.0 / (2 * r + 1) as f32;
+    for line in 0..lines {
+        let mut sum = 0.0f32;
+        for i in 0..=r.min(len - 1) {
+            sum += src[at(line, i)];
+        }
+        for i in 0..len {
+            dst[at(line, i)] = sum * norm;
+            if i + r + 1 < len {
+                sum += src[at(line, i + r + 1)];
+            }
+            if i >= r {
+                sum -= src[at(line, i - r)];
+            }
+        }
+    }
+}
+
 fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    draw_view_cast(emu, p, v, alpha, t, mask, true)
+}
+
+/// A view and its subviews; `cast`: its shadow too.
+fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
     let mut vw = view(emu, v);
     let mut ly = if vw.layer != 0 { calayer::layer(emu, vw.layer) } else { Layer::default() };
     // What's on screen now: the model with running animations applied.
@@ -1113,6 +1235,9 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     let vt = concat(&placement(frame, &ly), t);
     let (w, h) = (frame[2] as f32, frame[3] as f32);
     let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&vw.background).copied());
+    if cast && casts_shadow(&ly) {
+        shadow(emu, p, &ly, w, h, &vt, alpha, mask, |emu, off, t2| draw_view_cast(emu, off, v, 1.0, t2, None, false), t);
+    }
     draw_layer_box(p, &ly, bg, w, h, a, &vt, mask);
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
     // A text view is a scroll view, which clips to its bounds.

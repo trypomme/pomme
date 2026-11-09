@@ -102,6 +102,8 @@ struct Transition {
     /// Views the transition animates (their transition animations end with it), and its dimming view.
     moving: Vec<u64>,
     dim: u64,
+    /// The shadow cards under the moving screens.
+    cards: Vec<u64>,
 }
 
 // UIKit's push and pop on iPhone, measured in the iOS 26 Simulator
@@ -113,6 +115,8 @@ const PUSH_SPRING: (f64, f64, f64) = (26.0, 1.11, 0.0);
 const POP_SPRING: (f64, f64, f64) = (20.4, 0.99, 9.0);
 const PARALLAX: f64 = 0.3;
 const DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.1];
+/// Each screen moves on a card casting a faint shadow: (opacity, radius, offset y).
+const CARD_SHADOW: (f32, f64, f64) = (0.04, 12.0, -3.0);
 
 fn get_prop(emu: &mut Emu, key: &'static str, default: u64) -> Result<()> {
     let v = emu.nav.props.get(&(emu.arg(0), key)).copied().unwrap_or(default);
@@ -292,7 +296,7 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
         }
     }
     layout_container(emu, container)?;
-    let mut t = Transition { nc, old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0 };
+    let mut t = Transition { nc, old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0, cards: Vec::new() };
     view_mut(emu, container).needs_layout = true;
     match (old_top, new_top) {
         (Some(ot), Some(nt)) if animated && ot != nt => {
@@ -330,16 +334,36 @@ fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut
     view_mut(emu, dim).alpha = to_dim;
     let at = |emu: &mut Emu, v: u64| crate::uiview::view(emu, v).center;
     let (oc, nc) = (at(emu, ov), at(emu, nv));
-    let (ol, nl, dl) = (send(emu, ov, "layer", &[])?, send(emu, nv, "layer", &[])?, send(emu, dim, "layer", &[])?);
-    if forward {
-        transition(emu, nl, Prop::Position, Val::P([nc[0] + w, nc[1]]), Val::P(nc), timing, duration);
-        transition(emu, ol, Prop::Position, Val::P(oc), Val::P([oc[0] - PARALLAX * w, oc[1]]), timing, duration);
+    // Where each screen goes: (view, from, to).
+    let moves = if forward {
+        [(nv, [nc[0] + w, nc[1]], nc), (ov, oc, [oc[0] - PARALLAX * w, oc[1]])]
     } else {
-        transition(emu, ol, Prop::Position, Val::P(oc), Val::P([oc[0] + w, oc[1]]), timing, duration);
-        transition(emu, nl, Prop::Position, Val::P([nc[0] - PARALLAX * w, nc[1]]), Val::P(nc), timing, duration);
+        [(ov, oc, [oc[0] + w, oc[1]]), (nv, [nc[0] - PARALLAX * w, nc[1]], nc)]
+    };
+    for (v, from, to) in moves {
+        // Its card: the screen's shape, casting the shadow, just under it.
+        let frame = crate::uiview::frame_of(emu, v);
+        let card = new_view(emu, frame)?;
+        view_mut(emu, card).user_interaction = false;
+        let cl = send(emu, card, "layer", &[])?;
+        let path = crate::render::new_rect_path(emu, [0.0, 0.0, frame[2], frame[3]])?;
+        {
+            let ly = crate::calayer::layer_mut(emu, cl);
+            ly.shadow_opacity = CARD_SHADOW.0;
+            ly.shadow_radius = CARD_SHADOW.1;
+            ly.shadow_offset = [0.0, CARD_SHADOW.2];
+            ly.shadow_path = path;
+        }
+        send(emu, container, "insertSubview:belowSubview:", &[card, v])?;
+        let l = send(emu, v, "layer", &[])?;
+        transition(emu, l, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+        transition(emu, cl, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+        t.moving.extend([l, cl]);
+        t.cards.push(card);
     }
+    let dl = send(emu, dim, "layer", &[])?;
     transition(emu, dl, Prop::Opacity, Val::N(from_dim), Val::N(to_dim), timing, duration);
-    t.moving = vec![ol, nl, dl];
+    t.moving.push(dl);
     t.dim = dim;
     Ok(duration)
 }
@@ -355,9 +379,13 @@ fn finish_fire(emu: &mut Emu) -> Result<()> {
 
 /// The `did` half of a change of controllers.
 fn finish(emu: &mut Emu, t: Transition) -> Result<()> {
-    let Transition { nc, old_top, new_top, removed, added, animated, moving, dim } = t;
+    let Transition { nc, old_top, new_top, removed, added, animated, moving, dim, cards } = t;
     for l in moving {
         crate::animation::end_transition(emu, l);
+    }
+    for card in cards {
+        send(emu, card, "removeFromSuperview", &[])?;
+        send(emu, card, "release", &[])?;
     }
     if dim != 0 {
         send(emu, dim, "removeFromSuperview", &[])?;
