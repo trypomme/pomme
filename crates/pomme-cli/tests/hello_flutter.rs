@@ -382,3 +382,57 @@ fn list_flings_and_taps() {
     .unwrap();
     assert_eq!(tapped, (0, 0, 0));
 }
+
+/// The frame after running held `held`, turning at the given times, as a
+/// point → (r, g, b) lookup at 3×; None without a GPU.
+fn landscape_frame(held: pomme_hle::device::Orientation, turns: &[(f64, pomme_hle::device::Orientation)], secs: f64) -> Option<(u32, u32, impl Fn(f64, f64) -> (u8, u8, u8))> {
+    let mut emu = boot()?;
+    emu.ui.device_orientation = held;
+    emu.ui.rotations = turns.iter().map(|&(t, o)| ((t * 1e9) as u64, o)).collect();
+    emu.time_limit_ns = Some((secs * 1e9) as u64);
+    match emu.run_main() {
+        Err(pomme_hle::Stop::TimeLimit(_)) => {}
+        other => panic!("expected the app to idle until the time limit, got {other:?}"),
+    }
+    if emu.metal.gpu_error.is_some() {
+        return None;
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let (w, h) = (pix.width(), pix.height());
+    Some((w, h, move |x: f64, y: f64| {
+        let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
+        (c.red(), c.green(), c.blue())
+    }))
+}
+
+fn near((r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)) -> bool {
+    r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12
+}
+
+/// Launched held sideways (Runner's Info.plist allows landscape): Flutter
+/// lays the page out at 844 × 390, the square centered across the width,
+/// and the notch is on the left (the phone was turned to the left).
+#[test]
+fn launches_in_landscape() {
+    use pomme_hle::device::Orientation::LandscapeRight;
+    let Some((w, h, at)) = landscape_frame(LandscapeRight, &[], 3.0) else { return };
+    assert_eq!((w, h), (844 * 3, 390 * 3));
+    // The square spans (272, 45)–(572, 345) pt.
+    assert!(near(at(290.0, 60.0), (0x1e, 0x29, 0x3b)), "square: {:?}", at(290.0, 60.0));
+    assert!(near(at(555.0, 330.0), (0x1e, 0x29, 0x3b)), "square: {:?}", at(555.0, 330.0));
+    assert!(near(at(150.0, 200.0), (255, 255, 255)), "page: {:?}", at(150.0, 200.0));
+    assert_eq!(at(5.0, 195.0), (0, 0, 0), "the notch, on the left");
+    assert!(near(at(839.0, 195.0), (255, 255, 255)), "nothing on the right: {:?}", at(839.0, 195.0));
+}
+
+/// Turned while running: FlutterViewController hears the new size and the
+/// engine re-lays the page out for it; the notch is now on the right.
+#[test]
+fn turns_while_running() {
+    use pomme_hle::device::Orientation::{LandscapeLeft, Portrait};
+    let Some((w, h, at)) = landscape_frame(Portrait, &[(2.0, LandscapeLeft)], 4.0) else { return };
+    assert_eq!((w, h), (844 * 3, 390 * 3));
+    assert!(near(at(290.0, 60.0), (0x1e, 0x29, 0x3b)), "square: {:?}", at(290.0, 60.0));
+    assert!(near(at(150.0, 200.0), (255, 255, 255)), "page: {:?}", at(150.0, 200.0));
+    assert_eq!(at(839.0, 195.0), (0, 0, 0), "the notch, on the right");
+}
