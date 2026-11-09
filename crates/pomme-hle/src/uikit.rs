@@ -279,7 +279,28 @@ fn ca_current_media_time(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// UIKit's geometry strings (`NSStringFromCGRect` …): the struct's doubles
+/// (in d0…, as a homogeneous aggregate is passed) grouped in braces, `{{0, 0}, {46, 30}}`.
+fn geometry_string(emu: &mut Emu, groups: &[usize]) -> Result<()> {
+    let mut i = 0;
+    let mut parts = Vec::new();
+    for &n in groups {
+        let v: Vec<String> = (i..i + n).map(|k| format!("{}", f64::from_bits(emu.cpu.q[k] as u64))).collect();
+        parts.push(v.join(", "));
+        i += n;
+    }
+    let s = if groups.len() == 1 { format!("{{{}}}", parts[0]) } else { format!("{{{}}}", parts.iter().map(|p| format!("{{{p}}}")).collect::<Vec<_>>().join(", ")) };
+    let r = foundation::new_nsstring(emu, &s)?;
+    emu.ret(r);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_NSStringFromCGPoint", |e| geometry_string(e, &[2])),
+    ("_NSStringFromCGSize", |e| geometry_string(e, &[2])),
+    ("_NSStringFromCGVector", |e| geometry_string(e, &[2])),
+    ("_NSStringFromCGRect", |e| geometry_string(e, &[2, 2])),
+    ("_NSStringFromUIEdgeInsets", |e| geometry_string(e, &[4])),
     ("_CACurrentMediaTime", ca_current_media_time),
     // CAFrameRateRange is three floats in, the same three out (s0-s2).
     ("_CAFrameRateRangeMake", |_| Ok(())),

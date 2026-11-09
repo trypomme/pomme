@@ -1,10 +1,12 @@
 //! UIControl: target-action and touch tracking, and UIButton.
 //!
-//! Targets are registered per control event (`addTarget:action:forControlEvents:`).
-//! A control fires them through `-sendAction:to:forEvent:`, which hands each
-//! one to `-[UIApplication sendAction:to:from:forEvent:]`; a nil target there
+//! Targets are registered per control event (`addTarget:action:forControlEvents:`),
+//! as are UIActions (`addAction:forControlEvents:`, a button's `primaryAction`).
+//! A control fires a target through `-sendAction:to:forEvent:`, which hands
+//! it to `-[UIApplication sendAction:to:from:forEvent:]`; a nil target there
 //! goes up the responder chain (from the first responder, else from the
-//! control) to the first responder that can perform the action.
+//! control) to the first responder that can perform the action. A UIAction
+//! goes through `-sendAction:`, which calls its handler with `sender` set.
 //!
 //! Touches follow UIKit's UIControl: `touchesBegan` marks the touch inside,
 //! asks `beginTrackingWithTouch:withEvent:` whether to track, highlights and
@@ -53,11 +55,19 @@ struct Tracking {
     passing: bool,
 }
 
+/// What a control does for some of its events: a target-action pair, or a UIAction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handler {
+    Target(u64, u64),
+    Action(u64),
+}
+
 #[derive(Default)]
 pub struct State {
-    /// Control → (target, action, events), in the order added.
-    targets: HashMap<u64, Vec<(u64, u64, u64)>>,
+    /// Control → what it does and for which events, in the order added.
+    targets: HashMap<u64, Vec<(Handler, u64)>>,
     tracking: HashMap<u64, Tracking>,
+    next_action_id: u64,
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {
@@ -81,35 +91,123 @@ fn responds(emu: &mut Emu, obj: u64, sel: &str) -> Result<bool> {
 
 fn add_target(emu: &mut Emu) -> Result<()> {
     let (c, target, action, events) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
-    let list = emu.control.targets.entry(c).or_default();
-    if !list.iter().any(|&(t, a, e)| t == target && a == action && e == events) {
-        list.push((target, action, events));
-    }
+    add_handler(emu, c, Handler::Target(target, action), events);
     Ok(())
+}
+
+/// Register a handler for `events` (more events for one already there).
+fn add_handler(emu: &mut Emu, c: u64, h: Handler, events: u64) {
+    let list = emu.control.targets.entry(c).or_default();
+    match list.iter_mut().find(|(x, _)| *x == h) {
+        Some((_, e)) => *e |= events,
+        None => list.push((h, events)),
+    }
+}
+
+/// Stop `h` handling `events` (it's gone once it handles none).
+fn remove_handlers(emu: &mut Emu, c: u64, events: u64, matches: impl Fn(Handler) -> bool) {
+    if let Some(list) = emu.control.targets.get_mut(&c) {
+        for (h, e) in list.iter_mut() {
+            if matches(*h) {
+                *e &= !events;
+            }
+        }
+        list.retain(|&(_, e)| e != 0);
+    }
 }
 
 fn remove_target(emu: &mut Emu) -> Result<()> {
     let (c, target, action, events) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
-    if let Some(list) = emu.control.targets.get_mut(&c) {
-        list.retain(|&(t, a, e)| !((target == 0 || t == target) && (action == 0 || a == action) && e & events != 0));
-    }
+    remove_handlers(emu, c, events, |h| matches!(h, Handler::Target(t, a) if (target == 0 || t == target) && (action == 0 || a == action)));
     Ok(())
 }
 
-/// Fire the actions registered for any of `events`: each goes through the
-/// control's `-sendAction:to:forEvent:` (which subclasses may override).
+/// Fire what's registered for any of `events`: targets through the control's
+/// `-sendAction:to:forEvent:`, UIActions through `-sendAction:` (both of
+/// which subclasses may override).
 pub fn send_actions(emu: &mut Emu, control: u64, events: u64, event: u64) -> Result<()> {
     let list = emu.control.targets.get(&control).cloned().unwrap_or_default();
-    for (target, action, e) in list {
-        if e & events != 0 {
-            send(emu, control, "sendAction:to:forEvent:", &[action, target, event])?;
+    for (h, e) in list {
+        if e & events == 0 {
+            continue;
         }
+        match h {
+            Handler::Target(target, action) => send(emu, control, "sendAction:to:forEvent:", &[action, target, event])?,
+            Handler::Action(a) => send(emu, control, "sendAction:", &[a])?,
+        };
     }
     Ok(())
 }
 
 pub fn has_targets(emu: &Emu, control: u64, events: u64) -> bool {
-    emu.control.targets.get(&control).is_some_and(|l| l.iter().any(|&(_, _, e)| e & events != 0))
+    emu.control.targets.get(&control).is_some_and(|l| l.iter().any(|&(_, e)| e & events != 0))
+}
+
+// ---- UIAction ----
+
+/// `+[UIAction actionWithTitle:image:identifier:handler:]` and friends.
+fn new_action(emu: &mut Emu, cls: u64, title: u64, image: u64, identifier: u64, handler: u64) -> Result<u64> {
+    let a = objc::create_instance(emu, cls, 0)?;
+    let copy = |emu: &mut Emu, x: u64, sel: &str| if x != 0 { send(emu, x, sel, &[]) } else { Ok(0) };
+    let title = copy(emu, title, "copy")?;
+    let image = copy(emu, image, "retain")?;
+    let handler = copy(emu, handler, "copy")?;
+    // Without an identifier, a unique one (UIKit makes a UUID string).
+    let identifier = if identifier != 0 {
+        send(emu, identifier, "copy", &[])?
+    } else {
+        let n = emu.control.next_action_id;
+        emu.control.next_action_id += 1;
+        crate::foundation::new_nsstring(emu, &format!("dev.pomme.action.{n}"))?
+    };
+    objc::bag_set(emu, a, "title", title);
+    objc::bag_set(emu, a, "image", image);
+    objc::bag_set(emu, a, "identifier", identifier);
+    objc::bag_set(emu, a, "pomme.handler", handler);
+    Ok(a)
+}
+
+/// `-[UIControl sendAction:]`: run the action's handler, with `sender` the control.
+fn send_ui_action(emu: &mut Emu) -> Result<()> {
+    let (c, a) = (emu.arg(0), emu.arg(2));
+    let handler = objc::bag_get(emu, a, "pomme.handler").unwrap_or(0);
+    if handler == 0 {
+        return Ok(());
+    }
+    let was = objc::bag_get(emu, a, "sender").unwrap_or(0);
+    objc::bag_set(emu, a, "sender", c);
+    crate::libsystem::call_block(emu, handler, &[a])?;
+    objc::bag_set(emu, a, "sender", was);
+    Ok(())
+}
+
+fn identifier_of(emu: &mut Emu, a: u64) -> Result<String> {
+    let id = objc::bag_get(emu, a, "identifier").unwrap_or(0);
+    if id == 0 { Ok(String::new()) } else { crate::foundation::nsstring(emu, id) }
+}
+
+/// Remove the actions with this identifier (an action and its replacement share one).
+fn remove_action_named(emu: &mut Emu, c: u64, id: &str, events: u64) -> Result<()> {
+    let actions: Vec<u64> = emu.control.targets.get(&c).map(|l| l.iter().filter_map(|&(h, _)| if let Handler::Action(a) = h { Some(a) } else { None }).collect()).unwrap_or_default();
+    for a in actions {
+        if identifier_of(emu, a)? == id {
+            remove_handlers(emu, c, events, |h| h == Handler::Action(a));
+        }
+    }
+    Ok(())
+}
+
+/// `-addAction:forControlEvents:`: an action with the identifier of one
+/// already there replaces it.
+fn add_ui_action(emu: &mut Emu, c: u64, a: u64, events: u64) -> Result<()> {
+    if a == 0 {
+        return Ok(());
+    }
+    let id = identifier_of(emu, a)?;
+    remove_action_named(emu, c, &id, events)?;
+    send(emu, a, "retain", &[])?;
+    add_handler(emu, c, Handler::Action(a), events);
+    Ok(())
 }
 
 /// `-[UIResponder targetForAction:withSender:]`: the first responder up the
@@ -305,18 +403,23 @@ fn for_state(emu: &Emu, b: u64, what: &str, state: u64) -> u64 {
     objc::bag_get(emu, b, &state_key(what, state)).filter(|&x| x != 0).or_else(|| objc::bag_get(emu, b, &state_key(what, 0))).unwrap_or(0)
 }
 
-/// The title label (a UILabel subview filling the button, as UIKit's does), made on first use.
+/// A button's title font: 15-pt system.
+const TITLE_SIZE: f64 = 15.0;
+/// Room above and below the title line: a 15-pt title makes a 30-pt button
+/// (UIKit's 46×30 "Button").
+const TITLE_PAD: f64 = 6.0;
+
+/// The title label, a UILabel subview (made on first use) that layoutSubviews sizes and places.
 fn title_label(emu: &mut Emu, b: u64) -> Result<u64> {
     if let Some(l) = objc::bag_get(emu, b, "pomme.titleLabel").filter(|&l| l != 0) {
         return Ok(l);
     }
     let cls = host_class(emu, "UILabel")?;
     let l = send(emu, cls, "alloc", &[])?;
-    let bounds = view(emu, b).bounds;
-    for (i, v) in bounds.iter().enumerate() {
-        emu.cpu.q[i] = v.to_bits() as u128;
-    }
+    emu.cpu.q[..4].fill(0);
     let l = send(emu, l, "initWithFrame:", &[])?;
+    let font = crate::uiview::new_font(emu, ".SFUI-Regular", TITLE_SIZE, 0.0)?;
+    objc::bag_set(emu, l, "font", font);
     objc::bag_set(emu, l, "textAlignment", 1); // centered
     objc::bag_set(emu, b, "pomme.titleLabel", l);
     send(emu, b, "addSubview:", &[l])?;
@@ -331,7 +434,13 @@ fn update_title(emu: &mut Emu, b: u64) -> Result<()> {
         return Ok(());
     }
     let l = title_label(emu, b)?;
-    send(emu, l, "setText:", &[title])?;
+    if objc::bag_get(emu, b, "pomme.shownTitle") != Some(title) {
+        objc::bag_set(emu, b, "pomme.shownTitle", title);
+        send(emu, l, "setText:", &[title])?;
+        // A new title is a new size.
+        send(emu, b, "invalidateIntrinsicContentSize", &[])?;
+        send(emu, b, "setNeedsLayout", &[])?;
+    }
     let mut color = for_state(emu, b, "titleColor", state);
     if color == 0 && objc::bag_get(emu, b, "buttonType").unwrap_or(0) == BUTTON_SYSTEM {
         color = crate::uiview::new_color(emu, SYSTEM_BLUE)?;
@@ -341,13 +450,113 @@ fn update_title(emu: &mut Emu, b: u64) -> Result<()> {
     Ok(())
 }
 
+const INSET_KEYS: [&str; 4] = ["pomme.contentInset.top", "pomme.contentInset.left", "pomme.contentInset.bottom", "pomme.contentInset.right"];
+
+/// `contentEdgeInsets`: top, left, bottom, right.
+fn content_insets(emu: &Emu, b: u64) -> [f64; 4] {
+    INSET_KEYS.map(|k| objc::bag_get(emu, b, k).map_or(0.0, f64::from_bits))
+}
+
+/// The title's size, padded as UIKit pads it (nothing without a title).
+fn title_size(emu: &mut Emu, b: u64) -> Result<[f64; 2]> {
+    let Some(l) = objc::bag_get(emu, b, "pomme.titleLabel").filter(|&l| l != 0) else { return Ok([0.0; 2]) };
+    if objc::bag_get(emu, b, "pomme.shownTitle").unwrap_or(0) == 0 {
+        return Ok([0.0; 2]);
+    }
+    let r = objc::send_fp(emu, l, "intrinsicContentSize", &[], &[])?;
+    Ok([r[0], r[1]])
+}
+
+/// What the button needs: its title (and the room around it) inside the content insets.
+fn button_size(emu: &mut Emu, b: u64) -> Result<[f64; 2]> {
+    let t = title_size(emu, b)?;
+    let [top, left, bottom, right] = content_insets(emu, b);
+    let pad = if t[1] > 0.0 { 2.0 * TITLE_PAD } else { 0.0 };
+    Ok([t[0] + left + right, t[1] + pad + top + bottom])
+}
+
+/// Where the title goes: its size in the content rect (the bounds inside the
+/// insets), placed by the content alignments (centered unless set).
+fn lay_out_title(emu: &mut Emu, b: u64) -> Result<()> {
+    let Some(l) = objc::bag_get(emu, b, "pomme.titleLabel").filter(|&l| l != 0) else { return Ok(()) };
+    let bounds = view(emu, b).bounds;
+    let [top, left, bottom, right] = content_insets(emu, b);
+    let content = [left, top, (bounds[2] - left - right).max(0.0), (bounds[3] - top - bottom).max(0.0)];
+    let t = title_size(emu, b)?;
+    let (w, h) = (t[0].min(content[2]), t[1].min(content[3]));
+    // UIControlContentHorizontalAlignment: center, left, right, fill, leading, trailing.
+    let (x, w) = match objc::bag_get(emu, b, "contentHorizontalAlignment").unwrap_or(0) {
+        1 | 4 => (content[0], w),
+        2 | 5 => (content[0] + content[2] - w, w),
+        3 => (content[0], content[2]),
+        _ => (content[0] + (content[2] - w) / 2.0, w),
+    };
+    // UIControlContentVerticalAlignment: center, top, bottom, fill.
+    let (y, h) = match objc::bag_get(emu, b, "contentVerticalAlignment").unwrap_or(0) {
+        1 => (content[1], h),
+        2 => (content[1] + content[3] - h, h),
+        3 => (content[1], content[3]),
+        _ => (content[1] + (content[3] - h) / 2.0, h),
+    };
+    objc::send_fp(emu, l, "setFrame:", &[], &[x, y, w, h])?;
+    Ok(())
+}
+
 fn button_with_type(emu: &mut Emu) -> Result<()> {
     let (cls, ty) = (emu.arg(0), emu.arg(2));
+    let b = make_button(emu, cls, ty)?;
+    ret(emu, b)
+}
+
+fn make_button(emu: &mut Emu, cls: u64, ty: u64) -> Result<u64> {
     let b = send(emu, cls, "alloc", &[])?;
     emu.cpu.q[..4].fill(0);
     let b = send(emu, b, "initWithFrame:", &[])?;
     objc::bag_set(emu, b, "buttonType", ty);
+    Ok(b)
+}
+
+/// `primaryAction`: fires on the button's primary action, and its title is the button's.
+fn set_primary_action(emu: &mut Emu, b: u64, a: u64) -> Result<()> {
+    if let Some(old) = objc::bag_get(emu, b, "primaryAction").filter(|&x| x != 0) {
+        remove_handlers(emu, b, u64::MAX, |h| h == Handler::Action(old));
+    }
+    objc::bag_set(emu, b, "primaryAction", a);
+    if a != 0 {
+        add_ui_action(emu, b, a, PRIMARY_ACTION_TRIGGERED)?;
+        let title = objc::bag_get(emu, a, "title").unwrap_or(0);
+        if title != 0 {
+            objc::bag_set(emu, b, &state_key("title", 0), title);
+            update_title(emu, b)?;
+        }
+    }
+    Ok(())
+}
+
+/// `+buttonWithType:primaryAction:` / `+systemButtonWithPrimaryAction:`.
+fn button_with_primary_action(emu: &mut Emu, ty: u64, a: u64) -> Result<()> {
+    let cls = emu.arg(0);
+    let b = make_button(emu, cls, ty)?;
+    set_primary_action(emu, b, a)?;
     ret(emu, b)
+}
+
+fn set_edge_insets(emu: &mut Emu) -> Result<()> {
+    let b = emu.arg(0);
+    for (i, k) in INSET_KEYS.iter().enumerate() {
+        objc::bag_set(emu, b, k, emu.cpu.q[i] as u64);
+    }
+    send(emu, b, "invalidateIntrinsicContentSize", &[])?;
+    send(emu, b, "setNeedsLayout", &[])?;
+    Ok(())
+}
+
+/// A content alignment's setter: store it and lay out again.
+fn set_alignment(emu: &mut Emu, key: &str) -> Result<()> {
+    let (c, x) = (emu.arg(0), emu.arg(2));
+    objc::bag_set(emu, c, key, x);
+    send(emu, c, "setNeedsLayout", &[])?;
+    Ok(())
 }
 
 fn set_for_state(emu: &mut Emu, what: &str) -> Result<()> {
@@ -399,7 +608,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "allTargets", |e| {
-        let mut t: Vec<u64> = e.control.targets.get(&e.arg(0)).map(|l| l.iter().map(|x| x.0).filter(|&x| x != 0).collect()).unwrap_or_default();
+        let mut t: Vec<u64> = e.control.targets.get(&e.arg(0)).map(|l| l.iter().filter_map(|&(h, _)| if let Handler::Target(t, _) = h { Some(t) } else { None }).filter(|&x| x != 0).collect()).unwrap_or_default();
         t.sort_unstable();
         t.dedup();
         let a = crate::foundation::new_array_of(e, &t)?;
@@ -408,15 +617,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, s)
     }),
     (C, false, "allControlEvents", |e| {
-        let ev = e.control.targets.get(&e.arg(0)).map_or(0, |l| l.iter().fold(0, |a, x| a | x.2));
+        let ev = e.control.targets.get(&e.arg(0)).map_or(0, |l| l.iter().fold(0, |a, x| a | x.1));
         ret(e, ev)
     }),
     (C, false, "actionsForTarget:forControlEvent:", |e| {
         let (c, target, events) = (e.arg(0), e.arg(2), e.arg(3));
         let list = e.control.targets.get(&c).cloned().unwrap_or_default();
         let mut names = Vec::new();
-        for (t, a, ev) in list {
-            if t == target && ev & events != 0 {
+        for (h, ev) in list {
+            if let Handler::Target(t, a) = h
+                && t == target
+                && ev & events != 0
+            {
                 let name = objc::sel_name(e, a);
                 names.push(crate::foundation::new_nsstring(e, &name)?);
             }
@@ -454,6 +666,42 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (C, false, "isTouchInside", |e| {
         let v = tracking(e, e.arg(0)).touch_inside as u64;
         ret(e, v)
+    }),
+    (C, false, "contentHorizontalAlignment", |e| {
+        let v = objc::bag_get(e, e.arg(0), "contentHorizontalAlignment").unwrap_or(0);
+        ret(e, v)
+    }),
+    (C, false, "setContentHorizontalAlignment:", |e| set_alignment(e, "contentHorizontalAlignment")),
+    (C, false, "contentVerticalAlignment", |e| {
+        let v = objc::bag_get(e, e.arg(0), "contentVerticalAlignment").unwrap_or(0);
+        ret(e, v)
+    }),
+    (C, false, "setContentVerticalAlignment:", |e| set_alignment(e, "contentVerticalAlignment")),
+    (C, false, "addAction:forControlEvents:", |e| {
+        let (c, a, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        add_ui_action(e, c, a, ev)
+    }),
+    (C, false, "removeAction:forControlEvents:", |e| {
+        let (c, a, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        let id = identifier_of(e, a)?;
+        remove_action_named(e, c, &id, ev)
+    }),
+    (C, false, "removeActionForIdentifier:forControlEvents:", |e| {
+        let (c, id, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        let id = if id == 0 { String::new() } else { crate::foundation::nsstring(e, id)? };
+        remove_action_named(e, c, &id, ev)
+    }),
+    (C, false, "sendAction:", send_ui_action),
+    // `-initWithFrame:primaryAction:` (iOS 14): a control that runs the action as its primary one.
+    (C, false, "initWithFrame:primaryAction:", |e| {
+        let (c, a) = (e.arg(0), e.arg(2));
+        let c = send(e, c, "initWithFrame:", &[])?;
+        if is_button(e, c)? {
+            set_primary_action(e, c, a)?;
+        } else {
+            add_ui_action(e, c, a, PRIMARY_ACTION_TRIGGERED)?;
+        }
+        ret(e, c)
     }),
     (C, false, "beginTrackingWithTouch:withEvent:", |e| ret(e, 1)),
     (C, false, "continueTrackingWithTouch:withEvent:", |e| ret(e, 1)),
@@ -497,6 +745,33 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, next)
     }),
     ("UIApplication", false, "sendAction:to:from:forEvent:", app_send_action),
+    // UIAction
+    ("UIAction", true, "actionWithHandler:", |e| {
+        let (cls, h) = (e.arg(0), e.arg(2));
+        let a = new_action(e, cls, 0, 0, 0, h)?;
+        ret(e, a)
+    }),
+    ("UIAction", true, "actionWithTitle:image:identifier:handler:", |e| {
+        let (cls, t, i, id, h) = (e.arg(0), e.arg(2), e.arg(3), e.arg(4), e.arg(5));
+        let a = new_action(e, cls, t, i, id, h)?;
+        ret(e, a)
+    }),
+    ("UIAction", false, "title", |e| {
+        let v = objc::bag_get(e, e.arg(0), "title").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIAction", false, "image", |e| {
+        let v = objc::bag_get(e, e.arg(0), "image").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIAction", false, "identifier", |e| {
+        let v = objc::bag_get(e, e.arg(0), "identifier").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIAction", false, "sender", |e| {
+        let v = objc::bag_get(e, e.arg(0), "sender").unwrap_or(0);
+        ret(e, v)
+    }),
     // UIButton
     (B, true, "buttonWithType:", button_with_type),
     (B, false, "buttonType", |e| {
@@ -516,13 +791,39 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     (B, false, "layoutSubviews", |e| {
         let b = e.arg(0);
-        if let Some(l) = objc::bag_get(e, b, "pomme.titleLabel").filter(|&l| l != 0) {
-            let bounds = view(e, b).bounds;
-            for (i, v) in bounds.iter().enumerate() {
-                e.cpu.q[i] = v.to_bits() as u128;
-            }
-            send(e, l, "setFrame:", &[])?;
-        }
+        lay_out_title(e, b)
+    }),
+    (B, false, "intrinsicContentSize", |e| {
+        let s = button_size(e, e.arg(0))?;
+        crate::uikit::ret_rect(e, [s[0], s[1], 0.0, 0.0]);
         Ok(())
+    }),
+    // Its own size, whatever it's offered (as UIKit's does for a title).
+    (B, false, "sizeThatFits:", |e| {
+        let s = button_size(e, e.arg(0))?;
+        crate::uikit::ret_rect(e, [s[0], s[1], 0.0, 0.0]);
+        Ok(())
+    }),
+    (B, false, "contentEdgeInsets", |e| {
+        let i = content_insets(e, e.arg(0));
+        crate::uikit::ret_rect(e, i);
+        Ok(())
+    }),
+    (B, false, "setContentEdgeInsets:", set_edge_insets),
+    (B, true, "buttonWithType:primaryAction:", |e| {
+        let (ty, a) = (e.arg(2), e.arg(3));
+        button_with_primary_action(e, ty, a)
+    }),
+    (B, true, "systemButtonWithPrimaryAction:", |e| {
+        let a = e.arg(2);
+        button_with_primary_action(e, BUTTON_SYSTEM, a)
+    }),
+    (B, false, "primaryAction", |e| {
+        let a = objc::bag_get(e, e.arg(0), "primaryAction").unwrap_or(0);
+        ret(e, a)
+    }),
+    (B, false, "setPrimaryAction:", |e| {
+        let (b, a) = (e.arg(0), e.arg(2));
+        set_primary_action(e, b, a)
     }),
 ];

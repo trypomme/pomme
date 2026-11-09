@@ -905,7 +905,12 @@ fn view_with_tag(emu: &mut Emu) -> Result<()> {
 }
 
 /// `-sizeToFit`: keeps the current size until there's real text and image measurement.
-fn size_to_fit(_: &mut Emu) -> Result<()> {
+/// `-sizeToFit`: the size `sizeThatFits:` asks for, keeping the frame's origin.
+fn size_to_fit(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    let f = frame_of(emu, v);
+    let size = objc::send_fp(emu, v, "sizeThatFits:", &[], &[f[2], f[3]])?;
+    objc::send_fp(emu, v, "setFrame:", &[], &[f[0], f[1], size[0], size[1]])?;
     Ok(())
 }
 

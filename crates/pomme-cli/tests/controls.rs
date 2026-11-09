@@ -30,9 +30,9 @@ const S: u64 = 1_000_000_000;
 fn tap_fires_down_and_up_inside() {
     let Some(v) = run(|s| touch::tap(s, S, 115.0, 125.0)) else { return };
     assert_eq!(field(&v, 100), "down(h1 t1) up(h0 in1 touches1) primary", "{v}");
-    // The title is a label filling the button.
+    // The title is a label (15-pt, 18 tall) centered in the button.
     let at = v.find("UIButton (40.0, 100.0, 150.0×50.0)").unwrap_or_else(|| panic!("no button in\n{v}"));
-    assert!(v[at..].lines().nth(1).unwrap().trim_start().starts_with("UILabel (0.0, 0.0, 150.0×50.0) \"Tap\""), "{v}");
+    assert!(v[at..].lines().nth(1).unwrap().trim_start().starts_with("UILabel (61.0, 16.0, 28.0×18.0) \"Tap\""), "{v}");
 }
 
 /// Dragging well away (past UIKit's 70 pt slop) exits and lifts outside: no primary action.
@@ -130,4 +130,23 @@ fn plain_scroll_view_leaves_a_control_its_touch() {
 fn list_takes_the_touch_from_a_control() {
     let Some(v) = run(|s| hold_then_drag(s, 295.0, 365.0)) else { return };
     assert_eq!(field(&v, 106), "down drag cancel", "{v}");
+}
+
+/// A button's size is its title's (15-pt system, 6 pt above and below) plus
+/// its content insets: what sizeToFit and Auto Layout use. The title is
+/// centered inside the insets. (Text widths are pomme's measure of the system
+/// font: "Button" is 47 wide here; UIKit's is 46.)
+#[test]
+fn buttons_size_to_their_titles() {
+    let Some(v) = run(|_| {}) else { return };
+    assert_eq!(field(&v, 107), "label {47, 18} fit {47, 30} padded {67, 40} title {{10, 11}, {47, 18}} auto {80, 30} at 20,10", "{v}");
+}
+
+/// UIActions: the primary action's title is the button's and its handler
+/// runs with `sender` set; an action with an identifier already there
+/// replaces that one.
+#[test]
+fn ui_actions_fire() {
+    let Some(v) = run(|s| touch::tap(s, S, 295.0, 540.0)) else { return };
+    assert_eq!(field(&v, 108), "down primary Act from Act", "{v}");
 }

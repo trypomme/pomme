@@ -40,7 +40,8 @@
 @end
 
 @interface ViewController : UIViewController <UIScrollViewDelegate>
-@property(nonatomic, strong) UITextField *tapLog, *disabledLog, *chainLog, *gateLog, *panLog, *scrollLog, *listLog;
+@property(nonatomic, strong) UITextField *tapLog, *disabledLog, *chainLog, *gateLog, *panLog, *scrollLog, *listLog, *sizeLog, *actionLog;
+@property(nonatomic, strong) UIButton *fit, *padded, *constrained;
 @end
 
 @implementation ViewController
@@ -120,6 +121,35 @@
     [inList addTarget:self action:@selector(listUp:) forControlEvents:UIControlEventTouchUpInside];
     [inList addTarget:self action:@selector(listCancel:) forControlEvents:UIControlEventTouchCancel];
 
+    // UIActions: a system button made from its primary action, and a
+    // touch-down action replaced by one with the same identifier.
+    UIButton *act = [UIButton systemButtonWithPrimaryAction:[UIAction actionWithTitle:@"Act" image:nil identifier:nil handler:^(UIAction *a) {
+        [weak log:[NSString stringWithFormat:@"primary %@ from %@", a.title, [(UIButton *)a.sender currentTitle]] to:weak.actionLog];
+    }]];
+    act.frame = CGRectMake(220, 525, 150, 30);
+    [act addAction:[UIAction actionWithTitle:@"" image:nil identifier:@"down" handler:^(UIAction *a) { [weak log:@"old" to:weak.actionLog]; }]
+        forControlEvents:UIControlEventTouchDown];
+    [act addAction:[UIAction actionWithTitle:@"" image:nil identifier:@"down" handler:^(UIAction *a) { [weak log:@"down" to:weak.actionLog]; }]
+        forControlEvents:UIControlEventTouchDown];
+    [self.view addSubview:act];
+
+    // Sizing (off screen): sizeToFit, content insets, and Auto Layout's intrinsic size.
+    UIView *sizing = [[UIView alloc] initWithFrame:CGRectMake(0, 900, 390, 100)];
+    [self.view addSubview:sizing];
+    self.fit = [self button:@"Button" at:0 in:sizing];
+    [self.fit sizeToFit];
+    self.padded = [self button:@"Button" at:0 in:sizing];
+    self.padded.contentEdgeInsets = UIEdgeInsetsMake(5, 10, 5, 10);
+    [self.padded sizeToFit];
+    self.constrained = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.constrained setTitle:@"Longer title" forState:UIControlStateNormal];
+    self.constrained.translatesAutoresizingMaskIntoConstraints = NO;
+    [sizing addSubview:self.constrained];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.constrained.leadingAnchor constraintEqualToAnchor:sizing.leadingAnchor constant:20],
+        [self.constrained.topAnchor constraintEqualToAnchor:sizing.topAnchor constant:10],
+    ]];
+
     self.tapLog = [self fieldAt:560 tag:100];
     self.disabledLog = [self fieldAt:600 tag:101];
     self.chainLog = [self fieldAt:640 tag:102];
@@ -127,6 +157,18 @@
     self.panLog = [self fieldAt:720 tag:104];
     self.scrollLog = [self fieldAt:760 tag:105];
     self.listLog = [self fieldAt:800 tag:106];
+    self.sizeLog = [self fieldAt:1000 tag:107];
+    self.actionLog = [self fieldAt:1040 tag:108];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // Subviews lay out after this: lay the padded button out to read its title's place.
+    [self.padded layoutIfNeeded];
+    CGRect c = self.constrained.frame;
+    self.sizeLog.text = [NSString stringWithFormat:@"label %@ fit %@ padded %@ title %@ auto %@ at %g,%g", NSStringFromCGSize(self.fit.titleLabel.intrinsicContentSize),
+                                                   NSStringFromCGSize(self.fit.frame.size), NSStringFromCGSize(self.padded.frame.size),
+                                                   NSStringFromCGRect(self.padded.titleLabel.frame), NSStringFromCGSize(c.size), c.origin.x, c.origin.y];
 }
 
 - (UIScrollView *)scrollAt:(CGFloat)y class:(Class)cls {
