@@ -65,8 +65,9 @@ pub struct State {
     pub scale: f32,
     /// Virtual time of the last frame (ns).
     last_frame: Option<u64>,
-    /// A layout pass happened since the last frame (it was too soon to draw).
-    frame_pending: bool,
+    /// Something on screen changed since the last frame (CoreAnimation's
+    /// uncommitted transaction): the next frame is due.
+    dirty: bool,
     /// The input run-loop source and the main run loop.
     source: u64,
     run_loop: u64,
@@ -80,12 +81,19 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     if emu.live.host.is_none() {
         return Ok(false);
     }
-    // Nothing is running: draw whatever the last layout pass left undrawn.
-    if emu.live.frame_pending {
-        draw(emu)?;
+    // Nothing is running: draw what changed since the last frame once the
+    // frame interval has passed (and wake for it then).
+    let now = crate::threads::now_ns(emu);
+    let mut next_ns = next_ns;
+    if emu.live.dirty {
+        let due = emu.live.last_frame.map_or(now, |t| t + FRAME_NS);
+        if now >= due {
+            draw(emu)?;
+        } else {
+            next_ns = Some(next_ns.map_or(due, |n| n.min(due)));
+        }
     }
     let Some(mut host) = emu.live.host.take() else { return Ok(false) };
-    let now = crate::threads::now_ns(emu);
     let r = host.idle(now, next_ns);
     emu.live.host = Some(host);
     match r {
@@ -157,29 +165,33 @@ pub(crate) fn biometry_prompt(emu: &mut Emu, reason: &str) {
     }
 }
 
-/// Something drew outside layout (a Metal frame): the next idle moment shows it.
-pub(crate) fn frame_changed(emu: &mut Emu) {
-    if emu.live.host.is_some() {
-        emu.live.frame_pending = true;
-    }
+/// Something on screen changed (a view or layer, text, a Metal frame): the next frame shows it.
+pub(crate) fn changed(emu: &mut Emu) {
+    emu.live.dirty = true;
 }
 
-/// After the layout pass: render a frame if one is due.
+/// Something drew outside the view and layer state (a Metal frame, text): the next frame shows it.
+pub(crate) fn frame_changed(emu: &mut Emu) {
+    changed(emu);
+}
+
+/// After the layout pass (CoreAnimation's commit): render a frame if
+/// something changed and the frame interval has passed; otherwise the next
+/// idle moment draws it.
 pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
-    if emu.live.host.is_none() {
+    if emu.live.host.is_none() || !emu.live.dirty {
         return Ok(());
     }
     let now = crate::threads::now_ns(emu);
     if emu.live.last_frame.is_some_and(|t| now < t + FRAME_NS) {
-        emu.live.frame_pending = true;
-        return Ok(());
+        return Ok(()); // too soon: the next idle moment draws it
     }
     draw(emu)
 }
 
 fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.last_frame = Some(crate::threads::now_ns(emu));
-    emu.live.frame_pending = false;
+    emu.live.dirty = false;
     let pix = crate::render::render(emu, emu.live.scale)?;
     let orientation = crate::orientation::current(emu);
     if let Some(mut host) = emu.live.host.take() {

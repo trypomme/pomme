@@ -32,6 +32,8 @@ pub struct View {
     pub window: u64,
     /// `layoutSubviews` is due at the next layout pass.
     pub needs_layout: bool,
+    /// `drawRect:` is due at the next frame (`setNeedsDisplay`).
+    pub needs_display: bool,
 }
 
 #[derive(Debug, Default)]
@@ -63,7 +65,15 @@ fn rect_arg(emu: &Emu) -> [f64; 4] {
     [f(emu, 0), f(emu, 1), f(emu, 2), f(emu, 3)]
 }
 
+/// A view's state, to change: the screen is due a new frame.
 pub(crate) fn view_mut(emu: &mut Emu, v: u64) -> &mut View {
+    crate::host::changed(emu);
+    view_entry(emu, v)
+}
+
+/// A view's state (made on first use), without marking the screen changed:
+/// for reading, and for the renderer's own bookkeeping.
+pub(crate) fn view_entry(emu: &mut Emu, v: u64) -> &mut View {
     if !emu.ui.views.views.contains_key(&v) {
         let user_interaction = interactive_by_default(emu, v);
         emu.ui.views.views.insert(v, View { alpha: 1.0, user_interaction, needs_layout: true, ..Default::default() });
@@ -85,7 +95,7 @@ fn interactive_by_default(emu: &Emu, v: u64) -> bool {
 }
 
 pub(crate) fn view(emu: &mut Emu, v: u64) -> View {
-    view_mut(emu, v).clone()
+    view_entry(emu, v).clone()
 }
 
 pub(crate) fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
@@ -475,7 +485,8 @@ fn view_layer(emu: &mut Emu) -> Result<()> {
 /// Whether any view was laid out.
 pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<bool> {
     let mut any = false;
-    if std::mem::take(&mut view_mut(emu, v).needs_layout) {
+    // Taking the flag isn't a change on screen; what layoutSubviews moves is.
+    if std::mem::take(&mut view_entry(emu, v).needs_layout) {
         any = true;
         // A view controller's view brackets its layout with the controller's callbacks.
         let vc = emu.ui.views.vc_view.iter().find(|&(_, &view)| view == v).map(|(&vc, _)| vc);
@@ -522,7 +533,8 @@ fn layout_if_needed(emu: &mut Emu) -> Result<()> {
 
 fn set_needs_layout(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
-    view_mut(emu, v).needs_layout = true;
+    // Not a change on screen until the layout moves something.
+    view_entry(emu, v).needs_layout = true;
     Ok(())
 }
 
@@ -568,6 +580,16 @@ fn size_class(emu: &mut Emu, vertical: bool) -> Result<()> {
     let now = crate::orientation::size_classes(emu);
     let v = objc::bag_get(emu, emu.arg(0), key).unwrap_or(if vertical { now.1 } else { now.0 });
     emu.ret(v);
+    Ok(())
+}
+
+/// `setNeedsDisplay` / `setNeedsDisplayInRect:`: redraw at the next frame.
+pub(crate) fn set_needs_display(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    if emu.ui.views.views.contains_key(&v) {
+        view_mut(emu, v).needs_display = true;
+        crate::host::frame_changed(emu);
+    }
     Ok(())
 }
 
@@ -1097,7 +1119,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIView", false, "setNeedsLayout", set_needs_layout),
-    ("UIView", false, "setNeedsDisplay", noop),
+    ("UIView", false, "setNeedsDisplay", set_needs_display),
+    ("UIView", false, "setNeedsDisplayInRect:", set_needs_display),
     ("UIView", false, "layoutSubviews", noop),
     ("UIView", false, "layoutIfNeeded", layout_if_needed),
     ("UIView", false, "didMoveToSuperview", noop),

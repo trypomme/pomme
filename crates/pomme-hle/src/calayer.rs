@@ -85,12 +85,14 @@ impl Default for Layer {
     }
 }
 
+/// A layer's state, to change: the screen is due a new frame.
 pub fn layer_mut(emu: &mut Emu, l: u64) -> &mut Layer {
+    crate::host::changed(emu);
     emu.ui.views.layers.entry(l).or_default()
 }
 
 pub fn layer(emu: &mut Emu, l: u64) -> Layer {
-    layer_mut(emu, l).clone()
+    emu.ui.views.layers.entry(l).or_default().clone()
 }
 
 /// The view whose own layer this is.
@@ -429,6 +431,16 @@ fn delegate(emu: &mut Emu) -> Result<()> {
     ret_x(emu, d)
 }
 
+/// A view's layer marked for display: the view redraws.
+fn layer_needs_display(emu: &mut Emu) -> Result<()> {
+    let layer = emu.arg(0);
+    if let Some(&v) = emu.ui.views.layer_view.get(&layer) {
+        crate::uiview::view_mut(emu, v).needs_display = true;
+        crate::host::frame_changed(emu);
+    }
+    Ok(())
+}
+
 fn nothing(_: &mut Emu) -> Result<()> {
     Ok(())
 }
@@ -601,9 +613,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "removeFromSuperlayer", remove_from_superlayer),
     (L, false, "presentationLayer", ret_self),
     (L, false, "modelLayer", ret_self),
-    (L, false, "setNeedsDisplay", nothing),
+    (L, false, "setNeedsDisplay", layer_needs_display),
     (L, false, "setNeedsLayout", nothing),
-    (L, false, "setNeedsDisplayInRect:", nothing),
+    (L, false, "setNeedsDisplayInRect:", layer_needs_display),
     (L, false, "layoutIfNeeded", nothing),
     (L, false, "layoutSublayers", nothing),
     (L, false, "displayIfNeeded", nothing),

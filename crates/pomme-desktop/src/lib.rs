@@ -165,6 +165,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         modifiers: ModifiersState::empty(),
         ended: false,
         menus: None,
+        shell: None,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -196,16 +197,24 @@ struct App {
     /// How the phone is held now.
     held: Orientation,
     menus: Option<menu::Menus>,
+    /// The phone's body for the last (orientation, scale bits) a frame came in.
+    shell: Option<((Orientation, u32), pomme_hle::render::Shell)>,
 }
 
 impl App {
     /// The phone at this frame scale with a blank screen: the window's size before the first frame.
-    fn blank_phone(&self, scale: f32) -> Option<Phone> {
-        let (w, h) = self.config.device.screen(self.held);
-        let mut screen = Pixmap::new((w * scale as f64) as u32, (h * scale as f64) as u32)?;
-        screen.fill(tiny_skia::Color::BLACK);
-        let (pix, rect) = pomme_hle::render::shell(self.config.device, self.held, &screen, scale).ok()?;
-        Some(Phone { pix, screen: rect, scale })
+    fn blank_phone(&mut self, scale: f32) -> Option<Phone> {
+        let shell = self.shell(self.held, scale)?;
+        Some(Phone { pix: shell.blank(), screen: shell.screen, scale })
+    }
+
+    /// The phone's body for this orientation and scale, drawn once and kept.
+    fn shell(&mut self, o: Orientation, scale: f32) -> Option<&pomme_hle::render::Shell> {
+        if self.shell.as_ref().is_none_or(|(k, _)| *k != (o, scale.to_bits())) {
+            let shell = pomme_hle::render::Shell::new(self.config.device, o, scale).ok()?;
+            self.shell = Some(((o, scale.to_bits()), shell));
+        }
+        self.shell.as_ref().map(|(_, s)| s)
     }
 
     /// Fit the phone in the window: the transform from phone pixels to window pixels.
@@ -245,7 +254,8 @@ impl App {
         let Some(f) = self.frame.lock().unwrap().take() else { return };
         let Some(scale) = self.phone.as_ref().map(|p| p.scale) else { return };
         let Some(screen) = Pixmap::from_vec(f.rgba, tiny_skia::IntSize::from_wh(f.width, f.height).unwrap()) else { return };
-        let Ok((pix, rect)) = pomme_hle::render::shell(self.config.device, f.orientation, &screen, scale) else { return };
+        let Some(shell) = self.shell(f.orientation, scale) else { return };
+        let (pix, rect) = (shell.compose(&screen), shell.screen);
         let turned = self.phone.as_ref().is_some_and(|p| (p.pix.width(), p.pix.height()) != (pix.width(), pix.height()));
         self.phone = Some(Phone { pix, screen: rect, scale });
         if turned {

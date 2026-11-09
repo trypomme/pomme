@@ -156,8 +156,8 @@ pub struct State {
     paths: HashMap<u64, Vec<El>>,
     bitmaps: HashMap<u64, Bitmap>,
     glyph_dumps: usize,
-    /// What each view drew in its last `drawRect:`.
-    content: HashMap<u64, Vec<Op>>,
+    /// What each view drew in its last `drawRect:`, and at what size.
+    content: HashMap<u64, (Vec<Op>, [f64; 2])>,
 }
 
 fn apply(m: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
@@ -548,6 +548,43 @@ fn fill(emu: &mut Emu, even_odd: bool) -> Result<()> {
     })
 }
 
+/// The current UIKit graphics context (`UIGraphicsGetCurrentContext`), if any.
+fn with_current(emu: &mut Emu, f: impl FnOnce(&mut Ctx)) -> Result<()> {
+    let Some(c) = emu.render.stack.last().copied() else { return Ok(()) };
+    if let Some(ctx) = ctx_mut(emu, c) {
+        f(ctx);
+    }
+    flush_bitmap(emu, c)
+}
+
+/// `UIRectFill(rect)`: fill with the current context's fill color.
+fn ui_rect_fill(emu: &mut Emu) -> Result<()> {
+    let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
+    with_current(emu, |c| {
+        let els = transform_els(&rect_els(r[0], r[1], r[2], r[3]), &c.gs.ctm);
+        c.ops.push(Op::Fill { path: els, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone() });
+    })
+}
+
+/// UIColor's `set`, `setFill` and `setStroke`: the current context's colors.
+pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("UIColor", false, "setFill", |e| {
+        let col = rgba(e, e.arg(0));
+        with_current(e, |c| c.gs.fill = col)
+    }),
+    ("UIColor", false, "setStroke", |e| {
+        let col = rgba(e, e.arg(0));
+        with_current(e, |c| c.gs.stroke = col)
+    }),
+    ("UIColor", false, "set", |e| {
+        let col = rgba(e, e.arg(0));
+        with_current(e, |c| {
+            c.gs.fill = col;
+            c.gs.stroke = col;
+        })
+    }),
+];
+
 fn current_context(emu: &mut Emu) -> Result<()> {
     let c = emu.render.stack.last().copied().unwrap_or(0);
     emu.ret(c);
@@ -609,10 +646,18 @@ fn path_add(emu: &mut Emu, p: u64, els: Vec<El>, m: Option<[f32; 6]>) {
 
 // ---- display pass and compositing ----
 
-/// Run the guest's `-drawRect:` overrides, recording what each view draws.
+/// Run the guest's `-drawRect:` overrides where they're due, recording what
+/// each view draws. As on iOS, a view draws when it first shows, when it's
+/// marked with `setNeedsDisplay`, and when its size changes; otherwise what it
+/// drew last is shown again. (iOS stretches the old bitmap after a size change
+/// until the view redraws, unless its content mode is Redraw; pomme records
+/// drawing as shapes, so it redraws at the new size instead.)
 fn display(emu: &mut Emu, v: u64) -> Result<()> {
     let vw = view(emu, v);
-    if !vw.hidden {
+    let size = [vw.bounds[2], vw.bounds[3]];
+    let due = vw.needs_display || emu.render.content.get(&v).is_none_or(|c| c.1 != size);
+    if !vw.hidden && due {
+        crate::uiview::view_entry(emu, v).needs_display = false;
         let isa = emu.read_u64(v)?;
         let sel = objc::intern(emu, "drawRect:")?;
         if let Some(Imp::Guest(_)) = objc::lookup(emu, isa, sel)? {
@@ -624,7 +669,7 @@ fn display(emu: &mut Emu, v: u64) -> Result<()> {
             let r = objc::send(emu, v, "drawRect:", &[]);
             let ops = end_context(emu, c);
             r?;
-            emu.render.content.insert(v, ops);
+            emu.render.content.insert(v, (ops, size));
         }
     }
     for s in vw.subviews {
@@ -1014,7 +1059,7 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
         let r = contents_rect(emu, &ly, &img, w, h);
         draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &vt), m);
     }
-    if let Some(ops) = emu.render.content.get(&v).cloned() {
+    if let Some((ops, _)) = emu.render.content.get(&v).cloned() {
         p.ops(&ops, a, &inner, m);
     }
     if vw.layer != 0 {
@@ -1298,61 +1343,94 @@ pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
 /// `scale` pixels per point), turned as the phone is held. Also returns
 /// where the screen is in the result, in pixels (x, y, width, height).
 pub fn shell(d: &crate::device::Device, o: crate::device::Orientation, screen: &Pixmap, scale: f32) -> Result<(Pixmap, [f32; 4])> {
-    // The body is drawn upright in portrait, around the screen turned back
-    // into the native frame; then the whole phone turns as it's held.
-    let (pw, ph) = ((d.width as f32 * scale) as u32, (d.height as f32 * scale) as u32);
-    let screen = turn(screen, invert(o.from_portrait(pw as f64, ph as f64)), pw, ph)?;
-    // Bezel around the screen (pt), and room for the buttons at the sides.
-    const BEZEL: f32 = 14.0;
-    const BUTTONS: f32 = 4.0;
-    let (chin, forehead) = if d.home_button { (88.0f32, 88.0f32) } else { (BEZEL, BEZEL) };
-    let (sw, sh) = (d.width as f32, d.height as f32);
-    let (bw, bh) = (sw + 2.0 * BEZEL, sh + forehead + chin);
-    let total = (bw + 2.0 * BUTTONS, bh);
-    let pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
-    let mut p = Painter { pix, font: None, emoji: None };
-    let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
-    let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
-    let body = transform_els(&rounded_rect(bw, bh, body_r), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
-    // Side buttons first, so the body covers their inner edges.
-    let button = |p: &mut Painter, x: f32, y: f32, h: f32| {
-        let b = transform_els(&rounded_rect(BUTTONS + 3.0, h, 2.0), &[1.0, 0.0, 0.0, 1.0, x, y]);
-        p.fill(&b, [0.17, 0.17, 0.18, 1.0], 1.0, false, &t, None);
-    };
-    let top = forehead + if d.home_button { 0.0 } else { 100.0 };
-    button(&mut p, 0.0, top, 32.0); // action / ring
-    button(&mut p, 0.0, top + 56.0, 60.0); // volume up
-    button(&mut p, 0.0, top + 128.0, 60.0); // volume down
-    button(&mut p, total.0 - BUTTONS - 3.0, top + 50.0, 96.0); // side button
-    p.fill(&body, [0.11, 0.11, 0.12, 1.0], 1.0, false, &t, None);
-    p.stroke(&body, [0.35, 0.35, 0.37, 1.0], 1.0, 1.5, &t, None);
-    // The screen, clipped to the display's corners.
-    let (ox, oy) = (BUTTONS + BEZEL, forehead);
-    let screen_shape = transform_els(&rounded_rect(sw, sh, d.corner_radius as f32), &[1.0, 0.0, 0.0, 1.0, ox, oy]);
-    let mask = p.intersect(None, &screen_shape, &t);
-    let pattern = tiny_skia::Pattern::new(screen.as_ref(), tiny_skia::SpreadMode::Pad, tiny_skia::FilterQuality::Nearest, 1.0, Transform::from_translate(ox * scale, oy * scale));
-    let paint = Paint { shader: pattern, anti_alias: true, ..Default::default() };
-    if let Some(r) = tiny_skia::Rect::from_xywh(ox * scale, oy * scale, sw * scale, sh * scale) {
-        p.pix.fill_rect(r, &paint, Transform::identity(), mask.as_ref());
+    let shell = Shell::new(d, o, scale)?;
+    Ok((shell.compose(screen), shell.screen))
+}
+
+/// The phone around the screen, drawn once for an orientation and scale:
+/// a frame goes into its screen with [`Shell::compose`] (the desktop window
+/// does that for every frame, so the body isn't drawn again each time).
+pub struct Shell {
+    /// The body, buttons and an empty (dark) screen, turned as the phone is held.
+    body: Pixmap,
+    /// Where the screen is in `body` (px): x, y, width, height.
+    pub screen: [f32; 4],
+    /// The display's rounded corners, over all of `body`.
+    mask: Option<Mask>,
+}
+
+impl Shell {
+    pub fn new(d: &crate::device::Device, o: crate::device::Orientation, scale: f32) -> Result<Shell> {
+        // The body is drawn upright in portrait; then the whole phone turns as it's held.
+        // Bezel around the screen (pt), and room for the buttons at the sides.
+        const BEZEL: f32 = 14.0;
+        const BUTTONS: f32 = 4.0;
+        let (chin, forehead) = if d.home_button { (88.0f32, 88.0f32) } else { (BEZEL, BEZEL) };
+        let (sw, sh) = (d.width as f32, d.height as f32);
+        let (bw, bh) = (sw + 2.0 * BEZEL, sh + forehead + chin);
+        let total = (bw + 2.0 * BUTTONS, bh);
+        let pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
+        let mut p = Painter { pix, font: None, emoji: None };
+        let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
+        let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
+        let body = transform_els(&rounded_rect(bw, bh, body_r), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
+        // Side buttons first, so the body covers their inner edges.
+        let button = |p: &mut Painter, x: f32, y: f32, h: f32| {
+            let b = transform_els(&rounded_rect(BUTTONS + 3.0, h, 2.0), &[1.0, 0.0, 0.0, 1.0, x, y]);
+            p.fill(&b, [0.17, 0.17, 0.18, 1.0], 1.0, false, &t, None);
+        };
+        let top = forehead + if d.home_button { 0.0 } else { 100.0 };
+        button(&mut p, 0.0, top, 32.0); // action / ring
+        button(&mut p, 0.0, top + 56.0, 60.0); // volume up
+        button(&mut p, 0.0, top + 128.0, 60.0); // volume down
+        button(&mut p, total.0 - BUTTONS - 3.0, top + 50.0, 96.0); // side button
+        p.fill(&body, [0.11, 0.11, 0.12, 1.0], 1.0, false, &t, None);
+        p.stroke(&body, [0.35, 0.35, 0.37, 1.0], 1.0, 1.5, &t, None);
+        let (ox, oy) = (BUTTONS + BEZEL, forehead);
+        if d.home_button {
+            let (cx, cy, r) = (total.0 / 2.0, bh - chin / 2.0, 22.0);
+            let mut ring = Vec::new();
+            arc_els(&mut ring, cx, cy, r, 0.0, std::f32::consts::TAU, false);
+            ring.push(El::Close);
+            p.stroke(&ring, [0.4, 0.4, 0.42, 1.0], 1.0, 2.0, &t, None);
+        }
+        let (w, h) = (p.pix.width(), p.pix.height());
+        let (ow, oh) = if o.is_landscape() { (h, w) } else { (w, h) };
+        let m = o.from_portrait(w as f64, h as f64);
+        // Where the screen lands: its corners through the turn.
+        let corners = [(ox * scale, oy * scale), ((ox + sw) * scale, (oy + sh) * scale)].map(|(x, y)| {
+            let (x, y) = (x as f64, y as f64);
+            ((m[0] * x + m[2] * y + m[4]) as f32, (m[1] * x + m[3] * y + m[5]) as f32)
+        });
+        let (x0, x1) = (corners[0].0.min(corners[1].0), corners[0].0.max(corners[1].0));
+        let (y0, y1) = (corners[0].1.min(corners[1].1), corners[0].1.max(corners[1].1));
+        let body = turn(&p.pix, m, ow, oh)?;
+        // The display's corners where the screen landed (a rounded rectangle looks the same turned).
+        let shape = transform_els(&rounded_rect(x1 - x0, y1 - y0, d.corner_radius as f32 * scale), &[1.0, 0.0, 0.0, 1.0, x0, y0]);
+        let mask = Painter { pix: Pixmap::new(ow, oh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?, font: None, emoji: None }.intersect(None, &shape, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        Ok(Shell { body, screen: [x0, y0, x1 - x0, y1 - y0], mask })
     }
-    if d.home_button {
-        let (cx, cy, r) = (total.0 / 2.0, bh - chin / 2.0, 22.0);
-        let mut ring = Vec::new();
-        arc_els(&mut ring, cx, cy, r, 0.0, std::f32::consts::TAU, false);
-        ring.push(El::Close);
-        p.stroke(&ring, [0.4, 0.4, 0.42, 1.0], 1.0, 2.0, &t, None);
+
+    /// The phone showing `screen` (upright for the orientation the shell was made for).
+    pub fn compose(&self, screen: &Pixmap) -> Pixmap {
+        let mut out = self.body.clone();
+        let [x, y, _, _] = self.screen;
+        let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Nearest, ..Default::default() };
+        out.draw_pixmap(0, 0, screen.as_ref(), &paint, Transform::from_translate(x.round(), y.round()), self.mask.as_ref());
+        out
     }
-    let (w, h) = (p.pix.width(), p.pix.height());
-    let (ow, oh) = if o.is_landscape() { (h, w) } else { (w, h) };
-    let m = o.from_portrait(w as f64, h as f64);
-    // Where the screen lands: its corners through the turn.
-    let corners = [(ox * scale, oy * scale), ((ox + sw) * scale, (oy + sh) * scale)].map(|(x, y)| {
-        let (x, y) = (x as f64, y as f64);
-        ((m[0] * x + m[2] * y + m[4]) as f32, (m[1] * x + m[3] * y + m[5]) as f32)
-    });
-    let (x0, x1) = (corners[0].0.min(corners[1].0), corners[0].0.max(corners[1].0));
-    let (y0, y1) = (corners[0].1.min(corners[1].1), corners[0].1.max(corners[1].1));
-    Ok((turn(&p.pix, m, ow, oh)?, [x0, y0, x1 - x0, y1 - y0]))
+
+    /// The body with nothing on the screen (before the first frame).
+    pub fn blank(&self) -> Pixmap {
+        let mut out = self.body.clone();
+        let [x, y, w, h] = self.screen;
+        if let Some(r) = tiny_skia::Rect::from_xywh(x, y, w, h) {
+            let mut paint = Paint::default();
+            paint.set_color(tiny_skia::Color::BLACK);
+            out.fill_rect(r, &paint, Transform::identity(), self.mask.as_ref());
+        }
+        out
+    }
 }
 
 /// `src` drawn through the pixel-space map `m` into a new `w`×`h` bitmap.
@@ -1363,13 +1441,6 @@ fn turn(src: &Pixmap, m: [f64; 6], w: u32, h: u32) -> Result<Pixmap> {
     Ok(out)
 }
 
-/// The inverse of an affine map `[a, b, c, d, tx, ty]`.
-fn invert(m: [f64; 6]) -> [f64; 6] {
-    let [a, b, c, d, tx, ty] = m;
-    let det = a * d - b * c;
-    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
-    [ia, ib, ic, id, -(ia * tx + ic * ty), -(ib * tx + id * ty)]
-}
 
 /// PNG bytes of [`render`].
 pub fn screenshot_png(emu: &mut Emu, scale: f32) -> Result<Vec<u8>> {
@@ -1385,6 +1456,7 @@ fn nothing(_: &mut Emu) -> Result<()> {
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_UIGraphicsGetCurrentContext", current_context),
+    ("_UIRectFill", ui_rect_fill),
     ("_UIGraphicsPushContext", |e| {
         let c = e.arg(0);
         e.render.stack.push(c);
