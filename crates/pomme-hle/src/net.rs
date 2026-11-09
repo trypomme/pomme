@@ -359,6 +359,9 @@ fn resume(emu: &mut Emu) -> Result<()> {
     }
     let result = if let Some(path) = request.url.strip_prefix("file://") {
         read_file_url(emu, path)
+    } else if emu.network.path == crate::network::Path::Offline {
+        // The phone has no network (--network offline): nothing goes out.
+        Err("offline".to_string())
     } else {
         match emu.net.client.as_mut() {
             Some(c) => c.fetch(&request),

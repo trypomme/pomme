@@ -244,6 +244,7 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     crate::textinput::schedule_script(emu)?;
     crate::clipboard::schedule_script(emu)?;
     crate::orientation::schedule_script(emu)?;
+    crate::network::schedule_script(emu)?;
     crate::host::install(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds

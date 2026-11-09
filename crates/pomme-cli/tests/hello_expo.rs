@@ -609,3 +609,47 @@ fn expo_image() {
     // The blurhash: soft colour, not the view's grey.
     assert!(!near(at(80.0, 589.0), (0xe5, 0xe7, 0xeb)), "blurhash: {:?}", at(80.0, 589.0));
 }
+
+/// The network screen's lines: the state (type, connected, reachable,
+/// listener updates) and the IP address.
+fn network_screen(setup: impl FnOnce(&mut Emu), secs: f64) -> Option<(String, String)> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///network".into());
+    setup(&mut emu);
+    let v = run_for(&mut emu, secs);
+    let line = |needle: &str| v.lines().find(|l| l.contains(needle)).map(|l| l.trim().to_string()).unwrap_or_else(|| panic!("no {needle:?} in\n{v}"));
+    Some((line(" updates\""), line("\"ip ")))
+}
+
+/// expo-network over the Network framework: on Wi-Fi by default, with the
+/// Wi-Fi interface's address; its listener hears the monitor's first path.
+#[test]
+fn expo_network_on_wifi() {
+    let Some((state, ip)) = network_screen(|_| {}, 5.0) else { return };
+    assert!(state.contains("\"WIFI · connected true · reachable true · 1 updates\""), "{state}");
+    assert!(ip.contains("\"ip 192.168.1.23\""), "{ip}");
+}
+
+/// The network changes while the app runs: cellular, then offline; each change reaches the listener.
+#[test]
+fn expo_network_follows_changes() {
+    use pomme_hle::network::Path;
+    let Some((state, _)) = network_screen(|e| {
+        e.network.changes = vec![(3_000_000_000, Path::Cellular)];
+    }, 4.0) else { return };
+    assert!(state.contains("\"CELLULAR · connected true · reachable true · 2 updates\""), "{state}");
+    let Some((state, _)) = network_screen(|e| {
+        e.network.changes = vec![(3_000_000_000, Path::Cellular), (4_000_000_000, Path::Offline)];
+    }, 5.0) else { return };
+    assert!(state.contains("\"NONE · connected false · reachable false · 3 updates\""), "{state}");
+}
+
+/// With the phone offline, requests fail even though a server (the fixtures) would answer.
+#[test]
+fn offline_network_fails_requests() {
+    let Some(mut emu) = boot() else { return };
+    emu.net.client = Some(Box::new(repos()));
+    emu.network.path = pomme_hle::network::Path::Offline;
+    let views = run_for(&mut emu, 6.0);
+    assert!(views.contains("Couldn't load"), "{views}");
+}

@@ -107,6 +107,12 @@ xcrun --sdk macosx swiftc -target "$TARGET" -sdk "$SDK" -O -wmo -parse-as-librar
   -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
   "$HERE/overlays/Symbols/Symbols.swift"
 
+# Network: the Swift API for watching the network (NWPathMonitor, NWPath,
+# NWInterface), ours, on the nw_* C API that pomme implements. Apps link it
+# as libswiftNetwork, as the SDK lays it out.
+overlay Network swiftNetwork -import-underlying-module -- "$HERE/overlays/Network/Network.swift"
+
+
 # Regex: _RegexParser, _StringProcessing (with its C Unicode tables) and
 # RegexBuilder, from swiftlang/swift-experimental-string-processing at the
 # toolchain's tag, built the way Runtimes/Supplemental/StringProcessing does:

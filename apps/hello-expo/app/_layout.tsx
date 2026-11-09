@@ -16,6 +16,7 @@ export default function RootLayout() {
         <Stack.Screen name="sticky" options={{ title: 'Sticky' }} />
         <Stack.Screen name="rotation" options={{ title: 'Rotation' }} />
         <Stack.Screen name="image" options={{ title: 'Image' }} />
+        <Stack.Screen name="network" options={{ title: 'Network' }} />
       </Stack>
     </QueryClientProvider>
   );

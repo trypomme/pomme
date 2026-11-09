@@ -1093,6 +1093,11 @@ fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Re
     Ok(())
 }
 
+/// Run `f(ctx)` on dispatch queue `queue`, as `dispatch_async_f` does (no queue: the main one).
+pub(crate) fn dispatch_on(emu: &mut Emu, queue: u64, f: u64, ctx: u64) -> Result<()> {
+    submit(emu, queue, f, ctx, None)
+}
+
 /// Run `f(ctx)` on the main thread, in turn with the main queue's other work.
 pub(crate) fn run_on_main(emu: &mut Emu, f: u64, ctx: u64) {
     emu.sys.queue.push_back((f, ctx));

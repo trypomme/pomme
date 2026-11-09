@@ -120,12 +120,31 @@ struct OrientationArgs {
     /// interface turns if they support the new orientation.
     #[arg(long, value_parser = parse_rotate)]
     rotate: Vec<(pomme_hle::device::Orientation, f64)>,
+    /// How the phone is connected: `wifi` (the default), `cellular`, `wired` or `offline`,
+    /// and changes while it runs: `--network cellular --network offline@3`. Apps see it
+    /// through the Network framework (NWPathMonitor, expo-network …); offline, requests fail.
+    #[arg(long, value_parser = parse_network)]
+    network: Vec<(pomme_hle::network::Path, Option<f64>)>,
 }
 
 impl OrientationArgs {
     fn apply(&self, emu: &mut pomme_hle::Emu) {
         emu.ui.device_orientation = self.held;
         emu.ui.rotations = self.rotate.iter().map(|&(o, t)| ((t * 1e9) as u64, o)).collect();
+        for &(p, at) in &self.network {
+            match at {
+                None => emu.network.path = p,
+                Some(t) => emu.network.changes.push(((t * 1e9) as u64, p)),
+            }
+        }
+    }
+}
+
+/// `cellular` (at launch) or `offline@3` (a change at 3 s).
+fn parse_network(s: &str) -> std::result::Result<(pomme_hle::network::Path, Option<f64>), String> {
+    match s.rsplit_once('@') {
+        Some((p, t)) => Ok((p.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
+        None => Ok((s.parse()?, None)),
     }
 }
 

@@ -61,6 +61,7 @@ pub mod indexset;
 pub mod commoncrypto;
 pub mod operation;
 pub mod uttype;
+pub mod network;
 mod uikit;
 mod uiview;
 
@@ -241,6 +242,7 @@ pub struct Emu {
     pub(crate) indexsets: indexset::State,
     pub(crate) crypto: commoncrypto::State,
     pub(crate) ops: operation::State,
+    pub network: network::State,
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
@@ -260,7 +262,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -324,6 +326,7 @@ impl Emu {
             indexsets: Default::default(),
             crypto: Default::default(),
             ops: Default::default(),
+            network: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
             system: Default::default(),
