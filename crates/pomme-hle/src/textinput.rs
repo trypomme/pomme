@@ -31,10 +31,13 @@ pub const EDITING_CHANGED: u64 = 1 << 17;
 pub const EDITING_DID_END: u64 = 1 << 18;
 pub const EDITING_DID_END_ON_EXIT: u64 = 1 << 19;
 
-/// The keyboard's height (portrait, English, with the predictive bar), as the
-/// iOS 26 Simulator reports it in UIKeyboardFrameEndUserInfoKey (an iPhone 17:
-/// 335 pt, its top at 539 of 874), and how long it takes to slide in or out.
+/// The keyboard's height (portrait, English), as the iOS 26 Simulator reports
+/// it in UIKeyboardFrameEndUserInfoKey on an iPhone 17: 335 pt with the
+/// predictive bar, 304 pt without it (an input with both autocorrection and
+/// spell checking off, as Flutter's `autocorrect: false` asks). And how long it
+/// takes to slide in or out.
 pub const KEYBOARD_HEIGHT: f64 = 335.0;
+pub const KEYBOARD_HEIGHT_NO_PREDICTIONS: f64 = 304.0;
 pub const KEYBOARD_DURATION: f64 = 0.25;
 /// UIViewAnimationCurve the keyboard animates with (UIKit's private "keyboard" curve).
 const KEYBOARD_CURVE: i64 = 7;
@@ -61,7 +64,11 @@ pub struct State {
     /// UIControl → (target, action, events).
     targets: HashMap<u64, Vec<(u64, u64, u64)>>,
     pub keyboard_shown: bool,
+    /// The keyboard's height while it's up (it depends on the input's traits).
+    pub keyboard_height: f64,
     pub script: Vec<KeyInput>,
+    /// The general pasteboard (empty: pomme has no clipboard).
+    pasteboard: u64,
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {
@@ -168,16 +175,39 @@ fn become_generic(emu: &mut Emu) -> Result<()> {
         return ret(emu, 0);
     }
     let old = emu.input.first_responder;
-    if old != 0 && send(emu, old, "resignFirstResponder", &[])? & 0xff == 0 {
-        return ret(emu, 0);
+    let keys = takes_keys(emu, r)?;
+    if old != 0 {
+        // Handing focus between text inputs keeps the keyboard up.
+        let shown = emu.input.keyboard_shown;
+        if keys {
+            emu.input.keyboard_shown = false;
+        }
+        let resigned = send(emu, old, "resignFirstResponder", &[])? & 0xff != 0;
+        emu.input.keyboard_shown = shown;
+        if !resigned {
+            return ret(emu, 0);
+        }
     }
     emu.input.first_responder = r;
+    if keys {
+        show_keyboard(emu)?;
+    }
     ret(emu, 1)
 }
 
+/// A responder that adopts UIKeyInput (Flutter's text input view, …): the
+/// keyboard comes up while it's first responder.
+fn takes_keys(emu: &mut Emu, r: u64) -> Result<bool> {
+    responds(emu, r, "insertText:")
+}
+
 fn resign_generic(emu: &mut Emu) -> Result<()> {
-    if emu.input.first_responder == emu.arg(0) {
+    let r = emu.arg(0);
+    if emu.input.first_responder == r {
         emu.input.first_responder = 0;
+        if takes_keys(emu, r)? {
+            hide_keyboard(emu)?;
+        }
     }
     ret(emu, 1)
 }
@@ -331,15 +361,21 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
         return Ok(());
     }
     if !is_text_field(emu, f) {
-        // Another UIKeyInput responder (Flutter's text input view, …).
-        match ch {
-            '\u{8}' => {
-                send(emu, f, "deleteBackward", &[])?;
+        // Another UIKeyInput responder (Flutter's text input view, …). Like
+        // the iOS keyboard, ask a UITextInput first whether the range may
+        // change (Flutter performs return's action there and answers NO).
+        let text = if ch == '\u{8}' { String::new() } else { ch.to_string() };
+        let s = foundation::new_nsstring(emu, &text)?;
+        if responds(emu, f, "shouldChangeTextInRange:replacementText:")? {
+            let range = change_range(emu, f, ch == '\u{8}')?;
+            if range != 0 && send(emu, f, "shouldChangeTextInRange:replacementText:", &[range, s])? & 0xff == 0 {
+                return Ok(());
             }
-            c => {
-                let s = foundation::new_nsstring(emu, &c.to_string())?;
-                send(emu, f, "insertText:", &[s])?;
-            }
+        }
+        if ch == '\u{8}' {
+            send(emu, f, "deleteBackward", &[])?;
+        } else {
+            send(emu, f, "insertText:", &[s])?;
         }
         return Ok(());
     }
@@ -374,6 +410,21 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The range a keystroke replaces in a UITextInput: the selection, or for
+/// delete with nothing selected, the character before the caret.
+fn change_range(emu: &mut Emu, input: u64, delete: bool) -> Result<u64> {
+    let sel = send(emu, input, "selectedTextRange", &[])?;
+    if sel == 0 || !delete || send(emu, sel, "isEmpty", &[])? & 0xff == 0 {
+        return Ok(sel);
+    }
+    let end = send(emu, sel, "start", &[])?;
+    let start = send(emu, input, "positionFromPosition:offset:", &[end, (-1i64) as u64])?;
+    if start == 0 {
+        return Ok(sel);
+    }
+    send(emu, input, "textRangeFromPosition:toPosition:", &[start, end])
 }
 
 fn tf_insert_text(emu: &mut Emu) -> Result<()> {
@@ -483,6 +534,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, r)
     }),
     ("UIResponder", false, "reloadInputViews", |_| Ok(())),
+    // No undo support: nil, as for a responder chain without a window's undo manager.
+    ("UIResponder", false, "undoManager", |e| ret(e, 0)),
     ("UIResponder", false, "inputView", |e| ret(e, 0)),
     ("UIResponder", false, "inputAccessoryView", |e| ret(e, 0)),
     ("UIResponder", false, "textInputMode", |e| ret(e, 0)),
@@ -639,6 +692,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let same = b != 0 && range_offsets(e, a) == range_offsets(e, b);
         ret(e, same as u64)
     }),
+    ("UIPasteboard", true, "generalPasteboard", |e| {
+        if e.input.pasteboard == 0 {
+            let cls = host_class(e, "UIPasteboard")?;
+            e.input.pasteboard = objc::create_instance(e, cls, 0)?;
+        }
+        let p = e.input.pasteboard;
+        ret(e, p)
+    }),
     // `[UIApplication sendAction:to:nil from:forEvent:]` goes to the first responder.
     ("UIApplication", false, "sendAction:to:from:forEvent:", |e| {
         let (action, to, from) = (e.arg(2), e.arg(3), e.arg(4));
@@ -658,10 +719,26 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 // ---- the keyboard ----
 
 /// The keyboard's frame in screen coordinates while shown (and below the screen while hidden).
-pub fn keyboard_frame(shown: bool) -> [f64; 4] {
+pub fn keyboard_frame(height: f64, shown: bool) -> [f64; 4] {
     let (w, h) = (crate::uikit::SCREEN_W, crate::uikit::SCREEN_H);
-    let y = if shown { h - KEYBOARD_HEIGHT } else { h };
-    [0.0, y, w, KEYBOARD_HEIGHT]
+    let y = if shown { h - height } else { h };
+    [0.0, y, w, height]
+}
+
+/// A UITextInputTraits value of the responder (0, "default", if it has none).
+fn trait_value(emu: &mut Emu, r: u64, name: &str) -> Result<u64> {
+    if let Some(v) = objc::bag_get(emu, r, name) {
+        return Ok(v);
+    }
+    if responds(emu, r, name)? { send(emu, r, name, &[]).map(|v| v & 0xffff_ffff) } else { Ok(0) }
+}
+
+/// The keyboard height for `r`: without the predictive bar when autocorrection
+/// and spell checking are both off (UITextAutocorrectionTypeNo, UITextSpellCheckingTypeNo).
+fn keyboard_height_for(emu: &mut Emu, r: u64) -> Result<f64> {
+    const NO: u64 = 1;
+    let off = trait_value(emu, r, "autocorrectionType")? == NO && trait_value(emu, r, "spellCheckingType")? == NO;
+    Ok(if off { KEYBOARD_HEIGHT_NO_PREDICTIONS } else { KEYBOARD_HEIGHT })
 }
 
 fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
@@ -685,7 +762,8 @@ fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
 }
 
 fn post_keyboard(emu: &mut Emu, names: &[&str], shown: bool) -> Result<()> {
-    let info = keyboard_info(emu, keyboard_frame(!shown), keyboard_frame(shown))?;
+    let h = emu.input.keyboard_height;
+    let info = keyboard_info(emu, keyboard_frame(h, !shown), keyboard_frame(h, shown))?;
     for n in names {
         foundation::post_named_info(emu, n, 0, info)?;
     }
@@ -712,6 +790,8 @@ pub fn show_keyboard(emu: &mut Emu) -> Result<()> {
         return Ok(());
     }
     emu.input.keyboard_shown = true;
+    let fr = emu.input.first_responder;
+    emu.input.keyboard_height = keyboard_height_for(emu, fr)?;
     post_keyboard(emu, &["UIKeyboardWillChangeFrameNotification", "UIKeyboardWillShowNotification"], true)?;
     crate::uikit::after_on_main(emu, KEYBOARD_DURATION, did_show, 0)?;
     crate::host::frame_changed(emu);
@@ -826,8 +906,8 @@ mod tests {
 
     #[test]
     fn keyboard_sits_on_the_bottom_edge() {
-        let shown = keyboard_frame(true);
+        let shown = keyboard_frame(KEYBOARD_HEIGHT, true);
         assert_eq!(shown[1] + shown[3], crate::uikit::SCREEN_H);
-        assert_eq!(keyboard_frame(false)[1], crate::uikit::SCREEN_H);
+        assert_eq!(keyboard_frame(KEYBOARD_HEIGHT, false)[1], crate::uikit::SCREEN_H);
     }
 }

@@ -67,7 +67,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 |---|---|---|---|
 | Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router, TextInput + KeyboardAvoidingView |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
-| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders and counts taps; matches the iOS Simulator to 3/255 except the font |
+| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders, counts taps, TextField with the keyboard inset; matches the iOS Simulator to 3/255 except the font |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |
 | Defold | Vulkan → MoltenVK → Metal (older builds: OpenGL ES) | — | planned: needs MoltenVK's runtime MSL, maybe GLES |
 | Native UIKit / SwiftUI | UIKit, Core Animation, Metal | — | later |

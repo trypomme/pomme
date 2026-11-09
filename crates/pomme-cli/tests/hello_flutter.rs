@@ -144,3 +144,58 @@ fn taps_are_counted() {
     assert_ne!(none, two);
     assert_eq!(two, two_and_page, "a tap outside the square was counted");
 }
+
+/// Flutter's TextField: a tap focuses it (Flutter's text input view becomes
+/// first responder and the keyboard comes up: 304 pt, since `autocorrect:
+/// false` turns spell checking off too and iOS drops the predictive bar); the
+/// Scaffold shrinks by the keyboard's height, lifting the field above it; keys
+/// arrive through UIKeyInput; return (asked about through
+/// shouldChangeTextInRange:replacementText:, as the iOS keyboard does) submits,
+/// unfocuses and lowers the keyboard.
+#[test]
+fn text_field_and_keyboard_inset() {
+    // Run with the tap and typing (and return, if `submit`) until `secs`; then
+    // whether the keyboard is up, its height and the colors at `points` (pt).
+    let run = |secs: f64, submit: bool, points: &[(f64, f64)]| -> Option<(bool, f64, Vec<(u8, u8, u8)>)> {
+        let mut emu = boot()?;
+        tap(&mut emu, (195.0, 800.0), 2.0);
+        emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: 3_500_000_000, text: "Adx\u{8}\u{8}da".into() });
+        if submit {
+            emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: 5_000_000_000, text: "\n".into() });
+        }
+        emu.time_limit_ns = Some((secs * 1e9) as u64);
+        match emu.run_main() {
+            Err(pomme_hle::Stop::TimeLimit(_)) => {}
+            other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        }
+        if emu.metal.gpu_error.is_some() {
+            return None;
+        }
+        let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+        let colors = points
+            .iter()
+            .map(|&(x, y)| {
+                let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
+                (c.red(), c.green(), c.blue())
+            })
+            .collect();
+        Some((emu.input.keyboard_shown, emu.input.keyboard_height, colors))
+    };
+    let near = |(r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)| r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12;
+    const FOCUSED: (u8, u8, u8) = (103, 80, 164);
+    const BORDER: (u8, u8, u8) = (121, 116, 126);
+    const KEYBOARD: (u8, u8, u8) = (226, 228, 232);
+
+    // The field's focused bottom border sits 16 pt above the keyboard (844 − 304 = 540).
+    let Some((shown, height, c)) = run(4.5, false, &[(200.0, 523.0), (195.0, 700.0)]) else { return };
+    assert!(shown, "the keyboard should be up");
+    assert_eq!(height, 304.0);
+    assert!(near(c[0], FOCUSED), "focused border: {:?}", c[0]);
+    assert!(near(c[1], KEYBOARD), "keyboard: {:?}", c[1]);
+
+    // After return: unfocused, back at the bottom, no keyboard.
+    let (shown, _, c) = run(7.0, true, &[(200.0, 827.5), (195.0, 700.0)]).unwrap();
+    assert!(!shown, "return should unfocus and lower the keyboard");
+    assert!(near(c[0], BORDER), "resting border: {:?}", c[0]);
+    assert!(near(c[1], (255, 255, 255)), "page: {:?}", c[1]);
+}

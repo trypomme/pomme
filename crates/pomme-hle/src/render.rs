@@ -1009,9 +1009,9 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
 /// The software keyboard while it's up: iOS 26's light keyboard panel (its
 /// colour and rounded top corners, sampled from the Simulator) along the bottom
 /// edge. The keys aren't drawn.
-fn draw_keyboard(p: &mut Painter, t: &[f32; 6]) {
+fn draw_keyboard(p: &mut Painter, height: f64, t: &[f32; 6]) {
     const RADIUS: f32 = 28.0;
-    let [x, y, w, h] = crate::textinput::keyboard_frame(true).map(|v| v as f32);
+    let [x, y, w, h] = crate::textinput::keyboard_frame(height, true).map(|v| v as f32);
     // Round the top corners only: the bottom ones fall below the screen.
     let panel = transform_els(&rounded_rect(w, h + RADIUS, RADIUS), &[1.0, 0.0, 0.0, 1.0, x, y]);
     p.fill(&panel, [226.0 / 255.0, 228.0 / 255.0, 232.0 / 255.0, 1.0], 1.0, false, t, None);
@@ -1121,7 +1121,7 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
         draw_view(emu, &mut p, w, 1.0, &t, None);
     }
     if emu.input.keyboard_shown {
-        draw_keyboard(&mut p, &t);
+        draw_keyboard(&mut p, emu.input.keyboard_height, &t);
     }
     Ok(p.pix)
 }

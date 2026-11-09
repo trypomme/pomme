@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 // The same scene as apps/hello-skia, so Flutter (Impeller on Metal) and React
 // Native Skia (Ganesh on Metal) can be compared with each other and with the
 // iOS Simulator: a dark slate rounded square with a rose → amber gradient
-// circle, a white stroked chevron under it, plus a tap counter.
+// circle, a white stroked chevron under it, plus a tap counter; and a name
+// field along the bottom (the Scaffold lifts it above the keyboard).
 
 void main() => runApp(const HelloApp());
 
@@ -25,12 +26,15 @@ class HelloPage extends StatefulWidget {
 
 class _HelloPageState extends State<HelloPage> {
   int _taps = 0;
+  String _name = '';
+  String _submitted = '';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Center(
+      body: Stack(children: [
+        Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -68,6 +72,28 @@ class _HelloPageState extends State<HelloPage> {
           ],
         ),
       ),
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _submitted.isNotEmpty ? 'Submitted $_submitted' : (_name.isEmpty ? 'Type your name below' : 'Hello, $_name!'),
+                style: const TextStyle(fontSize: 17),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                decoration: const InputDecoration(hintText: 'Your name', border: OutlineInputBorder()),
+                autocorrect: false,
+                onChanged: (v) => setState(() => _name = v),
+                onSubmitted: (v) => setState(() => _submitted = v),
+              ),
+            ],
+          ),
+        ),
+      ]),
     );
   }
 }

@@ -737,6 +737,56 @@ fn convert_point(emu: &mut Emu, to: bool) -> Result<()> {
     Ok(())
 }
 
+// ---- UIView block animations ----
+// pomme doesn't interpolate: the animations block runs now, so models take
+// their end values (and presentation layers are the model layers); the
+// completion block runs, finished, once the delay and duration have passed.
+
+fn copy_block(emu: &mut Emu, b: u64) -> Result<u64> {
+    let saved = emu.cpu.x[0];
+    emu.cpu.x[0] = b;
+    crate::libc::block_copy(emu)?;
+    let copy = emu.cpu.x[0];
+    emu.cpu.x[0] = saved;
+    Ok(copy)
+}
+
+fn completion_fire(emu: &mut Emu) -> Result<()> {
+    let b = emu.arg(1);
+    crate::libsystem::call_block(emu, b, &[1])?;
+    Ok(())
+}
+
+/// Run an animation: the block in x`anim`, the completion (or none) in
+/// x`completion`; duration in d0, the delay in d`delay` if there is one.
+fn animate(emu: &mut Emu, anim: usize, completion: Option<usize>, delay: Option<usize>) -> Result<()> {
+    let duration = f(emu, 0).max(0.0);
+    let delay = delay.map_or(0.0, |i| f(emu, i).max(0.0));
+    let (a, c) = (emu.arg(anim), completion.map_or(0, |i| emu.arg(i)));
+    if a != 0 {
+        crate::libsystem::call_block(emu, a, &[])?;
+    }
+    if c != 0 {
+        let c = copy_block(emu, c)?;
+        crate::uikit::after_on_main(emu, duration + delay, completion_fire, c)?;
+    }
+    Ok(())
+}
+
+/// `-convertPoint/Rect:to/fromCoordinateSpace:`: a view, or the screen (whose
+/// space is the window's: pomme's windows fill the screen at the origin).
+fn convert_space(emu: &mut Emu, rect: bool, to: bool) -> Result<()> {
+    let space = emu.arg(2);
+    let is_view = {
+        let cls = host_class(emu, "UIView")?;
+        space != 0 && crate::objc::is_kind_of(emu, space, cls)?
+    };
+    if !is_view {
+        emu.cpu.x[2] = 0;
+    }
+    if rect { convert_rect(emu, to) } else { convert_point(emu, to) }
+}
+
 /// `-convertRect:toView:` / `fromView:` (rect in d0–d3)
 fn convert_rect(emu: &mut Emu, to: bool) -> Result<()> {
     let (w, h) = (f(emu, 2), f(emu, 3));
@@ -796,6 +846,26 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "convertPoint:fromView:", |e| convert_point(e, false)),
     ("UIView", false, "convertRect:toView:", |e| convert_rect(e, true)),
     ("UIView", false, "convertRect:fromView:", |e| convert_rect(e, false)),
+    ("UIView", true, "animateWithDuration:animations:", |e| animate(e, 2, None, None)),
+    ("UIView", true, "animateWithDuration:animations:completion:", |e| animate(e, 2, Some(3), None)),
+    ("UIView", true, "animateWithDuration:delay:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
+    ("UIView", true, "animateWithDuration:delay:usingSpringWithDamping:initialSpringVelocity:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
+    ("UIView", true, "animateKeyframesWithDuration:delay:options:animations:completion:", |e| animate(e, 3, Some(4), Some(1))),
+    ("UIView", true, "transitionWithView:duration:options:animations:completion:", |e| animate(e, 4, Some(5), None)),
+    ("UIView", true, "addKeyframeWithRelativeStartTime:relativeDuration:animations:", |e| {
+        let b = e.arg(2);
+        crate::libsystem::call_block(e, b, &[])?;
+        Ok(())
+    }),
+    ("UIView", true, "performWithoutAnimation:", |e| {
+        let b = e.arg(2);
+        crate::libsystem::call_block(e, b, &[])?;
+        Ok(())
+    }),
+    ("UIView", false, "convertRect:toCoordinateSpace:", |e| convert_space(e, true, true)),
+    ("UIView", false, "convertRect:fromCoordinateSpace:", |e| convert_space(e, true, false)),
+    ("UIView", false, "convertPoint:toCoordinateSpace:", |e| convert_space(e, false, true)),
+    ("UIView", false, "convertPoint:fromCoordinateSpace:", |e| convert_space(e, false, false)),
     ("UIView", false, "isDescendantOfView:", is_descendant),
     ("UIView", false, "viewWithTag:", view_with_tag),
     ("UIView", false, "sizeToFit", size_to_fit),

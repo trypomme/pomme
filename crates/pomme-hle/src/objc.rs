@@ -107,6 +107,8 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
+    // The pasteboard: empty (string, hasStrings … are nil / NO until set).
+    "UIPasteboard",
     // A deep link's context (URL, options) and its options (all nil / NO).
     "UIOpenURLContext",
     "UISceneOpenURLOptions",

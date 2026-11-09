@@ -836,8 +836,21 @@ fn thread_info(emu: &mut Emu) -> Result<()> {
     ret(emu, 0)
 }
 
+/// `task_info(task, flavor, info, count)`: every flavor answers zeros (no
+/// memory used, no time spent), filling the words the caller has room for.
+fn task_info(emu: &mut Emu) -> Result<()> {
+    let (info, count) = (emu.arg(2), emu.arg(3));
+    if info == 0 || count == 0 {
+        return ret(emu, 4); // KERN_INVALID_ARGUMENT
+    }
+    let words = emu.p.memory.read_u32(count)? as u64;
+    emu.p.memory.write(info, &vec![0; (words * 4) as usize])?;
+    ret(emu, 0)
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_thread_info", thread_info),
+    ("_task_info", task_info),
     ("_mach_port_allocate", mach_port_allocate),
     ("_mach_port_construct", mach_port_construct),
     ("_mach_port_insert_member", mach_port_insert_member),

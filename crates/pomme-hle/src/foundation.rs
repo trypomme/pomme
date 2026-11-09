@@ -614,6 +614,53 @@ fn append_string(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The composed character sequence (a user-perceived character: a surrogate
+/// pair, a base and its combining marks, an emoji sequence) at `i`, from
+/// CoreFoundation: (location, length).
+fn composed_at(emu: &mut Emu, s: u64, i: u64) -> Result<(u64, u64)> {
+    let f = cf_sym(emu, "_CFStringGetRangeOfComposedCharactersAtIndex")?;
+    emu.call_abi(f, &[s, i], &[], &[], None)?;
+    Ok((emu.last_x01[0], emu.last_x01[1]))
+}
+
+/// `-rangeOfComposedCharacterSequencesForRange:` (NSRange in and out, in x0/x1):
+/// widened so it doesn't split a composed character at either end.
+fn range_of_composed(emu: &mut Emu) -> Result<()> {
+    let (s, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let s = as_cf_string(emu, s)?;
+    let n = cf(emu, "_CFStringGetLength", &[s])?;
+    let start = if loc < n { composed_at(emu, s, loc)?.0 } else { loc };
+    let end = if len == 0 {
+        start.max(loc)
+    } else if loc + len <= n && loc + len > 0 {
+        let (l, k) = composed_at(emu, s, loc + len - 1)?;
+        l + k
+    } else {
+        loc + len
+    };
+    emu.cpu.x[0] = start;
+    emu.cpu.x[1] = end.max(start) - start;
+    Ok(())
+}
+
+/// `-rangeOfComposedCharacterSequenceAtIndex:`.
+fn range_of_composed_at(emu: &mut Emu) -> Result<()> {
+    let (s, i) = (emu.arg(0), emu.arg(2));
+    let s = as_cf_string(emu, s)?;
+    let (l, k) = composed_at(emu, s, i)?;
+    emu.cpu.x[0] = l;
+    emu.cpu.x[1] = k;
+    Ok(())
+}
+
+/// `-replaceCharactersInRange:withString:` (and the edits built on it).
+fn replace_characters(emu: &mut Emu) -> Result<()> {
+    let (m, loc, len, with) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
+    let with = as_cf_string(emu, with)?;
+    cf(emu, "_CFStringReplace", &[m, loc, len, with])?;
+    Ok(())
+}
+
 fn has_prefix(emu: &mut Emu) -> Result<()> {
     let a = nsstring(emu, emu.arg(0))?;
     let b = nsstring(emu, emu.arg(2))?;
@@ -784,31 +831,23 @@ fn get_bytes(emu: &mut Emu) -> Result<()> {
     let len = emu.read_u64(sp + 8)?;
     let remaining = emu.read_u64(sp + 16)?;
     // CFStringGetBytes(str, range, encoding, lossByte, isExternalRepresentation, buffer, maxBufLen,
-    // usedBufLen): usedBufLen would be a 9th (stack) argument, which emu.call doesn't pass, so it
-    // gets NULL and the byte count is measured separately.
-    let converted = cf(emu, "_CFStringGetBytes", &[s, loc, len, cf_encoding(enc), 0, 0, buf, max])?;
+    // usedBufLen): usedBufLen is the 9th argument, on the stack.
+    let used_tmp = emu.alloc(8)?;
+    emu.write_u64(used_tmp, 0)?;
+    let f = cf_sym(emu, "_CFStringGetBytes")?;
+    emu.call_abi(f, &[s, loc, len, cf_encoding(enc), 0, 0, buf, max], &[], &[used_tmp], None)?;
+    let converted = emu.last_x01[0];
     if used != 0 {
-        let n = cf_get_bytes_len(emu, s, loc, converted, enc)?;
+        let n = emu.read_u64(used_tmp)?;
         emu.write_u64(used, n)?;
     }
+    emu.heap.free(&emu.p.memory, used_tmp)?;
     if remaining != 0 {
         emu.write_u64(remaining, loc + converted)?;
         emu.write_u64(remaining + 8, len - converted.min(len))?;
     }
     emu.ret((converted > 0 || len == 0) as u64);
     Ok(())
-}
-
-/// Bytes needed to encode `count` UTF-16 units starting at `loc`.
-fn cf_get_bytes_len(emu: &mut Emu, s: u64, loc: u64, count: u64, enc: u64) -> Result<u64> {
-    let text = nsstring(emu, s)?;
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let end = (loc + count).min(units.len() as u64) as usize;
-    let part = String::from_utf16_lossy(&units[loc.min(end as u64) as usize..end]);
-    Ok(match enc {
-        10 => (part.encode_utf16().count() * 2) as u64,
-        _ => part.len() as u64,
-    })
 }
 
 /// `-compare:options:range:locale:` → NSComparisonResult
@@ -3696,6 +3735,26 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "lengthOfBytesUsingEncoding:", length_of_bytes),
     ("NSString", false, "cStringUsingEncoding:", utf8_string),
     ("NSMutableString", false, "appendString:", append_string),
+    ("NSMutableString", false, "replaceCharactersInRange:withString:", replace_characters),
+    ("NSString", false, "rangeOfComposedCharacterSequencesForRange:", range_of_composed),
+    ("NSString", false, "rangeOfComposedCharacterSequenceAtIndex:", range_of_composed_at),
+    ("NSMutableString", false, "deleteCharactersInRange:", |e| {
+        let (m, loc, len) = (e.arg(0), e.arg(2), e.arg(3));
+        cf(e, "_CFStringDelete", &[m, loc, len])?;
+        Ok(())
+    }),
+    ("NSMutableString", false, "insertString:atIndex:", |e| {
+        let (m, with, at) = (e.arg(0), e.arg(2), e.arg(3));
+        let with = as_cf_string(e, with)?;
+        cf(e, "_CFStringInsert", &[m, at, with])?;
+        Ok(())
+    }),
+    ("NSMutableString", false, "setString:", |e| {
+        let (m, with) = (e.arg(0), e.arg(2));
+        let with = as_cf_string(e, with)?;
+        cf(e, "_CFStringReplaceAll", &[m, with])?;
+        Ok(())
+    }),
     ("NSString", false, "_fastCStringContents:", fast_cstring_contents),
     ("NSString", false, "_fastCharacterContents", fast_character_contents),
     ("NSString", false, "getCharacters:range:", get_characters_range),
