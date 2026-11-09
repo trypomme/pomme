@@ -64,7 +64,24 @@ fn rect_arg(emu: &Emu) -> [f64; 4] {
 }
 
 pub(crate) fn view_mut(emu: &mut Emu, v: u64) -> &mut View {
-    emu.ui.views.views.entry(v).or_insert_with(|| View { alpha: 1.0, user_interaction: true, needs_layout: true, ..Default::default() })
+    if !emu.ui.views.views.contains_key(&v) {
+        let user_interaction = interactive_by_default(emu, v);
+        emu.ui.views.views.insert(v, View { alpha: 1.0, user_interaction, needs_layout: true, ..Default::default() });
+    }
+    emu.ui.views.views.get_mut(&v).unwrap()
+}
+
+/// UIKit's default `userInteractionEnabled`: YES, but NO for labels and image
+/// views (touches on them go to the view behind: a button's title, say).
+fn interactive_by_default(emu: &Emu, v: u64) -> bool {
+    let Ok(mut cls) = emu.read_u64(v) else { return true };
+    while let Some(c) = emu.objc.class(cls) {
+        if c.host && matches!(c.name.as_str(), "UILabel" | "UIImageView") {
+            return false;
+        }
+        cls = c.superclass;
+    }
+    true
 }
 
 pub(crate) fn view(emu: &mut Emu, v: u64) -> View {

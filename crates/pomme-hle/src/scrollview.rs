@@ -5,8 +5,17 @@
 //! UIKit drives this with the scroll view's pan gesture recognizer; pomme
 //! builds it into touch delivery (touch.rs calls `touch_began` / `_moved` /
 //! `_ended`). A touch that starts in a scroll view pans it once it has moved
-//! 10 pt; the view under the finger then gets `touchesCancelled` (UIKit's
-//! `cancelsTouchesInView`). The delegate hears what UIKit tells it:
+//! 10 pt.
+//!
+//! The view under the finger hears of the touch as UIKit arranges it: with
+//! `delaysContentTouches` (the default) it gets `touchesBegan` only once the
+//! finger has stayed down 150 ms (or lifts sooner: then it hears the whole
+//! tap at once), and only if `touchesShouldBegin:withEvent:inContentView:`
+//! agrees. A drag that starts before then takes the touch silently. Once the
+//! view has the touch, the scroll view takes it only if `canCancelContentTouches`
+//! and `touchesShouldCancelInContentView:` say so (the latter is NO for
+//! controls, except in table and collection views); the view then gets
+//! `touchesCancelled`. Otherwise this touch doesn't scroll. The delegate hears what UIKit tells it:
 //! `scrollViewWillBeginDragging:`, `scrollViewDidScroll:` on every change,
 //! `scrollViewWillEndDragging:withVelocity:targetContentOffset:` (which may move
 //! the target: React Native snaps that way), `scrollViewDidEndDragging:willDecelerate:`,
@@ -198,9 +207,48 @@ fn banded(x: f64, min: f64, max: f64) -> f64 {
     }
 }
 
+/// Whether a touch on `v` reaches it only after the delay: a scroll view it's
+/// in (or is) delays content touches.
+pub(crate) fn delays_content_touches(emu: &mut Emu, mut v: u64) -> Result<bool> {
+    while v != 0 {
+        if is_scroll_view(emu, v) && send(emu, v, "delaysContentTouches", &[])? & 0xff != 0 {
+            return Ok(true);
+        }
+        v = view(emu, v).superview;
+    }
+    Ok(false)
+}
+
+/// The innermost scroll view `v` is content of (not `v` itself).
+fn enclosing_scroll_view(emu: &mut Emu, v: u64) -> u64 {
+    let mut s = view(emu, v).superview;
+    while s != 0 && !is_scroll_view(emu, s) {
+        s = view(emu, s).superview;
+    }
+    s
+}
+
+/// `touchesShouldBegin:withEvent:inContentView:` of the scroll view around `v` (YES without one).
+pub(crate) fn should_begin(emu: &mut Emu, v: u64, touches: u64, event: u64) -> Result<bool> {
+    let sv = enclosing_scroll_view(emu, v);
+    if sv == 0 {
+        return Ok(true);
+    }
+    Ok(send(emu, sv, "touchesShouldBegin:withEvent:inContentView:", &[touches, event, v])? & 0xff != 0)
+}
+
+/// Whether scroll view `sv` may take the touch from `content`, which has it.
+fn may_cancel(emu: &mut Emu, sv: u64, content: u64) -> Result<bool> {
+    if content == 0 || content == sv {
+        return Ok(true);
+    }
+    Ok(send(emu, sv, "canCancelContentTouches", &[])? & 0xff != 0 && send(emu, sv, "touchesShouldCancelInContentView:", &[content])? & 0xff != 0)
+}
+
 /// The finger moved. Returns true when a scroll view started dragging (the
-/// view under the finger loses the touch).
-pub(crate) fn touch_moved(emu: &mut Emu, at: [f64; 2], now: u64) -> Result<bool> {
+/// view under the finger loses the touch). `content` is the view under the
+/// finger if it has the touch (0 if it hasn't heard of it).
+pub(crate) fn touch_moved(emu: &mut Emu, at: [f64; 2], now: u64, content: u64) -> Result<bool> {
     let Some(mut pan) = emu.scroll.pan.clone() else { return Ok(false) };
     pan.samples.push((now, at));
     let mut started = false;
@@ -222,6 +270,14 @@ pub(crate) fn touch_moved(emu: &mut Emu, at: [f64; 2], now: u64) -> Result<bool>
         }
         if chosen == 0 {
             emu.scroll.pan = Some(pan);
+            return Ok(false);
+        }
+        // The view under the finger keeps its touch: this touch doesn't scroll.
+        if !may_cancel(emu, chosen, content)? {
+            for &c in &pan.candidates {
+                set_flag(emu, c, "tracking", false);
+            }
+            emu.scroll.pan = None;
             return Ok(false);
         }
         pan.view = chosen;
@@ -413,6 +469,34 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let v = scroll_enabled(e, e.arg(0)) as u64;
         ret(e, v)
     }),
+    (SV, false, "delaysContentTouches", |e| {
+        let v = objc::bag_get(e, e.arg(0), "delaysContentTouches").is_none_or(|x| x & 0xff != 0) as u64;
+        ret(e, v)
+    }),
+    (SV, false, "setDelaysContentTouches:", |e| {
+        let (v, x) = (e.arg(0), e.arg(2) & 0xff);
+        objc::bag_set(e, v, "delaysContentTouches", x);
+        Ok(())
+    }),
+    (SV, false, "canCancelContentTouches", |e| {
+        let v = objc::bag_get(e, e.arg(0), "canCancelContentTouches").is_none_or(|x| x & 0xff != 0) as u64;
+        ret(e, v)
+    }),
+    (SV, false, "setCanCancelContentTouches:", |e| {
+        let (v, x) = (e.arg(0), e.arg(2) & 0xff);
+        objc::bag_set(e, v, "canCancelContentTouches", x);
+        Ok(())
+    }),
+    (SV, false, "touchesShouldBegin:withEvent:inContentView:", |e| ret(e, 1)),
+    // A control keeps its touch (dragging off a button doesn't scroll)…
+    (SV, false, "touchesShouldCancelInContentView:", |e| {
+        let cls = host_class(e, "UIControl")?;
+        let control = objc::is_kind_of(e, e.arg(2), cls)?;
+        ret(e, !control as u64)
+    }),
+    // …except in lists, which scroll from anywhere.
+    ("UITableView", false, "touchesShouldCancelInContentView:", |e| ret(e, 1)),
+    ("UICollectionView", false, "touchesShouldCancelInContentView:", |e| ret(e, 1)),
     (SV, false, "isTracking", |e| {
         let v = flag(e, e.arg(0), "tracking") as u64;
         ret(e, v)

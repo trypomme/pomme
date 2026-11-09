@@ -40,8 +40,12 @@ struct Touch {
     timestamp: f64,
     /// Recognizers this touch is delivered to (fixed when it begins).
     recognizers: Vec<u64>,
-    /// A scroll view took the touch: its view got touchesCancelled and hears no more.
+    /// The view under the finger hears no more of this touch (a scroll view or
+    /// a recognizer took it, cancelling it if it had begun, or a scroll view
+    /// wouldn't let it begin).
     view_cancelled: bool,
+    /// The view got touchesBegan (a scroll view may hold it back for a while).
+    delivered: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -275,9 +279,15 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         let hit = send(emu, window, "hitTest:withEvent:", &[0])?;
         let t = new_object(emu, "UITouch")?;
         let recognizers = recognizers_for(emu, hit)?;
-        emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false });
+        emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false, delivered: false });
         emu.touch.active = t;
         crate::scrollview::touch_began(emu, hit, [x, y], at_ns)?;
+        // Inside a scroll view that delays content touches, the view hears
+        // of the touch only once the finger has stayed put a while.
+        if hit != 0 && crate::scrollview::delays_content_touches(emu, hit)? {
+            let fire = (at_ns + CONTENT_DELAY_NS).saturating_sub(crate::threads::now_ns(emu));
+            crate::uikit::after_on_main(emu, fire as f64 / 1e9, deliver_held, t)?;
+        }
         t
     } else {
         let t = emu.touch.active;
@@ -288,17 +298,13 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         tc.timestamp = now;
         t
     };
-    // A scroll view starting to drag takes the touch from the view under the finger.
-    if phase == MOVED && crate::scrollview::touch_moved(emu, [x, y], at_ns)? {
+    // A scroll view starting to drag takes the touch from the view under the
+    // finger (which it may decline to do once that view has the touch).
+    if phase == MOVED {
         let tc = emu.touch.touches[&touch].clone();
-        if tc.view != 0 && !tc.view_cancelled {
-            let event = new_object(emu, "UIEvent")?;
-            emu.touch.events.insert(event, vec![touch]);
-            let touches = set_of(emu, &[touch])?;
-            send(emu, tc.view, "touchesCancelled:withEvent:", &[touches, event])?;
-        }
-        if let Some(t) = emu.touch.touches.get_mut(&touch) {
-            t.view_cancelled = true;
+        let content = if tc.delivered && !tc.view_cancelled { tc.view } else { 0 };
+        if crate::scrollview::touch_moved(emu, [x, y], at_ns, content)? {
+            take_from_view(emu, touch)?;
         }
     }
     if phase == ENDED || phase == CANCELLED {
@@ -318,7 +324,20 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
     }
     // The view's responder chain (UIView passes touches up by default).
     if tc.view != 0 && !tc.view_cancelled {
-        send(emu, tc.view, sel, &[touches, event])?;
+        if phase == BEGAN {
+            if !crate::scrollview::delays_content_touches(emu, tc.view)? {
+                deliver_began(emu, touch, touches, event)?;
+            }
+        } else if tc.delivered {
+            send(emu, tc.view, sel, &[touches, event])?;
+        } else if phase == ENDED {
+            // Lifted while the scroll view held the touch back: the view
+            // hears all of it now.
+            deliver_began(emu, touch, touches, event)?;
+            if emu.touch.touches[&touch].delivered {
+                send(emu, tc.view, sel, &[touches, event])?;
+            }
+        }
     }
     if phase == ENDED || phase == CANCELLED {
         // Every finger is up: recognizers that finished reset to Possible.
@@ -330,6 +349,57 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
             }
         }
         emu.touch.active = 0;
+    }
+    Ok(())
+}
+
+/// How long a scroll view holds a touch back from its content (`delaysContentTouches`).
+pub const CONTENT_DELAY_NS: u64 = 150_000_000;
+
+/// The view under the finger gets touchesBegan, unless the scroll view it's
+/// in won't let it (`touchesShouldBegin:withEvent:inContentView:`).
+fn deliver_began(emu: &mut Emu, touch: u64, touches: u64, event: u64) -> Result<()> {
+    let v = emu.touch.touches[&touch].view;
+    let ok = crate::scrollview::should_begin(emu, v, touches, event)?;
+    if let Some(t) = emu.touch.touches.get_mut(&touch) {
+        t.delivered = ok;
+        t.view_cancelled |= !ok;
+    }
+    if ok {
+        send(emu, v, "touchesBegan:withEvent:", &[touches, event])?;
+    }
+    Ok(())
+}
+
+/// Timer callout `(timer, touch)`: the finger stayed down past the scroll
+/// view's delay, so the view under it gets touchesBegan.
+fn deliver_held(emu: &mut Emu) -> Result<()> {
+    let t = emu.arg(1);
+    let Some(tc) = emu.touch.touches.get(&t).cloned() else { return Ok(()) };
+    if tc.phase >= ENDED || tc.delivered || tc.view_cancelled || tc.view == 0 {
+        return Ok(());
+    }
+    let event = new_object(emu, "UIEvent")?;
+    emu.touch.events.insert(event, vec![t]);
+    let touches = set_of(emu, &[t])?;
+    deliver_began(emu, t, touches, event)
+}
+
+/// Something else took the touch: the view under the finger gets
+/// touchesCancelled if it had begun, and hears nothing more either way.
+fn take_from_view(emu: &mut Emu, t: u64) -> Result<()> {
+    let tc = emu.touch.touches[&t].clone();
+    if tc.view_cancelled {
+        return Ok(());
+    }
+    if let Some(x) = emu.touch.touches.get_mut(&t) {
+        x.view_cancelled = true;
+    }
+    if tc.view != 0 && tc.delivered {
+        let event = new_object(emu, "UIEvent")?;
+        emu.touch.events.insert(event, vec![t]);
+        let set = set_of(emu, &[t])?;
+        send(emu, tc.view, "touchesCancelled:withEvent:", &[set, event])?;
     }
     Ok(())
 }
@@ -511,16 +581,7 @@ fn recognized(emu: &mut Emu, r: u64) -> Result<()> {
     }
     if send(emu, r, "cancelsTouchesInView", &[])? & 0xff != 0 {
         for t in touches {
-            let tc = emu.touch.touches[&t].clone();
-            if tc.view != 0 && !tc.view_cancelled {
-                let event = new_object(emu, "UIEvent")?;
-                emu.touch.events.insert(event, vec![t]);
-                let set = set_of(emu, &[t])?;
-                send(emu, tc.view, "touchesCancelled:withEvent:", &[set, event])?;
-                if let Some(x) = emu.touch.touches.get_mut(&t) {
-                    x.view_cancelled = true;
-                }
-            }
+            take_from_view(emu, t)?;
         }
     }
     Ok(())

@@ -29,8 +29,18 @@
 }
 @end
 
-@interface ViewController : UIViewController
-@property(nonatomic, strong) UITextField *tapLog, *disabledLog, *chainLog, *gateLog, *panLog;
+// Lists let a drag take the touch from a control (UITableView does this).
+@interface ListLike : UIScrollView
+@end
+
+@implementation ListLike
+- (BOOL)touchesShouldCancelInContentView:(UIView *)view {
+    return YES;
+}
+@end
+
+@interface ViewController : UIViewController <UIScrollViewDelegate>
+@property(nonatomic, strong) UITextField *tapLog, *disabledLog, *chainLog, *gateLog, *panLog, *scrollLog, *listLog;
 @end
 
 @implementation ViewController
@@ -97,12 +107,48 @@
     [inPan addTarget:self action:@selector(panCancel:) forControlEvents:UIControlEventTouchCancel];
     [inPan addTarget:self action:@selector(panUp:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
 
+    // Buttons in scroll views (on the right): a plain one keeps a control's
+    // touch once the control has it; a list-like one takes it.
+    UIScrollView *plain = [self scrollAt:100 class:UIScrollView.class];
+    UIButton *inPlain = [self button:@"Plain" at:20 in:plain];
+    [inPlain addTarget:self action:@selector(scrollDown:) forControlEvents:UIControlEventTouchDown];
+    [inPlain addTarget:self action:@selector(scrollUp:) forControlEvents:UIControlEventTouchUpInside];
+    [inPlain addTarget:self action:@selector(scrollCancel:) forControlEvents:UIControlEventTouchCancel];
+    UIScrollView *list = [self scrollAt:320 class:ListLike.class];
+    UIButton *inList = [self button:@"List" at:20 in:list];
+    [inList addTarget:self action:@selector(listDown:) forControlEvents:UIControlEventTouchDown];
+    [inList addTarget:self action:@selector(listUp:) forControlEvents:UIControlEventTouchUpInside];
+    [inList addTarget:self action:@selector(listCancel:) forControlEvents:UIControlEventTouchCancel];
+
     self.tapLog = [self fieldAt:560 tag:100];
     self.disabledLog = [self fieldAt:600 tag:101];
     self.chainLog = [self fieldAt:640 tag:102];
     self.gateLog = [self fieldAt:680 tag:103];
     self.panLog = [self fieldAt:720 tag:104];
+    self.scrollLog = [self fieldAt:760 tag:105];
+    self.listLog = [self fieldAt:800 tag:106];
 }
+
+- (UIScrollView *)scrollAt:(CGFloat)y class:(Class)cls {
+    UIScrollView *s = [[cls alloc] initWithFrame:CGRectMake(200, y, 190, 200)];
+    s.contentSize = CGSizeMake(190, 1000);
+    s.delegate = self;
+    [self.view addSubview:s];
+    return s;
+}
+
+- (UITextField *)logFor:(UIScrollView *)s {
+    return [s isKindOfClass:ListLike.class] ? self.listLog : self.scrollLog;
+}
+- (void)scrollViewWillBeginDragging:(UIScrollView *)s {
+    [self log:@"drag" to:[self logFor:s]];
+}
+- (void)scrollDown:(UIButton *)b { [self log:@"down" to:self.scrollLog]; }
+- (void)scrollUp:(UIButton *)b { [self log:@"up" to:self.scrollLog]; }
+- (void)scrollCancel:(UIButton *)b { [self log:@"cancel" to:self.scrollLog]; }
+- (void)listDown:(UIButton *)b { [self log:@"down" to:self.listLog]; }
+- (void)listUp:(UIButton *)b { [self log:@"up" to:self.listLog]; }
+- (void)listCancel:(UIButton *)b { [self log:@"cancel" to:self.listLog]; }
 
 - (void)down:(UIButton *)b {
     [self log:[NSString stringWithFormat:@"down(h%d t%d)", b.highlighted, b.tracking] to:self.tapLog];

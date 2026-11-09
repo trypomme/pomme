@@ -2,7 +2,8 @@
 //! UIControl's touch tracking and target-action. Taps, drags out of and back
 //! into a button, a disabled button, a nil target found up the responder
 //! chain, a subclass that declines to track, and a pan that cancels the
-//! button's touch. Built with the iOS SDK; skipped without Xcode or the sysroot.
+//! button's touch, and buttons in scroll views (which hold touches back and
+//! may or may not take them from a control). Built with the iOS SDK; skipped without Xcode or the sysroot.
 
 mod common;
 
@@ -93,4 +94,40 @@ fn subclass_declines_tracking() {
 fn gesture_recognizer_cancels_tracking() {
     let Some(v) = run(|s| touch::swipe(s, S, (115.0, 465.0), (300.0, 465.0), 200_000_000)) else { return };
     assert_eq!(field(&v, 104), "down cancel(h0) pan", "{v}");
+}
+
+/// A press, resting past the scroll view's delay, then a drag.
+fn hold_then_drag(s: &mut Vec<Input>, x: f64, y: f64) {
+    s.push(Input { at_ns: S, phase: BEGAN, x, y });
+    s.push(Input { at_ns: S + 300_000_000, phase: MOVED, x, y: y - 45.0 });
+    s.push(Input { at_ns: S + 400_000_000, phase: ENDED, x, y: y - 45.0 });
+}
+
+/// A quick tap on a button in a scroll view: held back, then all at once on lift.
+#[test]
+fn tap_in_scroll_view() {
+    let Some(v) = run(|s| touch::tap(s, S, 295.0, 145.0)) else { return };
+    assert_eq!(field(&v, 105), "down up", "{v}");
+}
+
+/// A quick drag from a button scrolls: the button never heard of the touch.
+#[test]
+fn quick_drag_from_button_scrolls() {
+    let Some(v) = run(|s| touch::swipe(s, S, (295.0, 145.0), (295.0, 45.0), 100_000_000)) else { return };
+    assert_eq!(field(&v, 105), "drag", "{v}");
+}
+
+/// Once the button has the touch, a plain scroll view leaves it there: no
+/// scrolling, and the finger (still within the slop) lifts inside.
+#[test]
+fn plain_scroll_view_leaves_a_control_its_touch() {
+    let Some(v) = run(|s| hold_then_drag(s, 295.0, 145.0)) else { return };
+    assert_eq!(field(&v, 105), "down up", "{v}");
+}
+
+/// A list takes it: the drag scrolls and the button's tracking is cancelled.
+#[test]
+fn list_takes_the_touch_from_a_control() {
+    let Some(v) = run(|s| hold_then_drag(s, 295.0, 365.0)) else { return };
+    assert_eq!(field(&v, 106), "down drag cancel", "{v}");
 }
