@@ -1,6 +1,6 @@
-//! The Simulator's menus, as far as pomme has them: Device ▸ Rotate Left /
-//! Rotate Right, and Features ▸ Face ID ▸ Enrolled / Matching Face /
-//! Non-matching Face. On macOS they're the menu bar, with the Simulator's
+//! The Simulator's menus, as far as pomme has them: File ▸ Save Screen /
+//! Record Screen, Device ▸ Rotate Left / Rotate Right, and Features ▸ Face ID
+//! ▸ Enrolled / Matching Face / Non-matching Face. On macOS they're the menu bar, with the Simulator's
 //! shortcuts. On Windows the window has no frame to hang a menu bar on, so
 //! they're a right-click menu on the phone's bezel (the shortcuts work there
 //! too, through the window's own key handling). Linux has the shortcuts only:
@@ -16,6 +16,7 @@ use winit::window::Window;
 pub(crate) struct Menus {
     menu: Menu,
     enrolled: CheckMenuItem,
+    record: MenuItem,
 }
 
 fn key(mods: Modifiers, code: Code) -> Option<Accelerator> {
@@ -34,7 +35,19 @@ impl Menus {
         let matching = item("Matching Face", key(face, Code::KeyM));
         let non_matching = item("Non-matching Face", key(face, Code::KeyN));
         let close = item("Close Window", key(CMD_OR_CTRL, Code::KeyW));
+        let save = item("Save Screen", key(CMD_OR_CTRL, Code::KeyS));
+        let record = item("Record Screen", key(CMD_OR_CTRL, Code::KeyR));
         let sep = PredefinedMenuItem::separator();
+        let mut actions = vec![
+            (rotate_left.id().clone(), Action::Rotate(true)),
+            (rotate_right.id().clone(), Action::Rotate(false)),
+            (enrolled.id().clone(), Action::Face(Face::ToggleEnrolled)),
+            (matching.id().clone(), Action::Face(Face::Matching)),
+            (non_matching.id().clone(), Action::Face(Face::NonMatching)),
+            (close.id().clone(), Action::Close),
+            (save.id().clone(), Action::SaveScreen),
+            (record.id().clone(), Action::Record),
+        ];
         let face_id = Submenu::with_items("Face ID", true, &[&enrolled, &sep, &matching, &non_matching]).expect("menu");
         let device = Submenu::with_items("Device", true, &[&rotate_left, &rotate_right]).expect("menu");
         let features = Submenu::with_items("Features", true, &[&face_id]).expect("menu");
@@ -50,29 +63,28 @@ impl Menus {
                 &[&PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &sep, &quit],
             )
             .expect("menu");
-            let file = Submenu::with_items("File", true, &[&close]).expect("menu");
+            let file = Submenu::with_items("File", true, &[&close, &sep, &save, &record]).expect("menu");
             let window = Submenu::with_items("Window", true, &[&PredefinedMenuItem::minimize(None)]).expect("menu");
             menu.append_items(&[&app, &file, &device, &features, &window]).expect("menu");
             window.set_as_windows_menu_for_nsapp();
-            let actions = actions(&rotate_left, &rotate_right, &enrolled, &matching, &non_matching, &close, Some(&quit));
-            Self::finish(menu, enrolled, actions, proxy, wrap)
+            actions.push((quit.id().clone(), Action::Close));
+            Self::finish(menu, enrolled, record, actions, proxy, wrap)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            menu.append_items(&[&device, &features, &sep, &close]).expect("menu");
-            let actions = actions(&rotate_left, &rotate_right, &enrolled, &matching, &non_matching, &close, None);
-            Self::finish(menu, enrolled, actions, proxy, wrap)
+            menu.append_items(&[&save, &record, &sep, &device, &features, &sep, &close]).expect("menu");
+            Self::finish(menu, enrolled, record, actions, proxy, wrap)
         }
     }
 
-    fn finish<T: Send + 'static>(menu: Menu, enrolled: CheckMenuItem, actions: Vec<(MenuId, Action)>, proxy: EventLoopProxy<T>, wrap: fn(Action) -> T) -> Self {
+    fn finish<T: Send + 'static>(menu: Menu, enrolled: CheckMenuItem, record: MenuItem, actions: Vec<(MenuId, Action)>, proxy: EventLoopProxy<T>, wrap: fn(Action) -> T) -> Self {
         let proxy = std::sync::Mutex::new(proxy);
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             if let Some(&(_, a)) = actions.iter().find(|(id, _)| *id == e.id) {
                 let _ = proxy.lock().unwrap().send_event(wrap(a));
             }
         }));
-        Self { menu, enrolled }
+        Self { menu, enrolled, record }
     }
 
     /// Put the menus up for the app (macOS: the menu bar).
@@ -97,31 +109,13 @@ impl Menus {
         }
     }
 
+    /// Record Screen becomes Stop Recording while it records.
+    pub(crate) fn recording(&self, on: bool) {
+        self.record.set_text(if on { "Stop Recording" } else { "Record Screen" });
+    }
+
     /// Keep the Enrolled check in step when it's toggled from the keyboard.
     pub(crate) fn toggled_enrolled(&self) {
         self.enrolled.set_checked(!self.enrolled.is_checked());
     }
-}
-
-fn actions(
-    rotate_left: &MenuItem,
-    rotate_right: &MenuItem,
-    enrolled: &CheckMenuItem,
-    matching: &MenuItem,
-    non_matching: &MenuItem,
-    close: &MenuItem,
-    quit: Option<&MenuItem>,
-) -> Vec<(MenuId, Action)> {
-    let mut a = vec![
-        (rotate_left.id().clone(), Action::Rotate(true)),
-        (rotate_right.id().clone(), Action::Rotate(false)),
-        (enrolled.id().clone(), Action::Face(Face::ToggleEnrolled)),
-        (matching.id().clone(), Action::Face(Face::Matching)),
-        (non_matching.id().clone(), Action::Face(Face::NonMatching)),
-        (close.id().clone(), Action::Close),
-    ];
-    if let Some(q) = quit {
-        a.push((q.id().clone(), Action::Close));
-    }
-    a
 }

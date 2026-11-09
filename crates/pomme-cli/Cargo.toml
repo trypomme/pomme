@@ -18,3 +18,5 @@ ureq = "3.5.1"
 [dev-dependencies]
 serde_json = "1.0.154"
 tiny-skia = "0.12"
+pomme-video = { path = "../pomme-video" }
+mp4 = "0.14.0"

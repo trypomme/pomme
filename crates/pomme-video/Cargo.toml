@@ -1,0 +1,11 @@
+[package]
+name = "pomme-video"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Screen recordings of pomme's screen: H.264 in an MP4, with each frame's own timing"
+
+[dependencies]
+openh264 = "0.9.9"
+mp4 = "0.14.0"
+bytes = "1"

@@ -3,8 +3,9 @@
 //! focused text input (as a hardware keyboard does in the Simulator),
 //! ⌘← / ⌘→ (Ctrl on Windows and Linux) turn the phone, and the Simulator's
 //! Face ID shortcuts work: ⌥⌘M a matching face, ⌥⌘N one that doesn't match,
-//! and ⌥⌘E turns enrolment on or off. They're menus too, as the Simulator's
-//! (Device, Features ▸ Face ID): see menu.rs.
+//! and ⌥⌘E turns enrolment on or off. ⌘S saves the screen and ⌘R records it
+//! (to the Desktop, see capture.rs). They're menus too, as the Simulator's
+//! (File, Device, Features ▸ Face ID): see menu.rs.
 //!
 //! The emulator runs on its own thread with a [`DesktopHost`]: it paces
 //! virtual time against the wall clock while the app idles, and takes the
@@ -15,6 +16,7 @@
 //! do: macOS, Windows, Linux (X11 and Wayland); where windows can't be
 //! transparent the phone sits on a dark backdrop.
 
+mod capture;
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), path = "menu_none.rs")]
 mod menu;
 mod present;
@@ -101,6 +103,10 @@ enum Action {
     Face(Face),
     /// Close the window (and stop the run).
     Close,
+    /// File ▸ Save Screen.
+    SaveScreen,
+    /// File ▸ Record Screen / Stop Recording.
+    Record,
 }
 
 /// The emulator thread's side: a frame for the window, or the run ended.
@@ -134,6 +140,9 @@ pub struct DesktopHost {
     base: Option<Instant>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     stats: Option<FrameStats>,
+    /// The phone's name, for capture files.
+    device: &'static str,
+    recording: Option<capture::Recording>,
 }
 
 impl Host for DesktopHost {
@@ -205,6 +214,20 @@ impl Host for DesktopHost {
         let _ = self.proxy.send_event(ToWindow::FaceId(false));
     }
 
+    fn screenshot(&mut self, shot: Frame<'_>) {
+        capture::save_screenshot(shot, self.device);
+    }
+
+    fn recorded(&mut self, f: Frame<'_>) {
+        self.recording.get_or_insert_with(|| capture::Recording::start(self.device)).frame(f);
+    }
+
+    fn recording_stopped(&mut self, at_ns: u64) {
+        if let Some(r) = self.recording.take() {
+            r.stop(at_ns);
+        }
+    }
+
     fn frame(&mut self, f: Frame<'_>) {
         if let Some(s) = self.stats.as_mut() {
             s.frame(f.at_ns);
@@ -238,6 +261,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         menus: None,
         shell: None,
         face_id: false,
+        recording: false,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -271,6 +295,8 @@ struct App {
     menus: Option<menu::Menus>,
     /// A Face ID prompt is waiting: the sheet is up.
     face_id: bool,
+    /// Recording the screen (File ▸ Record Screen).
+    recording: bool,
     /// The phone's body for the last (orientation, scale bits) a frame came in.
     shell: Option<((Orientation, u32), pomme_hle::render::Shell)>,
 }
@@ -378,6 +404,14 @@ impl App {
             Action::Rotate(left) => self.rotate(left),
             Action::Face(f) => self.send(Event::Face(f)),
             Action::Close => self.close(event_loop),
+            Action::SaveScreen => self.send(Event::SaveScreen),
+            Action::Record => {
+                self.recording = !self.recording;
+                if let Some(m) = &self.menus {
+                    m.recording(self.recording);
+                }
+                self.send(Event::Record(self.recording));
+            }
         }
     }
 
@@ -559,7 +593,7 @@ impl ApplicationHandler<ToWindow> for App {
         let (tx, rx) = channel();
         self.events = Some(tx);
         let stats = self.config.frame_stats.then(FrameStats::default);
-        let host = DesktopHost { events: rx, frame: self.frame.clone(), proxy: self.proxy.clone(), base: None, closed: self.closed.clone(), stats };
+        let host = DesktopHost { events: rx, frame: self.frame.clone(), proxy: self.proxy.clone(), base: None, closed: self.closed.clone(), stats, device: self.config.device.name, recording: None };
         let app = self.app.take().unwrap();
         let proxy = self.proxy.clone();
         std::thread::Builder::new()
@@ -671,6 +705,8 @@ impl ApplicationHandler<ToWindow> for App {
                     Key::Named(NamedKey::ArrowRight) if command => self.rotate(false),
                     // No title bar to close it with: ⌘W / ⌘Q.
                     Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
+                    Key::Character(c) if command && c.as_str() == "s" => self.act(event_loop, Action::SaveScreen),
+                    Key::Character(c) if command && c.as_str() == "r" => self.act(event_loop, Action::Record),
                     _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),
                     Key::Named(NamedKey::Backspace) => self.send(Event::Key('\u{8}')),

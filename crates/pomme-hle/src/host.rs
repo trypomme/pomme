@@ -26,6 +26,12 @@ pub enum Event {
     Rotate(crate::device::Orientation),
     /// Something from the Simulator's Face ID menu: enrolment, or a face for a waiting prompt.
     Face(crate::keychain::Face),
+    /// File ▸ Save Screen: the screen at the phone's own resolution comes back in [`Host::screenshot`].
+    SaveScreen,
+    /// File ▸ Record Screen: start (true) or stop recording. While it records,
+    /// every frame also comes at the phone's own resolution in [`Host::recorded`],
+    /// and [`Host::recording_stopped`] says when it ends.
+    Record(bool),
 }
 
 /// A rendered frame: RGBA8, `width` × `height`, rows top to bottom, upright
@@ -66,6 +72,13 @@ pub trait Host {
     fn wall_ns(&mut self) -> Option<u64> {
         None
     }
+    /// The screen as it is now, at the phone's own resolution (File ▸ Save Screen).
+    fn screenshot(&mut self, _shot: Frame<'_>) {}
+    /// A frame of the recording, at the phone's own resolution: the screen as
+    /// recording starts, then each frame drawn until it stops.
+    fn recorded(&mut self, _frame: Frame<'_>) {}
+    /// The recording ended at this (virtual) time: the last frame lasts until then.
+    fn recording_stopped(&mut self, _at_ns: u64) {}
 }
 
 #[derive(Default)]
@@ -82,6 +95,8 @@ pub struct State {
     source: u64,
     run_loop: u64,
     pending: Vec<Event>,
+    /// Recording the screen (File ▸ Record Screen).
+    recording: bool,
 }
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
@@ -114,10 +129,24 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
             // Face ID is the system's (its own process on iOS), not the app's
             // run loop: a face answers a waiting prompt at once, even one
             // that blocks the main thread.
-            let (system, app): (Vec<Event>, Vec<Event>) = events.into_iter().partition(|e| matches!(e, Event::Face(_)));
+            // Saving and recording the screen are the Simulator's, not the app's, too.
+            let (system, app): (Vec<Event>, Vec<Event>) = events.into_iter().partition(|e| matches!(e, Event::Face(_) | Event::SaveScreen | Event::Record(_)));
             for ev in system {
-                if let Event::Face(f) = ev {
-                    crate::keychain::present(emu, f)?;
+                match ev {
+                    Event::Face(f) => crate::keychain::present(emu, f)?,
+                    Event::SaveScreen => capture(emu, |h, f| h.screenshot(f))?,
+                    Event::Record(true) if !emu.live.recording => {
+                        emu.live.recording = true;
+                        capture(emu, |h, f| h.recorded(f))?;
+                    }
+                    Event::Record(false) if emu.live.recording => {
+                        emu.live.recording = false;
+                        let now = crate::threads::now_ns(emu);
+                        if let Some(h) = emu.live.host.as_mut() {
+                            h.recording_stopped(now);
+                        }
+                    }
+                    _ => {}
                 }
             }
             if app.is_empty() {
@@ -141,9 +170,26 @@ fn perform(emu: &mut Emu) -> Result<()> {
             Event::Key(ch) => crate::textinput::key(emu, ch)?,
             Event::Rotate(o) => crate::orientation::turn_device(emu, o)?,
             Event::Face(f) => crate::keychain::present(emu, f)?,
+            Event::SaveScreen | Event::Record(_) => {}
         }
     }
     Ok(())
+}
+
+/// Render the screen at the phone's own resolution and hand it to the host.
+fn capture(emu: &mut Emu, give: impl FnOnce(&mut dyn Host, Frame<'_>)) -> Result<()> {
+    let pix = crate::render::render(emu, emu.device.scale as f32)?;
+    give_frame(emu, &pix, give);
+    Ok(())
+}
+
+fn give_frame(emu: &mut Emu, pix: &tiny_skia::Pixmap, give: impl FnOnce(&mut dyn Host, Frame<'_>)) {
+    let orientation = crate::orientation::current(emu);
+    let at_ns = crate::threads::now_ns(emu);
+    if let Some(mut host) = emu.live.host.take() {
+        give(host.as_mut(), Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns });
+        emu.live.host = Some(host);
+    }
 }
 
 /// Set up the input source on the main run loop (when there's a host).
@@ -242,11 +288,14 @@ fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.last_frame = Some(crate::threads::now_ns(emu));
     emu.live.dirty = false;
     let pix = crate::render::render(emu, emu.live.scale)?;
-    let orientation = crate::orientation::current(emu);
-    if let Some(mut host) = emu.live.host.take() {
-        let at_ns = crate::threads::now_ns(emu);
-        host.frame(Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns });
-        emu.live.host = Some(host);
+    give_frame(emu, &pix, |h, f| h.frame(f));
+    if emu.live.recording {
+        // The recording is at the phone's resolution, whatever the window's.
+        if emu.device.scale as f32 == emu.live.scale {
+            give_frame(emu, &pix, |h, f| h.recorded(f));
+        } else {
+            capture(emu, |h, f| h.recorded(f))?;
+        }
     }
     Ok(())
 }
