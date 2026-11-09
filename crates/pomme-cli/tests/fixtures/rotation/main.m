@@ -1,6 +1,6 @@
 // A UIKit app that logs what it hears as the phone turns, for
 // tests/rotation.rs. The log is the text of field 1; the geometry after the
-// last turn is in field 2. A tap locks it to portrait.
+// last turn is in field 2. The "Lock" button locks it to portrait.
 #import <UIKit/UIKit.h>
 
 static NSMutableArray<NSString *> *events;
@@ -53,6 +53,12 @@ static NSString *insets(UIEdgeInsets i) { return [NSString stringWithFormat:@"%g
     self.state = [[UITextField alloc] initWithFrame:CGRectMake(0, 140, 300, 30)];
     self.state.tag = 2;
     [self.view addSubview:self.state];
+    // Under the tests' tap once the phone is sideways (844x390).
+    UIButton *lock = [UIButton buttonWithType:UIButtonTypeSystem];
+    lock.frame = CGRectMake(350, 250, 100, 100);
+    [lock setTitle:@"Lock" forState:UIControlStateNormal];
+    [lock addTarget:self action:@selector(lock) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:lock];
 
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [UIDevice.currentDevice beginGeneratingDeviceOrientationNotifications];
@@ -71,10 +77,6 @@ static NSString *insets(UIEdgeInsets i) { return [NSString stringWithFormat:@"%g
         note([NSString stringWithFormat:@"statusBarFrame %@", size([n.userInfo[UIApplicationStatusBarFrameUserInfoKey] CGRectValue].size)]);
     }];
 #pragma clang diagnostic pop
-}
-
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [self lock];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
