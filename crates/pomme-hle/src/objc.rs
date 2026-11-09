@@ -107,7 +107,7 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
-    // The pasteboard: empty (string, hasStrings … are nil / NO until set).
+    // The pasteboard (see clipboard.rs): anything else it's asked is answered generically.
     "UIPasteboard",
     // A deep link's context (URL, options) and its options (all nil / NO).
     "UIOpenURLContext",
@@ -454,6 +454,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::locale::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::textinput::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::autolayout::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::clipboard::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -494,7 +495,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     }
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, &anchors[..], EXCEPTION_METHODS] {
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {

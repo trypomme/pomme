@@ -2,64 +2,15 @@
 //! with Auto Layout against the safe area, the layout margins, a custom guide
 //! and the keyboard. Built with the iOS SDK; skipped without Xcode or the sysroot.
 
+mod common;
+
+use common::views;
 use pomme_hle::Emu;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const SYSROOT: &str = "../../vendor/sysroot";
-
-fn build() -> Option<PathBuf> {
-    let sdk = Command::new("xcrun").args(["--sdk", "iphoneos", "--show-sdk-path"]).output().ok().filter(|o| o.status.success())?;
-    let _ = sdk;
-    let app = Path::new(env!("CARGO_TARGET_TMPDIR")).join("Autolayout.app");
-    std::fs::create_dir_all(&app).unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/autolayout/main.m");
-    let status = Command::new("xcrun")
-        .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation"])
-        .arg(&src)
-        .arg("-o")
-        .arg(app.join("Autolayout"))
-        .status()
-        .expect("run clang");
-    assert!(status.success(), "building the fixture app failed");
-    std::fs::write(
-        app.join("Info.plist"),
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>Autolayout</string>
-<key>CFBundleIdentifier</key><string>dev.pomme.autolayout</string>
-<key>CFBundleName</key><string>Autolayout</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>MinimumOSVersion</key><string>17.0</string>
-</dict></plist>"#,
-    )
-    .unwrap();
-    Some(app)
-}
 
 fn boot(device: &str) -> Option<Emu> {
-    let sysroot = Path::new(SYSROOT);
-    if !sysroot.join("System/Library/Frameworks/CoreFoundation.framework").exists() {
-        eprintln!("skipping: build the sysroot first");
-        return None;
-    }
-    let app = build()?;
-    let opts = pomme_loader::LoadOptions { sysroot: Some(sysroot.canonicalize().unwrap()) };
-    let mut emu = Emu::new(pomme_loader::load_with(&app, &opts).unwrap()).unwrap();
+    let mut emu = common::boot("autolayout")?;
     emu.device = pomme_hle::device::find(device).unwrap();
     Some(emu)
-}
-
-/// The views after running for `secs`, as `pomme run --views` prints them.
-fn views(emu: &mut Emu, secs: f64) -> String {
-    emu.time_limit_ns = Some((secs * 1e9) as u64);
-    match emu.run_main() {
-        // A static app has nothing scheduled once it's laid out.
-        Err(pomme_hle::Stop::TimeLimit(_) | pomme_hle::Stop::Idle(_)) => {}
-        other => panic!("expected the app to idle until the time limit, got {other:?}"),
-    }
-    emu.describe_views()
 }
 
 /// The frame of the view of this class, from the dump.

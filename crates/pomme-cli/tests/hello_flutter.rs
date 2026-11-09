@@ -263,3 +263,43 @@ fn other_devices() {
     assert!(near(c[0], WHITE) && near(c[1], WHITE), "top of an SE: {:?}", &c[..2]);
     assert_eq!(c.len(), 3);
 }
+
+/// A paste into the TextField: Flutter's text input view takes `paste:`,
+/// the framework reads the clipboard over its platform channel
+/// (UIPasteboard's string, without a prompt: the user chose to paste) and
+/// inserts it. Compared by ink in the field: "Hi " alone, then with "Ada Lovelace" pasted after it.
+#[test]
+fn paste_into_text_field() {
+    let ink = |paste: bool| -> Option<(usize, u32)> {
+        let mut emu = boot()?;
+        tap(&mut emu, (195.0, 800.0), 2.0);
+        emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: 3_500_000_000, text: "Hi ".into() });
+        if paste {
+            emu.clipboard.script.push(pomme_hle::clipboard::PasteInput { at_ns: 4_000_000_000, text: Some("Ada Lovelace".into()) });
+        }
+        emu.time_limit_ns = Some(5_000_000_000);
+        match emu.run_main() {
+            Err(pomme_hle::Stop::TimeLimit(_)) => {}
+            other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        }
+        if emu.metal.gpu_error.is_some() {
+            return None;
+        }
+        let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+        // The focused field's text line (the field sits on the 304-pt keyboard).
+        let mut n = 0;
+        for y in (485 * 3)..(510 * 3) {
+            for x in (25 * 3)..(370 * 3) {
+                if pix.pixel(x, y).unwrap().red() < 100 {
+                    n += 1;
+                }
+            }
+        }
+        Some((n, emu.clipboard.prompts))
+    };
+    let Some((typed, _)) = ink(false) else { return };
+    let (pasted, prompts) = ink(true).unwrap();
+    assert!(typed > 300, "\"Hi \": {typed} dark pixels");
+    assert!(pasted > typed * 3, "\"Hi Ada Lovelace\": {pasted} dark pixels against {typed}");
+    assert_eq!(prompts, 0);
+}

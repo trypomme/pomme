@@ -228,6 +228,7 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     foundation::cf_call(emu, "_CFRunLoopAddObserver", &[rl, observer, common])?;
     crate::touch::schedule_script(emu)?;
     crate::textinput::schedule_script(emu)?;
+    crate::clipboard::schedule_script(emu)?;
     crate::host::install(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds

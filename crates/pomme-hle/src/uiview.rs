@@ -687,7 +687,7 @@ pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
 // ---- UIFont {isa, name (NSString), point size (f64 bits), weight (f64 bits)} ----
 // No font files yet: every font is "the system font" with SF Pro's proportions.
 
-fn new_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<u64> {
+pub(crate) fn new_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<u64> {
     let cls = host_class(emu, "UIFont")?;
     let font = objc::create_instance(emu, cls, 0)?;
     let n = foundation::new_nsstring(emu, name)?;

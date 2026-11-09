@@ -74,6 +74,8 @@ enum Cmd {
         /// return, `\b` delete). Keys go to the first responder (tap a text field first).
         #[arg(long = "type", value_parser = parse_typing)]
         typing: Vec<(String, f64)>,
+        #[command(flatten)]
+        clipboard: ClipboardArgs,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -93,12 +95,83 @@ enum Cmd {
     },
 }
 
+#[derive(clap::Args)]
+struct ClipboardArgs {
+    /// What the clipboard starts with: `empty` (the default), `host` (this machine's
+    /// clipboard, live both ways: the app pastes what you copied and its copies land
+    /// here), or some text (`text:…` for text that would read as one of those words).
+    #[arg(long = "clipboard", default_value = "empty")]
+    source: String,
+    /// Paste into whatever has focus at a virtual time, as if chosen from the edit menu:
+    /// `--paste 'Ada@4'` copies "Ada" (as another app would) and pastes it; `--paste '@4'`
+    /// pastes what's on the clipboard. `\n` is a newline.
+    #[arg(long, value_parser = parse_paste)]
+    paste: Vec<(Option<String>, f64)>,
+    /// How iOS's "Allow Paste" prompt is answered when the app reads another app's text
+    /// without the user pasting: `allow` (the default) or `deny`.
+    #[arg(long = "paste-permission", default_value = "allow")]
+    permission: pomme_hle::clipboard::Permission,
+}
+
+/// This machine's clipboard.
+struct HostClipboard(arboard::Clipboard);
+
+impl pomme_hle::clipboard::Backend for HostClipboard {
+    fn read(&mut self) -> Option<String> {
+        self.0.get_text().ok()
+    }
+    fn write(&mut self, text: Option<&str>) {
+        let _ = match text {
+            Some(t) => self.0.set_text(t),
+            None => self.0.clear(),
+        };
+    }
+}
+
+impl ClipboardArgs {
+    fn apply(&self, emu: &mut pomme_hle::Emu) -> Result<()> {
+        use pomme_hle::clipboard::{Memory, PasteInput};
+        let c = &mut emu.clipboard;
+        c.backend = match self.source.as_str() {
+            "empty" => Box::new(Memory(None)),
+            "host" => Box::new(HostClipboard(arboard::Clipboard::new().context("opening this machine's clipboard")?)),
+            t => Box::new(Memory(Some(pomme_hle::textinput::unescape(t.strip_prefix("text:").unwrap_or(t))))),
+        };
+        c.permission = self.permission;
+        c.script = self.paste.iter().map(|(text, t)| PasteInput { at_ns: (t * 1e9) as u64, text: text.clone() }).collect();
+        Ok(())
+    }
+
+    /// After the run: what the app left on the clipboard (not echoed for the host's).
+    fn report(&self, emu: &mut pomme_hle::Emu) {
+        let prompts = emu.clipboard.prompts;
+        if self.source == "host" {
+            if prompts > 0 {
+                println!("
+clipboard: {prompts} \"Allow Paste\" prompt(s), answered {:?}", self.permission);
+            }
+            return;
+        }
+        let text = emu.clipboard.text();
+        if text.is_some() || prompts > 0 || !self.paste.is_empty() {
+            println!("
+clipboard: {text:?}; {prompts} \"Allow Paste\" prompt(s)");
+        }
+    }
+}
+
+fn parse_paste(s: &str) -> std::result::Result<(Option<String>, f64), String> {
+    let (text, t) = s.rsplit_once('@').ok_or("expected text@seconds or @seconds")?;
+    let t = t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?;
+    Ok(((!text.is_empty()).then(|| pomme_hle::textinput::unescape(text)), t))
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -109,7 +182,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard)
         }
     }
 }
@@ -440,7 +513,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)]) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -452,6 +525,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.device = device;
+    clipboard.apply(&mut emu)?;
     emu.ui.launch_url = url;
     for (text, t) in typing {
         emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (t * 1e9) as u64, text: text.clone() });
@@ -568,6 +642,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     if views {
         println!("\nviews:\n{}", emu.describe_views());
     }
+    clipboard.report(&mut emu);
     if let Some(out) = screenshot {
         let scale = device.scale as f32;
         match if shell { emu.shell_png(scale) } else { emu.screenshot_png(scale) } {

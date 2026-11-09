@@ -361,3 +361,20 @@ fn text_input_and_keyboard_avoiding_view() {
     assert!(done.contains("\"keyboard hidden\""), "{done}");
     assert_eq!(y_of(&done, "RCTTextInputComponentView"), resting);
 }
+
+/// A paste into the TextInput: another app's text arrives through
+/// UITextField's `paste:` and its delegate, like typing; React sees it, and
+/// the user chose to paste, so iOS doesn't ask.
+#[test]
+fn paste_into_text_input() {
+    let script = |emu: &mut Emu| {
+        tap(emu, NAME_FIELD, 3.0);
+        type_text(emu, "Hi ", 4.0);
+        emu.clipboard.script.push(pomme_hle::clipboard::PasteInput { at_ns: 4_500_000_000, text: Some("Ada Lovelace".into()) });
+    };
+    let Some((mut emu, v)) = keyboard_screen(script, 5.5) else { return };
+    assert!(v.contains("\"Hello, Hi Ada Lovelace!\""), "{v}");
+    assert!(v.contains("\"Editing · 15 characters\""), "{v}");
+    assert_eq!(emu.clipboard.prompts, 0);
+    assert_eq!(emu.clipboard.text().as_deref(), Some("Ada Lovelace"));
+}

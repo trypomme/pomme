@@ -62,8 +62,6 @@ pub struct State {
     /// The keyboard's height while it's up (it depends on the input's traits).
     pub keyboard_height: f64,
     pub script: Vec<KeyInput>,
-    /// The general pasteboard (empty: pomme has no clipboard).
-    pasteboard: u64,
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {
@@ -349,6 +347,24 @@ fn edit(emu: &mut Emu, f: u64, range: (usize, usize), s: &str) -> Result<()> {
     Ok(())
 }
 
+/// Replace a text field's selection with `s`, as typing or pasting does.
+pub(crate) fn replace_selection(emu: &mut Emu, f: u64, s: &str) -> Result<()> {
+    let sel = field(emu, f).sel;
+    edit(emu, f, sel, s)
+}
+
+/// A text field's selected text, if anything is selected.
+pub(crate) fn selected_text(emu: &mut Emu, f: u64) -> Option<String> {
+    let fd = field(emu, f);
+    let (a, b) = (fd.sel.0.min(fd.text.len()), fd.sel.1.min(fd.text.len()));
+    (a < b).then(|| String::from_utf16_lossy(&fd.text[a..b]))
+}
+
+pub(crate) fn select_all(emu: &mut Emu, f: u64) {
+    let fd = field(emu, f);
+    fd.sel = (0, fd.text.len());
+}
+
 /// One key on the keyboard, sent to the first responder.
 pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
     let f = emu.input.first_responder;
@@ -578,6 +594,23 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (TF, false, "text", tf_get_text),
     (TF, false, "setText:", tf_set_text),
     (TF, false, "attributedText", tf_attributed_text),
+    // UIKit's: the field's font (17 pt system unless set) and text color; or what the app set.
+    (TF, false, "defaultTextAttributes", |e| {
+        let f = e.arg(0);
+        if let Some(a) = objc::bag_get(e, f, "defaultTextAttributes").filter(|&a| a != 0) {
+            return ret(e, a);
+        }
+        let font = match objc::bag_get(e, f, "font").filter(|&x| x != 0) {
+            Some(x) => x,
+            None => crate::uiview::new_font(e, ".SFUI-Regular", 17.0, 0.0)?,
+        };
+        let mut pairs = vec![(foundation::new_nsstring(e, "NSFont")?, font)];
+        if let Some(c) = objc::bag_get(e, f, "textColor").filter(|&x| x != 0) {
+            pairs.push((foundation::new_nsstring(e, "NSColor")?, c));
+        }
+        let d = foundation::new_dict_of(e, &pairs)?;
+        ret(e, d)
+    }),
     (TF, false, "setAttributedText:", tf_set_attributed_text),
     (TF, false, "hasText", |e| {
         let f = e.arg(0);
@@ -686,14 +719,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (a, b) = (e.arg(0), e.arg(2));
         let same = b != 0 && range_offsets(e, a) == range_offsets(e, b);
         ret(e, same as u64)
-    }),
-    ("UIPasteboard", true, "generalPasteboard", |e| {
-        if e.input.pasteboard == 0 {
-            let cls = host_class(e, "UIPasteboard")?;
-            e.input.pasteboard = objc::create_instance(e, cls, 0)?;
-        }
-        let p = e.input.pasteboard;
-        ret(e, p)
     }),
     // `[UIApplication sendAction:to:nil from:forEvent:]` goes to the first responder.
     ("UIApplication", false, "sendAction:to:from:forEvent:", |e| {

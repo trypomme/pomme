@@ -45,6 +45,7 @@ pub mod net;
 pub mod host;
 pub mod touch;
 pub mod autolayout;
+pub mod clipboard;
 pub mod textinput;
 pub mod device;
 mod uikit;
@@ -201,6 +202,8 @@ pub struct Emu {
     /// Touches, gesture recognizers and the input script.
     pub touch: touch::State,
     pub input: textinput::State,
+    /// The clipboard (UIPasteboard) and its backend, paste permission and scripted pastes.
+    pub clipboard: clipboard::State,
     /// Auto Layout: constraints, anchors and layout guides.
     pub(crate) layout: autolayout::State,
     /// The iPhone model pomme presents (`--device`).
@@ -279,6 +282,7 @@ impl Emu {
             render: Default::default(),
             touch: Default::default(),
             input: Default::default(),
+            clipboard: Default::default(),
             layout: Default::default(),
             device: device::default(),
             live: Default::default(),

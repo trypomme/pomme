@@ -48,6 +48,12 @@ Debugging:
   `--type 'Ada\n@4'` types on the software keyboard at 4 s (`\n` return, `\b` delete) into
   whatever has focus (tap a text field first with `--tap`). The keyboard reports iOS 26's
   frame (335 pt, measured in the Simulator) with the usual will/did notifications.
+- The clipboard: `--clipboard host` shares this machine's clipboard with the app (paste in
+  what you copied; the app's copies land here); `--clipboard 'some text'` starts it with
+  text, and the default is empty, so runs repeat. `--paste 'Ada@4'` pastes "Ada" (copied by
+  another app) into whatever has focus at 4 s; `--paste '@4'` pastes what's there. Reads
+  of another app's text count iOS's "Allow Paste" prompts, answered by
+  `--paste-permission allow|deny`; tests drive the same through `emu.clipboard`.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the
