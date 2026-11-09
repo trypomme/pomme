@@ -9,6 +9,7 @@ arboard = { version = "3.7.0", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
 plist = "1.10.3"
 pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
+pomme-desktop = { version = "0.1.0", path = "../pomme-desktop" }
 pomme-hle = { version = "0.1.0", path = "../pomme-hle" }
 pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }

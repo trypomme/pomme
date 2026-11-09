@@ -12,7 +12,7 @@
 //! Virtual time follows the wall clock while the app is idle; when the guest
 //! is busy it simply falls behind and catches up, as a slow phone would.
 
-use pomme_hle::host::{Host, Idle};
+use pomme_hle::host::{Event, Frame, Host, Idle};
 use pomme_hle::touch::Input;
 use pomme_hle::{Emu, Stop};
 use std::path::PathBuf;
@@ -41,13 +41,13 @@ struct WebHost {
 }
 
 impl WebHost {
-    fn take_events(&mut self) -> Vec<Input> {
+    fn take_events(&mut self) -> Vec<Event> {
         let written = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
         let mut out = Vec::new();
         while self.read < written {
             let at = HEADER + (self.read as u32 % RING) * 4;
             let get = |i: u32| self.input.get_index(at + i);
-            out.push(Input { at_ns: 0, phase: get(0) as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 });
+            out.push(Event::Touch(Input { at_ns: 0, phase: get(0) as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 }));
             self.read += 1;
         }
         out
@@ -85,8 +85,8 @@ impl Host for WebHost {
         }
     }
 
-    fn frame(&mut self, rgba: &[u8], width: u32, height: u32) {
-        pomme_frame(rgba, width, height);
+    fn frame(&mut self, f: Frame<'_>) {
+        pomme_frame(f.rgba, f.width, f.height);
     }
 }
 

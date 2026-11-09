@@ -14,12 +14,33 @@
 use crate::touch::Input;
 use crate::{Emu, Result, Stop, foundation};
 
+/// Something the person did.
+#[derive(Clone, Debug)]
+pub enum Event {
+    /// A finger down, moving or up (`Input.at_ns` is ignored: the event's time is the batch's).
+    Touch(Input),
+    /// A key on a hardware keyboard, typed into the first responder as the
+    /// software keyboard would (`'\n'` return, `'\u{8}'` delete).
+    Key(char),
+    /// The phone turned to be held this way (the interface follows if the app allows).
+    Rotate(crate::device::Orientation),
+}
+
+/// A rendered frame: RGBA8, `width` × `height`, rows top to bottom, upright
+/// for the interface `orientation` (the window decides how to show the phone around it).
+pub struct Frame<'a> {
+    pub rgba: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+    pub orientation: crate::device::Orientation,
+}
+
 /// What the host wants after an idle call.
 pub enum Idle {
     /// Nothing arrived: let virtual time jump to the next deadline.
     Advance,
     /// Input arrived at this virtual time (ns): deliver it now.
-    Input { at_ns: u64, events: Vec<Input> },
+    Input { at_ns: u64, events: Vec<Event> },
     /// Stop the run.
     Quit,
 }
@@ -29,8 +50,8 @@ pub trait Host {
     /// earliest deadline (none: wait for input). Block until it's due on the
     /// wall clock or input arrives.
     fn idle(&mut self, now_ns: u64, next_ns: Option<u64>) -> Idle;
-    /// A new frame: RGBA8, `width` × `height`, rows top to bottom.
-    fn frame(&mut self, rgba: &[u8], width: u32, height: u32);
+    /// A new frame.
+    fn frame(&mut self, frame: Frame<'_>);
 }
 
 #[derive(Default)]
@@ -45,7 +66,7 @@ pub struct State {
     /// The input run-loop source and the main run loop.
     source: u64,
     run_loop: u64,
-    pending: Vec<Input>,
+    pending: Vec<Event>,
 }
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
@@ -78,10 +99,14 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     }
 }
 
-/// The source's perform callout: deliver queued touches.
+/// The source's perform callout: deliver what arrived, in order.
 fn perform(emu: &mut Emu) -> Result<()> {
-    for inp in std::mem::take(&mut emu.live.pending) {
-        crate::touch::send_touch(emu, inp.phase, inp.x, inp.y)?;
+    for ev in std::mem::take(&mut emu.live.pending) {
+        match ev {
+            Event::Touch(inp) => crate::touch::send_touch(emu, inp.phase, inp.x, inp.y)?,
+            Event::Key(ch) => crate::textinput::key(emu, ch)?,
+            Event::Rotate(o) => crate::orientation::turn_device(emu, o)?,
+        }
     }
     Ok(())
 }
@@ -132,8 +157,9 @@ fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.last_frame = Some(crate::threads::now_ns(emu));
     emu.live.frame_pending = false;
     let pix = crate::render::render(emu, emu.live.scale)?;
+    let orientation = crate::orientation::current(emu);
     if let Some(mut host) = emu.live.host.take() {
-        host.frame(pix.data(), pix.width(), pix.height());
+        host.frame(Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation });
         emu.live.host = Some(host);
     }
     Ok(())

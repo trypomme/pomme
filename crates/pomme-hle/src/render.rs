@@ -1289,13 +1289,19 @@ fn notch_els(cx: f32, width: f32, height: f32) -> Vec<El> {
 /// a dark bezel, the side buttons and (on SE-style phones) the home button.
 /// Not a picture of Apple's hardware: a plain stand-in for previews.
 pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
-    let d = emu.device;
+    let screen = render(emu, scale)?;
     let o = crate::orientation::current(emu);
+    Ok(shell(emu.device, o, &screen, scale)?.0)
+}
+
+/// A phone around `screen` (upright for the interface orientation `o`, at
+/// `scale` pixels per point), turned as the phone is held. Also returns
+/// where the screen is in the result, in pixels (x, y, width, height).
+pub fn shell(d: &crate::device::Device, o: crate::device::Orientation, screen: &Pixmap, scale: f32) -> Result<(Pixmap, [f32; 4])> {
     // The body is drawn upright in portrait, around the screen turned back
     // into the native frame; then the whole phone turns as it's held.
-    let screen = render(emu, scale)?;
     let (pw, ph) = ((d.width as f32 * scale) as u32, (d.height as f32 * scale) as u32);
-    let screen = turn(&screen, invert(o.from_portrait(pw as f64, ph as f64)), pw, ph)?;
+    let screen = turn(screen, invert(o.from_portrait(pw as f64, ph as f64)), pw, ph)?;
     // Bezel around the screen (pt), and room for the buttons at the sides.
     const BEZEL: f32 = 14.0;
     const BUTTONS: f32 = 4.0;
@@ -1303,9 +1309,8 @@ pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     let (sw, sh) = (d.width as f32, d.height as f32);
     let (bw, bh) = (sw + 2.0 * BEZEL, sh + forehead + chin);
     let total = (bw + 2.0 * BUTTONS, bh);
-    let mut pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
-    let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
-    let mut p = Painter { pix: std::mem::replace(&mut pix, Pixmap::new(1, 1).unwrap()), font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    let pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
+    let mut p = Painter { pix, font: None, emoji: None };
     let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
     let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
     let body = transform_els(&rounded_rect(bw, bh, body_r), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
@@ -1339,7 +1344,15 @@ pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     }
     let (w, h) = (p.pix.width(), p.pix.height());
     let (ow, oh) = if o.is_landscape() { (h, w) } else { (w, h) };
-    turn(&p.pix, o.from_portrait(w as f64, h as f64), ow, oh)
+    let m = o.from_portrait(w as f64, h as f64);
+    // Where the screen lands: its corners through the turn.
+    let corners = [(ox * scale, oy * scale), ((ox + sw) * scale, (oy + sh) * scale)].map(|(x, y)| {
+        let (x, y) = (x as f64, y as f64);
+        ((m[0] * x + m[2] * y + m[4]) as f32, (m[1] * x + m[3] * y + m[5]) as f32)
+    });
+    let (x0, x1) = (corners[0].0.min(corners[1].0), corners[0].0.max(corners[1].0));
+    let (y0, y1) = (corners[0].1.min(corners[1].1), corners[0].1.max(corners[1].1));
+    Ok((turn(&p.pix, m, ow, oh)?, [x0, y0, x1 - x0, y1 - y0]))
 }
 
 /// `src` drawn through the pixel-space map `m` into a new `w`×`h` bitmap.
@@ -1708,5 +1721,26 @@ mod tests {
         arc_els(&mut els, 0.0, 0.0, 10.0, 0.0, std::f32::consts::PI, false);
         let Some(El::Cubic(.., x, y)) = els.last().copied() else { panic!() };
         assert!((x + 10.0).abs() < 1e-4 && y.abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+    use crate::device::Orientation;
+
+    /// The screen sits inside the bezel, and turns with the phone: in
+    /// landscape the picture is wider than tall and the screen too.
+    #[test]
+    fn shell_places_the_screen() {
+        let d = crate::device::find("iphone-17").unwrap();
+        for o in [Orientation::Portrait, Orientation::LandscapeRight, Orientation::LandscapeLeft] {
+            let (sw, sh) = d.screen(o);
+            let screen = Pixmap::new(sw as u32, sh as u32).unwrap();
+            let (pix, r) = shell(d, o, &screen, 1.0).unwrap();
+            assert_eq!((r[2].round(), r[3].round()), (sw as f32, sh as f32), "{o:?}");
+            assert!(r[0] > 0.0 && r[1] > 0.0 && r[0] + r[2] < pix.width() as f32 && r[1] + r[3] < pix.height() as f32, "{o:?} {r:?}");
+            assert_eq!(pix.width() > pix.height(), o.is_landscape(), "{o:?}");
+        }
     }
 }

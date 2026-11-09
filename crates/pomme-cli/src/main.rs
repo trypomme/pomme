@@ -83,6 +83,11 @@ enum Cmd {
         clipboard: ClipboardArgs,
         #[command(flatten)]
         orientation: OrientationArgs,
+        /// Run live in a window that looks like the iOS Simulator: click and drag to
+        /// touch, type into the focused field, ⌘← / ⌘→ (Ctrl on Windows and Linux)
+        /// to turn the phone. Runs until the window closes (no step or time limit).
+        #[arg(long)]
+        window: bool,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -205,8 +210,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, orientation } => {
-            let net = make_net(offline, &fixture)?;
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, orientation, window } => {
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -216,7 +220,21 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation)
+            if window {
+                let config = pomme_desktop::Config { device, orientation: orientation.held, title: format!("{} — iOS {ios}", device.name) };
+                let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
+                let out = result.clone();
+                pomme_desktop::launch(config, move |host, scale| {
+                    let r = make_net(offline, &fixture).and_then(|net| {
+                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation, Some((host, scale)))
+                    });
+                    *out.lock().unwrap() = r;
+                })
+                .map_err(anyhow::Error::msg)?;
+                return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
+            }
+            let net = make_net(offline, &fixture)?;
+            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation, None)
         }
     }
 }
@@ -569,7 +587,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, orientation: &OrientationArgs) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, orientation: &OrientationArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -606,6 +624,13 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         if s.liquid_glass() { "Liquid Glass" } else { "pre-iOS 26" }
     );
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
+    // Live in a window: until it closes.
+    if let Some((host, scale)) = live {
+        emu.live.host = Some(host);
+        emu.live.scale = scale;
+        emu.time_limit_ns = None;
+        emu.max_steps = u64::MAX;
+    }
     emu.net.client = net;
     for &(x, y, t) in taps {
         pomme_hle::touch::tap(&mut emu.touch.script, (t * 1e9) as u64, x, y);

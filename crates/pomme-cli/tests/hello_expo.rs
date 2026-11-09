@@ -256,7 +256,7 @@ struct ScriptedHost {
 
 impl pomme_hle::host::Host for ScriptedHost {
     fn idle(&mut self, now_ns: u64, next_ns: Option<u64>) -> pomme_hle::host::Idle {
-        use pomme_hle::host::Idle;
+        use pomme_hle::host::{Event, Idle};
         if let Some(&(at, x, y)) = self.taps.first()
             && next_ns.is_none_or(|n| at <= n)
         {
@@ -264,16 +264,16 @@ impl pomme_hle::host::Host for ScriptedHost {
             let at = at.max(now_ns);
             return Idle::Input {
                 at_ns: at,
-                events: vec![Input { at_ns: at, phase: BEGAN, x, y }, Input { at_ns: at, phase: ENDED, x, y }],
+                events: vec![Event::Touch(Input { at_ns: at, phase: BEGAN, x, y }), Event::Touch(Input { at_ns: at, phase: ENDED, x, y })],
             };
         }
         if next_ns.is_none_or(|n| n > self.end_ns) { Idle::Quit } else { Idle::Advance }
     }
 
-    fn frame(&mut self, rgba: &[u8], _w: u32, _h: u32) {
+    fn frame(&mut self, frame: pomme_hle::host::Frame<'_>) {
         let mut f = self.frames.borrow_mut();
         f.0 += 1;
-        f.1 = rgba.to_vec();
+        f.1 = frame.rgba.to_vec();
     }
 }
 
