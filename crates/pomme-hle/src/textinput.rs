@@ -653,20 +653,6 @@ macro_rules! text_methods {
         }),
         ($c, false, "insertText:", tf_insert_text),
         ($c, false, "deleteBackward", tf_delete_backward),
-        // A text input is a control: it tracks touches like one (see control.rs).
-        ($c, false, "touchesBegan:withEvent:", |e| {
-            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
-            crate::control::touches_began(e, c, t, ev)
-        }),
-        ($c, false, "touchesMoved:withEvent:", |e| {
-            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
-            crate::control::touches_moved(e, c, t, ev)
-        }),
-        ($c, false, "touchesEnded:withEvent:", tf_touches_ended),
-        ($c, false, "touchesCancelled:withEvent:", |e| {
-            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
-            crate::control::touches_cancelled(e, c, t, ev)
-        }),
         ($c, false, "caretRectForPosition:", |e| {
             let b = crate::uiview::view(e, e.arg(0)).bounds;
             ret_rect(e, [0.0, 0.0, 2.0, b[3]])
@@ -760,6 +746,29 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("UIView", false, "endEditing:", end_editing),
     // UITextField only (the rest is shared with UITextView: TEXT_METHODS)
+    // A text field is a control: it tracks touches like one (see control.rs).
+    (TF, false, "touchesBegan:withEvent:", |e| {
+        let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        crate::control::touches_began(e, c, t, ev)
+    }),
+    (TF, false, "touchesMoved:withEvent:", |e| {
+        let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        crate::control::touches_moved(e, c, t, ev)
+    }),
+    (TF, false, "touchesEnded:withEvent:", tf_touches_ended),
+    (TF, false, "touchesCancelled:withEvent:", |e| {
+        let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+        crate::control::touches_cancelled(e, c, t, ev)
+    }),
+    // A text view isn't a control (it's a scroll view): a tap on an editable one starts editing.
+    (TV, false, "touchesEnded:withEvent:", |e| {
+        let v = e.arg(0);
+        let editable = send(e, v, "isEditable", &[])? & 0xff != 0;
+        if editable && e.input.first_responder != v {
+            send(e, v, "becomeFirstResponder", &[])?;
+        }
+        Ok(())
+    }),
     // UIKit's: the field's font (17 pt system unless set) and text color; or what the app set.
     (TF, false, "defaultTextAttributes", |e| {
         let f = e.arg(0);

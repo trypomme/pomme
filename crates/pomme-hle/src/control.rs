@@ -737,6 +737,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let t = target_for_action(e, r, action, sender)?;
         ret(e, t)
     }),
+    // UIResponder's default: the chain ends here (views, controllers, windows and the app override it).
+    ("UIResponder", false, "nextResponder", |e| ret(e, 0)),
     // The chain's top: window → application → its delegate (when that's a responder).
     ("UIWindow", false, "nextResponder", |e| {
         let app = e.ui.app;
