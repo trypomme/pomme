@@ -18,6 +18,7 @@ export default function RootLayout() {
         <Stack.Screen name="image" options={{ title: 'Image' }} />
         <Stack.Screen name="network" options={{ title: 'Network' }} />
         <Stack.Screen name="storage" options={{ title: 'Storage' }} />
+        <Stack.Screen name="lock" options={{ title: 'Lock' }} />
       </Stack>
     </QueryClientProvider>
   );

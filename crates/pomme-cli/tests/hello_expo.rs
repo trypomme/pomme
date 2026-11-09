@@ -686,3 +686,69 @@ fn secure_store_with_face_id() {
     let (_, _, protected) = storage_screen(Biometry::NonMatching).unwrap();
     assert!(protected.contains("\"protected error"), "{protected}");
 }
+
+// ---- the lock screen: a PIN pad with Face ID ----
+
+/// The keypad's keys (pt).
+fn key(k: char) -> (f64, f64) {
+    let i = "123456789 0⌫".chars().position(|c| c == k).unwrap();
+    (103.0 + 92.0 * (i % 3) as f64, 225.0 + 92.0 * (i / 3) as f64)
+}
+const FACE_ID_SWITCH: (f64, f64) = (343.0, 166.0);
+const LOCK_BUTTON: (f64, f64) = (195.0, 240.0);
+const FACE_ID_BUTTON: (f64, f64) = (195.0, 587.0);
+
+/// Run the lock screen with this biometry and these taps (from 2 s, 0.3 s apart): its status line.
+fn lock_screen(biometry: pomme_hle::keychain::Biometry, taps: &[(f64, f64)]) -> Option<String> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///lock".into());
+    emu.keychain.biometry = biometry;
+    for (i, &p) in taps.iter().enumerate() {
+        tap(&mut emu, p, 2.0 + 0.3 * i as f64);
+    }
+    let v = run_for(&mut emu, 2.0 + 0.3 * taps.len() as f64 + 1.0);
+    Some(v.lines().find(|l| l.contains(" tag 6 ")).map(|l| l.trim().to_string()).unwrap_or_else(|| panic!("no status in\n{v}")))
+}
+
+fn pin(digits: &str) -> Vec<(f64, f64)> {
+    digits.chars().map(key).collect()
+}
+
+/// Choose a PIN on the pad (kept in the Keychain), then unlock with it; a wrong one doesn't.
+#[test]
+fn lock_screen_pin() {
+    use pomme_hle::keychain::Biometry;
+    let mut taps = pin("1234");
+    taps.extend(pin("1234"));
+    let Some(status) = lock_screen(Biometry::NotEnrolled, &taps) else { return };
+    assert!(status.ends_with("\"Unlocked with PIN\""), "{status}");
+    // ⌫ takes back a digit: 1 2 ⌫ 3 4 5 is 1345, not the PIN.
+    let mut taps = pin("1234");
+    taps.extend(pin("12⌫345"));
+    let status = lock_screen(Biometry::NotEnrolled, &taps).unwrap();
+    assert!(status.ends_with("\"Wrong PIN\""), "{status}");
+}
+
+/// With a matching face: turning "Unlock with Face ID" on asks for it, and once locked the Face ID button unlocks.
+#[test]
+fn lock_screen_face_id() {
+    use pomme_hle::keychain::Biometry;
+    let mut taps = pin("1234");
+    taps.extend(pin("1234"));
+    taps.extend([FACE_ID_SWITCH, LOCK_BUTTON, FACE_ID_BUTTON]);
+    let Some(status) = lock_screen(Biometry::Matching, &taps) else { return };
+    assert!(status.ends_with("\"Unlocked with Face ID\""), "{status}");
+}
+
+/// A face that doesn't match can't turn Face ID on; without Face ID set up, the setting says so.
+#[test]
+fn lock_screen_face_id_refused() {
+    use pomme_hle::keychain::Biometry;
+    let mut taps = pin("1234");
+    taps.extend(pin("1234"));
+    taps.push(FACE_ID_SWITCH);
+    let Some(status) = lock_screen(Biometry::NonMatching, &taps) else { return };
+    assert!(status.ends_with("\"Face ID failed: authentication_failed\""), "{status}");
+    let status = lock_screen(Biometry::NotEnrolled, &taps).unwrap();
+    assert!(status.ends_with("\"Face ID isn't set up\""), "{status}");
+}

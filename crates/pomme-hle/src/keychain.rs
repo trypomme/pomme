@@ -11,7 +11,8 @@
 //! Biometry is modeled as the iOS Simulator's Face ID / Touch ID menu has it:
 //! not enrolled (the default), enrolled with a matching face or finger, or
 //! with one that doesn't match (`--biometry`). Items made with an access
-//! control that asks for biometry need a match to be read.
+//! control that asks for biometry need a match to be read. Like a fresh
+//! Simulator, the phone has no device passcode, so nothing falls back to one.
 
 use crate::foundation;
 use crate::objc::{self, host_class, send};
@@ -346,13 +347,27 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
 
 const LA: &str = "LAContext";
 
+fn la_get(emu: &mut Emu, key: &str) -> Result<()> {
+    let v = objc::bag_get(emu, emu.arg(0), key).unwrap_or(0);
+    emu.ret(v);
+    Ok(())
+}
+
+fn la_set(emu: &mut Emu, key: &str) -> Result<()> {
+    let (o, v) = (emu.arg(0), emu.arg(2));
+    objc::bag_set(emu, o, key, v);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
-    // LAPolicy 1: biometrics only (enrolled); 2: biometrics or the passcode (always set).
+    // LAPolicy 1: biometrics only; 2: biometrics or the device passcode. With no
+    // passcode set (a fresh Simulator), both come down to enrolled biometry.
     (LA, false, "canEvaluatePolicy:error:", |e| {
         let (policy, error) = (e.arg(2), e.arg(3));
-        let ok = policy == 2 || e.keychain.biometry != Biometry::NotEnrolled;
+        let ok = e.keychain.biometry != Biometry::NotEnrolled;
         if !ok && error != 0 {
-            let err = la_error(e, -7)?; // LAErrorBiometryNotEnrolled
+            // LAErrorPasscodeNotSet (-5) for the passcode policy, LAErrorBiometryNotEnrolled (-7) for biometrics.
+            let err = la_error(e, if policy == 2 { -5 } else { -7 })?;
             e.write_u64(error, err)?;
         }
         e.ret(ok as u64);
@@ -368,8 +383,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (policy, reply) = (e.arg(2), e.arg(4));
         let (ok, code) = match e.keychain.biometry {
             Biometry::Matching => (true, 0),
-            Biometry::NonMatching => (policy == 2, -1), // LAErrorAuthenticationFailed
-            Biometry::NotEnrolled => (policy == 2, -7), // LAErrorBiometryNotEnrolled
+            Biometry::NonMatching => (false, -1), // LAErrorAuthenticationFailed
+            Biometry::NotEnrolled => (false, if policy == 2 { -5 } else { -7 }),
         };
         let err = if ok { 0 } else { la_error(e, code)? };
         let block = crate::libc::copy_block(e, reply)?;
@@ -379,6 +394,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let q = crate::libsystem::global_queue(e)?;
         crate::libsystem::dispatch_on(e, q, f, i as u64)
     }),
+    // The prompt's labels and options: kept for the app to read back.
+    (LA, false, "localizedFallbackTitle", |e| la_get(e, "localizedFallbackTitle")),
+    (LA, false, "setLocalizedFallbackTitle:", |e| la_set(e, "localizedFallbackTitle")),
+    (LA, false, "localizedCancelTitle", |e| la_get(e, "localizedCancelTitle")),
+    (LA, false, "setLocalizedCancelTitle:", |e| la_set(e, "localizedCancelTitle")),
+    (LA, false, "localizedReason", |e| la_get(e, "localizedReason")),
+    (LA, false, "setLocalizedReason:", |e| la_set(e, "localizedReason")),
+    (LA, false, "interactionNotAllowed", |e| la_get(e, "interactionNotAllowed")),
+    (LA, false, "setInteractionNotAllowed:", |e| la_set(e, "interactionNotAllowed")),
     (LA, false, "invalidate", |_| Ok(())),
 ];
 
