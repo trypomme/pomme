@@ -158,7 +158,33 @@ pub struct State {
     glyph_dumps: usize,
     /// What each view drew in its last `drawRect:`, and at what size.
     content: HashMap<u64, (Vec<Op>, [f64; 2])>,
+    /// Blurred shadows of `shadowPath`s, which only move from frame to frame
+    /// (a push's cards): keyed by everything that shapes them, with where the
+    /// blur sits relative to the layer's origin.
+    shadows: HashMap<ShadowKey, (std::rc::Rc<Pixmap>, f32, f32)>,
 }
+
+/// A path's shape as a hash (FNV-1a over its elements): a path mutated in place is a new shape.
+fn path_hash(els: &[El]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |x: u32| {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for e in els {
+        match *e {
+            El::Move(x, y) => [0, x.to_bits(), y.to_bits()].into_iter().for_each(&mut mix),
+            El::Line(x, y) => [1, x.to_bits(), y.to_bits()].into_iter().for_each(&mut mix),
+            El::Cubic(a, b, c, d, x, y) => [2, a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits(), x.to_bits(), y.to_bits()].into_iter().for_each(&mut mix),
+            El::Close => mix(3),
+        }
+    }
+    h
+}
+
+/// What a path shadow's pixels depend on: the path's shape, the layer's size and
+/// linear transform (scale, rotation), the blur, colour and strength (all as bits).
+type ShadowKey = (u64, [u32; 2], [u32; 4], u32, [u64; 4], u32);
 
 fn apply(m: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
     (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
@@ -1146,6 +1172,36 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
     let sigma = ly.shadow_radius.max(0.0) as f32 * k;
     let (ox, oy) = (ly.shadow_offset[0] as f32, ly.shadow_offset[1] as f32);
     let (dx, dy) = (lt[0] * ox + lt[2] * oy, lt[1] * ox + lt[3] * oy);
+    let color = emu.ui.views.colors.get(&ly.shadow_color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    // A shadow path's shadow only moves with the layer: blur it once.
+    let path = (ly.shadow_path != 0).then(|| emu.render.paths.get(&ly.shadow_path).cloned()).flatten();
+    if let Some(els) = path {
+        let strength = ly.shadow_opacity * ly.opacity * alpha * color[3] as f32;
+        let key: ShadowKey = (path_hash(&els), [w.to_bits(), h.to_bits()], [lt[0].to_bits(), lt[1].to_bits(), lt[2].to_bits(), lt[3].to_bits()], sigma.to_bits(), color.map(f64::to_bits), strength.to_bits());
+        if !emu.render.shadows.contains_key(&key) {
+            // Around the shape at the origin (the layer's translation comes in when it's drawn).
+            let at0 = [lt[0], lt[1], lt[2], lt[3], 0.0, 0.0];
+            let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(&at0, x, y));
+            let margin = (3.0 * sigma).ceil() + 1.0;
+            let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor();
+            let y0 = (pts.iter().map(|q| q.1).fold(f32::MAX, f32::min) - margin).floor();
+            let x1 = (pts.iter().map(|q| q.0).fold(f32::MIN, f32::max) + margin).ceil();
+            let y1 = (pts.iter().map(|q| q.1).fold(f32::MIN, f32::max) + margin).ceil();
+            let (bw, bh) = ((x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32);
+            let Some(pix) = Pixmap::new(bw, bh) else { return };
+            let mut off = Painter { pix, font: p.font, emoji: p.emoji };
+            off.fill(&els, [0.0, 0.0, 0.0, 1.0], 1.0, false, &concat(&at0, &[1.0, 0.0, 0.0, 1.0, -x0, -y0]), None);
+            let Some(sh) = blurred_shadow(&off.pix, sigma, color, strength) else { return };
+            if emu.render.shadows.len() > 32 {
+                emu.render.shadows.clear();
+            }
+            emu.render.shadows.insert(key, (std::rc::Rc::new(sh), x0, y0));
+        }
+        let (sh, x0, y0) = emu.render.shadows[&key].clone();
+        let paint = tiny_skia::PixmapPaint::default();
+        p.pix.draw_pixmap(0, 0, sh.as_ref().as_ref(), &paint, Transform::from_translate(lt[4] + x0 + dx, lt[5] + y0 + dy), mask);
+        return;
+    }
     // The layer's box on screen, with room for the blur.
     let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(lt, x, y));
     let margin = (3.0 * sigma).ceil() + 1.0;
@@ -1158,18 +1214,20 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
     let Some(pix) = Pixmap::new(bw, bh) else { return };
     let mut off = Painter { pix, font: p.font, emoji: p.emoji };
     let shift = [1.0, 0.0, 0.0, 1.0, -x0, -y0];
-    match emu.render.paths.get(&ly.shadow_path).cloned() {
-        // The shape the app gave, in the layer's coordinates.
-        Some(els) if ly.shadow_path != 0 => off.fill(&els, [0.0, 0.0, 0.0, 1.0], 1.0, false, &concat(lt, &shift), None),
-        _ => source(emu, &mut off, &concat(t, &shift)),
-    }
-    let mut a: Vec<f32> = off.pix.pixels().iter().map(|c| c.alpha() as f32 / 255.0).collect();
+    source(emu, &mut off, &concat(t, &shift));
+    // The source already carries the layer's own opacity.
+    let strength = ly.shadow_opacity * alpha * color[3] as f32;
+    let Some(sh) = blurred_shadow(&off.pix, sigma, color, strength) else { return };
+    let paint = tiny_skia::PixmapPaint::default();
+    p.pix.draw_pixmap(0, 0, sh.as_ref(), &paint, Transform::from_translate(x0 + dx, y0 + dy), mask);
+}
+
+/// A shadow from a source's alpha: blurred by `sigma` pixels, in `color` at `strength`.
+fn blurred_shadow(source: &Pixmap, sigma: f32, color: [f64; 4], strength: f32) -> Option<Pixmap> {
+    let (bw, bh) = (source.width(), source.height());
+    let mut a: Vec<f32> = source.pixels().iter().map(|c| c.alpha() as f32 / 255.0).collect();
     gaussian_blur(&mut a, bw as usize, bh as usize, sigma);
-    let color = emu.ui.views.colors.get(&ly.shadow_color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
-    // The source already carries the layer's own opacity (or a shadow path stands for an opaque shape).
-    let own = if ly.shadow_path != 0 { ly.opacity } else { 1.0 };
-    let strength = ly.shadow_opacity * own * alpha * color[3] as f32;
-    let Some(mut sh) = Pixmap::new(bw, bh) else { return };
+    let mut sh = Pixmap::new(bw, bh)?;
     for (px, &v) in sh.pixels_mut().iter_mut().zip(&a) {
         let al = (v * strength).clamp(0.0, 1.0);
         if al > 0.0 {
@@ -1177,8 +1235,7 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
             *px = tiny_skia::PremultipliedColorU8::from_rgba(c(color[0]), c(color[1]), c(color[2]), (al * 255.0).round() as u8).unwrap_or(*px);
         }
     }
-    let paint = tiny_skia::PixmapPaint::default();
-    p.pix.draw_pixmap(0, 0, sh.as_ref(), &paint, Transform::from_translate(x0 + dx, y0 + dy), mask);
+    Some(sh)
 }
 
 /// Blur `a` (w × h, row-major) by a Gaussian of standard deviation `sigma`
