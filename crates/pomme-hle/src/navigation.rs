@@ -553,12 +553,9 @@ fn vc_next_responder(emu: &mut Emu) -> Result<()> {
 
 // ---- safe areas ----
 
-/// A view's safe-area insets (top, left, bottom, right): the device's, plus a
-/// visible navigation bar's, as they overlap the view.
-pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
-    let o = crate::uiview::window_origin(emu, v);
-    let b = view(emu, v).bounds;
-    let (top, bottom) = (o[1], o[1] + b[3]);
+/// The safe band of the screen for a view, in window coordinates: below the
+/// status bar (and a visible navigation bar it sits under), above the home indicator.
+pub fn safe_band(emu: &mut Emu, v: u64) -> (f64, f64) {
     let mut safe_top = emu.device.safe_top;
     // Inside a navigation controller with a visible bar, the bar covers more.
     let mut cur = v;
@@ -572,13 +569,17 @@ pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
         }
         cur = view(emu, cur).superview;
     }
-    let (screen_h, safe_bottom) = (emu.device.height, emu.device.safe_bottom);
-    [
-        (safe_top - top).clamp(0.0, b[3]),
-        0.0,
-        (bottom - (screen_h - safe_bottom)).clamp(0.0, b[3]),
-        0.0,
-    ]
+    (safe_top, emu.device.height - emu.device.safe_bottom)
+}
+
+/// A view's safe-area insets (top, left, bottom, right): the device's, plus a
+/// visible navigation bar's, as they overlap the view.
+pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
+    let o = crate::uiview::window_origin(emu, v);
+    let b = view(emu, v).bounds;
+    let (top, bottom) = (o[1], o[1] + b[3]);
+    let (safe_top, safe_bottom) = safe_band(emu, v);
+    [(safe_top - top).clamp(0.0, b[3]), 0.0, (bottom - safe_bottom).clamp(0.0, b[3]), 0.0]
 }
 
 const VC: &str = "UIViewController";

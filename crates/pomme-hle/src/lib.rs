@@ -44,6 +44,7 @@ mod nstimer;
 pub mod net;
 pub mod host;
 pub mod touch;
+pub mod autolayout;
 pub mod textinput;
 pub mod device;
 mod uikit;
@@ -200,6 +201,8 @@ pub struct Emu {
     /// Touches, gesture recognizers and the input script.
     pub touch: touch::State,
     pub input: textinput::State,
+    /// Auto Layout: constraints, anchors and layout guides.
+    pub(crate) layout: autolayout::State,
     /// The iPhone model pomme presents (`--device`).
     pub device: &'static device::Device,
     /// A live host (browser, window) and its frames and input.
@@ -276,6 +279,7 @@ impl Emu {
             render: Default::default(),
             touch: Default::default(),
             input: Default::default(),
+            layout: Default::default(),
             device: device::default(),
             live: Default::default(),
             net: Default::default(),

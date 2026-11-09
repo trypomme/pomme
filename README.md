@@ -53,6 +53,10 @@ Debugging:
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the
   screenshot inside a plain phone body: rounded screen corners, bezel, buttons, home button.
   The iPhone 17's frame matches the iOS 26 Simulator's, island included.
+  Native apps get Auto Layout against the device: anchors and `NSLayoutConstraint`,
+  `safeAreaLayoutGuide`, `layoutMarginsGuide`, `keyboardLayoutGuide` and their own guides,
+  with `safeAreaInsetsDidChange` / `viewSafeAreaInsetsDidChange` when insets change
+  (a propagating solver, not Cassowary: pinning, centering and fixed or proportional sizes).
 - `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
   local (non-exported) ones too, by name or by the address `nm` prints.
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.

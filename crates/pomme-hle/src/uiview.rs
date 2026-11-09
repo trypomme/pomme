@@ -425,13 +425,24 @@ pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<bool> {
 /// Whether any view was laid out.
 pub fn layout_windows(emu: &mut Emu) -> Result<bool> {
     let mut any = false;
-    for w in emu.ui.windows.clone() {
-        any |= layout_tree(emu, w)?;
+    // Constraints and safe areas settle frames, which layoutSubviews may move
+    // again (and constraints and safe areas follow): a few rounds at most.
+    for _ in 0..3 {
+        let mut round = crate::autolayout::solve(emu)?;
+        round |= crate::autolayout::safe_area_changes(emu)?;
+        for w in emu.ui.windows.clone() {
+            round |= layout_tree(emu, w)?;
+        }
+        any |= round;
+        if !round {
+            break;
+        }
     }
     Ok(any)
 }
 
 fn layout_if_needed(emu: &mut Emu) -> Result<()> {
+    crate::autolayout::solve(emu)?;
     layout_tree(emu, emu.arg(0))?;
     Ok(())
 }
@@ -673,11 +684,6 @@ pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn layout_margins(emu: &mut Emu) -> Result<()> {
-    ret_rect(emu, [8.0, 8.0, 8.0, 8.0]);
-    Ok(())
-}
-
 // ---- UIFont {isa, name (NSString), point size (f64 bits), weight (f64 bits)} ----
 // No font files yet: every font is "the system font" with SF Pro's proportions.
 
@@ -871,8 +877,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "pointInside:withEvent:", point_inside),
     ("UIView", false, "contentScaleFactor", content_scale),
     ("UIView", false, "setContentScaleFactor:", noop),
-    ("UIView", false, "invalidateIntrinsicContentSize", noop),
-    ("UIView", false, "setNeedsUpdateConstraints", noop),
     ("UIView", false, "updateConstraintsIfNeeded", noop),
     ("UIView", false, "setSemanticContentAttribute:", noop),
     ("UIView", false, "semanticContentAttribute", ret_zero),
@@ -948,8 +952,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIFont", false, "leading", |e| font_metric(e, 0.0)),
     ("UIView", false, "safeAreaInsets", safe_area_insets),
     ("UIView", false, "safeAreaInsetsDidChange", noop),
-    ("UIView", false, "layoutMargins", layout_margins),
-    ("UIView", false, "directionalLayoutMargins", layout_margins),
     ("UIView", false, "init", view_init),
     ("UIView", false, "initWithFrame:", view_init_with_frame),
     ("UIView", false, "initWithCoder:", |e| {
@@ -1161,6 +1163,9 @@ pub fn describe_tree(emu: &mut Emu) -> Result<String> {
         }
         if vw.hidden {
             line += " hidden";
+        }
+        if vw.tag != 0 {
+            line += &format!(" tag {}", vw.tag);
         }
         if vw.alpha < 1.0 {
             line += &format!(" alpha {:.2}", vw.alpha);
