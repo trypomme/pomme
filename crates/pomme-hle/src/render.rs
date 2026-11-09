@@ -229,6 +229,62 @@ fn arc_els(out: &mut Vec<El>, cx: f32, cy: f32, r: f32, start: f32, end: f32, cl
     }
 }
 
+/// A rectangle with rounded corners, as a layer's `cornerRadius`,
+/// `maskedCorners` (1 top-left, 2 top-right, 4 bottom-left, 8 bottom-right)
+/// and `cornerCurve` shape it. Continuous corners are Apple's: the curve eases
+/// into the straight edge over 1.528 × the radius (this reconstruction of
+/// the path matches iOS 26's sheet corners to 0.2 pt).
+pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) -> Vec<El> {
+    // How far along each edge a corner reaches, per unit of radius.
+    const REACH: f32 = 1.528_664_8;
+    let reach = if continuous { REACH } else { 1.0 };
+    let r = r.max(0.0).min(w / 2.0 / reach).min(h / 2.0 / reach);
+    if r == 0.0 || mask & 15 == 0 {
+        return rect_els(0.0, 0.0, w, h);
+    }
+    // A corner as cubics in (a, b): a back along the edge arriving at the
+    // corner, b along the edge leaving it, in units of the radius.
+    const CONTINUOUS: [[(f32, f32); 3]; 3] = [
+        [(1.088_493_2, 0.0), (0.868_406_9, 0.0), (0.631_496, 0.074_911)],
+        [(0.372_823_9, 0.169_059), (0.169_059, 0.372_823_9), (0.074_911, 0.631_496)],
+        [(0.0, 0.868_406_9), (0.0, 1.088_493_2), (0.0, 1.528_664_8)],
+    ];
+    const K: f32 = 0.447_715; // 1 − 0.552285, the circle's cubic handles
+    const CIRCULAR: [[(f32, f32); 3]; 1] = [[(K, 0.0), (0.0, K), (0.0, 1.0)]];
+    // Corners clockwise from top-right: (corner point, arriving direction, leaving direction, mask bit).
+    let corners: [((f32, f32), (f32, f32), (f32, f32), u64); 4] = [
+        ((w, 0.0), (1.0, 0.0), (0.0, 1.0), 2),
+        ((w, h), (0.0, 1.0), (-1.0, 0.0), 8),
+        ((0.0, h), (-1.0, 0.0), (0.0, -1.0), 4),
+        ((0.0, 0.0), (0.0, -1.0), (1.0, 0.0), 1),
+    ];
+    let at = |c: (f32, f32), u: (f32, f32), v: (f32, f32), a: f32, b: f32| (c.0 - a * r * u.0 + b * r * v.0, c.1 - a * r * u.1 + b * r * v.1);
+    let mut out = Vec::new();
+    // Start on the top edge, where the top-left corner leaves it.
+    let tl = mask & 1 != 0;
+    out.push(El::Move(if tl { reach * r } else { 0.0 }, 0.0));
+    for &(c, u, v, bit) in &corners {
+        if mask & bit == 0 {
+            out.push(El::Line(c.0, c.1));
+            continue;
+        }
+        let start = at(c, u, v, reach, 0.0);
+        out.push(El::Line(start.0, start.1));
+        let segs: &[[(f32, f32); 3]] = if continuous { &CONTINUOUS } else { &CIRCULAR };
+        for seg in segs {
+            let (p1, p2, p3) = (at(c, u, v, seg[0].0, seg[0].1), at(c, u, v, seg[1].0, seg[1].1), at(c, u, v, seg[2].0, seg[2].1));
+            out.push(El::Cubic(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1));
+        }
+    }
+    out.push(El::Close);
+    out
+}
+
+/// A layer's own shape, `w` × `h`.
+fn layer_shape(ly: &Layer, w: f32, h: f32) -> Vec<El> {
+    corner_shape(w, h, ly.corner_radius as f32, ly.masked_corners, ly.continuous_corners)
+}
+
 fn rounded_rect(w: f32, h: f32, r: f32) -> Vec<El> {
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
     if r == 0.0 {
@@ -996,7 +1052,7 @@ fn placement(frame: [f64; 4], ly: &Layer) -> [f32; 6] {
 /// A layer's background: `bg` is the colour (an animated one), or its colour object's.
 #[allow(clippy::too_many_arguments)]
 fn draw_layer_box(p: &mut Painter, ly: &Layer, bg: Option<[f64; 4]>, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    let shape = rounded_rect(w, h, ly.corner_radius as f32);
+    let shape = layer_shape(ly, w, h);
     if let Some(c) = bg {
         p.fill(&shape, c.map(|v| v as f32), alpha, false, t, mask);
     }
@@ -1009,7 +1065,8 @@ fn draw_border(p: &mut Painter, ly: &Layer, colors: &HashMap<u64, [f64; 4]>, w: 
     }
     let bw = ly.border_width as f32;
     let c = colors.get(&ly.border_color).map_or([0.0, 0.0, 0.0, 1.0], |c| c.map(|v| v as f32));
-    let inset = transform_els(&rounded_rect(w - bw, h - bw, (ly.corner_radius as f32 - bw / 2.0).max(0.0)), &[1.0, 0.0, 0.0, 1.0, bw / 2.0, bw / 2.0]);
+    let inner = corner_shape(w - bw, h - bw, (ly.corner_radius as f32 - bw / 2.0).max(0.0), ly.masked_corners, ly.continuous_corners);
+    let inset = transform_els(&inner, &[1.0, 0.0, 0.0, 1.0, bw / 2.0, bw / 2.0]);
     p.stroke(&inset, c, alpha, bw, t, mask);
 }
 
@@ -1033,7 +1090,7 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
         draw_layer_box(p, &ly, bg, w, h, a, &lt, mask);
         if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
             let r = contents_rect(emu, &ly, &img, w, h);
-            let clip = if ly.masks { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &lt) } else { None };
+            let clip = if ly.masks { p.intersect(mask, &layer_shape(&ly, w, h), &lt) } else { None };
             let m = if ly.masks { clip.as_ref() } else { mask };
             draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &lt), m);
         }
@@ -1061,7 +1118,7 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     // A text view is a scroll view, which clips to its bounds.
     let text_view = crate::textinput::is_text_view(emu, v);
     let clips = vw.clips || ly.masks || text_view;
-    let clipped = if clips { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &vt) } else { None };
+    let clipped = if clips { p.intersect(mask, &layer_shape(&ly, w, h), &vt) } else { None };
     let m = if clips { clipped.as_ref() } else { mask };
     // The layer's own contents are clipped with it too (masksToBounds).
     if let Some(img) = emu.render.images.get(&ly.contents).cloned() {

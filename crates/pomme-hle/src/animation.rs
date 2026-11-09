@@ -809,6 +809,55 @@ fn read_anim(emu: &mut Emu, o: u64, key: &str, now: f64, out: &mut Vec<Anim>, gr
     Ok(())
 }
 
+// ---- system transitions ----
+
+/// A critically (or nearly) damped spring as UIKit's transitions use, from its
+/// natural frequency `omega` (rad/s), damping ratio `zeta` and initial
+/// velocity (in distances per second); and how long it takes to settle.
+pub fn transition_spring((omega, zeta, velocity): (f64, f64, f64)) -> (Timing, f64) {
+    let t = Timing::Spring { mass: 1.0, stiffness: omega * omega, damping: 2.0 * zeta * omega, velocity };
+    let Timing::Spring { mass, stiffness, damping, velocity } = t else { unreachable!() };
+    (t, settling_duration(mass, stiffness, damping, velocity))
+}
+
+/// Animate `prop` on layer `l` from `from` to `to` starting now, holding the
+/// end value until the transition finishes (system transitions: navigation,
+/// presentation).
+pub fn transition(emu: &mut Emu, l: u64, prop: Prop, from: Val, to: Val, timing: Timing, duration: f64) {
+    let begin = crate::threads::now_ns(emu) as f64 / 1e9;
+    push(
+        emu,
+        l,
+        Anim {
+            key: "pomme.transition".into(),
+            prop,
+            curve: Curve::Basic { from: Some(from), to: Some(to), by: None },
+            begin,
+            duration,
+            timing,
+            repeat: 1.0,
+            autoreverses: false,
+            fill_forwards: true,
+            fill_backwards: false,
+            removed_on_completion: true,
+            additive: false,
+            object: 0,
+            delegate: 0,
+        },
+    );
+}
+
+/// The transition's animations are done: take them off `l` (the model shows from now).
+pub fn end_transition(emu: &mut Emu, l: u64) {
+    if let Some(list) = emu.anim.layers.get_mut(&l) {
+        list.retain(|a| a.key != "pomme.transition");
+        if list.is_empty() {
+            emu.anim.layers.remove(&l);
+        }
+    }
+    crate::host::changed(emu);
+}
+
 // ---- UIView animation blocks ----
 
 /// UIView animation options: the curve (bits 16–19), repeat and autoreverse.

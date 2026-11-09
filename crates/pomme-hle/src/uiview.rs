@@ -1230,8 +1230,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "viewDidAppear:", noop),
     ("UIViewController", false, "viewWillLayoutSubviews", noop),
     ("UIViewController", false, "viewDidLayoutSubviews", noop),
-    ("UIViewController", false, "presentedViewController", ret_zero),
-    ("UIViewController", false, "presentingViewController", ret_zero),
     ("UIViewController", false, "traitCollection", trait_collection),
     ("UIColor", true, "colorWithRed:green:blue:alpha:", color_rgba),
     ("UIColor", false, "initWithRed:green:blue:alpha:", color_rgba),
@@ -1272,6 +1270,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "lightGrayColor", |e| ret_color(e, [2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0])),
     ("UIColor", true, "blueColor", |e| ret_color(e, [0.0, 0.0, 1.0, 1.0])),
     ("UIColor", true, "greenColor", |e| ret_color(e, [0.0, 1.0, 0.0, 1.0])),
+    // UIKit's fixed named colours (sRGB, not the dynamic system ones).
+    ("UIColor", true, "yellowColor", |e| ret_color(e, [1.0, 1.0, 0.0, 1.0])),
+    ("UIColor", true, "cyanColor", |e| ret_color(e, [0.0, 1.0, 1.0, 1.0])),
+    ("UIColor", true, "magentaColor", |e| ret_color(e, [1.0, 0.0, 1.0, 1.0])),
+    ("UIColor", true, "orangeColor", |e| ret_color(e, [1.0, 0.5, 0.0, 1.0])),
+    ("UIColor", true, "purpleColor", |e| ret_color(e, [0.5, 0.0, 0.5, 1.0])),
+    ("UIColor", true, "brownColor", |e| ret_color(e, [0.6, 0.4, 0.2, 1.0])),
     ("UIColor", false, "isEqual:", |e| {
         let (a, b) = (e.arg(0), e.arg(2));
         let ca = e.ui.views.colors.get(&a).copied();

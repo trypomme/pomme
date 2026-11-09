@@ -31,6 +31,8 @@ pub struct Layer {
     pub background: u64,
     pub corner_radius: f64,
     pub masked_corners: u64,
+    /// `cornerCurve` is continuous (Apple's squircle) rather than circular.
+    pub continuous_corners: bool,
     pub border_width: f64,
     pub border_color: u64,
     pub shadow_color: u64,
@@ -65,6 +67,7 @@ impl Default for Layer {
             background: 0,
             corner_radius: 0.0,
             masked_corners: 15,
+            continuous_corners: false,
             border_width: 0.0,
             border_color: 0,
             shadow_color: 0,
@@ -538,7 +541,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "setCornerRadius:", set_corner_radius),
     (L, false, "maskedCorners", masked_corners),
     (L, false, "setMaskedCorners:", set_masked_corners),
-    (L, false, "setCornerCurve:", nothing),
+    (L, false, "setCornerCurve:", |e| {
+        let (l, c) = (e.arg(0), e.arg(2));
+        let curve = if c != 0 { crate::foundation::nsstring(e, c)? } else { String::new() };
+        layer_mut(e, l).continuous_corners = curve == "continuous";
+        Ok(())
+    }),
+    (L, false, "cornerCurve", |e| {
+        let l = e.arg(0);
+        let name = if layer(e, l).continuous_corners { "continuous" } else { "circular" };
+        let s = crate::foundation::new_nsstring(e, name)?;
+        e.ret(s);
+        Ok(())
+    }),
     (L, false, "borderWidth", border_width),
     (L, false, "setBorderWidth:", set_border_width),
     (L, false, "borderColor", border_color),

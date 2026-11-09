@@ -55,7 +55,64 @@ pub struct State {
     moving_from: std::collections::HashSet<u64>,
     /// Plain stored properties (object, property) → value.
     props: HashMap<(u64, &'static str), u64>,
+    /// Navigation controller → its push or pop that's animating.
+    transitions: HashMap<u64, Transition>,
+    /// Modal presentations, in the order they were made (the last is on top).
+    presentations: Vec<Presentation>,
 }
+
+/// A presented view controller and what shows it.
+#[derive(Clone, Debug)]
+struct Presentation {
+    /// The controller it's presented from (the root of the one that asked).
+    presenter: u64,
+    presented: u64,
+    /// Over the window: holds the dimming view and the sheet, or the presented view.
+    container: u64,
+    dim: u64,
+    /// The sheet holding the presented view (0 for full screen).
+    sheet: u64,
+    /// Full screen, the screen behind leaves the hierarchy once covered (not for `overFullScreen`).
+    covers: bool,
+    /// Presenting (true) or dismissing (false) right now, with the completion block to run.
+    moving: Option<bool>,
+    completion: u64,
+}
+
+// iOS 26's modal presentation on iPhone, measured in the Simulator
+// (scripts/measure/transitions): sheets and full-screen controllers slide up
+// from the bottom on a critically damped spring and back down on another; a
+// page sheet runs from the safe area's top to the bottom, its top corners
+// continuous with a 37.6 pt radius, over 20% black dimming; the screen
+// behind keeps its size.
+const PRESENT_SPRING: (f64, f64, f64) = (18.0, 0.99, 2.5);
+const DISMISS_SPRING: (f64, f64, f64) = (16.8, 0.94, 0.0);
+const SHEET_RADIUS: f64 = 37.6;
+const SHEET_DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.2];
+
+/// A change of the top controller: what's left to do when its transition settles.
+#[derive(Clone)]
+struct Transition {
+    nc: u64,
+    old_top: Option<u64>,
+    new_top: Option<u64>,
+    removed: Vec<u64>,
+    added: Vec<u64>,
+    animated: bool,
+    /// Views the transition animates (their transition animations end with it), and its dimming view.
+    moving: Vec<u64>,
+    dim: u64,
+}
+
+// UIKit's push and pop on iPhone, measured in the iOS 26 Simulator
+// (scripts/measure/transitions): the incoming view slides across the whole
+// width, the outgoing one moves 30% of it the other way under a 10% black
+// dimming view, on springs (natural frequency rad/s, damping ratio, initial
+// velocity: a pop starts already moving).
+const PUSH_SPRING: (f64, f64, f64) = (26.0, 1.11, 0.0);
+const POP_SPRING: (f64, f64, f64) = (20.4, 0.99, 9.0);
+const PARALLAX: f64 = 0.3;
+const DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.1];
 
 fn get_prop(emu: &mut Emu, key: &'static str, default: u64) -> Result<()> {
     let v = emu.nav.props.get(&(emu.arg(0), key)).copied().unwrap_or(default);
@@ -187,8 +244,14 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     Ok(())
 }
 
-/// Switch to `stack`, running UIKit's containment and appearance sequence.
+/// Switch to `stack`, running UIKit's containment and appearance sequence:
+/// the `will` half now; then, when the transition (if animated) settles, the
+/// `did` half ([`finish`]).
 fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<()> {
+    // A transition still running finishes first.
+    if let Some(t) = emu.nav.transitions.remove(&nc) {
+        finish(emu, t)?;
+    }
     let container = ensure_view(emu, nc)?;
     let old = nav(emu, nc).stack;
     let (old_top, new_top) = (old.last().copied(), stack.last().copied());
@@ -206,6 +269,8 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
     }
     let delegate = nav(emu, nc).delegate;
     let a = animated as u64;
+    // A push brings in a controller that wasn't on the stack; a pop goes back to one that was.
+    let forward = new_top.is_some_and(|t| !old.contains(&t));
     // UIKit updates `viewControllers` before telling the delegate.
     nav_mut(emu, nc).stack = stack.clone();
     if old_top != new_top {
@@ -218,11 +283,88 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
         }
         if let Some(nt) = new_top {
             let v = send(emu, nt, "view", &[])?;
-            let bar = nav(emu, nc).bar;
-            send(emu, container, "insertSubview:belowSubview:", &[v, bar])?;
+            // Pushed, it comes in on top; popped back to, it's underneath the one leaving.
+            let below = match old_top {
+                Some(ot) if !forward => send(emu, ot, "view", &[])?,
+                _ => nav(emu, nc).bar,
+            };
+            send(emu, container, "insertSubview:belowSubview:", &[v, below])?;
         }
     }
     layout_container(emu, container)?;
+    let mut t = Transition { nc, old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0 };
+    view_mut(emu, container).needs_layout = true;
+    match (old_top, new_top) {
+        (Some(ot), Some(nt)) if animated && ot != nt => {
+            let duration = slide(emu, container, ot, nt, forward, &mut t)?;
+            emu.nav.transitions.insert(nc, t);
+            crate::uikit::after_on_main(emu, duration, finish_fire, nc)
+        }
+        _ => finish(emu, t),
+    }
+}
+
+/// Start the push or pop slide; returns how long it takes to settle.
+fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut Transition) -> Result<f64> {
+    use crate::animation::{Prop, Val, transition, transition_spring};
+    let (ov, nv) = (send(emu, ot, "view", &[])?, send(emu, nt, "view", &[])?);
+    let w = view(emu, container).bounds[2];
+    let (timing, duration) = transition_spring(if forward { PUSH_SPRING } else { POP_SPRING });
+    // The view going underneath is dimmed: the old one on a push, the new one on a pop.
+    let under = if forward { ov } else { nv };
+    let dim = {
+        let cls = crate::objc::host_class(emu, "UIView")?;
+        let d = send(emu, cls, "alloc", &[])?;
+        let frame = crate::uiview::frame_of(emu, under);
+        for (i, f) in frame.iter().enumerate() {
+            emu.cpu.q[i] = f.to_bits() as u128;
+        }
+        let d = send(emu, d, "initWithFrame:", &[])?;
+        let black = crate::uiview::new_color(emu, DIMMING)?;
+        send(emu, d, "setBackgroundColor:", &[black])?;
+        view_mut(emu, d).user_interaction = false;
+        send(emu, container, "insertSubview:aboveSubview:", &[d, under])?;
+        d
+    };
+    let (from_dim, to_dim) = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
+    view_mut(emu, dim).alpha = to_dim;
+    let at = |emu: &mut Emu, v: u64| crate::uiview::view(emu, v).center;
+    let (oc, nc) = (at(emu, ov), at(emu, nv));
+    let (ol, nl, dl) = (send(emu, ov, "layer", &[])?, send(emu, nv, "layer", &[])?, send(emu, dim, "layer", &[])?);
+    if forward {
+        transition(emu, nl, Prop::Position, Val::P([nc[0] + w, nc[1]]), Val::P(nc), timing, duration);
+        transition(emu, ol, Prop::Position, Val::P(oc), Val::P([oc[0] - PARALLAX * w, oc[1]]), timing, duration);
+    } else {
+        transition(emu, ol, Prop::Position, Val::P(oc), Val::P([oc[0] + w, oc[1]]), timing, duration);
+        transition(emu, nl, Prop::Position, Val::P([nc[0] - PARALLAX * w, nc[1]]), Val::P(nc), timing, duration);
+    }
+    transition(emu, dl, Prop::Opacity, Val::N(from_dim), Val::N(to_dim), timing, duration);
+    t.moving = vec![ol, nl, dl];
+    t.dim = dim;
+    Ok(duration)
+}
+
+/// The run-loop callout when a push or pop settles.
+fn finish_fire(emu: &mut Emu) -> Result<()> {
+    let nc = emu.arg(1);
+    match emu.nav.transitions.remove(&nc) {
+        Some(t) => finish(emu, t),
+        None => Ok(()),
+    }
+}
+
+/// The `did` half of a change of controllers.
+fn finish(emu: &mut Emu, t: Transition) -> Result<()> {
+    let Transition { nc, old_top, new_top, removed, added, animated, moving, dim } = t;
+    for l in moving {
+        crate::animation::end_transition(emu, l);
+    }
+    if dim != 0 {
+        send(emu, dim, "removeFromSuperview", &[])?;
+        send(emu, dim, "release", &[])?;
+    }
+    let delegate = nav(emu, nc).delegate;
+    let a = animated as u64;
     // Popped controllers are detached before `viewDidDisappear:` (screens checks
     // `parentViewController == nil` there to tell JS the screen was dismissed).
     for &vc in &removed {
@@ -230,6 +372,7 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
     }
     if old_top != new_top {
         if let Some(ot) = old_top {
+            // Still on the stack (pushed over), or not: either way its view leaves the container.
             let v = send(emu, ot, "view", &[])?;
             send(emu, v, "removeFromSuperview", &[])?;
             send(emu, ot, "viewDidDisappear:", &[a])?;
@@ -248,7 +391,6 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
         send(emu, vc, "didMoveToParentViewController:", &[nc])?;
         emu.nav.moving_to.remove(&vc);
     }
-    view_mut(emu, container).needs_layout = true;
     Ok(())
 }
 
@@ -623,6 +765,230 @@ const NC: &str = "UINavigationController";
 const NI: &str = "UINavigationItem";
 const NB: &str = "UINavigationBar";
 
+// ---- modal presentation ----
+
+/// The controller at the top of `vc`'s containment (its outermost parent).
+fn root_of(emu: &Emu, mut vc: u64) -> u64 {
+    while let Some(&p) = emu.nav.parent.get(&vc) {
+        if p == 0 {
+            break;
+        }
+        vc = p;
+    }
+    vc
+}
+
+/// A plain UIView with this frame.
+fn new_view(emu: &mut Emu, frame: [f64; 4]) -> Result<u64> {
+    let cls = crate::objc::host_class(emu, "UIView")?;
+    let v = send(emu, cls, "alloc", &[])?;
+    for (i, f) in frame.iter().enumerate() {
+        emu.cpu.q[i] = f.to_bits() as u128;
+    }
+    send(emu, v, "initWithFrame:", &[])
+}
+
+/// `-presentViewController:animated:completion:`: UIKit's sequence, the view
+/// shown as the controller's `modalPresentationStyle` says (page sheets by
+/// default on iPhone; full screen covers the screen behind).
+fn present(emu: &mut Emu) -> Result<()> {
+    let (me, vc, animated, completion) = (emu.arg(0), emu.arg(2), emu.arg(3) & 0xff != 0, emu.arg(4));
+    if vc == 0 {
+        return Ok(());
+    }
+    let presenter = root_of(emu, me);
+    if emu.nav.presentations.iter().any(|p| p.presenter == presenter || p.presented == vc) {
+        // As UIKit does: a warning, and nothing presented.
+        eprintln!("Attempt to present a view controller on one which is already presenting");
+        return Ok(());
+    }
+    // UIModalPresentationStyle: 0 full screen, 1 page sheet, 2 form sheet, 3 current context,
+    // 4 custom, 5 over full screen, 6 over current context, 7 popover, -2 automatic.
+    let style = emu.nav.props.get(&(vc, "modalPresentationStyle")).copied().unwrap_or(1) as i64;
+    let sheet_style = matches!(style, 1 | 2 | 7 | -2);
+    let covers = matches!(style, 0 | 3);
+    let pv = send(emu, presenter, "view", &[])?;
+    let window = match crate::uiview::view(emu, pv).window {
+        0 => emu.ui.windows.first().copied().unwrap_or(0),
+        w => w,
+    };
+    let wb = crate::uiview::view(emu, window).bounds;
+    let (w, h) = (wb[2], wb[3]);
+    send(emu, vc, "retain", &[])?;
+    let container = new_view(emu, [0.0, 0.0, w, h])?;
+    send(emu, window, "addSubview:", &[container])?;
+    let vview = send(emu, vc, "view", &[])?;
+    let (dim, sheet) = if sheet_style {
+        let dim = new_view(emu, [0.0, 0.0, w, h])?;
+        let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
+        send(emu, dim, "setBackgroundColor:", &[black])?;
+        send(emu, container, "addSubview:", &[dim])?;
+        let top = crate::orientation::safe_area(emu)[0];
+        let sheet = new_view(emu, [0.0, top, w, h - top])?;
+        view_mut(emu, sheet).clips = true;
+        let l = send(emu, sheet, "layer", &[])?;
+        {
+            let ly = crate::calayer::layer_mut(emu, l);
+            ly.corner_radius = SHEET_RADIUS;
+            ly.continuous_corners = true;
+            ly.masked_corners = 3; // the top two
+        }
+        send(emu, container, "addSubview:", &[sheet])?;
+        set_frame_of(emu, vview, [0.0, 0.0, w, h - top]);
+        send(emu, sheet, "addSubview:", &[vview])?;
+        (dim, sheet)
+    } else {
+        set_frame_of(emu, vview, [0.0, 0.0, w, h]);
+        send(emu, container, "addSubview:", &[vview])?;
+        (0, 0)
+    };
+    let completion = if completion != 0 { crate::libc::copy_block(emu, completion)? } else { 0 };
+    let p = Presentation { presenter, presented: vc, container, dim, sheet, covers, moving: Some(true), completion };
+    emu.nav.presentations.push(p.clone());
+    let a = animated as u64;
+    send(emu, vc, "viewWillAppear:", &[a])?;
+    if covers {
+        send(emu, presenter, "viewWillDisappear:", &[a])?;
+    }
+    if animated {
+        let duration = slide_modal(emu, &p, true, h)?;
+        crate::uikit::after_on_main(emu, duration, present_done_fire, vc)
+    } else {
+        present_done(emu, vc)
+    }
+}
+
+/// Slide a presentation's view (the sheet, or the presented view) up or down
+/// the screen of height `h`, and fade its dimming; returns how long it takes.
+fn slide_modal(emu: &mut Emu, p: &Presentation, up: bool, h: f64) -> Result<f64> {
+    use crate::animation::{Prop, Val, transition, transition_spring};
+    let moving = if p.sheet != 0 { p.sheet } else { send(emu, p.presented, "view", &[])? };
+    let (timing, duration) = transition_spring(if up { PRESENT_SPRING } else { DISMISS_SPRING });
+    let c = view(emu, moving).center;
+    let top = crate::uiview::frame_of(emu, moving)[1];
+    let down = [c[0], c[1] + (h - top)];
+    let l = send(emu, moving, "layer", &[])?;
+    let (from, to) = if up { (down, c) } else { (c, down) };
+    transition(emu, l, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+    if p.dim != 0 {
+        let dl = send(emu, p.dim, "layer", &[])?;
+        let (a, b) = if up { (0.0, 1.0) } else { (1.0, 0.0) };
+        view_mut(emu, p.dim).alpha = b;
+        transition(emu, dl, Prop::Opacity, Val::N(a), Val::N(b), timing, duration);
+    }
+    Ok(duration)
+}
+
+fn present_done_fire(emu: &mut Emu) -> Result<()> {
+    let vc = emu.arg(1);
+    present_done(emu, vc)
+}
+
+/// The presentation is on screen: `did` callbacks, the completion.
+fn present_done(emu: &mut Emu, vc: u64) -> Result<()> {
+    let Some(i) = emu.nav.presentations.iter().position(|p| p.presented == vc && p.moving == Some(true)) else { return Ok(()) };
+    let p = emu.nav.presentations[i].clone();
+    emu.nav.presentations[i].moving = None;
+    emu.nav.presentations[i].completion = 0;
+    let moving = if p.sheet != 0 { p.sheet } else { send(emu, vc, "view", &[])? };
+    for v in [moving, p.dim] {
+        if v != 0 {
+            let l = send(emu, v, "layer", &[])?;
+            crate::animation::end_transition(emu, l);
+        }
+    }
+    send(emu, vc, "viewDidAppear:", &[1])?;
+    if p.covers {
+        // Covered, the screen behind leaves the window (it comes back to be dismissed to).
+        let pv = send(emu, p.presenter, "view", &[])?;
+        send(emu, pv, "removeFromSuperview", &[])?;
+        send(emu, p.presenter, "viewDidDisappear:", &[1])?;
+    }
+    if p.completion != 0 {
+        crate::libsystem::call_block(emu, p.completion, &[])?;
+    }
+    Ok(())
+}
+
+/// `-dismissViewControllerAnimated:completion:`: on the presenting controller
+/// (or one inside it), or on the presented one itself.
+fn dismiss(emu: &mut Emu) -> Result<()> {
+    let (me, animated, completion) = (emu.arg(0), emu.arg(2) & 0xff != 0, emu.arg(3));
+    let root = root_of(emu, me);
+    let Some(i) = emu.nav.presentations.iter().position(|p| p.presenter == root).or_else(|| emu.nav.presentations.iter().position(|p| p.presented == root)) else {
+        return Ok(());
+    };
+    // Anything presented on top of it goes too, at once.
+    while emu.nav.presentations.len() > i + 1 {
+        let top = emu.nav.presentations.last().unwrap().presented;
+        dismiss_now(emu, top, false)?;
+    }
+    let mut p = emu.nav.presentations[i].clone();
+    if p.moving == Some(false) {
+        return Ok(());
+    }
+    if p.moving == Some(true) {
+        present_done(emu, p.presented)?;
+        p = emu.nav.presentations[i].clone();
+    }
+    let completion = if completion != 0 { crate::libc::copy_block(emu, completion)? } else { 0 };
+    emu.nav.presentations[i].moving = Some(false);
+    emu.nav.presentations[i].completion = completion;
+    let a = animated as u64;
+    send(emu, p.presented, "viewWillDisappear:", &[a])?;
+    if p.covers {
+        // The screen behind comes back underneath.
+        let pv = send(emu, p.presenter, "view", &[])?;
+        let window = view(emu, p.container).superview;
+        send(emu, window, "insertSubview:belowSubview:", &[pv, p.container])?;
+        send(emu, p.presenter, "viewWillAppear:", &[a])?;
+    }
+    if animated {
+        let h = view(emu, p.container).bounds[3];
+        let duration = slide_modal(emu, &p, false, h)?;
+        crate::uikit::after_on_main(emu, duration, dismiss_done_fire, p.presented)
+    } else {
+        dismiss_now(emu, p.presented, true)
+    }
+}
+
+fn dismiss_done_fire(emu: &mut Emu) -> Result<()> {
+    let vc = emu.arg(1);
+    dismiss_now(emu, vc, true)
+}
+
+/// Take a presentation away: `did` callbacks, the links, the completion.
+fn dismiss_now(emu: &mut Emu, vc: u64, notify: bool) -> Result<()> {
+    let Some(i) = emu.nav.presentations.iter().position(|p| p.presented == vc) else { return Ok(()) };
+    let p = emu.nav.presentations.remove(i);
+    let moving = if p.sheet != 0 { p.sheet } else { send(emu, vc, "view", &[])? };
+    for v in [moving, p.dim] {
+        if v != 0 {
+            let l = send(emu, v, "layer", &[])?;
+            crate::animation::end_transition(emu, l);
+        }
+    }
+    let vview = send(emu, vc, "view", &[])?;
+    send(emu, vview, "removeFromSuperview", &[])?;
+    send(emu, p.container, "removeFromSuperview", &[])?;
+    for v in [p.dim, p.sheet, p.container] {
+        if v != 0 {
+            send(emu, v, "release", &[])?;
+        }
+    }
+    if notify {
+        send(emu, vc, "viewDidDisappear:", &[1])?;
+        if p.covers {
+            send(emu, p.presenter, "viewDidAppear:", &[1])?;
+        }
+    }
+    if p.completion != 0 {
+        crate::libsystem::call_block(emu, p.completion, &[])?;
+    }
+    send(emu, vc, "release", &[])?;
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // iOS 26 layout regions: the safe area, with or without corner adaptation
     // (pomme's insets have no rounded-corner adjustments, so they are the same).
@@ -705,8 +1071,28 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let m = e.nav.moving_from.contains(&e.arg(0));
         ret(e, m as u64)
     }),
-    (VC, false, "isBeingPresented", |e| ret(e, 0)),
-    (VC, false, "isBeingDismissed", |e| ret(e, 0)),
+    (VC, false, "isBeingPresented", |e| {
+        let vc = e.arg(0);
+        let r = e.nav.presentations.iter().any(|p| p.presented == vc && p.moving == Some(true));
+        ret(e, r as u64)
+    }),
+    (VC, false, "isBeingDismissed", |e| {
+        let vc = e.arg(0);
+        let r = e.nav.presentations.iter().any(|p| p.presented == vc && p.moving == Some(false));
+        ret(e, r as u64)
+    }),
+    (VC, false, "presentViewController:animated:completion:", present),
+    (VC, false, "dismissViewControllerAnimated:completion:", dismiss),
+    (VC, false, "presentedViewController", |e| {
+        let root = root_of(e, e.arg(0));
+        let p = e.nav.presentations.iter().find(|p| p.presenter == root).map_or(0, |p| p.presented);
+        ret(e, p)
+    }),
+    (VC, false, "presentingViewController", |e| {
+        let root = root_of(e, e.arg(0));
+        let p = e.nav.presentations.iter().find(|p| p.presented == root).map_or(0, |p| p.presenter);
+        ret(e, p)
+    }),
     (VC, false, "tabBarController", |e| ret(e, 0)),
     (VC, false, "splitViewController", |e| ret(e, 0)),
     (VC, false, "beginAppearanceTransition:animated:", |_| Ok(())),

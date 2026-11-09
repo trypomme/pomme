@@ -39,6 +39,23 @@ const STRING_PREFIXES: &[&str] = &[
 
 /// String constants whose values aren't their names: (name, value).
 const STRINGS: &[(&str, &str)] = &[
+    // Core Animation's names, as its functions and properties compare them.
+    ("kCAFillModeForwards", "forwards"),
+    ("kCAFillModeBackwards", "backwards"),
+    ("kCAFillModeBoth", "both"),
+    ("kCAFillModeRemoved", "removed"),
+    ("kCAMediaTimingFunctionLinear", "linear"),
+    ("kCAMediaTimingFunctionEaseIn", "easeIn"),
+    ("kCAMediaTimingFunctionEaseOut", "easeOut"),
+    ("kCAMediaTimingFunctionEaseInEaseOut", "easeInEaseOut"),
+    ("kCAMediaTimingFunctionDefault", "default"),
+    ("kCAAnimationLinear", "linear"),
+    ("kCAAnimationDiscrete", "discrete"),
+    ("kCAAnimationPaced", "paced"),
+    ("kCAAnimationCubic", "cubic"),
+    ("kCAAnimationCubicPaced", "cubicPaced"),
+    ("kCACornerCurveCircular", "circular"),
+    ("kCACornerCurveContinuous", "continuous"),
     // ImageIO property keys and dictionaries.
     ("kCGImagePropertyPixelWidth", "PixelWidth"),
     ("kCGImagePropertyPixelHeight", "PixelHeight"),
