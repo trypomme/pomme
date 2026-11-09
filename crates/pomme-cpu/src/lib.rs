@@ -9,6 +9,7 @@
 
 mod block;
 mod branch;
+mod fast;
 mod dp;
 mod fp;
 mod ldst;
@@ -119,8 +120,8 @@ impl Cpu {
             let room = stop - self.steps;
             match blocks.get(self.pc, mem) {
                 Some(b) if b.len() as u64 <= room => {
-                    for &insn in b {
-                        if let Err(exit) = self.exec(insn, mem) {
+                    for op in b {
+                        if let Err(exit) = self.exec_op(op, mem) {
                             return exit;
                         }
                     }

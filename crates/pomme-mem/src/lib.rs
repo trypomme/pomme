@@ -187,54 +187,81 @@ impl Memory {
         Ok(())
     }
 
+    /// `N` bytes at `addr`, as an array: fixed-size accesses compile to plain loads.
+    #[inline(always)]
+    fn read_n<const N: usize>(&self, addr: u64) -> Result<[u8; N], MemError> {
+        let addr = untag(addr);
+        let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
+        let off = (addr - r.base) as usize;
+        match r.data.get(off..off + N) {
+            Some(b) => Ok(b.try_into().unwrap()),
+            None => Err(MemError::Unmapped(addr + N as u64)),
+        }
+    }
+
+    /// Write `N` bytes at `addr` (fixed size: plain stores).
+    #[inline(always)]
+    fn write_n<const N: usize>(&mut self, addr: u64, bytes: [u8; N]) -> Result<(), MemError> {
+        let addr = untag(addr);
+        let i = self.find(addr).ok_or(MemError::Unmapped(addr))?;
+        let r = &mut self.regions[i];
+        let off = (addr - r.base) as usize;
+        let dst: &mut [u8; N] = r.data.get_mut(off..off + N).ok_or(MemError::Unmapped(addr + N as u64))?.try_into().unwrap();
+        *dst = bytes;
+        if r.has_code {
+            self.code_generation += 1;
+        }
+        Ok(())
+    }
+
     #[inline]
     pub fn read_u8(&self, addr: u64) -> Result<u8, MemError> {
-        Ok(self.read(addr, 1)?[0])
+        Ok(self.read_n::<1>(addr)?[0])
     }
 
     #[inline]
     pub fn read_u16(&self, addr: u64) -> Result<u16, MemError> {
-        Ok(u16::from_le_bytes(self.read(addr, 2)?.try_into().unwrap()))
-    }
-
-    #[inline]
-    pub fn read_u128(&self, addr: u64) -> Result<u128, MemError> {
-        Ok(u128::from_le_bytes(self.read(addr, 16)?.try_into().unwrap()))
+        Ok(u16::from_le_bytes(self.read_n(addr)?))
     }
 
     #[inline]
     pub fn read_u32(&self, addr: u64) -> Result<u32, MemError> {
-        Ok(u32::from_le_bytes(self.read(addr, 4)?.try_into().unwrap()))
+        Ok(u32::from_le_bytes(self.read_n(addr)?))
     }
 
     #[inline]
     pub fn read_u64(&self, addr: u64) -> Result<u64, MemError> {
-        Ok(u64::from_le_bytes(self.read(addr, 8)?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(self.read_n(addr)?))
     }
 
     #[inline]
-    pub fn write_u64(&mut self, addr: u64, v: u64) -> Result<(), MemError> {
-        self.write(addr, &v.to_le_bytes())
+    pub fn read_u128(&self, addr: u64) -> Result<u128, MemError> {
+        Ok(u128::from_le_bytes(self.read_n(addr)?))
     }
 
     #[inline]
     pub fn write_u8(&mut self, addr: u64, v: u8) -> Result<(), MemError> {
-        self.write(addr, &[v])
+        self.write_n(addr, [v])
     }
 
     #[inline]
     pub fn write_u16(&mut self, addr: u64, v: u16) -> Result<(), MemError> {
-        self.write(addr, &v.to_le_bytes())
+        self.write_n(addr, v.to_le_bytes())
     }
 
     #[inline]
     pub fn write_u32(&mut self, addr: u64, v: u32) -> Result<(), MemError> {
-        self.write(addr, &v.to_le_bytes())
+        self.write_n(addr, v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_u64(&mut self, addr: u64, v: u64) -> Result<(), MemError> {
+        self.write_n(addr, v.to_le_bytes())
     }
 
     #[inline]
     pub fn write_u128(&mut self, addr: u64, v: u128) -> Result<(), MemError> {
-        self.write(addr, &v.to_le_bytes())
+        self.write_n(addr, v.to_le_bytes())
     }
 
     pub fn read_cstr(&self, addr: u64, max: usize) -> Result<String, MemError> {
