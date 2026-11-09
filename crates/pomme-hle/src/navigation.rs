@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 /// The navigation bar's height (below the status bar).
 pub const BAR_HEIGHT: f64 = 44.0;
+pub const COMPACT_BAR_HEIGHT: f64 = 32.0;
 
 #[derive(Clone, Default)]
 struct Nav {
@@ -40,7 +41,7 @@ struct Item {
 #[derive(Default)]
 pub struct State {
     parent: HashMap<u64, u64>,
-    children: HashMap<u64, Vec<u64>>,
+    pub(crate) children: HashMap<u64, Vec<u64>>,
     navs: HashMap<u64, Nav>,
     /// Container view → its navigation controller.
     containers: HashMap<u64, u64>,
@@ -148,8 +149,8 @@ fn ensure_view(emu: &mut Emu, nc: u64) -> Result<u64> {
     }
     let container = new_object(emu, "UIView")?;
     send(emu, container, "init", &[])?;
-    let d = emu.device;
-    set_frame_of(emu, container, [0.0, 0.0, d.width, d.height]);
+    let (w, h) = crate::orientation::screen(emu);
+    set_frame_of(emu, container, [0.0, 0.0, w, h]);
     let bar = if n.bar != 0 { n.bar } else { new_object(emu, "UINavigationBar")? };
     send(emu, bar, "init", &[])?;
     {
@@ -170,9 +171,10 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     let n = nav(emu, nc);
     let b = view(emu, container).bounds;
     let (w, h) = (b[2], b[3]);
-    let safe_top = emu.device.safe_top;
-    let bar_bottom = safe_top + BAR_HEIGHT;
-    set_frame_of(emu, n.bar, [0.0, safe_top, w, BAR_HEIGHT]);
+    let safe_top = crate::orientation::safe_area(emu)[0];
+    let bar_h = bar_height(emu);
+    let bar_bottom = safe_top + bar_h;
+    set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
     if let Some(&top) = n.stack.last() {
         let v = send(emu, top, "view", &[])?;
@@ -369,6 +371,9 @@ pub struct BarLook {
     pub background: Option<[f64; 4]>,
     /// The hairline along the bar's bottom edge (pre-26).
     pub shadow: Option<[f64; 4]>,
+    /// Where the bar's leading content starts: its left safe-area inset
+    /// (the sensor housing's side in landscape).
+    pub leading: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -449,11 +454,12 @@ pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
     let glass = emu.system.liquid_glass();
     let title = vc_title(emu, top)?;
     let top_item = item_of(emu, top)?;
+    let leading = safe_area(emu, bar)[1];
     let mut back = None;
     if stack.len() >= 2 && !item_state(emu, top_item).hides_back {
         back = Some(if glass {
             // A 44-pt glass circle 16 pt in (with a little slop).
-            Back { label: None, hit: (8.0, 60.0) }
+            Back { label: None, hit: (leading + 8.0, 60.0) }
         } else {
             let prev = stack[stack.len() - 2];
             let prev_item = item_of(emu, prev)?;
@@ -463,7 +469,7 @@ pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
             let own = if p.back_title != 0 { foundation::nsstring(emu, p.back_title)? } else { vc_title(emu, prev)? };
             // The label gets what the centered title leaves; UIKit falls back
             // from the previous title to "Back" to the chevron alone.
-            let room = (bar_width(emu, bar) - text_width(emu, &title, TITLE_WEIGHT)) / 2.0 - BACK_LABEL_X - 8.0;
+            let room = (bar_width(emu, bar) - text_width(emu, &title, TITLE_WEIGHT)) / 2.0 - leading - BACK_LABEL_X - 8.0;
             let candidates: Vec<String> = match mode {
                 2 => vec![],
                 1 => vec!["Back".into()],
@@ -471,11 +477,11 @@ pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
             };
             let label = candidates.into_iter().find(|t| text_width(emu, t, 0.0) <= room);
             let w = BACK_LABEL_X + label.as_ref().map_or(0.0, |l| text_width(emu, l, 0.0)) + 8.0;
-            Back { label, hit: (0.0, w.max(44.0)) }
+            Back { label, hit: (leading, w.max(44.0)) }
         });
     }
     let (background, shadow) = if glass { (None, None) } else { bar_background(emu, top_item) };
-    Ok(Some(BarLook { title, back, glass, background, shadow }))
+    Ok(Some(BarLook { title, back, glass, background, shadow, leading }))
 }
 
 fn bar_width(emu: &mut Emu, bar: u64) -> f64 {
@@ -490,7 +496,8 @@ fn bar_touches_ended(emu: &mut Emu) -> Result<()> {
     let o = crate::uiview::window_origin(emu, bar);
     let (x, y) = (p[0] - o[0], p[1] - o[1]);
     let Some(Back { hit: (bx, bw), .. }) = bar_look(emu, bar)?.and_then(|l| l.back) else { return Ok(()) };
-    if x >= bx && x < bx + bw && (0.0..BAR_HEIGHT).contains(&y) {
+    let h = view(emu, bar).bounds[3];
+    if x >= bx && x < bx + bw && (0.0..h).contains(&y) {
         send(emu, nc, "popViewControllerAnimated:", &[1])?;
     }
     Ok(())
@@ -553,23 +560,31 @@ fn vc_next_responder(emu: &mut Emu) -> Result<()> {
 
 // ---- safe areas ----
 
-/// The safe band of the screen for a view, in window coordinates: below the
-/// status bar (and a visible navigation bar it sits under), above the home indicator.
-pub fn safe_band(emu: &mut Emu, v: u64) -> (f64, f64) {
-    let mut safe_top = emu.device.safe_top;
+/// The safe region of the screen for a view, in window coordinates
+/// `[left, top, right, bottom]`: inside the status bar (and a visible
+/// navigation bar the view sits under), the sensor housing's side in
+/// landscape, and the home indicator.
+pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
+    let (w, h) = crate::orientation::screen(emu);
+    let [mut top, left, bottom, right] = crate::orientation::safe_area(emu);
     // Inside a navigation controller with a visible bar, the bar covers more.
     let mut cur = v;
     while cur != 0 {
         if let Some(&nc) = emu.nav.containers.get(&cur) {
-            let n = nav(emu, nc);
-            if !n.bar_hidden {
-                safe_top += BAR_HEIGHT;
+            if !nav(emu, nc).bar_hidden {
+                top += bar_height(emu);
             }
             break;
         }
         cur = view(emu, cur).superview;
     }
-    (safe_top, emu.device.height - emu.device.safe_bottom)
+    [left, top, w - right, h - bottom]
+}
+
+/// A navigation bar's height: 44 pt, or UIKit's compact 32 pt where the
+/// vertical size class is compact (phones in landscape).
+pub fn bar_height(emu: &Emu) -> f64 {
+    if crate::orientation::size_classes(emu).1 == crate::device::COMPACT { COMPACT_BAR_HEIGHT } else { BAR_HEIGHT }
 }
 
 /// A view's safe-area insets (top, left, bottom, right): the device's, plus a
@@ -577,9 +592,13 @@ pub fn safe_band(emu: &mut Emu, v: u64) -> (f64, f64) {
 pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
     let o = crate::uiview::window_origin(emu, v);
     let b = view(emu, v).bounds;
-    let (top, bottom) = (o[1], o[1] + b[3]);
-    let (safe_top, safe_bottom) = safe_band(emu, v);
-    [(safe_top - top).clamp(0.0, b[3]), 0.0, (bottom - safe_bottom).clamp(0.0, b[3]), 0.0]
+    let [l, t, r, btm] = safe_rect(emu, v);
+    [
+        (t - o[1]).clamp(0.0, b[3]),
+        (l - o[0]).clamp(0.0, b[2]),
+        (o[1] + b[3] - btm).clamp(0.0, b[3]),
+        (o[0] + b[2] - r).clamp(0.0, b[2]),
+    ]
 }
 
 const VC: &str = "UIViewController";
@@ -617,8 +636,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("UIView", false, "edgeInsetsForLayoutRegion:", crate::uiview::safe_area_insets),
     ("UIView", false, "nextResponder", view_next_responder),
-    // Portrait only: pomme's screen doesn't rotate.
-    ("UIApplication", false, "supportedInterfaceOrientationsForWindow:", |e| ret(e, 2)),
     (VC, false, "nextResponder", vc_next_responder),
     // iOS 26 scroll edge effects (the blur under bars): styles are tokens; no
     // effect is drawn, so scroll views report none (messages to nil are no-ops).
@@ -701,11 +718,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (VC, false, "setAdditionalSafeAreaInsets:", |_| Ok(())),
     (VC, false, "setPreferredContentSize:", |_| Ok(())),
     (VC, false, "preferredStatusBarUpdateAnimation", |e| ret(e, 1)), // fade
-    (VC, false, "supportedInterfaceOrientations", |e| ret(e, 2)), // portrait
     (VC, false, "childViewControllerForHomeIndicatorAutoHidden", |e| ret(e, 0)),
     (VC, false, "prefersHomeIndicatorAutoHidden", |e| ret(e, 0)),
     (VC, false, "setNeedsUpdateOfHomeIndicatorAutoHidden", |_| Ok(())),
-    (VC, false, "setNeedsUpdateOfSupportedInterfaceOrientations", |_| Ok(())),
     (VC, false, "endAppearanceTransition", |_| Ok(())),
     (NC, false, "init", nc_init),
     (NC, false, "initWithNibName:bundle:", nc_init),

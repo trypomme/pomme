@@ -306,15 +306,7 @@ fn shared_session(emu: &mut Emu) -> Result<()> {
     ret(emu, emu.net.shared)
 }
 
-/// `_Block_copy` from host code.
-fn copy_block(emu: &mut Emu, b: u64) -> Result<u64> {
-    let saved = emu.cpu.x[0];
-    emu.cpu.x[0] = b;
-    crate::libc::block_copy(emu)?;
-    let c = emu.cpu.x[0];
-    emu.cpu.x[0] = saved;
-    Ok(c)
-}
+use crate::libc::copy_block;
 
 fn new_task(emu: &mut Emu, session: u64, request: u64, completion: u64) -> Result<u64> {
     let t = new_object(emu, "NSURLSessionDataTask")?;

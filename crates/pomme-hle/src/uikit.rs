@@ -35,6 +35,13 @@ pub struct State {
     pub delayed_performs: Vec<u64>,
     /// The URL the app is launched with (a deep link), as iOS passes it.
     pub launch_url: Option<String>,
+    /// How the interface is turned, and how the device is held (see orientation.rs).
+    pub orientation: crate::device::Orientation,
+    pub device_orientation: crate::device::Orientation,
+    /// Scripted turns of the phone: (virtual ns, how it's then held).
+    pub rotations: Vec<(u64, crate::device::Orientation)>,
+    /// The interface turn in progress, if any.
+    pub transition: crate::orientation::Transition,
 }
 
 /// The launch URL as an NSURL, if there is one.
@@ -81,6 +88,9 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     let app = send(emu, app_cls, "alloc", &[])?;
     let app = send(emu, app, "init", &[])?;
     emu.ui.app = app;
+    // The interface starts as the phone is held, if Info.plist allows.
+    let held = emu.ui.device_orientation;
+    crate::orientation::launch(emu, held);
 
     if let Some(name) = delegate {
         let cls = class_named(emu, &name)?;
@@ -111,6 +121,8 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     let mut roots = Vec::new();
     if scene_delegate_class(emu).is_none() {
         roots.extend(window_roots(emu));
+        // The root view controllers have their say on the orientation before the first frame.
+        crate::orientation::settle(emu, false)?;
         for &vc in &roots {
             crate::navigation::appearance(emu, vc, "viewWillAppear:", false)?;
         }
@@ -120,7 +132,8 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     }
     call_if_implemented(emu, d, "applicationDidBecomeActive:", &[app])?;
     foundation::post_named(emu, "UIApplicationDidBecomeActiveNotification", app)?;
-    // The first frame is on screen: the root view controllers have appeared.
+    // The first frame is laid out and on screen: the root view controllers have appeared.
+    crate::uiview::layout_windows(emu)?;
     for vc in roots {
         crate::navigation::appearance(emu, vc, "viewDidAppear:", false)?;
     }
@@ -145,7 +158,7 @@ fn scene_delegate_class(emu: &Emu) -> Option<String> {
 }
 
 /// The root view controllers of the visible windows.
-fn window_roots(emu: &mut Emu) -> Vec<u64> {
+pub(crate) fn window_roots(emu: &mut Emu) -> Vec<u64> {
     let windows = emu.ui.windows.clone();
     let mut roots = Vec::new();
     for w in windows {
@@ -192,6 +205,7 @@ fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<Vec<u64>> {
         send(emu, window, "makeKeyAndVisible", &[])?;
     }
     let roots = window_roots(emu);
+    crate::orientation::settle(emu, false)?;
     for &vc in &roots {
         crate::navigation::appearance(emu, vc, "viewWillAppear:", false)?;
     }
@@ -229,6 +243,7 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     crate::touch::schedule_script(emu)?;
     crate::textinput::schedule_script(emu)?;
     crate::clipboard::schedule_script(emu)?;
+    crate::orientation::schedule_script(emu)?;
     crate::host::install(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
@@ -313,11 +328,6 @@ fn set_app_delegate(emu: &mut Emu) -> Result<()> {
 
 fn ret_zero(emu: &mut Emu) -> Result<()> {
     emu.ret(0);
-    Ok(())
-}
-
-fn ret_one(emu: &mut Emu) -> Result<()> {
-    emu.ret(1);
     Ok(())
 }
 
@@ -406,7 +416,7 @@ fn empty_set(emu: &mut Emu) -> Result<()> {
 }
 
 fn interface_orientation(emu: &mut Emu) -> Result<()> {
-    emu.ret(1); // UIInterfaceOrientationPortrait
+    emu.ret(crate::orientation::current(emu) as u64);
     Ok(())
 }
 
@@ -437,8 +447,8 @@ pub fn ret_f64(emu: &mut Emu, v: f64) {
 }
 
 fn screen_bounds(emu: &mut Emu) -> Result<()> {
-    let d = emu.device;
-    ret_rect(emu, [0.0, 0.0, d.width, d.height]);
+    let (w, h) = crate::orientation::screen(emu);
+    ret_rect(emu, [0.0, 0.0, w, h]);
     Ok(())
 }
 
@@ -460,11 +470,16 @@ fn screen_fps(emu: &mut Emu) -> Result<()> {
 
 // ---- UIDevice ----
 
-fn current_device(emu: &mut Emu) -> Result<()> {
+pub(crate) fn current_device_obj(emu: &mut Emu) -> Result<u64> {
     if emu.ui.views.device == 0 {
         emu.ui.views.device = new_object(emu, "UIDevice")?;
     }
-    emu.ret(emu.ui.views.device);
+    Ok(emu.ui.views.device)
+}
+
+fn current_device(emu: &mut Emu) -> Result<()> {
+    let d = current_device_obj(emu)?;
+    emu.ret(d);
     Ok(())
 }
 
@@ -674,11 +689,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
     ("UIApplication", false, "statusBarFrame", |e| {
-        let d = e.device;
-        ret_rect(e, [0.0, 0.0, d.width, d.safe_top]);
+        let f = crate::orientation::status_bar_frame(e);
+        ret_rect(e, f);
         Ok(())
     }),
-    ("UIApplication", false, "isStatusBarHidden", ret_zero),
     ("UIApplication", false, "statusBarStyle", ret_zero),
     ("UIApplication", false, "setStatusBarStyle:", noop),
     ("UIApplication", false, "setStatusBarStyle:animated:", noop),
@@ -710,11 +724,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIStatusBarManager", false, "statusBarFrame", |e| {
-        let d = e.device;
-        ret_rect(e, [0.0, 0.0, d.width, d.safe_top]);
+        let f = crate::orientation::status_bar_frame(e);
+        ret_rect(e, f);
         Ok(())
     }),
-    ("UIStatusBarManager", false, "isStatusBarHidden", ret_zero),
     ("UIStatusBarManager", false, "statusBarStyle", ret_zero),
     ("UIWindowScene", false, "windows", scene_windows),
     ("UIWindowScene", false, "interfaceOrientation", interface_orientation),
@@ -757,9 +770,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIDevice", false, "model", |e| device_string(e, "iPhone")),
     ("UIDevice", false, "name", |e| device_string(e, "pomme")),
     ("UIDevice", false, "userInterfaceIdiom", ret_zero), // phone
-    ("UIDevice", false, "orientation", ret_one), // portrait
     ("UIDevice", false, "isBatteryMonitoringEnabled", ret_zero),
-    ("UIDevice", false, "beginGeneratingDeviceOrientationNotifications", noop),
     ("UIDevice", false, "identifierForVendor", ret_zero),
     ("UIDevice", false, "self", ret_self),
 ];

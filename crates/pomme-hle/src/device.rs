@@ -3,12 +3,20 @@
 //! or none on home-button phones), the screen's corner radius and the
 //! keyboard's height.
 //!
+//! Everything that depends on how the phone is held is asked of the device
+//! with an [`Orientation`]: the screen's size, the safe area, the status bar,
+//! the keyboard's height and the size classes.
+//!
 //! Sources: screen sizes and scales are from Xcode 26's simulator device
 //! profiles (`/Library/Developer/CoreSimulator/Profiles/DeviceTypes`), notch
-//! sizes from their sensor-housing art. The iPhone 17's safe area, Dynamic
-//! Island and keyboard were measured in the iOS 26 Simulator; the other safe
-//! areas, islands and corner radii are Apple's published values. Keyboard
-//! heights elsewhere are the iPhone 17's keys plus the device's bottom inset.
+//! sizes from their sensor-housing art. Measured in the iOS 26 Simulator on
+//! the iPhone 17 (island) and 16e (notch), portrait and landscape: the safe
+//! areas, status bars, keyboards and size classes, from which the rules below
+//! generalize (landscape: the sides inset by the portrait top, 20 pt at the
+//! bottom, no status bar; the same keyboard on both). The other portrait safe
+//! areas, islands and corner radii are Apple's published values. Max-size
+//! phones' regular width in landscape is UIKit's documented rule (not
+//! measured).
 
 /// The sensor housing at the top of the screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,39 +30,151 @@ pub enum Cutout {
     Island { top: f64, width: f64, height: f64 },
 }
 
+/// How the interface is turned: UIInterfaceOrientation's values. (A device
+/// turned to UIDeviceOrientationLandscapeLeft shows LandscapeRight: the
+/// enums mirror each other with the same numbers.)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Orientation {
+    #[default]
+    Portrait = 1,
+    PortraitUpsideDown = 2,
+    /// Turned counter-clockwise: the sensor housing on the left.
+    LandscapeRight = 3,
+    /// Turned clockwise: the sensor housing on the right.
+    LandscapeLeft = 4,
+}
+
+impl Orientation {
+    pub fn is_landscape(self) -> bool {
+        matches!(self, Orientation::LandscapeLeft | Orientation::LandscapeRight)
+    }
+
+    pub fn from_raw(v: u64) -> Option<Orientation> {
+        Some(match v {
+            1 => Orientation::Portrait,
+            2 => Orientation::PortraitUpsideDown,
+            3 => Orientation::LandscapeRight,
+            4 => Orientation::LandscapeLeft,
+            _ => return None,
+        })
+    }
+
+    /// Its bit in UIInterfaceOrientationMask.
+    pub fn mask(self) -> u64 {
+        1 << self as u64
+    }
+
+    /// The affine map `[a, b, c, d, tx, ty]` (x' = a·x + c·y + tx,
+    /// y' = b·x + d·y + ty) from the device's native portrait frame of size
+    /// `w`×`h` into the interface's frame. Measured: in LandscapeRight the
+    /// Simulator's portrait screenshot holds app point (x, y) at native
+    /// (w − y, x), so the island (native top) is on the interface's left.
+    pub fn from_portrait(self, w: f64, h: f64) -> [f64; 6] {
+        match self {
+            Orientation::Portrait => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            Orientation::LandscapeRight => [0.0, -1.0, 1.0, 0.0, 0.0, w],
+            Orientation::LandscapeLeft => [0.0, 1.0, -1.0, 0.0, h, 0.0],
+            Orientation::PortraitUpsideDown => [-1.0, 0.0, 0.0, -1.0, w, h],
+        }
+    }
+}
+
+impl std::str::FromStr for Orientation {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        Ok(match s {
+            "portrait" => Orientation::Portrait,
+            "portrait-upside-down" | "upside-down" => Orientation::PortraitUpsideDown,
+            "landscape-left" => Orientation::LandscapeLeft,
+            // The usual way: the phone turned to the left, the housing on the left.
+            "landscape" | "landscape-right" => Orientation::LandscapeRight,
+            o => return Err(format!("{o}: expected portrait, landscape (= landscape-right), landscape-left or portrait-upside-down")),
+        })
+    }
+}
+
+/// UIUserInterfaceSizeClass
+pub const COMPACT: u64 = 1;
+pub const REGULAR: u64 = 2;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Device {
     /// What `--device` takes: `iphone-17-pro-max`.
     pub id: &'static str,
     pub name: &'static str,
-    /// The screen in points, and pixels per point.
+    /// The screen in points as the phone is made (portrait), and pixels per point.
     pub width: f64,
     pub height: f64,
     pub scale: f64,
     /// Portrait safe area: the status bar / sensor housing, and the home indicator.
     pub safe_top: f64,
     pub safe_bottom: f64,
+    /// The portrait status bar's height (shorter than the safe area's top on island phones).
+    pub status_bar: f64,
     pub cutout: Cutout,
     /// The display's rounded corners (0: square).
     pub corner_radius: f64,
     pub home_button: bool,
 }
 
-/// The keys of the iOS 26 keyboard (portrait, English) above the home
-/// indicator, with and without the predictive bar: measured on an iPhone 17
-/// (335 and 304 pt overall, 34 pt of which is the bottom inset).
-const KEYS_WITH_PREDICTIONS: f64 = 301.0;
-const KEYS_WITHOUT_PREDICTIONS: f64 = 270.0;
+/// The keys of the iOS 26 keyboard (English) above the bottom inset, with
+/// and without the predictive bar, portrait and landscape: measured on the
+/// iPhone 17 and 16e (335 / 304 pt overall in portrait with the 34-pt inset;
+/// 209 / 164 in landscape with the 20-pt one). (Portrait without predictions
+/// was 304 for Flutter's field and 308 for a plain UITextField with
+/// autocorrection and spell checking off: another trait is involved.)
+const KEYS: [[f64; 2]; 2] = [[301.0, 270.0], [189.0, 144.0]];
+
+/// The bottom inset in landscape on phones with a home indicator.
+const LANDSCAPE_BOTTOM: f64 = 20.0;
 
 impl Device {
-    /// The keyboard's height on this device.
-    pub fn keyboard_height(&self, predictive: bool) -> f64 {
-        (if predictive { KEYS_WITH_PREDICTIONS } else { KEYS_WITHOUT_PREDICTIONS }) + self.safe_bottom
+    /// The screen's size (points) held this way.
+    pub fn screen(&self, o: Orientation) -> (f64, f64) {
+        if o.is_landscape() { (self.height, self.width) } else { (self.width, self.height) }
     }
 
-    /// Safe-area insets as UIEdgeInsets (top, left, bottom, right).
-    pub fn safe_area(&self) -> [f64; 4] {
-        [self.safe_top, 0.0, self.safe_bottom, 0.0]
+    /// Safe-area insets (top, left, bottom, right) held this way.
+    pub fn safe_area(&self, o: Orientation) -> [f64; 4] {
+        match o {
+            Orientation::Portrait => [self.safe_top, 0.0, self.safe_bottom, 0.0],
+            // Face ID phones don't turn upside down; home-button phones keep a status bar.
+            Orientation::PortraitUpsideDown => [self.safe_top, 0.0, self.safe_bottom, 0.0],
+            _ if self.home_button => [0.0; 4],
+            _ => [0.0, self.safe_top, LANDSCAPE_BOTTOM, self.safe_top],
+        }
+    }
+
+    /// The status bar's height held this way (iPhones hide it in landscape).
+    pub fn status_bar(&self, o: Orientation) -> f64 {
+        if o.is_landscape() { 0.0 } else { self.status_bar }
+    }
+
+    /// The keyboard's height held this way.
+    pub fn keyboard_height(&self, o: Orientation, predictive: bool) -> f64 {
+        let keys = KEYS[o.is_landscape() as usize][!predictive as usize];
+        keys + self.safe_area(o)[2]
+    }
+
+    /// (horizontal, vertical) size classes held this way: compact width
+    /// except Max-size phones (414 pt and wider) in landscape; compact height
+    /// in landscape.
+    pub fn size_classes(&self, o: Orientation) -> (u64, u64) {
+        if o.is_landscape() {
+            (if self.width >= 414.0 { REGULAR } else { COMPACT }, COMPACT)
+        } else {
+            (COMPACT, REGULAR)
+        }
+    }
+
+    /// Orientations the hardware turns to: Face ID phones never turn upside down.
+    pub fn orientations(&self) -> u64 {
+        let all = [Orientation::Portrait, Orientation::LandscapeLeft, Orientation::LandscapeRight];
+        let mut m = all.iter().fold(0, |m, o| m | o.mask());
+        if self.home_button {
+            m |= Orientation::PortraitUpsideDown.mask();
+        }
+        m
     }
 }
 
@@ -63,11 +183,14 @@ const fn island(top: f64) -> Cutout {
 }
 
 const fn phone(id: &'static str, name: &'static str, size: (f64, f64), scale: f64, safe: (f64, f64), cutout: Cutout, corner_radius: f64) -> Device {
-    Device { id, name, width: size.0, height: size.1, scale, safe_top: safe.0, safe_bottom: safe.1, cutout, corner_radius, home_button: false }
+    // The status bar fills the safe area's top on notch phones; on island
+    // phones it's 54 pt (measured on the iPhone 17).
+    let status_bar = if matches!(cutout, Cutout::Island { .. }) { 54.0 } else { safe.0 };
+    Device { id, name, width: size.0, height: size.1, scale, safe_top: safe.0, safe_bottom: safe.1, status_bar, cutout, corner_radius, home_button: false }
 }
 
 const fn home_button(id: &'static str, name: &'static str, size: (f64, f64), scale: f64) -> Device {
-    Device { id, name, width: size.0, height: size.1, scale, safe_top: 20.0, safe_bottom: 0.0, cutout: Cutout::None, corner_radius: 0.0, home_button: true }
+    Device { id, name, width: size.0, height: size.1, scale, safe_top: 20.0, safe_bottom: 0.0, status_bar: 20.0, cutout: Cutout::None, corner_radius: 0.0, home_button: true }
 }
 
 const NOTCH_X: Cutout = Cutout::Notch { width: 223.0, height: 30.0 };
@@ -143,12 +266,59 @@ mod tests {
 
     #[test]
     fn keyboard_heights_match_the_simulator() {
-        // The iPhone 17's, measured: 335 pt with the predictive bar, 304 without.
-        let d = find("iphone-17").unwrap();
-        assert_eq!(d.keyboard_height(true), 335.0);
-        assert_eq!(d.keyboard_height(false), 304.0);
+        use Orientation::*;
+        // The iPhone 17's and 16e's, measured: 335 pt with the predictive bar, 304 without;
+        // in landscape 209 and 164.
+        for id in ["iphone-17", "iphone-16e"] {
+            let d = find(id).unwrap();
+            assert_eq!(d.keyboard_height(Portrait, true), 335.0);
+            assert_eq!(d.keyboard_height(Portrait, false), 304.0);
+            assert_eq!(d.keyboard_height(LandscapeRight, true), 209.0);
+            assert_eq!(d.keyboard_height(LandscapeLeft, false), 164.0);
+        }
         // No home indicator: no bottom inset under the keys.
-        assert_eq!(find("iphone-se").unwrap().keyboard_height(true), 301.0);
+        assert_eq!(find("iphone-se").unwrap().keyboard_height(Portrait, true), 301.0);
+    }
+
+    #[test]
+    fn landscape_matches_the_simulator() {
+        use Orientation::*;
+        let d = find("iphone-17").unwrap();
+        assert_eq!(d.screen(LandscapeRight), (874.0, 402.0));
+        assert_eq!(d.safe_area(LandscapeRight), [0.0, 62.0, 20.0, 62.0]);
+        assert_eq!(d.safe_area(LandscapeLeft), [0.0, 62.0, 20.0, 62.0]);
+        assert_eq!(d.status_bar(Portrait), 54.0);
+        assert_eq!(d.status_bar(LandscapeLeft), 0.0);
+        assert_eq!(d.size_classes(Portrait), (COMPACT, REGULAR));
+        assert_eq!(d.size_classes(LandscapeLeft), (COMPACT, COMPACT));
+        let e = find("iphone-16e").unwrap();
+        assert_eq!(e.safe_area(LandscapeLeft), [0.0, 47.0, 20.0, 47.0]);
+        assert_eq!(e.status_bar(Portrait), 47.0);
+        assert_eq!(find("iphone-17-pro-max").unwrap().size_classes(LandscapeRight), (REGULAR, COMPACT));
+        // Face ID phones don't turn upside down; home-button ones do.
+        assert_eq!(d.orientations() & PortraitUpsideDown.mask(), 0);
+        assert_ne!(find("iphone-se").unwrap().orientations() & PortraitUpsideDown.mask(), 0);
+    }
+
+    #[test]
+    fn portrait_frame_maps_as_the_simulator_shows() {
+        use Orientation::*;
+        let apply = |m: [f64; 6], x: f64, y: f64| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+        let (w, h) = (402.0, 874.0);
+        // The island (native top centre) sits on the left in LandscapeRight,
+        // the right in LandscapeLeft, the bottom upside down.
+        assert_eq!(apply(LandscapeRight.from_portrait(w, h), w / 2.0, 0.0), (0.0, w / 2.0));
+        assert_eq!(apply(LandscapeLeft.from_portrait(w, h), w / 2.0, 0.0), (h, w / 2.0));
+        assert_eq!(apply(PortraitUpsideDown.from_portrait(w, h), w / 2.0, 0.0), (w / 2.0, h));
+        // The native frame covers the interface frame exactly.
+        for o in [Portrait, LandscapeRight, LandscapeLeft, PortraitUpsideDown] {
+            let (iw, ih) = if o.is_landscape() { (h, w) } else { (w, h) };
+            let m = o.from_portrait(w, h);
+            for (x, y) in [(0.0, 0.0), (w, h)] {
+                let (px, py) = apply(m, x, y);
+                assert!((0.0..=iw).contains(&px) && (0.0..=ih).contains(&py), "{o:?}");
+            }
+        }
     }
 
     #[test]

@@ -885,8 +885,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 // ---- the keyboard ----
 
 /// The keyboard's frame in screen coordinates while shown (and below the screen while hidden).
-pub fn keyboard_frame(device: &crate::device::Device, height: f64, shown: bool) -> [f64; 4] {
-    let (w, h) = (device.width, device.height);
+pub fn keyboard_frame(screen: (f64, f64), height: f64, shown: bool) -> [f64; 4] {
+    let (w, h) = screen;
     let y = if shown { h - height } else { h };
     [0.0, y, w, height]
 }
@@ -904,12 +904,17 @@ fn trait_value(emu: &mut Emu, r: u64, name: &str) -> Result<u64> {
 fn keyboard_height_for(emu: &mut Emu, r: u64) -> Result<f64> {
     const NO: u64 = 1;
     let off = trait_value(emu, r, "autocorrectionType")? == NO && trait_value(emu, r, "spellCheckingType")? == NO;
-    Ok(emu.device.keyboard_height(!off))
+    Ok(crate::orientation::keyboard_height(emu, !off))
 }
 
+/// The keyboard notifications' userInfo, with the keys iOS 26 sends (measured).
 fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
     let begin = crate::nsvalue::new_rect_value(emu, from)?;
     let end = crate::nsvalue::new_rect_value(emu, to)?;
+    let center = |r: [f64; 4]| [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
+    let center_begin = crate::nsvalue::new_point_value(emu, center(from))?;
+    let center_end = crate::nsvalue::new_point_value(emu, center(to))?;
+    let bounds = crate::nsvalue::new_rect_value(emu, [0.0, 0.0, to[2], to[3]])?;
     let duration = foundation::new_number_f64(emu, KEYBOARD_DURATION)?;
     let curve = foundation::new_number_i64(emu, KEYBOARD_CURVE)?;
     let local = foundation::new_number_i64(emu, 1)?;
@@ -917,6 +922,9 @@ fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
     for (k, v) in [
         ("UIKeyboardFrameBeginUserInfoKey", begin),
         ("UIKeyboardFrameEndUserInfoKey", end),
+        ("UIKeyboardCenterBeginUserInfoKey", center_begin),
+        ("UIKeyboardCenterEndUserInfoKey", center_end),
+        ("UIKeyboardBoundsUserInfoKey", bounds),
         ("UIKeyboardAnimationDurationUserInfoKey", duration),
         ("UIKeyboardAnimationCurveUserInfoKey", curve),
         ("UIKeyboardIsLocalUserInfoKey", local),
@@ -929,8 +937,8 @@ fn keyboard_info(emu: &mut Emu, from: [f64; 4], to: [f64; 4]) -> Result<u64> {
 
 fn post_keyboard(emu: &mut Emu, names: &[&str], shown: bool) -> Result<()> {
     let h = emu.input.keyboard_height;
-    let d = emu.device;
-    let info = keyboard_info(emu, keyboard_frame(d, h, !shown), keyboard_frame(d, h, shown))?;
+    let screen = crate::orientation::screen(emu);
+    let info = keyboard_info(emu, keyboard_frame(screen, h, !shown), keyboard_frame(screen, h, shown))?;
     for n in names {
         foundation::post_named_info(emu, n, 0, info)?;
     }
@@ -998,6 +1006,24 @@ pub fn show_keyboard(emu: &mut Emu) -> Result<()> {
     post_keyboard(emu, &["UIKeyboardWillChangeFrameNotification", "UIKeyboardWillShowNotification"], true)?;
     crate::uikit::after_on_main(emu, KEYBOARD_DURATION, did_show, 0)?;
     crate::host::frame_changed(emu);
+    Ok(())
+}
+
+/// The interface turned with the keyboard up: it comes back at the new
+/// orientation's height, across the new screen, without sliding.
+pub fn keyboard_reoriented(emu: &mut Emu, old_screen: (f64, f64)) -> Result<()> {
+    if !emu.input.keyboard_shown {
+        return Ok(());
+    }
+    let old = keyboard_frame(old_screen, emu.input.keyboard_height, true);
+    let fr = emu.input.first_responder;
+    emu.input.keyboard_height = keyboard_height_for(emu, fr)?;
+    emu.input.slide = None;
+    let new = keyboard_frame(crate::orientation::screen(emu), emu.input.keyboard_height, true);
+    let info = keyboard_info(emu, old, new)?;
+    for n in ["UIKeyboardWillChangeFrameNotification", "UIKeyboardWillShowNotification", "UIKeyboardDidChangeFrameNotification", "UIKeyboardDidShowNotification"] {
+        foundation::post_named_info(emu, n, 0, info)?;
+    }
     Ok(())
 }
 
@@ -1110,9 +1136,13 @@ mod tests {
 
     #[test]
     fn keyboard_sits_on_the_bottom_edge() {
+        use crate::device::Orientation::*;
         let d = crate::device::default();
-        let shown = keyboard_frame(d, d.keyboard_height(true), true);
-        assert_eq!(shown[1] + shown[3], d.height);
-        assert_eq!(keyboard_frame(d, d.keyboard_height(true), false)[1], d.height);
+        for o in [Portrait, LandscapeLeft] {
+            let (w, h) = d.screen(o);
+            let shown = keyboard_frame((w, h), d.keyboard_height(o, true), true);
+            assert_eq!((shown[1] + shown[3], shown[2]), (h, w));
+            assert_eq!(keyboard_frame((w, h), d.keyboard_height(o, true), false)[1], h);
+        }
     }
 }

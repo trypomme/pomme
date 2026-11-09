@@ -147,6 +147,8 @@ pub struct State {
     added: HashMap<u64, Vec<u64>>,
     /// The safe-area insets each interested view was last told about.
     told: HashMap<u64, [f64; 4]>,
+    /// The layout margins (safe area included) each interested view was last told about.
+    told_margins: HashMap<u64, [f64; 4]>,
     /// Classes → whether they (or their superclasses) implement the callbacks in guest code.
     listens: HashMap<(u64, &'static str), bool>,
 }
@@ -336,15 +338,18 @@ fn guide_insets_x(emu: &Emu, g: Guide) -> (f64, f64) {
 /// A guide's rect along one axis from its owner's (min, size) there.
 fn guide_axis(emu: &mut Emu, g: Guide, axis: usize, (min, size): (f64, f64)) -> Option<(f64, f64)> {
     let (mut lo, mut hi) = (min, min + size);
-    if axis == 1 && g.kind != GuideKind::Custom {
-        let (top, bottom) = crate::navigation::safe_band(emu, g.owner);
+    // The keyboard guide spans its owner's width, as the keyboard spans the screen's.
+    if g.kind != GuideKind::Custom && !(g.kind == GuideKind::Keyboard && axis == 0) {
+        let safe = crate::navigation::safe_rect(emu, g.owner);
+        let (top, bottom) = (safe[axis], safe[axis + 2]);
         if g.kind == GuideKind::Keyboard {
             // While it's down, the guide rests on the safe area's bottom (or,
             // with usesBottomSafeArea = NO, the screen's).
-            let rest = if crate::objc::bag_get(emu, g.owner, "pomme.keyboardGuideIgnoresSafeArea").is_some_and(|x| x != 0) { emu.device.height } else { bottom };
+            let (_, screen_h) = crate::orientation::screen(emu);
+            let rest = if crate::objc::bag_get(emu, g.owner, "pomme.keyboardGuideIgnoresSafeArea").is_some_and(|x| x != 0) { screen_h } else { bottom };
             // Where the (possibly sliding) keyboard's top is, never below the resting place.
-            let kb_top = (emu.device.height - crate::textinput::keyboard_visible(emu)).min(rest);
-            return Some((kb_top, emu.device.height - kb_top));
+            let kb_top = (screen_h - crate::textinput::keyboard_visible(emu)).min(rest);
+            return Some((kb_top, screen_h - kb_top));
         }
         lo = lo.max(top);
         hi = hi.min(bottom).max(lo);
@@ -553,16 +558,48 @@ fn listens(emu: &mut Emu, obj: u64, sel: &'static str) -> Result<bool> {
     Ok(b)
 }
 
-/// The safe-area callbacks: views (and view controllers, for their root
-/// views) that implement them hear when their insets change, including
-/// the first time they're in a window.
+/// The safe-area and margin callbacks: views (and view controllers, for
+/// their root views) that implement them hear when their insets or layout
+/// margins change, including the first time they're in a window. Margins
+/// first, as UIKit does when the interface turns.
 pub fn safe_area_changes(emu: &mut Emu) -> Result<bool> {
-    let mut todo: Vec<u64> = emu.ui.windows.clone();
-    let mut any = false;
+    // Every view in the windows, parents before children.
+    let mut order = Vec::new();
+    let mut todo: Vec<u64> = emu.ui.windows.iter().rev().copied().collect();
     while let Some(v) = todo.pop() {
-        let vw = view(emu, v);
-        todo.extend(vw.subviews.iter().rev());
-        let vc = emu.ui.views.vc_view.iter().find(|&(_, &x)| x == v).map(|(&vc, _)| vc);
+        order.push(v);
+        todo.extend(view(emu, v).subviews.iter().rev());
+    }
+    let mut any = false;
+    let vc_of = |emu: &Emu, v: u64| emu.ui.views.vc_view.iter().find(|&(_, &x)| x == v).map(|(&vc, _)| vc);
+    for &v in &order {
+        let vc = vc_of(emu, v);
+        let margins_view = listens(emu, v, "layoutMarginsDidChange")?;
+        let margins_vc = match vc {
+            Some(c) => listens(emu, c, "viewLayoutMarginsDidChange")?,
+            None => false,
+        };
+        if !(margins_view || margins_vc) {
+            continue;
+        }
+        let insets = view_safe_area(emu, v);
+        let m = margins_of(emu, v);
+        let margins = [m[0] + insets[0], m[1] + insets[1], m[2] + insets[2], m[3] + insets[3]];
+        // The first report is of margins that were always there: UIKit doesn't call it a change.
+        if emu.layout.told_margins.insert(v, margins).is_some_and(|o| o != margins) {
+            crate::uiview::view_mut(emu, v).needs_layout = true;
+            any = true;
+            if margins_view {
+                send(emu, v, "layoutMarginsDidChange", &[])?;
+            }
+            if let (Some(c), true) = (vc, margins_vc) {
+                send(emu, c, "viewLayoutMarginsDidChange", &[])?;
+            }
+        }
+    }
+    // Safe areas: subviews hear before their view controller (measured).
+    for &v in order.iter().rev() {
+        let vc = vc_of(emu, v);
         let wants_view = listens(emu, v, "safeAreaInsetsDidChange")?;
         let wants_vc = match vc {
             Some(c) => listens(emu, c, "viewSafeAreaInsetsDidChange")?,
@@ -571,7 +608,7 @@ pub fn safe_area_changes(emu: &mut Emu) -> Result<bool> {
         if !wants_view && !wants_vc {
             continue;
         }
-        let insets = if emu.ui.windows.contains(&v) { emu.device.safe_area() } else { crate::navigation::safe_area(emu, v) };
+        let insets = view_safe_area(emu, v);
         if emu.layout.told.get(&v).copied().unwrap_or([0.0; 4]) == insets {
             continue;
         }
@@ -581,13 +618,16 @@ pub fn safe_area_changes(emu: &mut Emu) -> Result<bool> {
         if wants_view {
             send(emu, v, "safeAreaInsetsDidChange", &[])?;
         }
-        if let Some(c) = vc
-            && wants_vc
-        {
+        if let (Some(c), true) = (vc, wants_vc) {
             send(emu, c, "viewSafeAreaInsetsDidChange", &[])?;
         }
     }
     Ok(any)
+}
+
+/// A view's safe-area insets: the screen's for a window, else as they overlap it.
+pub(crate) fn view_safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
+    if emu.ui.windows.contains(&v) { crate::orientation::safe_area(emu) } else { crate::navigation::safe_area(emu, v) }
 }
 
 // ---- host methods ----
@@ -667,7 +707,7 @@ fn set_margins(emu: &mut Emu) -> Result<()> {
 fn get_margins(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
     let m = margins_of(emu, v);
-    let s = if emu.ui.windows.contains(&v) { emu.device.safe_area() } else { crate::navigation::safe_area(emu, v) };
+    let s = view_safe_area(emu, v);
     ret_rect(emu, [m[0] + s[0], m[1] + s[1], m[2] + s[2], m[3] + s[3]]);
     Ok(())
 }

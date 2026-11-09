@@ -506,9 +506,32 @@ fn intrinsic_size(emu: &mut Emu) -> Result<()> {
 }
 
 fn trait_collection(emu: &mut Emu) -> Result<()> {
+    let t = current_traits(emu)?;
+    emu.ret(t);
+    Ok(())
+}
+
+/// A trait collection with the given (horizontal, vertical) size classes.
+pub(crate) fn new_traits(emu: &mut Emu, size_classes: (u64, u64)) -> Result<u64> {
     let cls = host_class(emu, "UITraitCollection")?;
     let t = objc::create_instance(emu, cls, 0)?;
-    emu.ret(t);
+    objc::bag_set(emu, t, "horizontalSizeClass", size_classes.0);
+    objc::bag_set(emu, t, "verticalSizeClass", size_classes.1);
+    Ok(t)
+}
+
+/// The traits as they are now (the size classes follow the orientation).
+pub(crate) fn current_traits(emu: &mut Emu) -> Result<u64> {
+    let classes = crate::orientation::size_classes(emu);
+    new_traits(emu, classes)
+}
+
+/// A size class the collection was made with, else the current one.
+fn size_class(emu: &mut Emu, vertical: bool) -> Result<()> {
+    let key = if vertical { "verticalSizeClass" } else { "horizontalSizeClass" };
+    let now = crate::orientation::size_classes(emu);
+    let v = objc::bag_get(emu, emu.arg(0), key).unwrap_or(if vertical { now.1 } else { now.0 });
+    emu.ret(v);
     Ok(())
 }
 
@@ -530,8 +553,8 @@ fn ret_one(emu: &mut Emu) -> Result<()> {
 
 fn window_init_with_scene(emu: &mut Emu) -> Result<()> {
     let w = emu.arg(0);
-    let d = emu.device;
-    set_frame_of(emu, w, [0.0, 0.0, d.width, d.height]);
+    let (sw, sh) = crate::orientation::screen(emu);
+    set_frame_of(emu, w, [0.0, 0.0, sw, sh]);
     view_mut(emu, w).window = w;
     if !emu.ui.windows.contains(&w) {
         emu.ui.windows.push(w);
@@ -666,8 +689,7 @@ fn color_white(emu: &mut Emu) -> Result<()> {
 
 fn color_dynamic(emu: &mut Emu) -> Result<()> {
     let block = emu.arg(2);
-    let cls = host_class(emu, "UITraitCollection")?;
-    let traits = objc::create_instance(emu, cls, 0)?;
+    let traits = current_traits(emu)?;
     let c = crate::libsystem::call_block(emu, block, &[traits])?;
     emu.ret(c);
     Ok(())
@@ -716,7 +738,7 @@ fn color_get_rgba(emu: &mut Emu) -> Result<()> {
 /// and views that cover the screen; zero for views inside the safe area.
 pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
     let v = emu.arg(0);
-    let insets = if emu.ui.windows.contains(&v) { emu.device.safe_area() } else { crate::navigation::safe_area(emu, v) };
+    let insets = crate::autolayout::view_safe_area(emu, v);
     ret_rect(emu, insets);
     Ok(())
 }
@@ -1158,11 +1180,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret_f64(e, e.device.scale);
         Ok(())
     }),
-    ("UITraitCollection", false, "horizontalSizeClass", ret_one), // compact
-    ("UITraitCollection", false, "verticalSizeClass", |e| {
-        e.ret(2); // regular
-        Ok(())
-    }),
+    ("UITraitCollection", false, "horizontalSizeClass", |e| size_class(e, false)),
+    ("UITraitCollection", false, "verticalSizeClass", |e| size_class(e, true)),
     ("UITraitCollection", false, "preferredContentSizeCategory", |e| {
         // Same value pomme gives the UIContentSizeCategoryLarge constant (see constants.rs).
         let s = foundation::new_nsstring(e, "UIContentSizeCategoryLarge")?;

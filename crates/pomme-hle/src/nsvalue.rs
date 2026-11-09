@@ -96,6 +96,11 @@ fn words(emu: &Emu, v: u64) -> Result<(u64, [u64; 4])> {
     Ok((kind, w))
 }
 
+/// An NSValue holding a CGPoint.
+pub(crate) fn new_point_value(emu: &mut Emu, p: [f64; 2]) -> Result<u64> {
+    new_value(emu, POINT, &p.map(f64::to_bits))
+}
+
 /// An NSValue holding a CGRect.
 pub(crate) fn new_rect_value(emu: &mut Emu, r: [f64; 4]) -> Result<u64> {
     new_value(emu, RECT, &r.map(f64::to_bits))

@@ -108,6 +108,16 @@ const BLOCK_NEEDS_FREE: u32 = 1 << 24;
 const BLOCK_HAS_COPY_DISPOSE: u32 = 1 << 25;
 const BLOCK_IS_GLOBAL: u32 = 1 << 28;
 
+/// `_Block_copy` from host code.
+pub(crate) fn copy_block(emu: &mut Emu, b: u64) -> Result<u64> {
+    let saved = emu.cpu.x[0];
+    emu.cpu.x[0] = b;
+    block_copy(emu)?;
+    let c = emu.cpu.x[0];
+    emu.cpu.x[0] = saved;
+    Ok(c)
+}
+
 /// `_Block_copy` / `objc_retainBlock`: move a stack block to the heap.
 pub(crate) fn block_copy(emu: &mut Emu) -> Result<()> {
     let block = emu.arg(0);

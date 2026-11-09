@@ -81,6 +81,8 @@ enum Cmd {
         typing: Vec<(String, f64)>,
         #[command(flatten)]
         clipboard: ClipboardArgs,
+        #[command(flatten)]
+        orientation: OrientationArgs,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -98,6 +100,33 @@ enum Cmd {
         #[arg(long)]
         stubs: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct OrientationArgs {
+    /// How the phone is held at launch: `portrait` (the default), `landscape` (turned
+    /// to the left: the island on the left; = `landscape-right`, as UIKit names the
+    /// interface then), `landscape-left` or `portrait-upside-down`. The interface
+    /// follows if the app supports it.
+    #[arg(long = "orientation", default_value = "portrait")]
+    held: pomme_hle::device::Orientation,
+    /// Turn the phone at a virtual time: `--rotate landscape@3` (repeatable). Apps
+    /// hear it as on a real iPhone: device-orientation notifications, and the
+    /// interface turns if they support the new orientation.
+    #[arg(long, value_parser = parse_rotate)]
+    rotate: Vec<(pomme_hle::device::Orientation, f64)>,
+}
+
+impl OrientationArgs {
+    fn apply(&self, emu: &mut pomme_hle::Emu) {
+        emu.ui.device_orientation = self.held;
+        emu.ui.rotations = self.rotate.iter().map(|&(o, t)| ((t * 1e9) as u64, o)).collect();
+    }
+}
+
+fn parse_rotate(s: &str) -> std::result::Result<(pomme_hle::device::Orientation, f64), String> {
+    let (o, t) = s.rsplit_once('@').ok_or("expected orientation@seconds")?;
+    Ok((o.parse()?, t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))
 }
 
 #[derive(clap::Args)]
@@ -176,7 +205,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, orientation } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -187,7 +216,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard)
+            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation)
         }
     }
 }
@@ -540,7 +569,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, orientation: &OrientationArgs) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -553,6 +582,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.device = device;
     clipboard.apply(&mut emu)?;
+    orientation.apply(&mut emu);
     emu.ui.launch_url = url;
     for (text, t) in typing {
         emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (t * 1e9) as u64, text: text.clone() });

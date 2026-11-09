@@ -1053,11 +1053,11 @@ fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f
 /// The software keyboard while it's up: iOS 26's light keyboard panel (its
 /// colour and rounded top corners, sampled from the Simulator) along the bottom
 /// edge. The keys aren't drawn.
-fn draw_keyboard(p: &mut Painter, device: &crate::device::Device, height: f64, visible: f64, t: &[f32; 6]) {
+fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64, t: &[f32; 6]) {
     const RADIUS: f32 = 28.0;
-    let [x, _, w, h] = crate::textinput::keyboard_frame(device, height, true).map(|v| v as f32);
+    let [x, _, w, h] = crate::textinput::keyboard_frame(screen, height, true).map(|v| v as f32);
     // Sliding: its top is `visible` points above the bottom edge.
-    let y = (device.height - visible) as f32;
+    let y = (screen.1 - visible) as f32;
     // Round the top corners only: the bottom ones fall below the screen.
     let panel = transform_els(&rounded_rect(w, h + RADIUS, RADIUS), &[1.0, 0.0, 0.0, 1.0, x, y]);
     p.fill(&panel, [226.0 / 255.0, 228.0 / 255.0, 232.0 / 255.0, 1.0], 1.0, false, t, None);
@@ -1083,6 +1083,8 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
     let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
     p.glyphs(&placed, alpha, t, mask);
     let Some(back) = &look.back else { return };
+    // The back button sits inside the bar's leading safe-area inset.
+    let t = &concat(&[1.0, 0.0, 0.0, 1.0, look.leading as f32, 0.0], t);
     let round = Stroke { width: 2.6, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
     let chevron = |p: &mut Painter, cx: f32, cy: f32, half: f32, depth: f32, color: [f64; 4], width: f32| {
         let els = [El::Move(cx + depth / 2.0, cy - half), El::Line(cx - depth / 2.0, cy), El::Line(cx + depth / 2.0, cy + half)];
@@ -1157,7 +1159,8 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     for w in emu.ui.windows.clone() {
         display(emu, w)?;
     }
-    let (sw, sh) = ((emu.device.width as f32 * scale) as u32, (emu.device.height as f32 * scale) as u32);
+    let screen = crate::orientation::screen(emu);
+    let (sw, sh) = ((screen.0 as f32 * scale) as u32, (screen.1 as f32 * scale) as u32);
     let mut pix = Pixmap::new(sw, sh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
     pix.fill(tiny_skia::Color::BLACK);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
@@ -1168,9 +1171,11 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     }
     let visible = crate::textinput::keyboard_visible(emu);
     if visible > 0.0 {
-        draw_keyboard(&mut p, emu.device, emu.input.keyboard_height, visible, &t);
+        draw_keyboard(&mut p, screen, emu.input.keyboard_height, visible, &t);
     }
-    draw_cutout(&mut p, emu.device, &t);
+    // The housing is fixed to the hardware: draw it in the native frame.
+    let native = crate::orientation::from_portrait(emu).map(|v| v as f32);
+    draw_cutout(&mut p, emu.device, &concat(&native, &t));
     Ok(p.pix)
 }
 
@@ -1215,7 +1220,12 @@ fn notch_els(cx: f32, width: f32, height: f32) -> Vec<El> {
 /// Not a picture of Apple's hardware: a plain stand-in for previews.
 pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     let d = emu.device;
+    let o = crate::orientation::current(emu);
+    // The body is drawn upright in portrait, around the screen turned back
+    // into the native frame; then the whole phone turns as it's held.
     let screen = render(emu, scale)?;
+    let (pw, ph) = ((d.width as f32 * scale) as u32, (d.height as f32 * scale) as u32);
+    let screen = turn(&screen, invert(o.from_portrait(pw as f64, ph as f64)), pw, ph)?;
     // Bezel around the screen (pt), and room for the buttons at the sides.
     const BEZEL: f32 = 14.0;
     const BUTTONS: f32 = 4.0;
@@ -1257,7 +1267,25 @@ pub fn render_shell(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
         ring.push(El::Close);
         p.stroke(&ring, [0.4, 0.4, 0.42, 1.0], 1.0, 2.0, &t, None);
     }
-    Ok(p.pix)
+    let (w, h) = (p.pix.width(), p.pix.height());
+    let (ow, oh) = if o.is_landscape() { (h, w) } else { (w, h) };
+    turn(&p.pix, o.from_portrait(w as f64, h as f64), ow, oh)
+}
+
+/// `src` drawn through the pixel-space map `m` into a new `w`×`h` bitmap.
+fn turn(src: &Pixmap, m: [f64; 6], w: u32, h: u32) -> Result<Pixmap> {
+    let mut out = Pixmap::new(w, h).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Nearest, ..Default::default() };
+    out.draw_pixmap(0, 0, src.as_ref(), &paint, ts(&m.map(|v| v as f32)), None);
+    Ok(out)
+}
+
+/// The inverse of an affine map `[a, b, c, d, tx, ty]`.
+fn invert(m: [f64; 6]) -> [f64; 6] {
+    let [a, b, c, d, tx, ty] = m;
+    let det = a * d - b * c;
+    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+    [ia, ib, ic, id, -(ia * tx + ic * ty), -(ib * tx + id * ty)]
 }
 
 /// PNG bytes of [`render`].

@@ -53,6 +53,7 @@ pub mod label;
 mod charset;
 pub mod textinput;
 pub mod device;
+pub mod orientation;
 mod uikit;
 mod uiview;
 

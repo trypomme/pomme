@@ -441,37 +441,11 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         ["NSObject", "NSString", "NSMutableString", "NSArray", "NSMutableArray", "NSDictionary", "NSMutableDictionary", "NSSet", "NSMutableSet", "NSEnumerator", "NSNumber", "NSNull"]
             .map(str::to_string),
     );
-    names.extend(HOST_METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::foundation::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::uikit::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::bundle::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::uiview::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::threads::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::invocation::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::attributed::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::textkit::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::calayer::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::touch::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::net::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::nstimer::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::image::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::regex::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::json::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(EXCEPTION_METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::nsvalue::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::navigation::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::metal::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::pointer_array::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::storyboard::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::locale::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::textinput::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::autolayout::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::clipboard::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::textview::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::label::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::scrollview::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::charset::METHODS.iter().map(|m| m.0.to_string()));
-    names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
+    let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
+    let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
+    let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, EXCEPTION_METHODS];
+    names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
     for name in &names {
@@ -509,11 +483,8 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             emu.objc.classes.get_mut(&c).unwrap().methods.insert(sel, Imp::Host(f));
         }
     }
-    let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
-    let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
-    let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, EXCEPTION_METHODS] {
-        for &(class, class_method, sel, f) in tables {
+    for table in tables {
+        for &(class, class_method, sel, f) in table {
             let mut cls = emu.objc.by_name[class];
             if class_method {
                 cls = emu.objc.classes[&cls].isa;

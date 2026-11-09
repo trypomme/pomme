@@ -41,6 +41,8 @@ fn build_now(name: &str) -> Option<PathBuf> {
         .status()
         .expect("run clang");
     assert!(status.success(), "building the {name} fixture app failed");
+    // More Info.plist keys (scenes, orientations, …), if the fixture has them.
+    let extra = std::fs::read_to_string(dir.join("Info.extra.plist")).unwrap_or_default();
     std::fs::write(
         app.join("Info.plist"),
         format!(
@@ -52,6 +54,7 @@ fn build_now(name: &str) -> Option<PathBuf> {
 <key>CFBundleName</key><string>{exe}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>MinimumOSVersion</key><string>17.0</string>
+{extra}
 </dict></plist>"#
         ),
     )
