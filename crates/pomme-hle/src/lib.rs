@@ -52,6 +52,7 @@ pub mod scrollview;
 pub mod label;
 mod charset;
 pub mod textinput;
+pub mod control;
 pub mod device;
 pub mod orientation;
 mod uikit;
@@ -213,6 +214,7 @@ pub struct Emu {
     /// Touches, gesture recognizers and the input script.
     pub touch: touch::State,
     pub input: textinput::State,
+    pub control: control::State,
     /// The clipboard (UIPasteboard) and its backend, paste permission and scripted pastes.
     pub clipboard: clipboard::State,
     pub scroll: scrollview::State,
@@ -296,6 +298,7 @@ impl Emu {
             render: Default::default(),
             touch: Default::default(),
             input: Default::default(),
+            control: Default::default(),
             clipboard: Default::default(),
             scroll: Default::default(),
             layout: Default::default(),

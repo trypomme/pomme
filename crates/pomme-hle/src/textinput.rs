@@ -1,6 +1,6 @@
 //! Text input: the first responder, UITextField editing, UIKit's text input
 //! protocols (UIKeyInput, the UITextPosition / UITextRange part of UITextInput),
-//! UIControl target-action, and the software keyboard (its frame and the
+//! and the software keyboard (its frame and the
 //! show / hide notifications apps lay out around).
 //!
 //! UITextField follows UIKit's contract, which React Native's RCTUITextField
@@ -20,6 +20,7 @@
 //! Text is UTF-16 internally, as NSRange counts. Input is scripted like touches:
 //! `--type 'text@secs'` types into the first responder at a virtual time.
 
+use crate::control::send_actions;
 use crate::foundation::{self, nsstring};
 use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result};
@@ -56,8 +57,6 @@ pub struct KeyInput {
 pub struct State {
     pub first_responder: u64,
     fields: HashMap<u64, Field>,
-    /// UIControl → (target, action, events).
-    targets: HashMap<u64, Vec<(u64, u64, u64)>>,
     pub keyboard_shown: bool,
     /// The keyboard's height while it's up (it depends on the input's traits).
     pub keyboard_height: f64,
@@ -185,46 +184,6 @@ fn names(k: Kind) -> &'static Names {
     }
 }
 
-// ---- UIControl target-action ----
-
-fn add_target(emu: &mut Emu) -> Result<()> {
-    let (c, target, action, events) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
-    let list = emu.input.targets.entry(c).or_default();
-    if !list.iter().any(|&(t, a, e)| t == target && a == action && e == events) {
-        list.push((target, action, events));
-    }
-    Ok(())
-}
-
-fn remove_target(emu: &mut Emu) -> Result<()> {
-    let (c, target, action, events) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
-    if let Some(list) = emu.input.targets.get_mut(&c) {
-        list.retain(|&(t, a, e)| !((target == 0 || t == target) && (action == 0 || a == action) && e & events != 0));
-    }
-    Ok(())
-}
-
-/// Send `events`' actions: `[target action:sender forEvent:nil]` (one-argument
-/// and no-argument actions ignore the extra registers).
-pub fn send_actions(emu: &mut Emu, control: u64, events: u64) -> Result<()> {
-    let list = emu.input.targets.get(&control).cloned().unwrap_or_default();
-    for (target, action, e) in list {
-        if e & events != 0 {
-            let name = objc::sel_name(emu, action);
-            // A nil target goes up the responder chain: to the first responder.
-            let t = if target == 0 { emu.input.first_responder } else { target };
-            if t != 0 {
-                send(emu, t, &name, &[control, 0])?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn has_targets(emu: &Emu, control: u64, events: u64) -> bool {
-    emu.input.targets.get(&control).is_some_and(|l| l.iter().any(|&(_, _, e)| e & events != 0))
-}
-
 // ---- first responder ----
 
 /// `-[UIResponder becomeFirstResponder]` for responders that can.
@@ -330,7 +289,7 @@ fn tf_become(emu: &mut Emu) -> Result<()> {
     }
     tell(emu, delegate, n.did_begin, &[f])?;
     if k == Kind::Field {
-        send_actions(emu, f, EDITING_DID_BEGIN)?;
+        send_actions(emu, f, EDITING_DID_BEGIN, 0)?;
     }
     foundation::post_named(emu, n.began, f)?;
     show_keyboard(emu)?;
@@ -356,7 +315,7 @@ fn tf_resign(emu: &mut Emu) -> Result<()> {
         tell(emu, delegate, n.did_end, &[f])?;
     }
     if k == Kind::Field {
-        send_actions(emu, f, EDITING_DID_END)?;
+        send_actions(emu, f, EDITING_DID_END, 0)?;
     }
     foundation::post_named(emu, n.ended, f)?;
     hide_keyboard(emu)?;
@@ -447,7 +406,7 @@ fn edit(emu: &mut Emu, f: u64, range: (usize, usize), s: &str) -> Result<()> {
     fd.text.splice(a..b, units);
     fd.sel = (a + n, a + n);
     match k {
-        Kind::Field => send_actions(emu, f, EDITING_CHANGED)?,
+        Kind::Field => send_actions(emu, f, EDITING_CHANGED, 0)?,
         // UITextView: the selection moves first, then the text has changed
         // (React Native depends on this order).
         Kind::View => {
@@ -514,8 +473,8 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
         '\n' => {
             let delegate = send(emu, f, "delegate", &[])?;
             if ask(emu, delegate, "textFieldShouldReturn:", &[f], true)? {
-                let ends = has_targets(emu, f, EDITING_DID_END_ON_EXIT);
-                send_actions(emu, f, EDITING_DID_END_ON_EXIT)?;
+                let ends = crate::control::has_targets(emu, f, EDITING_DID_END_ON_EXIT);
+                send_actions(emu, f, EDITING_DID_END_ON_EXIT, 0)?;
                 if ends && emu.input.first_responder == f {
                     send(emu, f, "resignFirstResponder", &[])?;
                 }
@@ -578,10 +537,12 @@ fn tf_delete_backward(emu: &mut Emu) -> Result<()> {
     r
 }
 
-/// A tap ends on the field: it starts editing.
+/// A tap ends on the field: it starts editing (unless it's disabled).
 fn tf_touches_ended(emu: &mut Emu) -> Result<()> {
-    let f = emu.arg(0);
-    if emu.input.first_responder != f {
+    let (f, touches, event) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    crate::control::touches_ended(emu, f, touches, event)?;
+    let enabled = send(emu, f, "isEnabled", &[])? & 0xff != 0;
+    if enabled && emu.input.first_responder != f {
         send(emu, f, "becomeFirstResponder", &[])?;
     }
     Ok(())
@@ -692,10 +653,20 @@ macro_rules! text_methods {
         }),
         ($c, false, "insertText:", tf_insert_text),
         ($c, false, "deleteBackward", tf_delete_backward),
-        ($c, false, "touchesBegan:withEvent:", |_| Ok(())),
-        ($c, false, "touchesMoved:withEvent:", |_| Ok(())),
+        // A text input is a control: it tracks touches like one (see control.rs).
+        ($c, false, "touchesBegan:withEvent:", |e| {
+            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+            crate::control::touches_began(e, c, t, ev)
+        }),
+        ($c, false, "touchesMoved:withEvent:", |e| {
+            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+            crate::control::touches_moved(e, c, t, ev)
+        }),
         ($c, false, "touchesEnded:withEvent:", tf_touches_ended),
-        ($c, false, "touchesCancelled:withEvent:", |_| Ok(())),
+        ($c, false, "touchesCancelled:withEvent:", |e| {
+            let (c, t, ev) = (e.arg(0), e.arg(2), e.arg(3));
+            crate::control::touches_cancelled(e, c, t, ev)
+        }),
         ($c, false, "caretRectForPosition:", |e| {
             let b = crate::uiview::view(e, e.arg(0)).bounds;
             ret_rect(e, [0.0, 0.0, 2.0, b[3]])
@@ -788,31 +759,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, r)
     }),
     ("UIView", false, "endEditing:", end_editing),
-    // UIControl
-    ("UIControl", false, "addTarget:action:forControlEvents:", add_target),
-    ("UIControl", false, "removeTarget:action:forControlEvents:", remove_target),
-    ("UIControl", false, "sendActionsForControlEvents:", |e| {
-        let (c, ev) = (e.arg(0), e.arg(2));
-        send_actions(e, c, ev)
-    }),
-    // Enabled unless turned off (React Native's text field reads `editable` from it).
-    ("UIControl", false, "isEnabled", |e| {
-        let v = objc::bag_get(e, e.arg(0), "enabled").is_none_or(|x| x & 0xff != 0) as u64;
-        ret(e, v)
-    }),
-    ("UIControl", false, "setEnabled:", |e| {
-        let (c, x) = (e.arg(0), e.arg(2) & 0xff);
-        objc::bag_set(e, c, "enabled", x);
-        Ok(())
-    }),
-    ("UIControl", false, "allTargets", |e| {
-        let mut t: Vec<u64> = e.input.targets.get(&e.arg(0)).map(|l| l.iter().map(|x| x.0).filter(|&x| x != 0).collect()).unwrap_or_default();
-        t.dedup();
-        let a = foundation::new_array_of(e, &t)?;
-        let cls = host_class(e, "NSSet")?;
-        let s = send(e, cls, "setWithArray:", &[a])?;
-        ret(e, s)
-    }),
     // UITextField only (the rest is shared with UITextView: TEXT_METHODS)
     // UIKit's: the field's font (17 pt system unless set) and text color; or what the app set.
     (TF, false, "defaultTextAttributes", |e| {
@@ -865,20 +811,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (a, b) = (e.arg(0), e.arg(2));
         let same = b != 0 && range_offsets(e, a) == range_offsets(e, b);
         ret(e, same as u64)
-    }),
-    // `[UIApplication sendAction:to:nil from:forEvent:]` goes to the first responder.
-    ("UIApplication", false, "sendAction:to:from:forEvent:", |e| {
-        let (action, to, from) = (e.arg(2), e.arg(3), e.arg(4));
-        let target = if to != 0 { to } else { e.input.first_responder };
-        if target == 0 {
-            return ret(e, 0);
-        }
-        let name = objc::sel_name(e, action);
-        if !responds(e, target, &name)? {
-            return ret(e, 0);
-        }
-        send(e, target, &name, &[from, 0])?;
-        ret(e, 1)
     }),
 ];
 

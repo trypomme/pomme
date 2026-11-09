@@ -249,6 +249,12 @@ pub(crate) fn active_location(emu: &Emu) -> Option<[f64; 2]> {
     emu.touch.touches.get(&emu.touch.active).map(|t| t.location)
 }
 
+/// Where a touch is in `v`'s coordinates (None for an object that isn't one of pomme's touches).
+pub(crate) fn location_in(emu: &mut Emu, t: u64, v: u64) -> Option<[f64; 2]> {
+    let at = emu.touch.touches.get(&t)?.location;
+    Some(to_view(emu, at, v))
+}
+
 pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
     let at = crate::threads::now_ns(emu);
     send_touch_at(emu, phase, x, y, at)

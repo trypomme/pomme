@@ -608,6 +608,24 @@ fn string_by_appending(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &(a + &b))
 }
 
+/// `-stringByAppendingFormat:`: format x2, varargs on the stack.
+fn string_by_appending_format(emu: &mut Emu) -> Result<()> {
+    let a = nsstring(emu, emu.arg(0))?;
+    let fmt = nsstring(emu, emu.arg(2))?;
+    let b = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
+    ret_string(emu, &(a + &String::from_utf8_lossy(&b)))
+}
+
+/// `-[NSMutableString appendFormat:]`.
+fn append_format(emu: &mut Emu) -> Result<()> {
+    let fmt = nsstring(emu, emu.arg(2))?;
+    let b = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
+    let b = new_nsstring(emu, &String::from_utf8_lossy(&b))?;
+    let s = as_cf_string(emu, b)?;
+    cf(emu, "_CFStringAppend", &[emu.arg(0), s])?;
+    Ok(())
+}
+
 fn append_string(emu: &mut Emu) -> Result<()> {
     let s = as_cf_string(emu, emu.arg(2))?;
     cf(emu, "_CFStringAppend", &[emu.arg(0), s])?;
@@ -3772,6 +3790,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "mutableCopy", string_mutable_copy),
     ("NSString", false, "description", ret_self),
     ("NSString", false, "stringByAppendingString:", string_by_appending),
+    ("NSString", false, "stringByAppendingFormat:", string_by_appending_format),
     ("NSString", false, "hasPrefix:", has_prefix),
     ("NSString", false, "hasSuffix:", has_suffix),
     ("NSString", false, "lowercaseString", lowercase),
@@ -3791,6 +3810,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "lengthOfBytesUsingEncoding:", length_of_bytes),
     ("NSString", false, "cStringUsingEncoding:", utf8_string),
     ("NSMutableString", false, "appendString:", append_string),
+    ("NSMutableString", false, "appendFormat:", append_format),
     ("NSMutableString", false, "replaceCharactersInRange:withString:", replace_characters),
     ("NSString", false, "rangeOfComposedCharacterSequencesForRange:", range_of_composed),
     ("NSString", false, "rangeOfComposedCharacterSequenceAtIndex:", range_of_composed_at),
