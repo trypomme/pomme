@@ -1266,6 +1266,9 @@ pub(crate) fn dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
     if constant_kind(emu, d) == Some(Constant::Dictionary) {
         return constant_dict_pairs(emu, d);
     }
+    if !is_cf(emu, d) {
+        return subclass_dict_pairs(emu, d);
+    }
     let n = cf(emu, "_CFDictionaryGetCount", &[d])?;
     let keys = emu.alloc(n * 8 + 8)?;
     let vals = emu.alloc(n * 8 + 8)?;
@@ -1275,6 +1278,29 @@ pub(crate) fn dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
     emu.heap.free(&emu.p.memory, keys)?;
     emu.heap.free(&emu.p.memory, vals)?;
     Ok(k.into_iter().zip(v).collect())
+}
+
+/// An NSDictionary subclass of the app's (Swift's _SwiftDeferredNSDictionary,
+/// a bridged `[K: V]`): its entries through the primitives it implements,
+/// `keyEnumerator` and `objectForKey:` (NSDictionary's contract), as
+/// NSDictionary's other methods use them.
+fn subclass_dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
+    let cls = objc::class_of(emu, d)?;
+    let sel = objc::intern(emu, "keyEnumerator")?;
+    if !matches!(objc::lookup(emu, cls, sel)?, Some(objc::Imp::Guest(_))) {
+        return Ok(Vec::new());
+    }
+    let e = send(emu, d, "keyEnumerator", &[])?;
+    let mut out = Vec::new();
+    loop {
+        let k = send(emu, e, "nextObject", &[])?;
+        if k == 0 {
+            break;
+        }
+        let v = send(emu, d, "objectForKey:", &[k])?;
+        out.push((k, v));
+    }
+    Ok(out)
 }
 
 fn dict_empty(emu: &mut Emu) -> Result<()> {

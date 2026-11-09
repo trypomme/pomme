@@ -1053,9 +1053,11 @@ fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f
 /// The software keyboard while it's up: iOS 26's light keyboard panel (its
 /// colour and rounded top corners, sampled from the Simulator) along the bottom
 /// edge. The keys aren't drawn.
-fn draw_keyboard(p: &mut Painter, device: &crate::device::Device, height: f64, t: &[f32; 6]) {
+fn draw_keyboard(p: &mut Painter, device: &crate::device::Device, height: f64, visible: f64, t: &[f32; 6]) {
     const RADIUS: f32 = 28.0;
-    let [x, y, w, h] = crate::textinput::keyboard_frame(device, height, true).map(|v| v as f32);
+    let [x, _, w, h] = crate::textinput::keyboard_frame(device, height, true).map(|v| v as f32);
+    // Sliding: its top is `visible` points above the bottom edge.
+    let y = (device.height - visible) as f32;
     // Round the top corners only: the bottom ones fall below the screen.
     let panel = transform_els(&rounded_rect(w, h + RADIUS, RADIUS), &[1.0, 0.0, 0.0, 1.0, x, y]);
     p.fill(&panel, [226.0 / 255.0, 228.0 / 255.0, 232.0 / 255.0, 1.0], 1.0, false, t, None);
@@ -1164,8 +1166,9 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     for w in emu.ui.windows.clone() {
         draw_view(emu, &mut p, w, 1.0, &t, None);
     }
-    if emu.input.keyboard_shown {
-        draw_keyboard(&mut p, emu.device, emu.input.keyboard_height, &t);
+    let visible = crate::textinput::keyboard_visible(emu);
+    if visible > 0.0 {
+        draw_keyboard(&mut p, emu.device, emu.input.keyboard_height, visible, &t);
     }
     draw_cutout(&mut p, emu.device, &t);
     Ok(p.pix)

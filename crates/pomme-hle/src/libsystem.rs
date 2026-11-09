@@ -1719,6 +1719,9 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_after", dispatch_after),
     ("_dispatch_after_f", dispatch_after_f),
     ("__Unwind_RaiseException", unwind_raise_exception),
+    // stdio locking (Swift's print): pomme's stdio needs none.
+    ("_flockfile", noop),
+    ("_funlockfile", noop),
     ("_dispatch_block_create", dispatch_block_create),
     // (flags, qos, relative priority, block): QoS doesn't matter here.
     ("_dispatch_block_create_with_qos_class", |e| {

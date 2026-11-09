@@ -61,6 +61,8 @@ pub struct State {
     pub keyboard_shown: bool,
     /// The keyboard's height while it's up (it depends on the input's traits).
     pub keyboard_height: f64,
+    /// The keyboard sliding in or out: (start, visible height from, to).
+    slide: Option<(u64, f64, f64)>,
     pub script: Vec<KeyInput>,
 }
 
@@ -949,14 +951,50 @@ fn did_hide(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// How much of the keyboard is on screen now (points from the bottom edge):
+/// it slides over KEYBOARD_DURATION, easing out, as the iOS keyboard does.
+pub fn keyboard_visible(emu: &Emu) -> f64 {
+    let rest = if emu.input.keyboard_shown { emu.input.keyboard_height } else { 0.0 };
+    let Some((start, from, to)) = emu.input.slide else { return rest };
+    let t = (crate::threads::now_ns(emu).saturating_sub(start)) as f64 / 1e9 / KEYBOARD_DURATION;
+    if t >= 1.0 {
+        return to;
+    }
+    let eased = 1.0 - (1.0 - t).powi(3);
+    from + (to - from) * eased
+}
+
+/// Start the keyboard sliding to `to` points visible, laying out each frame.
+fn slide_keyboard(emu: &mut Emu, to: f64) -> Result<()> {
+    let from = keyboard_visible(emu);
+    let start = crate::threads::now_ns(emu);
+    emu.input.slide = Some((start, from, to));
+    crate::uikit::after_on_main(emu, 1.0 / 60.0, slide_frame, start)
+}
+
+fn slide_frame(emu: &mut Emu) -> Result<()> {
+    let start = emu.arg(1);
+    let Some((s, _, _)) = emu.input.slide.filter(|x| x.0 == start) else { return Ok(()) };
+    crate::autolayout::mark_dirty(emu);
+    crate::host::frame_changed(emu);
+    if crate::threads::now_ns(emu).saturating_sub(s) as f64 / 1e9 < KEYBOARD_DURATION {
+        crate::uikit::after_on_main(emu, 1.0 / 60.0, slide_frame, start)?;
+    } else {
+        emu.input.slide = None;
+    }
+    Ok(())
+}
+
 /// The keyboard slides up: will-notifications now, did-notifications when it's there.
 pub fn show_keyboard(emu: &mut Emu) -> Result<()> {
     if emu.input.keyboard_shown {
         return Ok(());
     }
-    emu.input.keyboard_shown = true;
     let fr = emu.input.first_responder;
     emu.input.keyboard_height = keyboard_height_for(emu, fr)?;
+    let h = emu.input.keyboard_height;
+    slide_keyboard(emu, h)?;
+    emu.input.keyboard_shown = true;
     post_keyboard(emu, &["UIKeyboardWillChangeFrameNotification", "UIKeyboardWillShowNotification"], true)?;
     crate::uikit::after_on_main(emu, KEYBOARD_DURATION, did_show, 0)?;
     crate::host::frame_changed(emu);
@@ -967,6 +1005,7 @@ pub fn hide_keyboard(emu: &mut Emu) -> Result<()> {
     if !emu.input.keyboard_shown {
         return Ok(());
     }
+    slide_keyboard(emu, 0.0)?;
     emu.input.keyboard_shown = false;
     post_keyboard(emu, &["UIKeyboardWillChangeFrameNotification", "UIKeyboardWillHideNotification"], false)?;
     crate::uikit::after_on_main(emu, KEYBOARD_DURATION, did_hide, 0)?;

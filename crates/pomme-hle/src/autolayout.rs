@@ -205,7 +205,7 @@ fn set_active(emu: &mut Emu, c: u64, on: bool) {
 }
 
 /// Something changed that layout depends on: lay the windows out again.
-fn mark_dirty(emu: &mut Emu) {
+pub(crate) fn mark_dirty(emu: &mut Emu) {
     for w in emu.ui.windows.clone() {
         crate::uiview::view_mut(emu, w).needs_layout = true;
     }
@@ -342,7 +342,8 @@ fn guide_axis(emu: &mut Emu, g: Guide, axis: usize, (min, size): (f64, f64)) -> 
             // While it's down, the guide rests on the safe area's bottom (or,
             // with usesBottomSafeArea = NO, the screen's).
             let rest = if crate::objc::bag_get(emu, g.owner, "pomme.keyboardGuideIgnoresSafeArea").is_some_and(|x| x != 0) { emu.device.height } else { bottom };
-            let kb_top = if emu.input.keyboard_shown { emu.device.height - emu.input.keyboard_height } else { rest };
+            // Where the (possibly sliding) keyboard's top is, never below the resting place.
+            let kb_top = (emu.device.height - crate::textinput::keyboard_visible(emu)).min(rest);
             return Some((kb_top, emu.device.height - kb_top));
         }
         lo = lo.max(top);

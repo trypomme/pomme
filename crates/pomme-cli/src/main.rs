@@ -434,7 +434,7 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     );
     // POMME_BREAK_VREGS=1: also print the vector registers that hold anything.
     if std::env::var_os("POMME_BREAK_VREGS").is_some() {
-        let xs: Vec<String> = (4..18).map(|i| format!("x{i}={:#x}", c.x[i])).collect();
+        let xs: Vec<String> = (4..29).map(|i| format!("x{i}={:#x}", c.x[i])).collect();
         println!("        {}", xs.join(" "));
         for (i, v) in c.q.iter().enumerate() {
             if *v != 0 {

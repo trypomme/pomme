@@ -77,8 +77,17 @@ extension Array: _ObjectiveCBridgeable {
 // MARK: Dictionary
 
 extension Dictionary: _ObjectiveCBridgeable {
+    // Eagerly, into an ordinary NSDictionary (each key and value bridged now)
+    // rather than the standard library's lazily bridging subclass, which
+    // pomme's NSDictionary doesn't serve reliably.
     public func _bridgeToObjectiveC() -> NSDictionary {
-        unsafeBitCast(_bridgeToObjectiveCImpl(), to: NSDictionary.self)
+        let keys = self.keys.map { _bridgeAnythingToObjectiveC($0) }
+        let values = self.values.map { _bridgeAnythingToObjectiveC($0) }
+        return keys.withUnsafeBufferPointer { k in
+            values.withUnsafeBufferPointer { v in
+                NSDictionary(objects: v.baseAddress, forKeys: k.baseAddress, count: UInt(count))
+            }
+        }
     }
 
     public static func _forceBridgeFromObjectiveC(_ source: NSDictionary, result: inout [Key: Value]?) {

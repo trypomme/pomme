@@ -498,3 +498,35 @@ fn gesture_handler_tap_and_pan() {
     let v = run_for(&mut emu, 5.5);
     assert!(v.contains("\"dropped at 150,200 · box 150,200 · 1 taps\""), "{v}");
 }
+
+// ---- react-native-keyboard-controller (the /sticky screen) ----
+
+/// react-native-keyboard-controller (with Reanimated and worklets): a
+/// KeyboardStickyView rides on top of the keyboard and comes back down when
+/// it's dismissed. Its keyboard handler's worklets run on Reanimated's UI
+/// runtime and report back to React ("keyboard 335 at 100%").
+#[test]
+fn keyboard_controller_sticky_view() {
+    // The colour at a point (pt) after `secs`, and the status line.
+    let run = |secs: f64, dismiss: bool| -> Option<((u8, u8, u8), String)> {
+        let mut emu = boot()?;
+        emu.ui.launch_url = Some("pommehello:///sticky".into());
+        tap(&mut emu, (195.0, 806.0), 3.0);
+        if dismiss {
+            type_text(&mut emu, "hi\n", 4.0);
+        }
+        let v = run_for(&mut emu, secs);
+        let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+        // Left of the field, inside the sticky view's padding when it's up.
+        let c = pix.pixel(8 * 3, 440 * 3).unwrap();
+        let status = v.lines().find(|l| l.contains(" tag 14 ")).unwrap_or_default().to_string();
+        Some(((c.red(), c.green(), c.blue()), status))
+    };
+    let Some((up, status)) = run(4.0, false) else { return };
+    assert!(status.contains("\"keyboard 335 at 100%"), "{status}");
+    // The sticky view's background (#f8fafc) sits just above the 335-pt keyboard (509).
+    assert_eq!(up, (0xf8, 0xfa, 0xfc), "sticky view up: {up:?}");
+    let (down, status) = run(6.0, true).unwrap();
+    assert!(status.contains("\"keyboard 0 at 0%"), "{status}");
+    assert_eq!(down, (0xff, 0xff, 0xff), "page, the sticky view back at the bottom: {down:?}");
+}

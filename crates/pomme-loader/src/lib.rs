@@ -476,6 +476,12 @@ impl Linker<'_> {
     fn bind(&mut self, i: usize, img: &Image<'_>, ordinal: LibOrdinal, name: &str, weak: bool) -> u64 {
         let found = match ordinal {
             LibOrdinal::Dylib(d) => match self.images[i].deps[d] {
+                // A system library from the sysroot that lacks the symbol: a
+                // host stub by name (pomme may provide it; if not, the stop
+                // names it rather than the app jumping to 0).
+                Some(target) if img.dylibs[d].kind == DylibKind::System => {
+                    self.lookup(target, name, 0).or_else(|| Some(self.stubs.get_or_insert(&img.dylibs[d].path, name)))
+                }
                 Some(target) => self.lookup(target, name, 0),
                 None if img.dylibs[d].kind == DylibKind::System => {
                     let path = &img.dylibs[d].path;

@@ -1071,7 +1071,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret_f64(e, 0.0);
         Ok(())
     }),
-    ("UIViewController", false, "init", |_| Ok(())),
+    // `init` goes through the designated initializer, as UIKit's does: Swift
+    // subclasses set up their stored properties in initWithNibName:bundle:.
+    ("UIViewController", false, "init", |e| {
+        let vc = e.arg(0);
+        let r = send(e, vc, "initWithNibName:bundle:", &[0, 0])?;
+        e.ret(r);
+        Ok(())
+    }),
     ("UIViewController", false, "initWithNibName:bundle:", |_| Ok(())),
     ("UIViewController", false, "view", vc_view),
     ("UIViewController", false, "setView:", vc_set_view),

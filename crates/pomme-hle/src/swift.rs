@@ -130,13 +130,25 @@ fn number_from_bool(emu: &mut Emu) -> Result<()> {
 /// controller watches a view's `center` this way for interactive dismissal,
 /// which scripted input doesn't do.
 fn kvo_observe(emu: &mut Emu) -> Result<()> {
-    let cls = crate::objc::host_class(emu, "NSKeyValueObservation")?;
-    let o = crate::objc::create_instance(emu, cls, 0)?;
+    // The Foundation overlay's Swift class (its invalidate() is a vtable call).
+    let o = match emu.objc.by_name.get("_TtC10Foundation21NSKeyValueObservation").copied() {
+        Some(cls) => {
+            let a = crate::objc::send(emu, cls, "alloc", &[])?;
+            crate::objc::send(emu, a, "init", &[])?
+        }
+        None => {
+            let cls = crate::objc::host_class(emu, "NSKeyValueObservation")?;
+            crate::objc::create_instance(emu, cls, 0)?
+        }
+    };
     emu.ret(o);
     Ok(())
 }
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    // NSKeyValueObservation.invalidate() (dispatch thunk and method): ours never fire.
+    ("_$s10Foundation21NSKeyValueObservationC10invalidateyyFTj", noop),
+    ("_$s10Foundation21NSKeyValueObservationC10invalidateyyF", noop),
     (
         "_$s10Foundation27_KeyValueCodingAndObservingPAAE7observe_7options13changeHandlerAA05NSKeyC11ObservationCs0B4PathCyxqd__G_So0kcF7OptionsVyx_AA0kC14ObservedChangeVyqd__GtctlF",
         kvo_observe,
