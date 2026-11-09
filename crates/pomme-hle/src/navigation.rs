@@ -59,7 +59,29 @@ pub struct State {
     transitions: HashMap<u64, Transition>,
     /// Modal presentations, in the order they were made (the last is on top).
     presentations: Vec<Presentation>,
+    /// A finger that may be swiping back from the left edge.
+    swipe: Option<Swipe>,
 }
+
+/// The back swipe: a touch that began at the left edge over a stack that can go back.
+#[derive(Clone, Copy, Debug)]
+struct Swipe {
+    nc: u64,
+    start: [f64; 2],
+    /// It became the swipe (the pop is following the finger).
+    tracking: bool,
+    /// The last two positions and times, for the release velocity.
+    last: (f64, f64),
+    prev: (f64, f64),
+}
+
+/// How far in from the left edge a back swipe can start, and how far the
+/// finger moves before it's a swipe (UIKit's edge pan gesture).
+const SWIPE_EDGE: f64 = 30.0;
+const SWIPE_SLOP: f64 = 10.0;
+/// Released, a swipe finishes the pop when it would end up past halfway
+/// (where it is, plus where its speed carries it in this long).
+const SWIPE_PROJECTION: f64 = 0.2;
 
 /// A presented view controller and what shows it.
 #[derive(Clone, Debug)]
@@ -123,6 +145,12 @@ struct Transition {
     dim: u64,
     /// The shadow cards under the moving screens.
     cards: Vec<u64>,
+    /// What moves, placed by the transition's progress: (layer, its model
+    /// centre, offset at progress 0 and at 1, in widths).
+    pieces: Vec<(u64, [f64; 2], f64, f64)>,
+    /// The dimming view's layer and its opacity at progress 0 and 1.
+    dim_fade: (u64, f64, f64),
+    width: f64,
 }
 
 // UIKit's push and pop on iPhone, measured in the iOS 26 Simulator
@@ -271,6 +299,11 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
 /// the `will` half now; then, when the transition (if animated) settles, the
 /// `did` half ([`finish`]).
 fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<()> {
+    change_stack(emu, nc, stack, animated, false)
+}
+
+/// As [`set_stack`]; `interactive`: the pop's pieces wait for a finger to move them.
+fn change_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool, interactive: bool) -> Result<()> {
     // A transition still running finishes first.
     if let Some(t) = emu.nav.transitions.remove(&nc) {
         finish(emu, t)?;
@@ -296,12 +329,19 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
     let forward = new_top.is_some_and(|t| !old.contains(&t));
     // UIKit updates `viewControllers` before telling the delegate.
     nav_mut(emu, nc).stack = stack.clone();
+    // Appearance callbacks only while it's on screen (in a window); otherwise
+    // the window's own appearance pass tells the top controller later.
+    let shown = view(emu, container).window != 0;
     if old_top != new_top {
         if let Some(nt) = new_top {
             delegate_call(emu, delegate, "navigationController:willShowViewController:animated:", &[nc, nt, a])?;
-            send(emu, nt, "viewWillAppear:", &[a])?;
+            if shown {
+                send(emu, nt, "viewWillAppear:", &[a])?;
+            }
         }
-        if let Some(ot) = old_top {
+        if let Some(ot) = old_top
+            && shown
+        {
             send(emu, ot, "viewWillDisappear:", &[a])?;
         }
         if let Some(nt) = new_top {
@@ -315,11 +355,35 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
         }
     }
     layout_container(emu, container)?;
-    let mut t = Transition { nc, old_stack: old.clone(), forward, screens: Vec::new(), old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0, cards: Vec::new() };
+    let mut t = Transition {
+        nc,
+        old_stack: old.clone(),
+        forward,
+        screens: Vec::new(),
+        old_top,
+        new_top,
+        removed,
+        added,
+        animated,
+        moving: Vec::new(),
+        dim: 0,
+        cards: Vec::new(),
+        pieces: Vec::new(),
+        dim_fade: (0, 0.0, 0.0),
+        width: 0.0,
+    };
     view_mut(emu, container).needs_layout = true;
     match (old_top, new_top) {
+        (Some(ot), Some(nt)) if interactive && ot != nt => {
+            chrome(emu, container, ot, nt, forward, &mut t)?;
+            place(emu, &t, 0.0, 0.0, crate::animation::Timing::Linear, 1e-6);
+            emu.nav.transitions.insert(nc, t);
+            Ok(())
+        }
         (Some(ot), Some(nt)) if animated && ot != nt => {
-            let duration = slide(emu, container, ot, nt, forward, &mut t)?;
+            chrome(emu, container, ot, nt, forward, &mut t)?;
+            let (timing, duration) = crate::animation::transition_spring(if forward { PUSH_SPRING } else { POP_SPRING });
+            place(emu, &t, 0.0, 1.0, timing, duration);
             emu.nav.transitions.insert(nc, t);
             crate::uikit::after_on_main(emu, duration, finish_fire, nc)
         }
@@ -327,39 +391,46 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
     }
 }
 
-/// Start the push or pop slide; returns how long it takes to settle.
-fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut Transition) -> Result<f64> {
-    use crate::animation::{Prop, Val, transition, transition_spring};
+/// Put a transition's pieces where progress `from` puts them, moving to
+/// progress `to` (the same for a finger holding them still).
+fn place(emu: &mut Emu, t: &Transition, from: f64, to: f64, timing: crate::animation::Timing, duration: f64) {
+    use crate::animation::{Prop, Val, transition};
+    let w = t.width;
+    for &(l, c, at0, at1) in &t.pieces {
+        let x = |p: f64| c[0] + w * (at0 + (at1 - at0) * p);
+        transition(emu, l, Prop::Position, Val::P([x(from), c[1]]), Val::P([x(to), c[1]]), timing, duration);
+    }
+    let (dl, d0, d1) = t.dim_fade;
+    if dl != 0 {
+        let o = |p: f64| d0 + (d1 - d0) * p;
+        transition(emu, dl, Prop::Opacity, Val::N(o(from)), Val::N(o(to)), timing, duration);
+    }
+}
+
+/// Make a push or pop's chrome: the dimming view over the screen going
+/// underneath, and a card casting the faint shadow under each moving screen;
+/// and record where each piece goes as the transition progresses.
+fn chrome(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut Transition) -> Result<()> {
     let (ov, nv) = (send(emu, ot, "view", &[])?, send(emu, nt, "view", &[])?);
     let w = view(emu, container).bounds[2];
-    let (timing, duration) = transition_spring(if forward { PUSH_SPRING } else { POP_SPRING });
+    t.width = w;
     // The view going underneath is dimmed: the old one on a push, the new one on a pop.
     let under = if forward { ov } else { nv };
-    let dim = {
-        let cls = crate::objc::host_class(emu, "UIView")?;
-        let d = send(emu, cls, "alloc", &[])?;
-        let frame = crate::uiview::frame_of(emu, under);
-        for (i, f) in frame.iter().enumerate() {
-            emu.cpu.q[i] = f.to_bits() as u128;
-        }
-        let d = send(emu, d, "initWithFrame:", &[])?;
-        let black = crate::uiview::new_color(emu, DIMMING)?;
-        send(emu, d, "setBackgroundColor:", &[black])?;
-        view_mut(emu, d).user_interaction = false;
-        send(emu, container, "insertSubview:aboveSubview:", &[d, under])?;
-        d
-    };
-    let (from_dim, to_dim) = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
-    view_mut(emu, dim).alpha = to_dim;
-    let at = |emu: &mut Emu, v: u64| crate::uiview::view(emu, v).center;
-    let (oc, nc) = (at(emu, ov), at(emu, nv));
-    // Where each screen goes: (view, from, to).
-    let moves = if forward {
-        [(nv, [nc[0] + w, nc[1]], nc), (ov, oc, [oc[0] - PARALLAX * w, oc[1]])]
-    } else {
-        [(ov, oc, [oc[0] + w, oc[1]]), (nv, [nc[0] - PARALLAX * w, nc[1]], nc)]
-    };
-    for (v, from, to) in moves {
+    let frame = crate::uiview::frame_of(emu, under);
+    let dim = new_view(emu, frame)?;
+    let black = crate::uiview::new_color(emu, DIMMING)?;
+    send(emu, dim, "setBackgroundColor:", &[black])?;
+    view_mut(emu, dim).user_interaction = false;
+    send(emu, container, "insertSubview:aboveSubview:", &[dim, under])?;
+    let (d0, d1) = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
+    view_mut(emu, dim).alpha = d1;
+    let dl = send(emu, dim, "layer", &[])?;
+    t.dim_fade = (dl, d0, d1);
+    t.moving.push(dl);
+    t.dim = dim;
+    // Each screen's offset (in widths) at the start and end.
+    let moves = if forward { [(nv, 1.0, 0.0), (ov, 0.0, -PARALLAX)] } else { [(ov, 0.0, 1.0), (nv, -PARALLAX, 0.0)] };
+    for (v, at0, at1) in moves {
         // Its card: the screen's shape, casting the shadow, just under it.
         let frame = crate::uiview::frame_of(emu, v);
         let card = new_view(emu, frame)?;
@@ -375,17 +446,178 @@ fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut
         }
         send(emu, container, "insertSubview:belowSubview:", &[card, v])?;
         let l = send(emu, v, "layer", &[])?;
-        transition(emu, l, Prop::Position, Val::P(from), Val::P(to), timing, duration);
-        transition(emu, cl, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+        let c = view(emu, v).center;
+        t.pieces.push((l, c, at0, at1));
+        t.pieces.push((cl, c, at0, at1));
         t.moving.extend([l, cl]);
         t.cards.push(card);
         t.screens.push(v);
     }
-    let dl = send(emu, dim, "layer", &[])?;
-    transition(emu, dl, Prop::Opacity, Val::N(from_dim), Val::N(to_dim), timing, duration);
-    t.moving.push(dl);
-    t.dim = dim;
-    Ok(duration)
+    Ok(())
+}
+
+// ---- the back swipe ----
+
+/// A finger went down at `p` (window coordinates): it may become a back swipe.
+pub(crate) fn swipe_began(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<()> {
+    emu.nav.swipe = None;
+    if p[0] > SWIPE_EDGE {
+        return Ok(());
+    }
+    // The navigation controllers under the finger that can go back; the innermost wins.
+    let mut best: Option<(u64, usize)> = None;
+    let navs: Vec<(u64, Nav)> = emu.nav.navs.iter().map(|(&k, v)| (k, v.clone())).collect();
+    for (nc, n) in navs {
+        if n.stack.len() < 2 || n.container == 0 || emu.nav.transitions.contains_key(&nc) {
+            continue;
+        }
+        let cv = view(emu, n.container);
+        if cv.window == 0 || cv.hidden {
+            continue;
+        }
+        // Covered by a presentation it isn't inside.
+        if let Some(top) = emu.nav.presentations.last().map(|p| p.container)
+            && !is_inside(emu, n.container, top)
+        {
+            continue;
+        }
+        if n.pop_gesture != 0 && objc::bag_get(emu, n.pop_gesture, "enabled").is_some_and(|e| e & 0xff == 0) {
+            continue;
+        }
+        let o = crate::uiview::window_origin(emu, n.container);
+        let inside = p[0] >= o[0] && p[1] >= o[1] && p[0] < o[0] + cv.bounds[2] && p[1] < o[1] + cv.bounds[3];
+        let depth = depth_of(emu, n.container);
+        if inside && best.is_none_or(|(_, d)| depth > d) {
+            best = Some((nc, depth));
+        }
+    }
+    if let Some((nc, _)) = best {
+        emu.nav.swipe = Some(Swipe { nc, start: p, tracking: false, last: (p[0], now), prev: (p[0], now) });
+    }
+    Ok(())
+}
+
+fn is_inside(emu: &mut Emu, mut v: u64, ancestor: u64) -> bool {
+    while v != 0 {
+        if v == ancestor {
+            return true;
+        }
+        v = view(emu, v).superview;
+    }
+    false
+}
+
+fn depth_of(emu: &mut Emu, mut v: u64) -> usize {
+    let mut d = 0;
+    while v != 0 {
+        d += 1;
+        v = view(emu, v).superview;
+    }
+    d
+}
+
+/// Whether a back swipe has the touch (the app's views don't get it).
+pub(crate) fn swiping(emu: &Emu) -> bool {
+    emu.nav.swipe.is_some_and(|s| s.tracking)
+}
+
+/// The finger moved. Ok(true): it just became the swipe (the view under it loses the touch).
+pub(crate) fn swipe_moved(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<bool> {
+    let Some(mut sw) = emu.nav.swipe else { return Ok(false) };
+    sw.prev = sw.last;
+    sw.last = (p[0], now);
+    let (dx, dy) = (p[0] - sw.start[0], p[1] - sw.start[1]);
+    let mut began = false;
+    if !sw.tracking {
+        if dx.abs() < SWIPE_SLOP && dy.abs() < SWIPE_SLOP {
+            emu.nav.swipe = Some(sw);
+            return Ok(false);
+        }
+        if dx < SWIPE_SLOP || dy.abs() > dx {
+            // Not a swipe back: the touch is the app's.
+            emu.nav.swipe = None;
+            return Ok(false);
+        }
+        // It's a swipe: start the pop, following the finger.
+        let stack = nav(emu, sw.nc).stack;
+        change_stack(emu, sw.nc, stack[..stack.len() - 1].to_vec(), true, true)?;
+        sw.tracking = true;
+        began = true;
+    }
+    emu.nav.swipe = Some(sw);
+    if let Some(t) = emu.nav.transitions.get(&sw.nc).cloned() {
+        let progress = (dx / t.width.max(1.0)).clamp(0.0, 1.0);
+        place(emu, &t, progress, progress, crate::animation::Timing::Linear, 1e-6);
+    }
+    Ok(began)
+}
+
+/// The finger lifted (or the touch was cancelled): finish the pop or put it back.
+pub(crate) fn swipe_ended(emu: &mut Emu, p: [f64; 2], now: f64, cancelled: bool) -> Result<()> {
+    let Some(sw) = emu.nav.swipe.take() else { return Ok(()) };
+    if !sw.tracking {
+        return Ok(());
+    }
+    let Some(t) = emu.nav.transitions.get(&sw.nc).cloned() else { return Ok(()) };
+    let w = t.width.max(1.0);
+    let progress = ((p[0] - sw.start[0]) / w).clamp(0.0, 1.0);
+    let (x0, t0) = if (now - sw.last.1).abs() > 1e-6 { sw.last } else { sw.prev };
+    let velocity = if now > t0 { (p[0] - x0) / (now - t0) } else { 0.0 };
+    let finish = !cancelled && progress + velocity / w * SWIPE_PROJECTION > 0.5;
+    let (omega, zeta, _) = POP_SPRING;
+    // The spring starts at the finger's speed, as a fraction of the distance left per second.
+    let (to, left) = if finish { (1.0, w * (1.0 - progress)) } else { (0.0, w * progress) };
+    let v = if left > 0.5 { velocity * if finish { 1.0 } else { -1.0 } / left } else { 0.0 };
+    let (timing, duration) = crate::animation::transition_spring((omega, zeta, v.max(0.0)));
+    place(emu, &t, progress, to, timing, duration);
+    if finish {
+        crate::uikit::after_on_main(emu, duration, finish_fire, sw.nc)
+    } else {
+        crate::uikit::after_on_main(emu, duration, cancel_fire, sw.nc)
+    }
+}
+
+fn cancel_fire(emu: &mut Emu) -> Result<()> {
+    let nc = emu.arg(1);
+    let Some(t) = emu.nav.transitions.remove(&nc) else { return Ok(()) };
+    cancel(emu, t)
+}
+
+/// A swipe back let go short: everything back as it was, with UIKit's
+/// callbacks for a cancelled transition.
+fn cancel(emu: &mut Emu, t: Transition) -> Result<()> {
+    let Transition { nc, old_stack, old_top, new_top, removed, added, moving, dim, cards, .. } = t;
+    for l in moving {
+        crate::animation::end_transition(emu, l);
+    }
+    for v in cards.into_iter().chain([dim]) {
+        if v != 0 {
+            send(emu, v, "removeFromSuperview", &[])?;
+            send(emu, v, "release", &[])?;
+        }
+    }
+    nav_mut(emu, nc).stack = old_stack;
+    // The screen it was going back to leaves again; the one it was leaving stays.
+    if let Some(nt) = new_top {
+        send(emu, nt, "viewWillDisappear:", &[1])?;
+        let v = send(emu, nt, "view", &[])?;
+        send(emu, v, "removeFromSuperview", &[])?;
+        send(emu, nt, "viewDidDisappear:", &[1])?;
+    }
+    if let Some(ot) = old_top {
+        send(emu, ot, "viewWillAppear:", &[1])?;
+        send(emu, ot, "viewDidAppear:", &[1])?;
+    }
+    for &vc in &removed {
+        emu.nav.moving_from.remove(&vc);
+        send(emu, vc, "didMoveToParentViewController:", &[nc])?;
+    }
+    for &vc in &added {
+        emu.nav.moving_to.remove(&vc);
+    }
+    let container = nav(emu, nc).container;
+    layout_container(emu, container)?;
+    Ok(())
 }
 
 /// The run-loop callout when a push or pop settles.
@@ -418,15 +650,21 @@ fn finish(emu: &mut Emu, t: Transition) -> Result<()> {
     for &vc in &removed {
         remove_from_parent(emu, vc)?;
     }
+    let container = nav(emu, nc).container;
+    let shown = container != 0 && view(emu, container).window != 0;
     if old_top != new_top {
         if let Some(ot) = old_top {
             // Still on the stack (pushed over), or not: either way its view leaves the container.
             let v = send(emu, ot, "view", &[])?;
             send(emu, v, "removeFromSuperview", &[])?;
-            send(emu, ot, "viewDidDisappear:", &[a])?;
+            if shown {
+                send(emu, ot, "viewDidDisappear:", &[a])?;
+            }
         }
         if let Some(nt) = new_top {
-            send(emu, nt, "viewDidAppear:", &[a])?;
+            if shown {
+                send(emu, nt, "viewDidAppear:", &[a])?;
+            }
             delegate_call(emu, delegate, "navigationController:didShowViewController:animated:", &[nc, nt, a])?;
         }
     }

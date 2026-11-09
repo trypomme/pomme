@@ -281,6 +281,8 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         let recognizers = recognizers_for(emu, hit)?;
         emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false, delivered: false });
         emu.touch.active = t;
+        // UIKit's back swipe (the navigation controller's edge pan) may take this touch.
+        crate::navigation::swipe_began(emu, [x, y], now)?;
         crate::scrollview::touch_began(emu, hit, [x, y], at_ns)?;
         // Inside a scroll view that delays content touches, the view hears
         // of the touch only once the finger has stayed put a while.
@@ -300,6 +302,21 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
     };
     // A scroll view starting to drag takes the touch from the view under the
     // finger (which it may decline to do once that view has the touch).
+    // A back swipe that has the touch: the pop follows the finger; the app sees none of it.
+    if phase == MOVED && crate::navigation::swipe_moved(emu, [x, y], now)? {
+        take_from_view(emu, touch)?;
+    }
+    if crate::navigation::swiping(emu) {
+        if phase == ENDED || phase == CANCELLED {
+            crate::navigation::swipe_ended(emu, [x, y], now, phase == CANCELLED)?;
+            emu.touch.active = 0;
+        }
+        return Ok(());
+    }
+    if phase == ENDED || phase == CANCELLED {
+        // A touch that never became a swipe.
+        crate::navigation::swipe_ended(emu, [x, y], now, true)?;
+    }
     if phase == MOVED {
         let tc = emu.touch.touches[&touch].clone();
         let content = if tc.delivered && !tc.view_cancelled { tc.view } else { 0 };
