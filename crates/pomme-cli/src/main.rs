@@ -82,7 +82,7 @@ enum Cmd {
         #[command(flatten)]
         clipboard: ClipboardArgs,
         #[command(flatten)]
-        orientation: OrientationArgs,
+        state: DeviceStateArgs,
         /// Run live in a window that looks like the iOS Simulator: click and drag to
         /// touch, type into the focused field, ⌘← / ⌘→ (Ctrl on Windows and Linux)
         /// to turn the phone. Runs until the window closes (no step or time limit).
@@ -108,7 +108,8 @@ enum Cmd {
 }
 
 #[derive(clap::Args)]
-struct OrientationArgs {
+/// How the phone is held, connected and set up.
+struct DeviceStateArgs {
     /// How the phone is held at launch: `portrait` (the default), `landscape` (turned
     /// to the left: the island on the left; = `landscape-right`, as UIKit names the
     /// interface then), `landscape-left` or `portrait-upside-down`. The interface
@@ -125,12 +126,17 @@ struct OrientationArgs {
     /// through the Network framework (NWPathMonitor, expo-network …); offline, requests fail.
     #[arg(long, value_parser = parse_network)]
     network: Vec<(pomme_hle::network::Path, Option<f64>)>,
+    /// Face ID / Touch ID, as the Simulator's Features menu sets it: `off` (not enrolled,
+    /// the default), `match` (enrolled; a matching face or finger) or `no-match`.
+    #[arg(long, default_value = "off")]
+    biometry: pomme_hle::keychain::Biometry,
 }
 
-impl OrientationArgs {
+impl DeviceStateArgs {
     fn apply(&self, emu: &mut pomme_hle::Emu) {
         emu.ui.device_orientation = self.held;
         emu.ui.rotations = self.rotate.iter().map(|&(o, t)| ((t * 1e9) as u64, o)).collect();
+        emu.keychain.biometry = self.biometry;
         for &(p, at) in &self.network {
             match at {
                 None => emu.network.path = p,
@@ -229,7 +235,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, orientation, window } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, window } => {
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -240,12 +246,12 @@ fn main() -> Result<()> {
                 None => (path, sysroot),
             };
             if window {
-                let config = pomme_desktop::Config { device, orientation: orientation.held, title: format!("{} — iOS {ios}", device.name) };
+                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name) };
                 let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
                 let out = result.clone();
                 pomme_desktop::launch(config, move |host, scale| {
                     let r = make_net(offline, &fixture).and_then(|net| {
-                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation, Some((host, scale)))
+                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, Some((host, scale)))
                     });
                     *out.lock().unwrap() = r;
                 })
@@ -253,7 +259,7 @@ fn main() -> Result<()> {
                 return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
             }
             let net = make_net(offline, &fixture)?;
-            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &orientation, None)
+            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, None)
         }
     }
 }
@@ -606,7 +612,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, orientation: &OrientationArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -619,7 +625,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.device = device;
     clipboard.apply(&mut emu)?;
-    orientation.apply(&mut emu);
+    state.apply(&mut emu);
     emu.ui.launch_url = url;
     for (text, t) in typing {
         emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (t * 1e9) as u64, text: text.clone() });

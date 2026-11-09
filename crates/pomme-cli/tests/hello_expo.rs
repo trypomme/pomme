@@ -653,3 +653,36 @@ fn offline_network_fails_requests() {
     let views = run_for(&mut emu, 6.0);
     assert!(views.contains("Couldn't load"), "{views}");
 }
+
+/// The storage screen's lines (AsyncStorage, SecureStore, the Face ID-protected value).
+fn storage_screen(biometry: pomme_hle::keychain::Biometry) -> Option<(String, String, String)> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///storage".into());
+    emu.keychain.biometry = biometry;
+    let v = run_for(&mut emu, 5.0);
+    let line = |needle: &str| v.lines().find(|l| l.contains(needle)).map(|l| l.trim().to_string()).unwrap_or_else(|| panic!("no {needle:?} in\n{v}"));
+    Some((line("\"async "), line("\"secure "), line("\"protected ")))
+}
+
+/// AsyncStorage (files in the data container) and expo-secure-store (the
+/// Keychain) round trips: replacing, merging, removing, keychain services
+/// kept apart, deleting. Face ID isn't enrolled, so the protected value can't be read.
+#[test]
+fn async_storage_and_secure_store() {
+    use pomme_hle::keychain::Biometry;
+    let Some((async_line, secure, protected)) = storage_screen(Biometry::NotEnrolled) else { return };
+    assert!(async_line.contains(r#""async hello · b,greeting,profile · a=null b=2 · {\"name\":\"Ada\",\"city\":\"London\"}""#), "{async_line}");
+    assert!(secure.contains("\"secure def456 · null · x · null · null · available true · biometrics false\""), "{secure}");
+    assert!(protected.contains("\"protected error"), "{protected}");
+}
+
+/// With Face ID enrolled and a matching face, the protected value reads back; with a face that doesn't match, it doesn't.
+#[test]
+fn secure_store_with_face_id() {
+    use pomme_hle::keychain::Biometry;
+    let Some((_, secure, protected)) = storage_screen(Biometry::Matching) else { return };
+    assert!(secure.contains("biometrics true\""), "{secure}");
+    assert!(protected.contains("\"protected opensesame\""), "{protected}");
+    let (_, _, protected) = storage_screen(Biometry::NonMatching).unwrap();
+    assert!(protected.contains("\"protected error"), "{protected}");
+}

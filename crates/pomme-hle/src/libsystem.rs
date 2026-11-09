@@ -1158,8 +1158,8 @@ fn dispatch_queue_create(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-/// The one global queue (every quality of service is the same here).
-fn dispatch_get_global_queue(emu: &mut Emu) -> Result<()> {
+/// The one global queue (every quality of service is the same here); its work runs on threads.
+pub(crate) fn global_queue(emu: &mut Emu) -> Result<u64> {
     if emu.sys.global_queue == 0 {
         let cls = crate::objc::host_class(emu, "OS_dispatch_queue")?;
         let q = emu.alloc(64)?;
@@ -1168,7 +1168,12 @@ fn dispatch_get_global_queue(emu: &mut Emu) -> Result<()> {
         emu.write_u64(q + 8, label)?;
         emu.sys.global_queue = q;
     }
-    emu.ret(emu.sys.global_queue);
+    Ok(emu.sys.global_queue)
+}
+
+fn dispatch_get_global_queue(emu: &mut Emu) -> Result<()> {
+    let q = global_queue(emu)?;
+    emu.ret(q);
     Ok(())
 }
 

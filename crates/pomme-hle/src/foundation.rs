@@ -2918,10 +2918,15 @@ fn data_range_of(emu: &mut Emu) -> Result<()> {
 /// NSDataWritingWithoutOverwriting (2) refuses an existing file. On failure,
 /// `*error` (if given) gets NSCocoaErrorDomain's NSFileWriteUnknownError (512).
 fn data_write(emu: &mut Emu, path: &str, options: u64, error: u64) -> Result<()> {
-    const WITHOUT_OVERWRITING: u64 = 2;
     let bytes = data_bytes(emu, emu.arg(0))?;
+    write_file(emu, path, &bytes, options, error)
+}
+
+/// Write `bytes` to `path` for NSData and NSString's writeTo… methods.
+fn write_file(emu: &mut Emu, path: &str, bytes: &[u8], options: u64, error: u64) -> Result<()> {
+    const WITHOUT_OVERWRITING: u64 = 2;
     let exists = crate::fs::exists(emu, path).is_some();
-    let ok = !(options & WITHOUT_OVERWRITING != 0 && exists) && crate::fs::write_data_file(emu, path, &bytes);
+    let ok = !(options & WITHOUT_OVERWRITING != 0 && exists) && crate::fs::write_data_file(emu, path, bytes);
     if !ok && error != 0 {
         let domain = new_nsstring(emu, "NSCocoaErrorDomain")?;
         let cls = host_class(emu, "NSError")?;
@@ -2930,6 +2935,25 @@ fn data_write(emu: &mut Emu, path: &str, options: u64, error: u64) -> Result<()>
         emu.write_u64(error, err)?;
     }
     ret_bool(emu, ok)
+}
+
+/// `-writeToFile:atomically:encoding:error:` (and the URL form): the string
+/// in that encoding. One that can't hold every character fails
+/// (NSFileWriteInapplicableStringEncodingError, 517).
+fn string_write(emu: &mut Emu, path: &str, enc: u64, error: u64) -> Result<()> {
+    let s = emu.arg(0);
+    match encode(emu, s, enc, 0)? {
+        Some(bytes) => write_file(emu, path, &bytes, 0, error),
+        None => {
+            if error != 0 {
+                let domain = new_nsstring(emu, "NSCocoaErrorDomain")?;
+                let cls = host_class(emu, "NSError")?;
+                let err = send(emu, cls, "errorWithDomain:code:userInfo:", &[domain, 517, 0])?;
+                emu.write_u64(error, err)?;
+            }
+            ret_bool(emu, false)
+        }
+    }
 }
 
 fn url_file_path(emu: &mut Emu, url: u64) -> Result<String> {
@@ -3676,6 +3700,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSData", false, "initWithContentsOfURL:options:error:", data_with_contents_of_url),
     ("NSData", false, "length", data_length),
     ("NSData", false, "rangeOfData:options:range:", data_range_of),
+    ("NSString", false, "writeToFile:atomically:encoding:error:", |e| {
+        let (path, enc, error) = (nsstring(e, e.arg(2))?, e.arg(4), e.arg(5));
+        string_write(e, &path, enc, error)
+    }),
+    ("NSString", false, "writeToURL:atomically:encoding:error:", |e| {
+        let (enc, error) = (e.arg(4), e.arg(5));
+        let path = url_file_path(e, e.arg(2))?;
+        string_write(e, &path, enc, error)
+    }),
     ("NSData", false, "writeToFile:atomically:", |e| {
         let path = nsstring(e, e.arg(2))?;
         data_write(e, &path, 0, 0)
@@ -4093,6 +4126,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSArray", false, "init", array_init),
     ("NSArray", true, "arrayWithObjects:count:", array_with_objects_count),
     ("NSArray", false, "initWithObjects:count:", array_with_objects_count),
+    ("NSArray", false, "initWithObjects:", array_with_objects_varargs),
     ("NSArray", true, "arrayWithObject:", array_with_object),
     ("NSArray", true, "arrayWithObjects:", array_with_objects_varargs),
     ("NSArray", false, "isEqualToArray:", array_is_equal),
@@ -4184,6 +4218,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSSet", false, "initWithArray:", set_with_array),
     ("NSSet", true, "setWithObjects:count:", set_with_objects_count),
     ("NSSet", false, "initWithObjects:count:", set_with_objects_count),
+    ("NSSet", false, "initWithObjects:", set_with_objects_varargs),
     ("NSSet", true, "setWithObject:", set_with_object),
     ("NSMutableSet", true, "setWithCapacity:", set_empty),
     ("NSMutableSet", false, "initWithCapacity:", set_empty),
