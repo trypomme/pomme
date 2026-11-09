@@ -2,8 +2,8 @@
 //!
 //! Shared by the loader (which fills it) and the CPU (which executes from it).
 //!
-//! Deliberately simple for now (one `Vec<u8>` per region). The CPU will
-//! eventually want a page-table-like fast path, but the API stays the same.
+//! One `Vec<u8>` per region, found by binary search, with a small cache in
+//! front (a software TLB): most accesses hit a page used a moment ago.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prot {
@@ -60,12 +60,54 @@ pub enum MemError {
     Overlap { name: String, base: u64, size: u64, other: String },
 }
 
-#[derive(Debug, Default)]
+/// TLB slots (direct-mapped by page number).
+const TLB_SLOTS: usize = 1024;
+
+/// A page recently found in a region: which one, as of which mapping generation.
+#[derive(Debug, Clone, Copy, Default)]
+struct TlbEntry {
+    page: u64,
+    region: u32,
+    generation: u32,
+}
+
+#[derive(Debug)]
 pub struct Memory {
     regions: Vec<Region>,
+    /// Page → region index for recent accesses. A hit is checked against the
+    /// region's bounds, so pages shared by two regions stay correct.
+    tlb: Box<[std::cell::Cell<TlbEntry>]>,
+    /// Bumped whenever regions move (a map), which empties the TLB.
+    generation: u32,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::default()); TLB_SLOTS].into_boxed_slice(), generation: 1 }
+    }
 }
 
 impl Memory {
+    /// The index of the region holding `addr` (untagged).
+    #[inline(always)]
+    fn find(&self, addr: u64) -> Option<usize> {
+        let page = addr / PAGE_SIZE;
+        let slot = &self.tlb[page as usize & (TLB_SLOTS - 1)];
+        let e = slot.get();
+        if e.page == page && e.generation == self.generation {
+            let r = &self.regions[e.region as usize];
+            if addr >= r.base && addr < r.end() {
+                return Some(e.region as usize);
+            }
+        }
+        let i = self.regions.partition_point(|r| r.base <= addr).checked_sub(1)?;
+        if addr >= self.regions[i].end() {
+            return None;
+        }
+        slot.set(TlbEntry { page, region: i as u32, generation: self.generation });
+        Some(i)
+    }
+
     pub fn regions(&self) -> &[Region] {
         &self.regions
     }
@@ -87,21 +129,22 @@ impl Memory {
             return Err(MemError::Overlap { name, base, size, other: other.name.clone() });
         }
         self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name });
+        // Indices after it moved.
+        self.generation = self.generation.wrapping_add(1).max(1);
         Ok(&mut self.regions[idx])
     }
 
+    #[inline(always)]
     pub fn region_of(&self, addr: u64) -> Option<&Region> {
-        let idx = self.regions.partition_point(|r| r.base <= addr).checked_sub(1)?;
-        let r = &self.regions[idx];
-        (addr < r.end()).then_some(r)
+        self.find(addr).map(|i| &self.regions[i])
     }
 
+    #[inline(always)]
     fn region_of_mut(&mut self, addr: u64) -> Option<&mut Region> {
-        let idx = self.regions.partition_point(|r| r.base <= addr).checked_sub(1)?;
-        let r = &mut self.regions[idx];
-        (addr < r.end()).then_some(r)
+        self.find(addr).map(|i| &mut self.regions[i])
     }
 
+    #[inline]
     pub fn read(&self, addr: u64, len: usize) -> Result<&[u8], MemError> {
         let addr = untag(addr);
         let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
@@ -109,6 +152,7 @@ impl Memory {
         r.data.get(off..off + len).ok_or(MemError::Unmapped(addr + len as u64))
     }
 
+    #[inline]
     pub fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), MemError> {
         let addr = untag(addr);
         let r = self.region_of_mut(addr).ok_or(MemError::Unmapped(addr))?;
@@ -121,42 +165,52 @@ impl Memory {
         Ok(())
     }
 
+    #[inline]
     pub fn read_u8(&self, addr: u64) -> Result<u8, MemError> {
         Ok(self.read(addr, 1)?[0])
     }
 
+    #[inline]
     pub fn read_u16(&self, addr: u64) -> Result<u16, MemError> {
         Ok(u16::from_le_bytes(self.read(addr, 2)?.try_into().unwrap()))
     }
 
+    #[inline]
     pub fn read_u128(&self, addr: u64) -> Result<u128, MemError> {
         Ok(u128::from_le_bytes(self.read(addr, 16)?.try_into().unwrap()))
     }
 
+    #[inline]
     pub fn read_u32(&self, addr: u64) -> Result<u32, MemError> {
         Ok(u32::from_le_bytes(self.read(addr, 4)?.try_into().unwrap()))
     }
 
+    #[inline]
     pub fn read_u64(&self, addr: u64) -> Result<u64, MemError> {
         Ok(u64::from_le_bytes(self.read(addr, 8)?.try_into().unwrap()))
     }
 
+    #[inline]
     pub fn write_u64(&mut self, addr: u64, v: u64) -> Result<(), MemError> {
         self.write(addr, &v.to_le_bytes())
     }
 
+    #[inline]
     pub fn write_u8(&mut self, addr: u64, v: u8) -> Result<(), MemError> {
         self.write(addr, &[v])
     }
 
+    #[inline]
     pub fn write_u16(&mut self, addr: u64, v: u16) -> Result<(), MemError> {
         self.write(addr, &v.to_le_bytes())
     }
 
+    #[inline]
     pub fn write_u32(&mut self, addr: u64, v: u32) -> Result<(), MemError> {
         self.write(addr, &v.to_le_bytes())
     }
 
+    #[inline]
     pub fn write_u128(&mut self, addr: u64, v: u128) -> Result<(), MemError> {
         self.write(addr, &v.to_le_bytes())
     }
