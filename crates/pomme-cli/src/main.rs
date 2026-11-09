@@ -83,6 +83,8 @@ enum Cmd {
         clipboard: ClipboardArgs,
         #[command(flatten)]
         state: DeviceStateArgs,
+        #[command(flatten)]
+        profile: ProfileArgs,
         /// Run live in a window that looks like the iOS Simulator: click and drag to
         /// touch, type into the focused field, ⌘← / ⌘→ (Ctrl on Windows and Linux)
         /// to turn the phone. Runs until the window closes (no step or time limit).
@@ -173,6 +175,20 @@ fn parse_rotate(s: &str) -> std::result::Result<(pomme_hle::device::Orientation,
 }
 
 #[derive(clap::Args)]
+/// Where the app's time goes.
+struct ProfileArgs {
+    /// Profile the app's code and write the profile here when the run stops, for
+    /// https://www.speedscope.app (flame chart, left-heavy and sandwich views; one
+    /// profile per thread). Time is in instructions, so the same run profiles the
+    /// same way every time. The functions with the most instructions are printed too.
+    #[arg(long, value_name = "FILE")]
+    profile: Option<PathBuf>,
+    /// Instructions between profile samples.
+    #[arg(long, default_value_t = 10_000, value_name = "N")]
+    profile_every: u64,
+}
+
+#[derive(clap::Args)]
 struct ClipboardArgs {
     /// What the clipboard starts with: `empty` (the default), `host` (this machine's
     /// clipboard, live both ways: the app pastes what you copied and its copies land
@@ -248,7 +264,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, window } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, profile, window } => {
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -264,7 +280,7 @@ fn main() -> Result<()> {
                 let out = result.clone();
                 pomme_desktop::launch(config, move |host, scale| {
                     let r = make_net(offline, &fixture).and_then(|net| {
-                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, Some((host, scale)))
+                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, Some((host, scale)))
                     });
                     *out.lock().unwrap() = r;
                 })
@@ -272,7 +288,7 @@ fn main() -> Result<()> {
                 return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
             }
             let net = make_net(offline, &fixture)?;
-            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, None)
+            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, None)
         }
     }
 }
@@ -625,7 +641,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, profile: &ProfileArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -677,8 +693,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         pomme_hle::touch::swipe(&mut emu.touch.script, (s.at * 1e9) as u64, s.from, s.to, (s.duration * 1e9) as u64);
     }
     emu.trace = trace;
-    if std::env::var("POMME_PROFILE").is_ok() {
-        emu.profile = Some(Default::default());
+    if profile.profile.is_some() {
+        emu.start_profiling(profile.profile_every);
     }
     // Debugging aid: POMME_BREAK=_sym1,Image:0xaddr,... prints the arguments of every call to those guest functions.
     if let Ok(list) = std::env::var("POMME_BREAK") {
@@ -711,15 +727,12 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     let elapsed = start.elapsed();
     let steps = emu.cpu.steps;
     let mips = steps as f64 / elapsed.as_secs_f64() / 1e6;
-    if let Some(profile) = emu.profile.take() {
-        let total: u64 = profile.values().sum::<u64>().max(1);
-        let mut rows: Vec<_> = profile.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
-        println!("\nprofile (instructions by thread and calling image):");
-        for ((tid, image), n) in rows.into_iter().take(20) {
-            let thread = emu.th.threads.get(tid).map_or("?", |t| t.name.as_str());
-            println!("  {:5.1}%  {n:>12}  thread {tid} {thread}  {image}", n as f64 * 100.0 / total as f64);
-        }
+    if let (Some(out), Some(p)) = (&profile.profile, emu.profiler.take()) {
+        let names = |tid: usize| emu.th.threads.get(tid).map_or(String::new(), |t| t.name.clone());
+        let title = emu.p.bundle_id.clone().unwrap_or_else(|| emu.p.main().name.clone());
+        std::fs::write(out, p.speedscope(&title, names)).with_context(|| format!("writing {}", out.display()))?;
+        println!("\nprofile: {} samples, every {} instructions, written to {} (open it at https://www.speedscope.app)", p.samples(), p.every, out.display());
+        print!("{}", p.summary(15));
     }
     match result {
         Ok(code) => println!("\nexit({code}) after {steps} instructions in {elapsed:.2?}"),

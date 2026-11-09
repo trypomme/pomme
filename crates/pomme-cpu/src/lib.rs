@@ -32,6 +32,8 @@ pub enum Exit {
     Fault { addr: u64 },
     /// `run` hit its step budget.
     StepLimit,
+    /// `steps` reached [`Cpu::sample_at`]: a profiler's turn (pc is the next instruction).
+    Sample,
 }
 
 impl From<MemError> for Exit {
@@ -66,6 +68,8 @@ pub struct Cpu {
     pub steps: u64,
     /// Ticks added to the clock when every thread was idle (virtual time skipped ahead).
     pub clock_offset: u64,
+    /// When `steps` reaches this, `run` stops with [`Exit::Sample`] (0: never).
+    pub sample_at: u64,
     /// Address held by the exclusive monitor (LDXR/STXR).
     exclusive: Option<u64>,
     /// Next pc, set by branches during a step.
@@ -91,12 +95,14 @@ impl Cpu {
     /// Run until something needs the host, or `max_steps` instructions retire.
     pub fn run(&mut self, mem: &mut Memory, max_steps: u64) -> Exit {
         let limit = self.steps.saturating_add(max_steps);
+        // One check covers both the budget and the next profiler sample.
+        let stop = if self.sample_at == 0 { limit } else { limit.min(self.sample_at) };
         loop {
             if self.pc == HOST_RETURN {
                 return Exit::Returned;
             }
-            if self.steps >= limit {
-                return Exit::StepLimit;
+            if self.steps >= stop {
+                return if self.sample_at != 0 && self.steps >= self.sample_at { Exit::Sample } else { Exit::StepLimit };
             }
             if let Err(exit) = self.step(mem) {
                 return exit;

@@ -88,6 +88,8 @@ pub struct Thread {
     tsd: HashMap<u64, u64>,
     /// `emu.depth` when its current slice started: blocking at that depth can unwind.
     base_depth: usize,
+    /// The profiler's host-frame count when its current slice started.
+    pub(crate) host_base: usize,
     /// Top (highest address) and size of its stack.
     stack_top: u64,
     stack_size: u64,
@@ -127,6 +129,7 @@ pub(crate) fn init(emu: &mut Emu) {
         name: "main".into(),
         tsd: HashMap::new(),
         base_depth: 0,
+        host_base: 0,
         stack_top: crate::STACK_TOP,
         stack_size: crate::STACK_SIZE,
     });
@@ -161,11 +164,12 @@ fn switch_to(emu: &mut Emu, tid: usize) {
     if cur == tid {
         return;
     }
-    let (steps, offset) = (emu.cpu.steps, emu.cpu.clock_offset);
+    let (steps, offset, sample_at) = (emu.cpu.steps, emu.cpu.clock_offset, emu.cpu.sample_at);
     let next = std::mem::take(&mut emu.th.threads[tid].cpu);
     emu.th.threads[cur].cpu = std::mem::replace(&mut emu.cpu, next);
     emu.cpu.steps = steps;
     emu.cpu.clock_offset = offset;
+    emu.cpu.sample_at = sample_at;
     emu.th.current = tid;
     if emu.trace {
         println!("{:>10} --- thread {tid} ---", steps);
@@ -192,6 +196,7 @@ pub fn spawn(emu: &mut Emu, pc: u64, arg: u64, name: &str) -> Result<usize> {
         name: name.into(),
         tsd: HashMap::new(),
         base_depth: 0,
+        host_base: 0,
         stack_top,
         stack_size: stack_top - stack,
     });
@@ -207,6 +212,8 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
     let me = emu.th.current;
     switch_to(emu, tid);
     emu.th.threads[tid].base_depth = emu.depth;
+    // Host frames from here up are this thread's (another may be waiting in one below).
+    emu.th.threads[tid].host_base = emu.profiler.as_ref().map_or(0, |p| p.host_depth());
     let limit = emu.cpu.steps + QUANTUM;
     let result = loop {
         let budget = limit.saturating_sub(emu.cpu.steps).min(emu.max_steps.saturating_sub(emu.cpu.steps));

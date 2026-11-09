@@ -81,8 +81,14 @@ Debugging:
   `/usr/lib/system/libunwind.dylib`), so throws are caught where the app catches them,
   destructors and all. An exception that would unwind through pomme's own code (a system
   call that called back into the app) stops the run, saying so.
-- `POMME_PROFILE=1 pomme run …` adds a profile when the run stops: instructions by thread and
-  by the image that ran them (React Native apps: mostly Hermes on the JavaScript thread).
+- `pomme run … --profile out.json` profiles the app's code: every 10,000 instructions
+  (`--profile-every N`) it records the running thread's whole stack, through pomme's own
+  functions where the app called into the system and was called back. When the run stops it
+  writes `out.json` for [speedscope](https://www.speedscope.app) (flame chart, left-heavy and
+  sandwich views, one profile per thread) and prints the functions with the most
+  instructions. Names are demangled. Time is in instructions, the guest's clock, so the same
+  run profiles the same way every time; what pomme's own code costs in wall time isn't in it
+  (profile the `pomme` binary itself for that, e.g. with samply or Instruments).
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`

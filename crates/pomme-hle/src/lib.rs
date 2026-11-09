@@ -9,6 +9,7 @@
 //! calling the app delegate.
 
 pub mod heap;
+pub mod profile;
 mod bundle;
 pub use bundle::bundle_resource;
 mod calayer;
@@ -177,11 +178,8 @@ pub struct Emu {
     pub time_limit_ns: Option<u64>,
     /// Print every system call and message send.
     pub trace: bool,
-    /// Instructions by (thread, image), when profiling (`POMME_PROFILE=1`):
-    /// what ran since the last call out of guest code, charged to the image
-    /// that made the call.
-    pub profile: Option<std::collections::HashMap<(usize, String), u64>>,
-    profile_mark: u64,
+    /// The guest profiler, when profiling (see profile.rs).
+    pub profiler: Option<profile::Profiler>,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
     /// main's argc/argv, for `CommandLine` and `_NSGetArgv`.
@@ -287,8 +285,7 @@ impl Emu {
             max_steps: u64::MAX,
             time_limit_ns: None,
             trace: false,
-            profile: None,
-            profile_mark: 0,
+            profiler: None,
             calls: HashMap::new(),
             argc: 0,
             argv: 0,
@@ -574,26 +571,25 @@ impl Emu {
     /// Handle a CPU exit that needs the host: a stub call, a hooked function,
     /// or a host thunk. Anything else is a stop.
     pub(crate) fn service_trap(&mut self, exit: Exit) -> Result<()> {
-        if self.profile.is_some() {
-            let n = self.cpu.steps.saturating_sub(self.profile_mark);
-            self.profile_mark = self.cpu.steps;
-            let image = self.p.image_at(self.cpu.x[30]).map_or_else(|| "?".to_string(), |i| i.name.clone());
-            let key = (self.th.current, image);
-            *self.profile.as_mut().unwrap().entry(key).or_default() += n;
-        }
         match exit {
+            Exit::Sample => {
+                profile::sample(self);
+                Ok(())
+            }
             Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch(),
             Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
                 let (f, original) = self.hooks[&self.cpu.pc];
                 self.hook_original = original;
                 self.hook_target = self.cpu.pc;
+                let frame = profile::HostFrame::Hook(self.cpu.pc);
                 self.cpu.pc = self.cpu.x[30];
-                f(self)
+                self.in_host(frame, f)
             }
             Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
-                let f = self.thunks[((self.cpu.pc - THUNK_BASE) / 4) as usize];
+                let i = ((self.cpu.pc - THUNK_BASE) / 4) as usize;
+                let f = self.thunks[i];
                 self.cpu.pc = self.cpu.x[30];
-                f(self)
+                self.in_host(profile::HostFrame::Thunk(i), f)
             }
             exit => Err(Stop::Cpu { exit, pc: self.cpu.pc }),
         }
@@ -615,8 +611,28 @@ impl Emu {
             }
         }
         *self.calls.entry(self.p.stubs.at(self.cpu.pc).unwrap().symbol.clone()).or_default() += 1;
+        let frame = profile::HostFrame::Stub(self.cpu.pc);
         self.cpu.pc = caller;
-        f(self)
+        self.in_host(frame, f)
+    }
+
+    /// Run a host function, telling the profiler (if any) it's on the stack.
+    fn in_host(&mut self, frame: profile::HostFrame, f: HostFn) -> Result<()> {
+        let Some(p) = self.profiler.as_mut() else { return f(self) };
+        // pc is back at the guest caller's return address by now.
+        p.push_host(profile::HostCall { frame, ret: self.cpu.pc });
+        let r = f(self);
+        if let Some(p) = self.profiler.as_mut() {
+            p.pop_host();
+        }
+        r
+    }
+
+    /// Start profiling guest code: a sample every `every` instructions (see profile.rs).
+    pub fn start_profiling(&mut self, every: u64) {
+        let p = profile::Profiler::new(every);
+        self.cpu.sample_at = self.cpu.steps + p.every;
+        self.profiler = Some(p);
     }
 
     /// A guest function pointer that runs `f` (same calling convention as a stub).

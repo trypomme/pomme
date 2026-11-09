@@ -478,6 +478,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpp_demangle"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1745,6 +1754,7 @@ dependencies = [
  "pomme-hle",
  "pomme-loader",
  "pomme-macho",
+ "serde_json",
  "ureq",
 ]
 
@@ -1772,6 +1782,7 @@ dependencies = [
 name = "pomme-hle"
 version = "0.1.0"
 dependencies = [
+ "cpp_demangle",
  "image",
  "md-5",
  "plist",
