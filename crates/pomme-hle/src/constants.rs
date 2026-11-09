@@ -56,6 +56,9 @@ const STRINGS: &[(&str, &str)] = &[
     ("kCAAnimationCubicPaced", "cubicPaced"),
     ("kCACornerCurveCircular", "circular"),
     ("kCACornerCurveContinuous", "continuous"),
+    // UIKit's sheet detent identifiers.
+    ("UISheetPresentationControllerDetentIdentifierMedium", "com.apple.UIKit.medium"),
+    ("UISheetPresentationControllerDetentIdentifierLarge", "com.apple.UIKit.large"),
     // ImageIO property keys and dictionaries.
     ("kCGImagePropertyPixelWidth", "PixelWidth"),
     ("kCGImagePropertyPixelHeight", "PixelHeight"),

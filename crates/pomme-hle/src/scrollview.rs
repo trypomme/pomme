@@ -85,6 +85,33 @@ fn set_bag_f64(emu: &mut Emu, v: u64, key: &str, x: f64) {
     objc::bag_set(emu, v, key, x.to_bits());
 }
 
+/// Whether a sheet may take a vertical drag that began on `hit` (going down
+/// when `down`): no scroll view between it and `stop` scrolls that way first —
+/// a scroll view at its top lets a downward drag move the sheet.
+pub(crate) fn sheet_may_drag(emu: &mut Emu, hit: u64, stop: u64, down: bool) -> Result<bool> {
+    let mut v = hit;
+    while v != 0 && v != stop {
+        if is_scroll_view(emu, v) && scroll_enabled(emu, v) && axes(emu, v)?[1] {
+            let (min, _) = range(emu, v)?;
+            let at_top = view(emu, v).bounds[1] <= min[1] + 0.5;
+            if !(at_top && down) {
+                return Ok(false);
+            }
+        }
+        v = view(emu, v).superview;
+    }
+    Ok(true)
+}
+
+/// Something else (a sheet's drag) took the touch: no scroll view pans it.
+pub(crate) fn abandon(emu: &mut Emu) {
+    if let Some(p) = emu.scroll.pan.take() {
+        for v in p.candidates {
+            set_flag(emu, v, "tracking", false);
+        }
+    }
+}
+
 pub fn is_scroll_view(emu: &mut Emu, v: u64) -> bool {
     let Ok(cls) = host_class(emu, "UIScrollView") else { return false };
     objc::is_kind_of(emu, v, cls).unwrap_or(false)

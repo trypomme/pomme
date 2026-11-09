@@ -61,6 +61,8 @@ pub struct State {
     presentations: Vec<Presentation>,
     /// A finger that may be swiping back from the left edge.
     swipe: Option<Swipe>,
+    /// A finger that may be dragging a sheet.
+    sheet_drag: Option<SheetDrag>,
 }
 
 /// The back swipe: a touch that began at the left edge over a stack that can go back.
@@ -101,6 +103,22 @@ struct Presentation {
     /// Presenting (true) or dismissing (false) right now, with the completion block to run.
     moving: Option<bool>,
     completion: u64,
+    /// A sheet's detents, smallest first: (identifier, its frame), and the one it's at.
+    detents: Vec<(String, [f64; 4])>,
+    detent: usize,
+    /// Dismissed by a drag: the sheet's delegate hears presentationControllerDidDismiss: after.
+    dragged_away: bool,
+}
+
+/// A finger on a sheet that may drag it.
+#[derive(Clone, Copy, Debug)]
+struct SheetDrag {
+    presented: u64,
+    hit: u64,
+    start: [f64; 2],
+    tracking: bool,
+    last: (f64, f64),
+    prev: (f64, f64),
 }
 
 // iOS 26's modal presentation on iPhone, measured in the Simulator
@@ -1115,6 +1133,9 @@ struct SheetDetent {
     height: Option<f64>,
     undimmed: bool,
     grabber: bool,
+    /// Every detent's sheet height, smallest first (None: large, attached), and which is shown.
+    all: Vec<(String, Option<f64>)>,
+    shown: usize,
 }
 
 /// What `UISheetPresentationController` says for `vc`, its detents resolved
@@ -1122,7 +1143,7 @@ struct SheetDetent {
 fn sheet_detent(emu: &mut Emu, vc: u64, max: f64) -> Result<SheetDetent> {
     let sc = emu.nav.props.get(&(vc, "pomme.sheet")).copied().unwrap_or(0);
     if sc == 0 {
-        return Ok(SheetDetent { height: None, undimmed: false, grabber: false });
+        return Ok(SheetDetent { height: None, undimmed: false, grabber: false, all: vec![(String::new(), None)], shown: 0 });
     }
     let grabber = crate::objc::bag_get(emu, sc, "prefersGrabberVisible").is_some_and(|g| g & 0xff != 0);
     let list = crate::objc::bag_get(emu, sc, "detents").unwrap_or(0);
@@ -1134,7 +1155,7 @@ fn sheet_detent(emu: &mut Emu, vc: u64, max: f64) -> Result<SheetDetent> {
         detents.push((id, detent_value(emu, d, max)?));
     }
     if detents.is_empty() {
-        return Ok(SheetDetent { height: None, undimmed: false, grabber });
+        return Ok(SheetDetent { height: None, undimmed: false, grabber, all: vec![(String::new(), None)], shown: 0 });
     }
     let id_of = |emu: &mut Emu, key: &str| crate::objc::bag_get(emu, sc, key).filter(|&s| s != 0).map(|s| foundation::nsstring(emu, s).unwrap_or_default());
     // It shows at the selected detent, else the smallest.
@@ -1146,8 +1167,21 @@ fn sheet_detent(emu: &mut Emu, vc: u64, max: f64) -> Result<SheetDetent> {
         Some(u) => detents.iter().find(|d| d.0 == u).is_some_and(|d| value <= d.1 + 0.5),
         None => false,
     };
-    let height = (value < max - 0.5).then_some(value + FLOAT_EXTRA);
-    Ok(SheetDetent { height, undimmed, grabber })
+    let height_of = |v: f64| (v < max - 0.5).then_some(v + FLOAT_EXTRA);
+    let height = height_of(value);
+    let mut all: Vec<(String, f64)> = detents.clone();
+    all.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let shown = all.iter().position(|d| (d.1 - value).abs() < 1e-6).unwrap_or(0);
+    let all = all.into_iter().map(|(id, v)| (id, height_of(v))).collect();
+    Ok(SheetDetent { height, undimmed, grabber, all, shown })
+}
+
+/// A sheet's frame at a detent of `height` (None: large, attached) in a `w` × `h` window.
+fn detent_frame(height: Option<f64>, w: f64, h: f64, top: f64) -> [f64; 4] {
+    match height {
+        Some(sh) => [FLOAT_INSET, h - FLOAT_INSET - sh, w - 2.0 * FLOAT_INSET, sh],
+        None => [0.0, top, w, h - top],
+    }
 }
 
 /// A detent's height: medium, large, or what its resolver returns.
@@ -1224,6 +1258,7 @@ fn present(emu: &mut Emu) -> Result<()> {
     let container = new_view(emu, [0.0, 0.0, w, h])?;
     send(emu, window, "addSubview:", &[container])?;
     let vview = send(emu, vc, "view", &[])?;
+    let mut sheet_detents: (Vec<(String, [f64; 4])>, usize) = (Vec::new(), 0);
     let (dim, sheet) = if sheet_style {
         let dim = new_view(emu, [0.0, 0.0, w, h])?;
         let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
@@ -1234,10 +1269,8 @@ fn present(emu: &mut Emu) -> Result<()> {
         let detent = sheet_detent(emu, vc, h - top - bottom)?;
         // The large detent attaches at the safe area's top, full width; smaller
         // ones float inset from the sides and bottom (iOS 26).
-        let frame = match detent.height {
-            Some(sh) => [FLOAT_INSET, h - FLOAT_INSET - sh, w - 2.0 * FLOAT_INSET, sh],
-            None => [0.0, top, w, h - top],
-        };
+        let frame = detent_frame(detent.height, w, h, top);
+        sheet_detents = (detent.all.iter().map(|(id, sh)| (id.clone(), detent_frame(*sh, w, h, top))).collect(), detent.shown);
         let sheet = new_view(emu, frame)?;
         view_mut(emu, sheet).clips = true;
         let l = send(emu, sheet, "layer", &[])?;
@@ -1276,7 +1309,20 @@ fn present(emu: &mut Emu) -> Result<()> {
     let completion = if completion != 0 { crate::libc::copy_block(emu, completion)? } else { 0 };
     // UIModalTransitionStyle: 0 cover vertical, 1 flip horizontal, 2 cross dissolve, 3 partial curl.
     let dissolve = emu.nav.props.get(&(vc, "modalTransitionStyle")).copied().unwrap_or(0) == 2;
-    let p = Presentation { presenter, presented: vc, container, dim, sheet, covers, dissolve, moving: Some(true), completion };
+    let p = Presentation {
+        presenter,
+        presented: vc,
+        container,
+        dim,
+        sheet,
+        covers,
+        dissolve,
+        moving: Some(true),
+        completion,
+        detents: sheet_detents.0,
+        detent: sheet_detents.1,
+        dragged_away: false,
+    };
     emu.nav.presentations.push(p.clone());
     let a = animated as u64;
     send(emu, vc, "viewWillAppear:", &[a])?;
@@ -1294,12 +1340,23 @@ fn present(emu: &mut Emu) -> Result<()> {
 /// Slide a presentation's view (the sheet, or the presented view) up or down
 /// the screen of height `h`, and fade its dimming; returns how long it takes.
 fn slide_modal(emu: &mut Emu, p: &Presentation, up: bool, h: f64) -> Result<f64> {
+    slide_modal_from(emu, p, up, h, None, 0.0)
+}
+
+/// As [`slide_modal`], down from where a drag left it (`from`, its presented
+/// centre) at `velocity` (pt/s down).
+fn slide_modal_from(emu: &mut Emu, p: &Presentation, up: bool, h: f64, from_drag: Option<[f64; 2]>, velocity: f64) -> Result<f64> {
     use crate::animation::{Prop, Val, transition, transition_spring};
     let moving = if p.sheet != 0 { p.sheet } else { send(emu, p.presented, "view", &[])? };
-    let (timing, duration) = transition_spring(if up { PRESENT_SPRING } else { DISMISS_SPRING });
     let c = view(emu, moving).center;
     let top = crate::uiview::frame_of(emu, moving)[1];
     let down = [c[0], c[1] + (h - top)];
+    let (o, z, v0) = if up { PRESENT_SPRING } else { DISMISS_SPRING };
+    let start = from_drag.unwrap_or(c);
+    let left = (down[1] - start[1]).abs().max(1.0);
+    let v = if from_drag.is_some() { (velocity / left).max(0.0) } else { v0 };
+    let (timing, duration) = transition_spring((o, z, v));
+    let c = if up { c } else { start };
     let l = send(emu, moving, "layer", &[])?;
     if p.dissolve {
         // Cross-dissolve: the same spring, on its opacity (measured in the iOS 26 Simulator).
@@ -1311,7 +1368,12 @@ fn slide_modal(emu: &mut Emu, p: &Presentation, up: bool, h: f64) -> Result<f64>
     }
     if p.dim != 0 {
         let dl = send(emu, p.dim, "layer", &[])?;
-        let (a, b) = if up { (0.0, 1.0) } else { (1.0, 0.0) };
+        // From a drag, the dimming fades from where the drag left it.
+        let from_dim = match from_drag {
+            Some(f) => (1.0 - (f[1] - view(emu, moving).center[1]) / view(emu, moving).bounds[3].max(1.0)).clamp(0.0, 1.0),
+            None => 1.0,
+        };
+        let (a, b) = if up { (0.0, 1.0) } else { (from_dim, 0.0) };
         view_mut(emu, p.dim).alpha = b;
         transition(emu, dl, Prop::Opacity, Val::N(a), Val::N(b), timing, duration);
     }
@@ -1424,7 +1486,210 @@ fn dismiss_now(emu: &mut Emu, vc: u64, notify: bool) -> Result<()> {
     if p.completion != 0 {
         crate::libsystem::call_block(emu, p.completion, &[])?;
     }
+    if p.dragged_away {
+        sheet_delegate(emu, vc, "presentationControllerDidDismiss:")?;
+    }
     send(emu, vc, "release", &[])?;
+    Ok(())
+}
+
+/// Tell the sheet's delegate (`presentationController.delegate`) `sel`, if it listens.
+fn sheet_delegate(emu: &mut Emu, vc: u64, sel: &str) -> Result<u64> {
+    let sc = emu.nav.props.get(&(vc, "pomme.sheet")).copied().unwrap_or(0);
+    let d = if sc != 0 { objc::bag_get(emu, sc, "delegate").unwrap_or(0) } else { 0 };
+    if d == 0 {
+        return Ok(1);
+    }
+    let s = objc::intern(emu, sel)?;
+    if !objc::responds(emu, d, s)? {
+        return Ok(1);
+    }
+    send(emu, d, sel, &[sc])
+}
+
+// ---- dragging a sheet ----
+
+/// How far the finger moves before it's a drag; how far ahead the release
+/// projects; how much a drag past the largest detent gives.
+const SHEET_SLOP: f64 = 10.0;
+const SHEET_PROJECTION: f64 = 0.2;
+const SHEET_RUBBER: f64 = 0.55;
+
+/// A finger went down at `p`: on the top sheet, it may drag it.
+pub(crate) fn sheet_began(emu: &mut Emu, hit: u64, p: [f64; 2], now: f64) -> Result<()> {
+    emu.nav.sheet_drag = None;
+    let Some(top) = emu.nav.presentations.last().cloned() else { return Ok(()) };
+    if top.sheet == 0 || top.moving.is_some() {
+        return Ok(());
+    }
+    let f = crate::uiview::frame_of(emu, top.sheet);
+    let o = crate::uiview::window_origin(emu, top.sheet);
+    if p[0] < o[0] || p[1] < o[1] || p[0] >= o[0] + f[2] || p[1] >= o[1] + f[3] {
+        return Ok(());
+    }
+    emu.nav.sheet_drag = Some(SheetDrag { presented: top.presented, hit, start: p, tracking: false, last: (p[1], now), prev: (p[1], now) });
+    Ok(())
+}
+
+pub(crate) fn sheet_dragging(emu: &Emu) -> bool {
+    emu.nav.sheet_drag.is_some_and(|d| d.tracking)
+}
+
+/// The finger moved. Ok(true): it just became the sheet's drag (the view under it loses the touch).
+pub(crate) fn sheet_moved(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<bool> {
+    let Some(mut d) = emu.nav.sheet_drag else { return Ok(false) };
+    d.prev = d.last;
+    d.last = (p[1], now);
+    let (dx, dy) = (p[0] - d.start[0], p[1] - d.start[1]);
+    let mut began = false;
+    if !d.tracking {
+        if dx.abs() < SHEET_SLOP && dy.abs() < SHEET_SLOP {
+            emu.nav.sheet_drag = Some(d);
+            return Ok(false);
+        }
+        let Some(i) = emu.nav.presentations.iter().position(|q| q.presented == d.presented) else { return Ok(false) };
+        let sheet = emu.nav.presentations[i].sheet;
+        if dx.abs() > dy.abs() || !crate::scrollview::sheet_may_drag(emu, d.hit, sheet, dy > 0.0)? {
+            emu.nav.sheet_drag = None;
+            return Ok(false);
+        }
+        crate::scrollview::abandon(emu);
+        d.tracking = true;
+        began = true;
+    }
+    emu.nav.sheet_drag = Some(d);
+    let Some(q) = emu.nav.presentations.iter().find(|q| q.presented == d.presented).cloned() else { return Ok(began) };
+    let rest = view(emu, q.sheet).center;
+    let frame = crate::uiview::frame_of(emu, q.sheet);
+    // Up to the largest detent's top it follows the finger; past it, it gives a little.
+    let highest = q.detents.iter().map(|x| x.1[1]).fold(frame[1], f64::min);
+    let room = frame[1] - highest;
+    let offset = if dy >= -room { dy } else { -room - rubber(-dy - room, frame[3]) };
+    move_sheet(emu, &q, [rest[0], rest[1] + offset]);
+    Ok(began)
+}
+
+fn rubber(x: f64, size: f64) -> f64 {
+    (1.0 - 1.0 / (x * SHEET_RUBBER / size.max(1.0) + 1.0)) * size
+}
+
+/// Hold the sheet (and its dimming) where a finger has it.
+fn move_sheet(emu: &mut Emu, q: &Presentation, centre: [f64; 2]) {
+    use crate::animation::{Prop, Timing, Val, transition};
+    let rest = view(emu, q.sheet).center;
+    let Ok(l) = send(emu, q.sheet, "layer", &[]) else { return };
+    transition(emu, l, Prop::Position, Val::P(centre), Val::P(centre), Timing::Linear, 1e-6);
+    if q.dim != 0
+        && let Ok(dl) = send(emu, q.dim, "layer", &[])
+    {
+        let h = view(emu, q.sheet).bounds[3].max(1.0);
+        let o = (1.0 - (centre[1] - rest[1]) / h).clamp(0.0, 1.0);
+        transition(emu, dl, Prop::Opacity, Val::N(o), Val::N(o), Timing::Linear, 1e-6);
+    }
+}
+
+/// The finger lifted: dismiss, settle on a detent, or spring back.
+pub(crate) fn sheet_ended(emu: &mut Emu, p: [f64; 2], now: f64, cancelled: bool) -> Result<()> {
+    let Some(d) = emu.nav.sheet_drag.take() else { return Ok(()) };
+    if !d.tracking {
+        return Ok(());
+    }
+    let Some(i) = emu.nav.presentations.iter().position(|q| q.presented == d.presented) else { return Ok(()) };
+    let q = emu.nav.presentations[i].clone();
+    let shown = crate::animation::presented_center(emu, q.sheet);
+    let rest = view(emu, q.sheet).center;
+    let frame = crate::uiview::frame_of(emu, q.sheet);
+    let (y0, t0) = if (now - d.last.1).abs() > 1e-6 { d.last } else { d.prev };
+    let velocity = if now > t0 { (p[1] - y0) / (now - t0) } else { 0.0 };
+    let top_now = frame[1] + (shown[1] - rest[1]);
+    let projected = top_now + velocity * SHEET_PROJECTION;
+    // Dragged down past half of the smallest detent: away it goes.
+    let smallest = q.detents.first().map_or(frame, |x| x.1);
+    let away = !cancelled && projected > smallest[1] + smallest[3] / 2.0;
+    if away {
+        let modal = emu.nav.props.get(&(q.presented, "isModalInPresentation")).copied().unwrap_or(0) & 0xff != 0;
+        let allowed = !modal && sheet_delegate(emu, q.presented, "presentationControllerShouldDismiss:")? & 0xff != 0;
+        if allowed {
+            sheet_delegate(emu, q.presented, "presentationControllerWillDismiss:")?;
+            emu.nav.presentations[i].moving = Some(false);
+            emu.nav.presentations[i].dragged_away = true;
+            send(emu, q.presented, "viewWillDisappear:", &[1])?;
+            if q.covers {
+                let pv = send(emu, q.presenter, "view", &[])?;
+                let window = view(emu, q.container).superview;
+                send(emu, window, "insertSubview:belowSubview:", &[pv, q.container])?;
+                send(emu, q.presenter, "viewWillAppear:", &[1])?;
+            }
+            let h = view(emu, q.container).bounds[3];
+            let duration = slide_modal_from(emu, &q, false, h, Some(shown), velocity.max(0.0))?;
+            return crate::uikit::after_on_main(emu, duration, dismiss_done_fire, q.presented);
+        }
+        sheet_delegate(emu, q.presented, "presentationControllerDidAttemptToDismiss:")?;
+    }
+    // Settle on the detent nearest where it was heading.
+    let target = if away || q.detents.is_empty() {
+        q.detent
+    } else {
+        (0..q.detents.len()).min_by(|&a, &b| (q.detents[a].1[1] - projected).abs().total_cmp(&(q.detents[b].1[1] - projected).abs())).unwrap_or(q.detent)
+    };
+    settle(emu, i, target, shown, velocity)
+}
+
+/// Put the sheet at detent `target`, springing there from where it's shown.
+fn settle(emu: &mut Emu, i: usize, target: usize, shown: [f64; 2], velocity: f64) -> Result<()> {
+    use crate::animation::{Prop, Val, transition, transition_spring};
+    let q = emu.nav.presentations[i].clone();
+    if let Some((id, f)) = q.detents.get(target).cloned()
+        && target != q.detent
+    {
+        // A new detent: its frame and corners (floating or attached).
+        set_frame_of(emu, q.sheet, f);
+        let vview = send(emu, q.presented, "view", &[])?;
+        set_frame_of(emu, vview, [0.0, 0.0, f[2], f[3]]);
+        let floating = f[0] > 0.0;
+        let l = send(emu, q.sheet, "layer", &[])?;
+        let bottom_r = emu.device.corner_radius - FLOAT_INSET;
+        crate::calayer::layer_mut(emu, l).corner_radii = floating.then_some([SHEET_RADIUS, SHEET_RADIUS, bottom_r, bottom_r]);
+        emu.nav.presentations[i].detent = target;
+        let sc = emu.nav.props.get(&(q.presented, "pomme.sheet")).copied().unwrap_or(0);
+        if sc != 0 {
+            let s = foundation::new_nsstring(emu, &id)?;
+            objc::bag_set(emu, sc, "selectedDetentIdentifier", s);
+            let d = objc::bag_get(emu, sc, "delegate").unwrap_or(0);
+            let sel = objc::intern(emu, "sheetPresentationControllerDidChangeSelectedDetentIdentifier:")?;
+            if d != 0 && objc::responds(emu, d, sel)? {
+                send(emu, d, "sheetPresentationControllerDidChangeSelectedDetentIdentifier:", &[sc])?;
+            }
+        }
+    }
+    let rest = view(emu, q.sheet).center;
+    let left = (rest[1] - shown[1]).abs().max(1.0);
+    // Speed toward the detent, as a fraction of the distance left per second.
+    let toward = if rest[1] > shown[1] { velocity } else { -velocity };
+    let (o, z, _) = PRESENT_SPRING;
+    let (timing, duration) = transition_spring((o, z, (toward / left).max(0.0)));
+    let l = send(emu, q.sheet, "layer", &[])?;
+    transition(emu, l, Prop::Position, Val::P(shown), Val::P(rest), timing, duration);
+    if q.dim != 0 {
+        let dl = send(emu, q.dim, "layer", &[])?;
+        let h = view(emu, q.sheet).bounds[3].max(1.0);
+        let from = (1.0 - (shown[1] - rest[1]) / h).clamp(0.0, 1.0);
+        transition(emu, dl, Prop::Opacity, Val::N(from), Val::N(1.0), timing, duration);
+    }
+    let info = q.presented;
+    crate::uikit::after_on_main(emu, duration, settle_done_fire, info)
+}
+
+fn settle_done_fire(emu: &mut Emu) -> Result<()> {
+    let vc = emu.arg(1);
+    if let Some(q) = emu.nav.presentations.iter().find(|q| q.presented == vc).cloned() {
+        for v in [q.sheet, q.dim] {
+            if v != 0 {
+                let l = send(emu, v, "layer", &[])?;
+                crate::animation::end_transition(emu, l);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1537,7 +1802,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (VC, false, "beginAppearanceTransition:animated:", |_| Ok(())),
     (VC, false, "nibName", |e| ret(e, 0)),
     (VC, false, "nibBundle", |e| ret(e, 0)),
-    (VC, false, "presentationController", |e| ret(e, 0)),
+    (VC, false, "presentationController", |e| {
+        let vc = e.arg(0);
+        let sc = send(e, vc, "sheetPresentationController", &[])?;
+        ret(e, sc)
+    }),
     // A page or form sheet's presentation controller: made on first use, read when presented.
     (VC, false, "sheetPresentationController", |e| {
         let vc = e.arg(0);

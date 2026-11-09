@@ -283,6 +283,8 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         emu.touch.active = t;
         // UIKit's back swipe (the navigation controller's edge pan) may take this touch.
         crate::navigation::swipe_began(emu, [x, y], now)?;
+        // So may dragging a sheet.
+        crate::navigation::sheet_began(emu, hit, [x, y], now)?;
         crate::scrollview::touch_began(emu, hit, [x, y], at_ns)?;
         // Inside a scroll view that delays content touches, the view hears
         // of the touch only once the finger has stayed put a while.
@@ -306,6 +308,16 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
     if phase == MOVED && crate::navigation::swipe_moved(emu, [x, y], now)? {
         take_from_view(emu, touch)?;
     }
+    if phase == MOVED && crate::navigation::sheet_moved(emu, [x, y], now)? {
+        take_from_view(emu, touch)?;
+    }
+    if crate::navigation::sheet_dragging(emu) {
+        if phase == ENDED || phase == CANCELLED {
+            crate::navigation::sheet_ended(emu, [x, y], now, phase == CANCELLED)?;
+            emu.touch.active = 0;
+        }
+        return Ok(());
+    }
     if crate::navigation::swiping(emu) {
         if phase == ENDED || phase == CANCELLED {
             crate::navigation::swipe_ended(emu, [x, y], now, phase == CANCELLED)?;
@@ -314,8 +326,9 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         return Ok(());
     }
     if phase == ENDED || phase == CANCELLED {
-        // A touch that never became a swipe.
+        // A touch that never became a swipe or a sheet drag.
         crate::navigation::swipe_ended(emu, [x, y], now, true)?;
+        crate::navigation::sheet_ended(emu, [x, y], now, true)?;
     }
     if phase == MOVED {
         let tc = emu.touch.touches[&touch].clone();
