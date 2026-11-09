@@ -179,12 +179,13 @@ pub(crate) fn frame_due(emu: &Emu) -> Option<u64> {
     Some(emu.live.last_frame.map_or(now, |t| (t + FRAME_NS).max(now)))
 }
 
-/// Between thread slices while the main thread waits (its run loop asleep, its
-/// changes committed): keep the app's clock up with the wall clock and draw a
-/// frame if one is due, as iOS's render server plays animations whatever the
-/// app's threads are doing. Only with a live host: headless runs keep time
-/// by instructions alone, deterministically.
-pub(crate) fn keep_pace(emu: &mut Emu) -> Result<()> {
+/// Between thread slices while the main thread waits: keep the app's clock up
+/// with the wall clock, and, when its run loop is asleep (`committed`: every
+/// change it made is done, as iOS's render server only shows committed
+/// layers), draw a frame if one is due, as animations play on iOS whatever
+/// the app's threads are doing. Only with a live host: headless runs keep
+/// time by instructions alone, deterministically.
+pub(crate) fn keep_pace(emu: &mut Emu, committed: bool) -> Result<()> {
     let Some(host) = emu.live.host.as_mut() else { return Ok(()) };
     let wall = host.wall_ns();
     let now = crate::threads::now_ns(emu);
@@ -193,7 +194,7 @@ pub(crate) fn keep_pace(emu: &mut Emu) -> Result<()> {
     {
         crate::threads::advance_to(emu, w);
     }
-    if frame_due(emu).is_some_and(|due| due <= crate::threads::now_ns(emu)) {
+    if committed && frame_due(emu).is_some_and(|due| due <= crate::threads::now_ns(emu)) {
         draw(emu)?;
     }
     Ok(())

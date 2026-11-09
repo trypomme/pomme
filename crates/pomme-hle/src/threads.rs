@@ -430,9 +430,12 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
             break Ok(r);
         }
         if schedule_round(emu)? {
-            // The main thread waiting while others work: time and frames keep up (live only).
+            // The main thread waiting while others work: time keeps up (live only),
+            // and frames too when it's asleep in its run loop (everything it did
+            // committed) rather than waiting part-way through something.
             if me == 0 {
-                crate::host::keep_pace(emu)?;
+                let committed = matches!(wait, Wait::MachReceive { .. });
+                crate::host::keep_pace(emu, committed)?;
             }
             continue;
         }

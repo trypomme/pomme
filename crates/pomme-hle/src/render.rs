@@ -1553,7 +1553,13 @@ fn draw_contents(p: &mut Painter, img: &Image, center: [f64; 4], w: f32, h: f32,
 }
 
 /// Render the visible windows at `scale` pixels per point.
+///
+/// Like Core Animation's commit, a frame lays out before it displays: views
+/// update what their drawRect: reads in layoutSubviews (React Native's
+/// paragraphs set their text view's drawing frame there, after asking it to
+/// redraw), so drawing first would cache text laid out for a stale frame.
 pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
+    crate::uiview::layout_windows(emu)?;
     for w in emu.ui.windows.clone() {
         display(emu, w)?;
     }

@@ -296,6 +296,28 @@ fn live_host_gets_frames_and_delivers_input() {
     assert_eq!(last.len(), 390 * 844 * 4);
 }
 
+/// A live frame shows what a still render shows: the frame lays out before
+/// drawRect: runs, so React Native's paragraphs aren't cached drawn into the
+/// drawing frame they had before layout (which cut "Tapped 0 times" to "T").
+#[test]
+fn live_frames_lay_out_before_they_draw() {
+    let Some(mut emu) = boot() else { return };
+    emu.net.client = Some(Box::new(repos()));
+    let frames = Rc::new(RefCell::new((0, Vec::new())));
+    emu.live.scale = 2.0;
+    emu.live.host = Some(Box::new(ScriptedHost { taps: vec![], frames: frames.clone(), end_ns: 4_000_000_000 }));
+    let _ = emu.run_main();
+    // The same screen, drawn once at the end by an app that ran without frames.
+    let Some(mut still) = boot() else { return };
+    still.net.client = Some(Box::new(repos()));
+    run_for(&mut still, 4.0);
+    let still = pomme_hle::render::render(&mut still, 2.0).unwrap();
+    let (_, live) = &*frames.borrow();
+    assert_eq!(live.len(), still.data().len());
+    let differ = live.chunks(4).zip(still.data().chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+    assert!(differ < 200, "{differ} pixels differ from a still render");
+}
+
 // ---- text input and the keyboard (the /keyboard screen) ----
 
 const NAME_FIELD: (f64, f64) = (195.0, 806.0);
