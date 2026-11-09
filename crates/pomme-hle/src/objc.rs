@@ -39,6 +39,9 @@ pub struct Class {
     pub protocols: Vec<String>,
     /// Instance variables: (name, address of its offset variable, type encoding).
     pub ivars: Vec<(String, u64, String)>,
+    /// A Swift class whose metadata is completed at run time: the initializer
+    /// to call before its first use (0 once it has run, or for other classes).
+    pub swift_init: u64,
 }
 
 #[derive(Default)]
@@ -63,12 +66,18 @@ pub struct Objc {
     /// Protocol objects by name, from every image's `__objc_protolist`.
     pub protocols: HashMap<String, u64>,
     hooks: HashMap<&'static str, u64>,
+    /// Ivar handles made by `class_getInstanceVariable`, by (class, name);
+    /// and the "virtual" ones of pomme's own classes → the property they stand for.
+    ivar_handles: HashMap<(u64, String), u64>,
+    virtual_ivars: HashMap<u64, &'static str>,
 }
 
 // Guest structure layouts (arm64, non-pointer isa not used).
 const CLASS_SIZE: u64 = 40;
 const RO_SIZE: u64 = 72;
 const RO_META: u32 = 1;
+/// class_ro_t has a Swift metadata initializer after its fields.
+const RO_HAS_SWIFT_INITIALIZER: u32 = 1 << 6;
 const FAST_DATA_MASK: u64 = 0x0000_7fff_ffff_fff8;
 const SMALL_METHOD_LIST: u32 = 0x8000_0000;
 const DIRECT_SELECTORS: u32 = 0x4000_0000;
@@ -107,6 +116,8 @@ const PERMISSIVE: &[&str] = &[
     "UIScreen",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
+    // Swift KVO observations that never fire (see swift.rs): invalidate etc.
+    "NSKeyValueObservation",
     // The pasteboard (see clipboard.rs): anything else it's asked is answered generically.
     "UIPasteboard",
     // A deep link's context (URL, options) and its options (all nil / NO).
@@ -323,6 +334,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UITableView", "UIScrollView"),
     ("UICollectionView", "UIScrollView"),
     ("UITextView", "UIScrollView"),
+    ("NSKeyValueObservation", "NSObject"),
     ("UIControl", "UIView"),
     ("UIButton", "UIControl"),
     ("UITextField", "UIControl"),
@@ -458,6 +470,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::textview::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::label::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::scrollview::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::charset::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -499,7 +512,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, EXCEPTION_METHODS] {
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -600,6 +613,7 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
                 initialized: false,
                 protocols: Vec::new(),
                 ivars: Vec::new(),
+                swift_init: 0,
             },
         );
     }
@@ -648,9 +662,10 @@ fn guest_class(emu: &mut Emu, cls: u64) -> Result<()> {
             emu.objc.by_name.insert(name.clone(), c);
         }
         let ivars = read_ivars(emu, emu.read_u64(ro + 48)?)?;
+        let swift_init = if !meta_flag && flags & RO_HAS_SWIFT_INITIALIZER != 0 { emu.read_u64(ro + RO_SIZE)? } else { 0 };
         emu.objc.classes.insert(
             c,
-            Class { name, meta: meta_flag, isa, superclass, methods, instance_size, host: false, initialized: false, protocols, ivars },
+            Class { name, meta: meta_flag, isa, superclass, methods, instance_size, host: false, initialized: false, protocols, ivars, swift_init },
         );
     }
     Ok(())
@@ -883,7 +898,20 @@ fn instance_class(emu: &mut Emu, obj: u64) -> Result<u64> {
 }
 
 /// Run `+initialize` for a class (superclasses first) the first time it's messaged.
+/// A Swift class with run-time metadata: complete it before its first use,
+/// as the Objective-C runtime does when it realizes the class (its
+/// initializer lays out the fields and calls `_objc_realizeClassFromSwift`).
+pub(crate) fn realize_swift(emu: &mut Emu, cls: u64) -> Result<()> {
+    let Some(f) = emu.objc.classes.get(&cls).map(|c| c.swift_init).filter(|&f| f != 0) else { return Ok(()) };
+    emu.objc.classes.get_mut(&cls).unwrap().swift_init = 0;
+    let saved = save_args(emu);
+    emu.call(f, &[cls, 0])?;
+    restore_args(emu, saved);
+    Ok(())
+}
+
 fn ensure_initialized(emu: &mut Emu, cls: u64) -> Result<()> {
+    realize_swift(emu, cls)?;
     match emu.objc.classes.get(&cls) {
         Some(c) if !c.initialized && !c.meta => {}
         _ => return Ok(()),
@@ -1136,6 +1164,7 @@ pub fn instance_size(emu: &Emu, cls: u64) -> u64 {
 
 /// Allocate a zeroed instance of `cls`, running C++ ivar constructors.
 pub fn create_instance(emu: &mut Emu, cls: u64, extra: u64) -> Result<u64> {
+    realize_swift(emu, cls)?;
     let size = instance_size(emu, cls).max(8) + extra;
     let obj = emu.alloc(size)?;
     if emu.trace {
@@ -2116,6 +2145,91 @@ fn class_copy_method_list(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Instance variables of pomme's own classes that apps reach into, and the
+/// property each stands for (keyboard controller installs its text-input
+/// delegate by writing UITextField's `_delegate` directly).
+const VIRTUAL_IVARS: &[(&str, &str, &str)] = &[("UITextField", "_delegate", "delegate"), ("UITextView", "_delegate", "delegate")];
+
+/// `class_getInstanceVariable(cls, name)`: an Ivar (ivar_t: offset pointer,
+/// name, type, alignment, size) for an app class's instance variable, or a
+/// virtual one of a pomme class; NULL if there's none.
+fn class_get_instance_variable(emu: &mut Emu) -> Result<()> {
+    let (cls, name_ptr) = (emu.arg(0), emu.arg(1));
+    if cls == 0 || name_ptr == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
+    let name = emu.cstr(name_ptr)?;
+    if let Some(&h) = emu.objc.ivar_handles.get(&(cls, name.clone())) {
+        emu.ret(h);
+        return Ok(());
+    }
+    let mut c = cls;
+    let mut found: Option<(u64, String, Option<&'static str>)> = None;
+    while c != 0 && found.is_none() {
+        let Some(class) = emu.objc.classes.get(&c) else { break };
+        if let Some((_, offset_var, ty)) = class.ivars.iter().find(|(n, _, _)| *n == name) {
+            found = Some((*offset_var, ty.clone(), None));
+        } else if class.host {
+            let cname = class.name.clone();
+            if let Some(&(_, _, prop)) = VIRTUAL_IVARS.iter().find(|(k, n, _)| *k == cname && *n == name) {
+                found = Some((0, "@".into(), Some(prop)));
+            }
+        }
+        c = class.superclass;
+    }
+    let Some((offset_var, ty, prop)) = found else {
+        emu.ret(0);
+        return Ok(());
+    };
+    let h = emu.alloc(32)?;
+    let n = emu.alloc_cstr(&name)?;
+    let t = emu.alloc_cstr(&ty)?;
+    emu.write_u64(h, offset_var)?;
+    emu.write_u64(h + 8, n)?;
+    emu.write_u64(h + 16, t)?;
+    emu.p.memory.write_u32(h + 24, 3)?; // log2 alignment
+    emu.p.memory.write_u32(h + 28, 8)?;
+    emu.objc.ivar_handles.insert((cls, name), h);
+    if let Some(p) = prop {
+        emu.objc.virtual_ivars.insert(h, p);
+    }
+    emu.ret(h);
+    Ok(())
+}
+
+fn ivar_offset(emu: &Emu, ivar: u64) -> Result<u64> {
+    let var = emu.read_u64(ivar)?;
+    Ok(if var == 0 { 0 } else { emu.p.memory.read_u32(var)? as u64 })
+}
+
+fn object_set_ivar(emu: &mut Emu) -> Result<()> {
+    let (obj, ivar, value) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    if obj == 0 || ivar == 0 {
+        return Ok(());
+    }
+    if let Some(&prop) = emu.objc.virtual_ivars.get(&ivar) {
+        bag_set(emu, obj, prop, value);
+        return Ok(());
+    }
+    let off = ivar_offset(emu, ivar)?;
+    emu.write_u64(obj + off, value)
+}
+
+fn object_get_ivar(emu: &mut Emu) -> Result<()> {
+    let (obj, ivar) = (emu.arg(0), emu.arg(1));
+    let v = if obj == 0 || ivar == 0 {
+        0
+    } else if let Some(&prop) = emu.objc.virtual_ivars.get(&ivar) {
+        bag_get(emu, obj, prop).unwrap_or(0)
+    } else {
+        let off = ivar_offset(emu, ivar)?;
+        emu.read_u64(obj + off)?
+    };
+    emu.ret(v);
+    Ok(())
+}
+
 fn class_copy_ivar_list(emu: &mut Emu) -> Result<()> {
     if emu.arg(1) != 0 {
         emu.p.memory.write_u32(emu.arg(1), 0)?;
@@ -2141,7 +2255,26 @@ fn imp_implementation_with_block(emu: &mut Emu) -> Result<()> {
 }
 
 fn realize_class(emu: &mut Emu) -> Result<()> {
-    guest_class(emu, emu.arg(0))?;
+    let cls = emu.arg(0);
+    // Known already (from the image's class list) but laid out only now:
+    // read it again, keeping whether it has been initialized.
+    if let Some(old) = emu.objc.classes.get(&cls).filter(|c| !c.host) {
+        let initialized = old.initialized;
+        let meta = old.isa;
+        emu.objc.classes.remove(&cls);
+        let meta_init = emu.objc.classes.remove(&meta).map(|m| m.initialized);
+        guest_class(emu, cls)?;
+        if let Some(c) = emu.objc.classes.get_mut(&cls) {
+            c.initialized = initialized;
+            c.swift_init = 0;
+        }
+        if let (Some(m), Some(init)) = (emu.objc.classes.get_mut(&meta), meta_init) {
+            m.initialized = init;
+        }
+        emu.cpu.x[0] = cls;
+        return Ok(());
+    }
+    guest_class(emu, cls)?;
     Ok(()) // returns the class, already in x0
 }
 
@@ -2364,6 +2497,28 @@ pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
     ("_class_replaceMethod", class_replace_method),
     ("_class_copyMethodList", class_copy_method_list),
     ("_class_copyIvarList", class_copy_ivar_list),
+    ("_class_getInstanceVariable", class_get_instance_variable),
+    ("_object_setIvar", object_set_ivar),
+    ("_object_setIvarWithStrongDefault", object_set_ivar),
+    ("_object_getIvar", object_get_ivar),
+    ("_ivar_getOffset", |e| {
+        let i = e.arg(0);
+        let o = if i == 0 { 0 } else { ivar_offset(e, i)? };
+        e.ret(o);
+        Ok(())
+    }),
+    ("_ivar_getName", |e| {
+        let i = e.arg(0);
+        let n = if i == 0 { 0 } else { e.read_u64(i + 8)? };
+        e.ret(n);
+        Ok(())
+    }),
+    ("_ivar_getTypeEncoding", |e| {
+        let i = e.arg(0);
+        let t = if i == 0 { 0 } else { e.read_u64(i + 16)? };
+        e.ret(t);
+        Ok(())
+    }),
     ("_imp_implementationWithBlock", imp_implementation_with_block),
     ("__objc_realizeClassFromSwift", realize_class),
     ("_objc_readClassPair", realize_class),
@@ -2419,6 +2574,7 @@ pub fn alias_class(emu: &mut Emu, at: u64, base: u64) -> Result<()> {
             initialized: false,
             protocols: Vec::new(),
             ivars: Vec::new(),
+            swift_init: 0,
         },
     );
     Ok(())

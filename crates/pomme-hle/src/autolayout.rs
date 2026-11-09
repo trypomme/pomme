@@ -339,7 +339,10 @@ fn guide_axis(emu: &mut Emu, g: Guide, axis: usize, (min, size): (f64, f64)) -> 
     if axis == 1 && g.kind != GuideKind::Custom {
         let (top, bottom) = crate::navigation::safe_band(emu, g.owner);
         if g.kind == GuideKind::Keyboard {
-            let kb_top = if emu.input.keyboard_shown { emu.device.height - emu.input.keyboard_height } else { bottom };
+            // While it's down, the guide rests on the safe area's bottom (or,
+            // with usesBottomSafeArea = NO, the screen's).
+            let rest = if crate::objc::bag_get(emu, g.owner, "pomme.keyboardGuideIgnoresSafeArea").is_some_and(|x| x != 0) { emu.device.height } else { bottom };
+            let kb_top = if emu.input.keyboard_shown { emu.device.height - emu.input.keyboard_height } else { rest };
             return Some((kb_top, emu.device.height - kb_top));
         }
         lo = lo.max(top);
@@ -821,6 +824,21 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, o)
     }),
     (G, false, "layoutFrame", guide_frame),
+    // UIKeyboardLayoutGuide (iOS 17)
+    (G, false, "usesBottomSafeArea", |e| {
+        let g = e.arg(0);
+        let owner = e.layout.guides.get(&g).map_or(0, |x| x.owner);
+        let ignores = crate::objc::bag_get(e, owner, "pomme.keyboardGuideIgnoresSafeArea").is_some_and(|x| x != 0);
+        ret(e, !ignores as u64)
+    }),
+    (G, false, "setUsesBottomSafeArea:", |e| {
+        let (g, on) = (e.arg(0), e.arg(2) & 0xff != 0);
+        if let Some(owner) = e.layout.guides.get(&g).map(|x| x.owner) {
+            crate::objc::bag_set(e, owner, "pomme.keyboardGuideIgnoresSafeArea", !on as u64);
+            mark_dirty(e);
+        }
+        Ok(())
+    }),
     // Anchors
     (AN, false, "constraintEqualToAnchor:", |e| {
         let o = e.arg(2);

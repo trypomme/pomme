@@ -50,6 +50,7 @@ pub mod clipboard;
 pub mod textview;
 pub mod scrollview;
 pub mod label;
+mod charset;
 pub mod textinput;
 pub mod device;
 mod uikit;

@@ -1269,6 +1269,22 @@ fn dispatch_block_create(emu: &mut Emu) -> Result<()> {
 
 // ---- C++ ABI bits that live in libSystem ----
 
+/// `_Unwind_RaiseException`: pomme can't unwind C++ exceptions, so a throw
+/// stops the run, reporting the exception's `what()` (a std::exception
+/// subclass: jsi::JSError carries the JavaScript error's message and stack).
+fn unwind_raise_exception(emu: &mut Emu) -> Result<()> {
+    // libc++abi puts the thrown object right after the 32-byte _Unwind_Exception.
+    let obj = emu.arg(0) + 32;
+    let what = (|| -> Result<String> {
+        let vtable = emu.read_u64(obj)?;
+        let what_fn = emu.read_u64(vtable + 16)?;
+        let p = emu.call(what_fn, &[obj])?;
+        emu.cstr(p)
+    })()
+    .unwrap_or_else(|_| "(no message)".into());
+    Err(crate::Stop::Unsupported(format!("C++ exception thrown (pomme can't unwind it): {what}")))
+}
+
 fn cxa_atexit(emu: &mut Emu) -> Result<()> {
     emu.ret(0); // destructors at exit: never run
     Ok(())
@@ -1674,7 +1690,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_async_f", dispatch_async_f),
     ("_dispatch_after", dispatch_after),
     ("_dispatch_after_f", dispatch_after_f),
+    ("__Unwind_RaiseException", unwind_raise_exception),
     ("_dispatch_block_create", dispatch_block_create),
+    // (flags, qos, relative priority, block): QoS doesn't matter here.
+    ("_dispatch_block_create_with_qos_class", |e| {
+        e.cpu.x[1] = e.cpu.x[3];
+        dispatch_block_create(e)
+    }),
     ("_dispatch_block_cancel", |e| {
         let b = e.arg(0);
         e.sys.cancelled.insert(b);

@@ -42,12 +42,14 @@ typedef NS_OPTIONS(unsigned long, NSStringCompareOptions) {
 @interface NSArray : NSObject <NSFastEnumeration>
 @property (readonly) unsigned long count;
 - (id)objectAtIndex:(unsigned long)index;
+- (instancetype)initWithObjects:(const id _Nonnull [_Nullable])objects count:(unsigned long)count;
 @end
 
 @interface NSDictionary : NSObject <NSFastEnumeration>
 @property (readonly) unsigned long count;
 @property (readonly) NSArray *allKeys;
 - (id)objectForKey:(id)key;
+- (instancetype)initWithObjects:(const id _Nonnull [_Nullable])objects forKeys:(const id _Nonnull [_Nullable])keys count:(unsigned long)count;
 @end
 
 @interface NSSet : NSObject <NSFastEnumeration>
@@ -116,6 +118,7 @@ typedef NSString *NSURLResourceKey NS_TYPED_EXTENSIBLE_ENUM;
 @property (readonly, copy) NSNotificationName name;
 @property (nullable, readonly, retain) id object;
 @property (nullable, readonly, copy) NSDictionary *userInfo;
++ (instancetype)notificationWithName:(NSNotificationName)name object:(nullable id)object userInfo:(nullable NSDictionary *)userInfo;
 @end
 
 @interface NSError : NSObject

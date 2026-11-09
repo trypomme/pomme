@@ -386,6 +386,11 @@ public struct Notification: Hashable {
     public static func == (a: Notification, b: Notification) -> Bool { a.name == b.name }
     public func hash(into hasher: inout Hasher) { hasher.combine(name) }
 
+    public func _bridgeToObjectiveC() -> NSNotification {
+        let obj: AnyObject? = object.map { _bridgeAnythingToObjectiveC($0) }
+        return NSNotification(name: name, object: obj, userInfo: userInfo?._bridgeToObjectiveC())
+    }
+
     public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNotification?) -> Notification {
         guard let source else { return Notification(name: NSNotificationName(rawValue: ""._bridgeToObjectiveC())) }
         var info: [AnyHashable: Any]?

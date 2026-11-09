@@ -104,7 +104,46 @@ fn errno_set(emu: &mut Emu) -> Result<()> {
     crate::libsystem::set_errno(emu, v)
 }
 
+/// `NSNumber(integerLiteral:)` and friends: Foundation's literal initializers.
+fn number_from_int(emu: &mut Emu) -> Result<()> {
+    let n = foundation::new_number_i64(emu, emu.arg(0) as i64)?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn number_from_float(emu: &mut Emu) -> Result<()> {
+    let v = f64::from_bits(emu.cpu.q[0] as u64);
+    let n = foundation::new_number_f64(emu, v)?;
+    emu.ret(n);
+    Ok(())
+}
+
+fn number_from_bool(emu: &mut Emu) -> Result<()> {
+    let b = foundation::boolean(emu, emu.arg(0) & 1 != 0);
+    emu.ret(b);
+    Ok(())
+}
+
+/// `NSObject.observe(_:options:changeHandler:)` (Swift's typed KVO, from
+/// Apple's Foundation overlay): an observation that never fires. pomme
+/// doesn't notify key-value observers of view properties; keyboard
+/// controller watches a view's `center` this way for interactive dismissal,
+/// which scripted input doesn't do.
+fn kvo_observe(emu: &mut Emu) -> Result<()> {
+    let cls = crate::objc::host_class(emu, "NSKeyValueObservation")?;
+    let o = crate::objc::create_instance(emu, cls, 0)?;
+    emu.ret(o);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    (
+        "_$s10Foundation27_KeyValueCodingAndObservingPAAE7observe_7options13changeHandlerAA05NSKeyC11ObservationCs0B4PathCyxqd__G_So0kcF7OptionsVyx_AA0kC14ObservedChangeVyqd__GtctlF",
+        kvo_observe,
+    ),
+    ("_$sSo8NSNumberC10FoundationE14integerLiteralABSi_tcfC", number_from_int),
+    ("_$sSo8NSNumberC10FoundationE12floatLiteralABSd_tcfC", number_from_float),
+    ("_$sSo8NSNumberC10FoundationE14booleanLiteralABSb_tcfC", number_from_bool),
     ("_$s6Darwin5errnos5Int32Vvg", errno_get),
     ("_$s6Darwin5errnos5Int32Vvs", errno_set),
     ("_$ss11CommandLineO4argcs5Int32VvgZ", command_line_argc),

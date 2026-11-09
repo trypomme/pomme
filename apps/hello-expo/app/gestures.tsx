@@ -16,7 +16,10 @@ export default function GesturesScreen() {
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const [status, setStatus] = useState('idle');
   const [taps, setTaps] = useState(0);
+  // The callbacks set React state, so they run on the JS thread (with
+  // Reanimated installed they'd otherwise run as worklets on the UI thread).
   const pan = usePanGesture({
+    runOnJS: true,
     onActivate: () => setStatus('dragging'),
     onUpdate: (e) => setDrag({ x: e.translationX, y: e.translationY }),
     onDeactivate: (e) => {
@@ -25,7 +28,7 @@ export default function GesturesScreen() {
       setStatus(`dropped at ${Math.round(e.translationX)},${Math.round(e.translationY)}`);
     },
   });
-  const tap = useTapGesture({ onActivate: () => setTaps((n) => n + 1) });
+  const tap = useTapGesture({ runOnJS: true, onActivate: () => setTaps((n) => n + 1) });
   const x = rest.x + drag.x;
   const y = rest.y + drag.y;
   return (

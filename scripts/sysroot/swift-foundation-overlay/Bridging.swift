@@ -222,6 +222,71 @@ extension Float: _ObjectiveCBridgeable {
     public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Float { source?.floatValue ?? 0 }
 }
 
+// MARK: Literals
+
+// `NSDictionary(dictionaryLiteral:)` and `NSArray(arrayLiteral:)`: Apple's
+// overlay makes them ExpressibleBy…Literal; apps call the initializers by
+// these names. (The metatype argument isn't needed: the class is fixed.)
+@_silgen_name("$sSo12NSDictionaryC10FoundationE17dictionaryLiteralAByp_yptd_tcfC")
+public func _pommeNSDictionaryLiteral(_ elements: [(Any, Any)]) -> NSDictionary {
+    let keys = elements.map { _bridgeAnythingToObjectiveC($0.0) }
+    let values = elements.map { _bridgeAnythingToObjectiveC($0.1) }
+    return keys.withUnsafeBufferPointer { k in
+        values.withUnsafeBufferPointer { v in
+            NSDictionary(objects: v.baseAddress, forKeys: k.baseAddress, count: UInt(elements.count))
+        }
+    }
+}
+
+@_silgen_name("$sSo8NSStringC10FoundationE13stringLiteralABs12StaticStringV_tcfC")
+public func _pommeNSStringLiteral(_ literal: StaticString) -> NSString {
+    unsafeBitCast(_pommeObjC(literal.description), to: NSString.self)
+}
+
+@_silgen_name("$sSo7NSArrayC10FoundationE12arrayLiteralAByp_td_tcfC")
+public func _pommeNSArrayLiteral(_ elements: [Any]) -> NSArray {
+    let objects = elements.map { _bridgeAnythingToObjectiveC($0) }
+    return objects.withUnsafeBufferPointer { NSArray(objects: $0.baseAddress, count: UInt(elements.count)) }
+}
+
+// MARK: AnyHashable
+
+// An NSString in an AnyHashable is its String, so `[AnyHashable: Any]`
+// dictionaries bridged from Objective-C (a notification's userInfo) can be
+// looked up with Swift string keys.
+extension NSString: _HasCustomAnyHashableRepresentation {
+    public func _toCustomAnyHashable() -> AnyHashable? {
+        AnyHashable(_pommeString(cocoa: self))
+    }
+}
+
+// An AnyHashable bridges as the value it wraps (`[AnyHashable: Any]` is what
+// `NSDictionary(dictionary:)` takes, so its keys come through here).
+extension AnyHashable: _ObjectiveCBridgeable {
+    public func _bridgeToObjectiveC() -> NSObject {
+        unsafeBitCast(_bridgeAnythingToObjectiveC(base), to: NSObject.self)
+    }
+    public static func _forceBridgeFromObjectiveC(_ x: NSObject, result: inout AnyHashable?) { result = AnyHashable(x) }
+    public static func _conditionallyBridgeFromObjectiveC(_ x: NSObject, result: inout AnyHashable?) -> Bool {
+        result = AnyHashable(x)
+        return true
+    }
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSObject?) -> AnyHashable { AnyHashable(source!) }
+}
+
+// CGFloat bridges to NSNumber too (keyboard controller puts frames in an
+// `[String: Any]` for React Native). On Apple platforms this conformance
+// lives in Foundation as well.
+extension CGFloat: _ObjectiveCBridgeable {
+    public func _bridgeToObjectiveC() -> NSNumber { NSNumber(double: Double(self)) }
+    public static func _forceBridgeFromObjectiveC(_ x: NSNumber, result: inout CGFloat?) { result = CGFloat(x.doubleValue) }
+    public static func _conditionallyBridgeFromObjectiveC(_ x: NSNumber, result: inout CGFloat?) -> Bool {
+        result = CGFloat(x.doubleValue)
+        return true
+    }
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> CGFloat { CGFloat(source?.doubleValue ?? 0) }
+}
+
 // MARK: URL
 
 extension URL: _ObjectiveCBridgeable {
