@@ -158,7 +158,7 @@ pub(crate) fn frame_of(emu: &mut Emu, v: u64) -> [f64; 4] {
 
 // ---- UIView ----
 
-fn view_init_with_frame(emu: &mut Emu) -> Result<()> {
+pub(crate) fn view_init_with_frame(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
     // As UIKit does, the view makes its layer as it's initialized (so it can be animated from the start).
     send(emu, v, "layer", &[])?;

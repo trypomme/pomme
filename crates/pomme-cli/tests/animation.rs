@@ -65,4 +65,25 @@ fn views_and_layers_animate() {
     // Removed at the end: back to the model (opacity 1), fully red.
     let (_, w, end) = at(2.2);
     assert!(red_alpha(end, *w) > 240);
+
+    // The spinner (37 pt, spokes centred 17.5 pt from its top-left, at
+    // (181.5, 581.5) + 17.5): its darkest spoke goes round clockwise, one
+    // spoke every 0.1 s, a turn every 0.8 s, as iOS's does.
+    let darkest = |rgba: &[u8], width: u32| {
+        (0..8)
+            .min_by_key(|&k| {
+                let a = (k as f64) * std::f64::consts::FRAC_PI_4;
+                let (x, y) = (181.5 + 17.5 + 12.0 * a.sin(), 581.5 + 17.5 - 12.0 * a.cos());
+                let i = ((y as u32 * width + x as u32) * 4) as usize;
+                rgba[i] as u32 + rgba[i + 1] as u32 + rgba[i + 2] as u32
+            })
+            .unwrap()
+    };
+    let (t0, w0, f0) = at(1.0);
+    let k0 = darkest(f0, *w0);
+    for step in 1..=4 {
+        let (t, w, f) = at(1.0 + 0.1 * step as f64);
+        let turns = ((*t as f64 - *t0 as f64) / 1e9 / 0.1).round() as usize;
+        assert_eq!(darkest(f, *w), (k0 + turns) % 8, "the head {turns} spokes on");
+    }
 }

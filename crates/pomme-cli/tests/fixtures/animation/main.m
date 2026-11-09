@@ -3,6 +3,7 @@
 // animation; its completion writes "done" in label 1. A standalone red layer
 // fades out over 1 s with a CABasicAnimation (removed at the end, the model
 // opacity stays 1); its delegate writes "stopped 1" in label 3 when it ends.
+// A large activity indicator spins at (200, 600) throughout.
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
@@ -24,6 +25,10 @@
     box.backgroundColor = UIColor.blueColor;
     box.tag = 2;
     [self.view addSubview:box];
+    UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+    spin.center = CGPointMake(200, 600);
+    [self.view addSubview:spin];
+    [spin startAnimating];
     CALayer *red = [CALayer layer];
     red.frame = CGRectMake(0, 300, 50, 50);
     red.backgroundColor = UIColor.redColor.CGColor;

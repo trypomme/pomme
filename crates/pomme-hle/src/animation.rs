@@ -35,6 +35,8 @@ pub enum Val {
     C([f64; 4]),
     /// A CATransform3D, row-major as Core Animation stores it (m11 m12 … m44).
     M([f64; 16]),
+    /// An object, such as an image for `contents` (it doesn't interpolate: it switches).
+    Obj(u64),
 }
 
 /// An animatable property (a key path).
@@ -58,6 +60,7 @@ pub enum Prop {
     CornerRadius,
     BorderWidth,
     ShadowOpacity,
+    Contents,
 }
 
 impl Prop {
@@ -81,6 +84,7 @@ impl Prop {
             "cornerRadius" => Prop::CornerRadius,
             "borderWidth" => Prop::BorderWidth,
             "shadowOpacity" => Prop::ShadowOpacity,
+            "contents" => Prop::Contents,
             _ => return None,
         })
     }
@@ -319,6 +323,13 @@ fn sub(a: Val, b: Val) -> Val {
 fn lerp(a: Val, b: Val, t: f64) -> Val {
     match (a, b) {
         (Val::M(x), Val::M(y)) => Val::M(lerp_transform(&x, &y, t)),
+        (Val::Obj(_), Val::Obj(_)) => {
+            if t < 1.0 {
+                a
+            } else {
+                b
+            }
+        }
         _ => combine(a, b, |x, y| x + (y - x) * t),
     }
 }
@@ -337,6 +348,10 @@ fn keyframe(values: &[Val], times: &[f64], discrete: bool, p: f64) -> Option<Val
         i += 1;
     }
     if discrete {
+        // Without key times, each value shows for an equal share of the duration.
+        if times.is_empty() {
+            return Some(values[((p * n as f64) as usize).min(n - 1)]);
+        }
         return Some(if p >= time(i + 1) { values[i + 1] } else { values[i] });
     }
     let (t0, t1) = (time(i), time(i + 1));
@@ -422,6 +437,7 @@ fn model(emu: &mut Emu, l: u64, v: Option<u64>, prop: Prop) -> Val {
         Prop::CornerRadius => Val::N(ly.corner_radius),
         Prop::BorderWidth => Val::N(ly.border_width),
         Prop::ShadowOpacity => Val::N(ly.shadow_opacity as f64),
+        Prop::Contents => Val::Obj(ly.contents),
     }
 }
 
@@ -466,6 +482,7 @@ fn apply(emu: &mut Emu, l: u64, v: Option<u64>, shown: &mut Shown, ly: &mut crat
             (Prop::CornerRadius, Val::N(r)) => ly.corner_radius = r,
             (Prop::BorderWidth, Val::N(w)) => ly.border_width = w,
             (Prop::ShadowOpacity, Val::N(o)) => ly.shadow_opacity = o as f32,
+            (Prop::Contents, Val::Obj(c)) => ly.contents = c,
             _ => {}
         }
     }
@@ -671,6 +688,10 @@ pub fn read_val(emu: &mut Emu, o: u64) -> Result<Option<Val>> {
     }
     if let Some(c) = emu.ui.views.colors.get(&o) {
         return Ok(Some(Val::C(*c)));
+    }
+    // An image (a CGImage for `contents`).
+    if emu.render.images.contains_key(&o) {
+        return Ok(Some(Val::Obj(o)));
     }
     if let Some(v) = crate::nsvalue::animatable(emu, o)? {
         return Ok(Some(v));

@@ -65,6 +65,7 @@ pub mod uttype;
 pub mod network;
 pub mod keychain;
 pub mod animation;
+mod spinner;
 mod uikit;
 mod uiview;
 
@@ -246,6 +247,8 @@ pub struct Emu {
     pub keychain: keychain::State,
     /// Core Animation: animations running on layers.
     pub anim: animation::State,
+    /// Activity indicator frames already drawn: (style, colour) → their images.
+    pub(crate) spinner_frames: std::collections::HashMap<(u64, [u64; 4]), Vec<u64>>,
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
@@ -331,6 +334,7 @@ impl Emu {
             network: Default::default(),
             keychain: Default::default(),
             anim: Default::default(),
+            spinner_frames: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
             system: Default::default(),
