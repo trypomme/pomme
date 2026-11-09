@@ -682,3 +682,54 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     }),
     ("_CGDataProviderRelease", |_| Ok(())),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Rc<Pixmap> {
+        let mut p = Pixmap::new(w, h).unwrap();
+        p.fill(tiny_skia::Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]));
+        Rc::new(p)
+    }
+
+    #[test]
+    fn sniffs_formats() {
+        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n...."), Some(Format::Png));
+        assert_eq!(sniff(&[0xff, 0xd8, 0xff, 0xe0]), Some(Format::Jpeg));
+        assert_eq!(sniff(b"GIF89a"), Some(Format::Gif));
+        assert_eq!(sniff(b"RIFF\0\0\0\0WEBPVP8 "), Some(Format::WebP));
+        assert_eq!(sniff(b"<svg"), None);
+    }
+
+    #[test]
+    fn png_round_trip_keeps_pixels_and_alpha() {
+        let bytes = encode(Format::Png, &[(solid(3, 2, [10, 200, 30, 128]), 0.0)], None).unwrap();
+        let d = decode(&bytes).unwrap();
+        assert_eq!((d.format, d.size(), d.frames.len(), d.has_alpha), (Format::Png, (3, 2), 1, true));
+        // Kept premultiplied (as CoreGraphics does): within a step after the round trip.
+        let c = d.frames[0].pix.pixel(1, 1).unwrap().demultiply();
+        let close = |a: u8, b: u8| a.abs_diff(b) <= 1;
+        assert!(close(c.red(), 10) && close(c.green(), 200) && close(c.blue(), 30) && c.alpha() == 128, "{c:?}");
+    }
+
+    #[test]
+    fn animated_gif_keeps_frames_and_delays() {
+        let frames = [(solid(4, 4, [255, 0, 0, 255]), 0.5), (solid(4, 4, [0, 0, 255, 255]), 0.25)];
+        let d = decode(&encode(Format::Gif, &frames, None).unwrap()).unwrap();
+        assert_eq!(d.frames.len(), 2);
+        assert_eq!((d.frames[0].delay, d.frames[1].delay), (0.5, 0.25));
+        assert_eq!(d.frames[1].pix.pixel(0, 0).unwrap().blue(), 255);
+    }
+
+    #[test]
+    fn exif_orientation_turns_upright() {
+        // A 2×1 image: left pixel red. Orientation 6 (rotated 90° clockwise to show): 1×2, red on top.
+        let mut p = Pixmap::new(2, 1).unwrap();
+        p.pixels_mut()[0] = tiny_skia::ColorU8::from_rgba(255, 0, 0, 255).premultiply();
+        p.pixels_mut()[1] = tiny_skia::ColorU8::from_rgba(0, 0, 255, 255).premultiply();
+        let u = upright(&p, 6).unwrap();
+        assert_eq!((u.width(), u.height()), (1, 2));
+        assert_eq!(u.pixel(0, 0).unwrap().red(), 255);
+    }
+}

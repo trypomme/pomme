@@ -49,6 +49,12 @@ impl Fixtures {
         self.0.push((url.into(), Response { status: 200, headers, body: body.as_bytes().to_vec() }));
         self
     }
+    /// A file's bytes, as `content_type`.
+    pub fn file(mut self, url: &str, content_type: &str, body: Vec<u8>) -> Self {
+        let headers = vec![("Content-Type".into(), content_type.into()), ("Content-Length".into(), body.len().to_string())];
+        self.0.push((url.into(), Response { status: 200, headers, body }));
+        self
+    }
     pub fn lookup(&self, url: &str) -> Option<&Response> {
         self.0.iter().find(|(u, _)| u == url || u.strip_suffix('*').is_some_and(|p| url.starts_with(p))).map(|(_, r)| r)
     }

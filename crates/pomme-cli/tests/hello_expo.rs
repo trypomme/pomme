@@ -575,3 +575,37 @@ fn rotation_and_back() {
     assert!(size.contains("\"portrait 390x844 · 2 changes\""), "{size}");
     assert!(insets.contains("\"insets 47,0,34,0\""), "{insets}");
 }
+
+/// expo-image (SDWebImage underneath): a bundled PNG (a file URL), a remote
+/// JPEG through ImageIO, shown with contentFit cover (its middle third fills
+/// the square) and contain (letterboxed), and a blurhash placeholder for an
+/// image that's never found. onLoad reports each image's pixel size.
+#[test]
+fn expo_image() {
+    let Some(mut emu) = boot() else { return };
+    let jpeg = std::fs::read("tests/fixtures/wide.jpg").unwrap();
+    emu.net.client = Some(Box::new(Fixtures::default().file("https://images.pomme.test/wide.jpg", "image/jpeg", jpeg)));
+    emu.ui.launch_url = Some("pommehello:///image".into());
+    let v = run_for(&mut emu, 6.0);
+    assert!(v.contains("\"contain 300x100 · cover 300x100 · local 200x200\""), "{v}");
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let at = |x: f64, y: f64| {
+        let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
+        (c.red(), c.green(), c.blue())
+    };
+    let near = |(r, g, b): (u8, u8, u8), (er, eg, eb): (u8, u8, u8)| r.abs_diff(er) < 12 && g.abs_diff(eg) < 12 && b.abs_diff(eb) < 12;
+    // The squares are 120 pt at x 20; their tops at y 133, 265, 397, 529.
+    // Local: red, green / blue, amber quadrants.
+    assert!(near(at(50.0, 163.0), (0xdc, 0x26, 0x26)), "local top left: {:?}", at(50.0, 163.0));
+    assert!(near(at(110.0, 223.0), (0xf5, 0x9e, 0x0b)), "local bottom right: {:?}", at(110.0, 223.0));
+    // Cover: the 3:1 picture filling the square shows its middle (purple) third, edge to edge.
+    for x in [25.0, 80.0, 135.0] {
+        assert!(near(at(x, 325.0), (0x7c, 0x3a, 0xed)), "cover at {x}: {:?}", at(x, 325.0));
+    }
+    // Contain: all three thirds in a 40 pt band across the middle; the view's grey above it.
+    assert!(near(at(30.0, 457.0), (0x0f, 0x76, 0x6e)), "contain left: {:?}", at(30.0, 457.0));
+    assert!(near(at(130.0, 457.0), (0xea, 0x58, 0x0c)), "contain right: {:?}", at(130.0, 457.0));
+    assert!(near(at(80.0, 410.0), (0xe5, 0xe7, 0xeb)), "contain letterbox: {:?}", at(80.0, 410.0));
+    // The blurhash: soft colour, not the view's grey.
+    assert!(!near(at(80.0, 589.0), (0xe5, 0xe7, 0xeb)), "blurhash: {:?}", at(80.0, 589.0));
+}
