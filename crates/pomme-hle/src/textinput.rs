@@ -116,6 +116,73 @@ pub fn is_text_field(emu: &mut Emu, v: u64) -> bool {
     objc::is_kind_of(emu, v, cls).unwrap_or(false)
 }
 
+pub fn is_text_view(emu: &mut Emu, v: u64) -> bool {
+    let Ok(cls) = host_class(emu, "UITextView") else { return false };
+    objc::is_kind_of(emu, v, cls).unwrap_or(false)
+}
+
+/// The two editable text controls: UITextField (one line) and UITextView
+/// (multiline; see textview.rs). They edit the same way and differ in their
+/// delegate protocol, notifications and what return does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Field,
+    View,
+}
+
+pub(crate) fn kind(emu: &mut Emu, v: u64) -> Option<Kind> {
+    if v == 0 {
+        None
+    } else if is_text_field(emu, v) {
+        Some(Kind::Field)
+    } else if is_text_view(emu, v) {
+        Some(Kind::View)
+    } else {
+        None
+    }
+}
+
+/// A kind's delegate methods and notifications.
+struct Names {
+    should_begin: &'static str,
+    did_begin: &'static str,
+    should_end: &'static str,
+    did_end: &'static str,
+    should_change: &'static str,
+    began: &'static str,
+    changed: &'static str,
+    ended: &'static str,
+}
+
+const FIELD_NAMES: Names = Names {
+    should_begin: "textFieldShouldBeginEditing:",
+    did_begin: "textFieldDidBeginEditing:",
+    should_end: "textFieldShouldEndEditing:",
+    did_end: "textFieldDidEndEditing:",
+    should_change: "textField:shouldChangeCharactersInRange:replacementString:",
+    began: "UITextFieldTextDidBeginEditingNotification",
+    changed: "UITextFieldTextDidChangeNotification",
+    ended: "UITextFieldTextDidEndEditingNotification",
+};
+
+const VIEW_NAMES: Names = Names {
+    should_begin: "textViewShouldBeginEditing:",
+    did_begin: "textViewDidBeginEditing:",
+    should_end: "textViewShouldEndEditing:",
+    did_end: "textViewDidEndEditing:",
+    should_change: "textView:shouldChangeTextInRange:replacementText:",
+    began: "UITextViewTextDidBeginEditingNotification",
+    changed: "UITextViewTextDidChangeNotification",
+    ended: "UITextViewTextDidEndEditingNotification",
+};
+
+fn names(k: Kind) -> &'static Names {
+    match k {
+        Kind::Field => &FIELD_NAMES,
+        Kind::View => &VIEW_NAMES,
+    }
+}
+
 // ---- UIControl target-action ----
 
 fn add_target(emu: &mut Emu) -> Result<()> {
@@ -227,14 +294,20 @@ fn tf_become(emu: &mut Emu) -> Result<()> {
     if emu.input.first_responder == f {
         return ret(emu, 1);
     }
+    let k = kind(emu, f).unwrap_or(Kind::Field);
+    // A text view that isn't editable can't be typed into (selecting text in it isn't modelled).
+    if k == Kind::View && !crate::textview::is_editable(emu, f) {
+        return ret(emu, 0);
+    }
+    let n = names(k);
     let delegate = send(emu, f, "delegate", &[])?;
-    if !ask(emu, delegate, "textFieldShouldBeginEditing:", &[f], true)? {
+    if !ask(emu, delegate, n.should_begin, &[f], true)? {
         return ret(emu, 0);
     }
     // Another field ending its editing hands the keyboard over (it stays up).
     let old = emu.input.first_responder;
     if old != 0 {
-        let switching = is_text_field(emu, old);
+        let switching = kind(emu, old).is_some();
         let shown = emu.input.keyboard_shown;
         if switching {
             emu.input.keyboard_shown = false; // so the old field doesn't hide it
@@ -248,11 +321,16 @@ fn tf_become(emu: &mut Emu) -> Result<()> {
     emu.input.first_responder = f;
     let fd = field(emu, f);
     fd.editing = true;
-    let end = fd.text.len();
-    fd.sel = (end, end);
-    tell(emu, delegate, "textFieldDidBeginEditing:", &[f])?;
-    send_actions(emu, f, EDITING_DID_BEGIN)?;
-    foundation::post_named(emu, "UITextFieldTextDidBeginEditingNotification", f)?;
+    // A text field puts the caret at the end; a text view keeps its selection.
+    if k == Kind::Field {
+        let end = fd.text.len();
+        fd.sel = (end, end);
+    }
+    tell(emu, delegate, n.did_begin, &[f])?;
+    if k == Kind::Field {
+        send_actions(emu, f, EDITING_DID_BEGIN)?;
+    }
+    foundation::post_named(emu, n.began, f)?;
     show_keyboard(emu)?;
     ret(emu, 1)
 }
@@ -262,25 +340,45 @@ fn tf_resign(emu: &mut Emu) -> Result<()> {
     if emu.input.first_responder != f {
         return ret(emu, 1);
     }
+    let k = kind(emu, f).unwrap_or(Kind::Field);
+    let n = names(k);
     let delegate = send(emu, f, "delegate", &[])?;
-    if !ask(emu, delegate, "textFieldShouldEndEditing:", &[f], true)? {
+    if !ask(emu, delegate, n.should_end, &[f], true)? {
         return ret(emu, 0);
     }
     emu.input.first_responder = 0;
     field(emu, f).editing = false;
-    if responds(emu, delegate, "textFieldDidEndEditing:reason:")? {
+    if k == Kind::Field && responds(emu, delegate, "textFieldDidEndEditing:reason:")? {
         send(emu, delegate, "textFieldDidEndEditing:reason:", &[f, 0])?;
     } else {
-        tell(emu, delegate, "textFieldDidEndEditing:", &[f])?;
+        tell(emu, delegate, n.did_end, &[f])?;
     }
-    send_actions(emu, f, EDITING_DID_END)?;
-    foundation::post_named(emu, "UITextFieldTextDidEndEditingNotification", f)?;
+    if k == Kind::Field {
+        send_actions(emu, f, EDITING_DID_END)?;
+    }
+    foundation::post_named(emu, n.ended, f)?;
     hide_keyboard(emu)?;
     ret(emu, 1)
 }
 
 fn tf_text(emu: &mut Emu, f: u64) -> String {
     String::from_utf16_lossy(&field(emu, f).text)
+}
+
+/// A text control's text in UTF-16 units.
+pub(crate) fn text_units(emu: &mut Emu, f: u64) -> Vec<u16> {
+    field(emu, f).text.clone()
+}
+
+/// A text control's selection [start, end) in UTF-16 units.
+pub(crate) fn selection(emu: &mut Emu, f: u64) -> (usize, usize) {
+    field(emu, f).sel
+}
+
+pub(crate) fn set_selection(emu: &mut Emu, f: u64, a: usize, b: usize) {
+    let fd = field(emu, f);
+    let n = fd.text.len();
+    fd.sel = (a.min(n), b.min(n));
 }
 
 fn set_text(emu: &mut Emu, f: u64, s: &str) {
@@ -295,7 +393,10 @@ fn tf_attributed_text(emu: &mut Emu) -> Result<()> {
     let f = emu.arg(0);
     let text = tf_text(emu, f);
     let s = foundation::new_nsstring(emu, &text)?;
-    let attrs = send(emu, f, "defaultTextAttributes", &[])?;
+    let attrs = match kind(emu, f) {
+        Some(Kind::View) => send(emu, f, "typingAttributes", &[])?,
+        _ => send(emu, f, "defaultTextAttributes", &[])?,
+    };
     let cls = host_class(emu, "NSAttributedString")?;
     let a = send(emu, cls, "alloc", &[])?;
     let a = send(emu, a, "initWithString:attributes:", &[s, attrs])?;
@@ -330,10 +431,11 @@ fn tf_set_text(emu: &mut Emu) -> Result<()> {
 
 /// Replace `range` with `s` the way a keystroke does: ask the delegate, edit, notify.
 fn edit(emu: &mut Emu, f: u64, range: (usize, usize), s: &str) -> Result<()> {
+    let k = kind(emu, f).unwrap_or(Kind::Field);
     let delegate = send(emu, f, "delegate", &[])?;
     let ns = foundation::new_nsstring(emu, s)?;
     let (loc, len) = (range.0 as u64, (range.1 - range.0) as u64);
-    if !ask(emu, delegate, "textField:shouldChangeCharactersInRange:replacementString:", &[f, loc, len, ns], true)? {
+    if !ask(emu, delegate, names(k).should_change, &[f, loc, len, ns], true)? {
         return Ok(());
     }
     let fd = field(emu, f);
@@ -342,8 +444,16 @@ fn edit(emu: &mut Emu, f: u64, range: (usize, usize), s: &str) -> Result<()> {
     let n = units.len();
     fd.text.splice(a..b, units);
     fd.sel = (a + n, a + n);
-    send_actions(emu, f, EDITING_CHANGED)?;
-    foundation::post_named(emu, "UITextFieldTextDidChangeNotification", f)?;
+    match k {
+        Kind::Field => send_actions(emu, f, EDITING_CHANGED)?,
+        // UITextView: the selection moves first, then the text has changed
+        // (React Native depends on this order).
+        Kind::View => {
+            tell(emu, delegate, "textViewDidChangeSelection:", &[f])?;
+            tell(emu, delegate, "textViewDidChange:", &[f])?;
+        }
+    }
+    foundation::post_named(emu, names(k).changed, f)?;
     Ok(())
 }
 
@@ -371,7 +481,7 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
     if f == 0 {
         return Ok(());
     }
-    if !is_text_field(emu, f) {
+    let Some(k) = kind(emu, f) else {
         // Another UIKeyInput responder (Flutter's text input view, …). Like
         // the iOS keyboard, ask a UITextInput first whether the range may
         // change (Flutter performs return's action there and answers NO).
@@ -389,8 +499,16 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
             send(emu, f, "insertText:", &[s])?;
         }
         return Ok(());
+    };
+    if k == Kind::View && !crate::textview::is_editable(emu, f) {
+        return Ok(());
     }
     match ch {
+        // Return starts a new line in a text view.
+        '\n' if k == Kind::View => {
+            let sel = field(emu, f).sel;
+            edit(emu, f, sel, "\n")?;
+        }
         '\n' => {
             let delegate = send(emu, f, "delegate", &[])?;
             if ask(emu, delegate, "textFieldShouldReturn:", &[f], true)? {
@@ -419,6 +537,10 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
             let sel = field(emu, f).sel;
             edit(emu, f, sel, &c.to_string())?;
         }
+    }
+    // As the user types, a text view scrolls to keep the caret in sight.
+    if k == Kind::View && emu.input.first_responder == f {
+        crate::textview::scroll_to_caret(emu, f)?;
     }
     Ok(())
 }
@@ -531,8 +653,114 @@ fn tf_position_direction(emu: &mut Emu) -> Result<()> {
 }
 
 const TF: &str = "UITextField";
+const TV: &str = "UITextView";
 const TP: &str = "UITextPosition";
 const TR: &str = "UITextRange";
+
+/// What UITextField and UITextView share: editing, the first responder and
+/// UITextInput's positions and ranges.
+macro_rules! text_methods {
+    ($c:expr) => {
+        [
+        ($c, false, "canBecomeFirstResponder", |e| ret(e, 1)),
+        ($c, false, "becomeFirstResponder", tf_become),
+        ($c, false, "resignFirstResponder", tf_resign),
+        ($c, false, "isEditing", |e| {
+            let f = e.arg(0);
+            let v = field(e, f).editing as u64;
+            ret(e, v)
+        }),
+        ($c, false, "delegate", |e| {
+            let d = objc::bag_get(e, e.arg(0), "delegate").unwrap_or(0);
+            ret(e, d)
+        }),
+        ($c, false, "setDelegate:", |e| {
+            let (f, d) = (e.arg(0), e.arg(2));
+            objc::bag_set(e, f, "delegate", d);
+            Ok(())
+        }),
+        ($c, false, "text", tf_get_text),
+        ($c, false, "setText:", tf_set_text),
+        ($c, false, "attributedText", tf_attributed_text),
+        ($c, false, "setAttributedText:", tf_set_attributed_text),
+        ($c, false, "hasText", |e| {
+            let f = e.arg(0);
+            let v = !field(e, f).text.is_empty() as u64;
+            ret(e, v)
+        }),
+        ($c, false, "insertText:", tf_insert_text),
+        ($c, false, "deleteBackward", tf_delete_backward),
+        ($c, false, "touchesBegan:withEvent:", |_| Ok(())),
+        ($c, false, "touchesMoved:withEvent:", |_| Ok(())),
+        ($c, false, "touchesEnded:withEvent:", tf_touches_ended),
+        ($c, false, "touchesCancelled:withEvent:", |_| Ok(())),
+        ($c, false, "caretRectForPosition:", |e| {
+            let b = crate::uiview::view(e, e.arg(0)).bounds;
+            ret_rect(e, [0.0, 0.0, 2.0, b[3]])
+        }),
+        ($c, false, "firstRectForRange:", |e| {
+            let b = crate::uiview::view(e, e.arg(0)).bounds;
+            ret_rect(e, [0.0, 0.0, b[2], b[3]])
+        }),
+        ($c, false, "selectionRectsForRange:", |e| {
+            let a = foundation::new_array_of(e, &[])?;
+            ret(e, a)
+        }),
+        // UITextInput positions and ranges
+        ($c, false, "beginningOfDocument", |e| {
+            let p = position(e, 0)?;
+            ret(e, p)
+        }),
+        ($c, false, "endOfDocument", |e| {
+            let f = e.arg(0);
+            let n = field(e, f).text.len();
+            let p = position(e, n)?;
+            ret(e, p)
+        }),
+        ($c, false, "selectedTextRange", tf_selected_range),
+        ($c, false, "setSelectedTextRange:", tf_set_selected_range),
+        ($c, false, "markedTextRange", |e| ret(e, 0)),
+        ($c, false, "positionFromPosition:offset:", tf_position_offset),
+        ($c, false, "positionFromPosition:inDirection:offset:", tf_position_direction),
+        ($c, false, "textRangeFromPosition:toPosition:", |e| {
+            let (a, b) = (e.arg(2), e.arg(3));
+            if a == 0 || b == 0 {
+                return ret(e, 0);
+            }
+            let (oa, ob) = (offset_of(e, a), offset_of(e, b));
+            let r = text_range(e, oa, ob)?;
+            ret(e, r)
+        }),
+        ($c, false, "offsetFromPosition:toPosition:", |e| {
+            let (a, b) = (e.arg(2), e.arg(3));
+            let d = offset_of(e, b) as i64 - offset_of(e, a) as i64;
+            ret(e, d as u64)
+        }),
+        ($c, false, "comparePosition:toPosition:", |e| {
+            let (a, b) = (offset_of(e, e.arg(2)), offset_of(e, e.arg(3)));
+            // NSComparisonResult: ascending -1, same 0, descending 1.
+            ret(e, a.cmp(&b) as i64 as u64)
+        }),
+        ($c, false, "textInRange:", |e| {
+            let (f, r) = (e.arg(0), e.arg(2));
+            let (a, b) = range_offsets(e, r);
+            let fd = field(e, f);
+            let (a, b) = (a.min(fd.text.len()), b.min(fd.text.len()));
+            let s = String::from_utf16_lossy(&fd.text[a..b]);
+            let ns = foundation::new_nsstring(e, &s)?;
+            ret(e, ns)
+        }),
+        ($c, false, "replaceRange:withText:", |e| {
+            let (f, r, s) = (e.arg(0), e.arg(2), e.arg(3));
+            let range = range_offsets(e, r);
+            let text = nsstring(e, s)?;
+            edit(e, f, range, &text)
+        }),
+        ]
+    };
+}
+
+pub(crate) const TEXT_METHODS: [&[(&str, bool, &str, HostFn)]; 2] = [&text_methods!(TF), &text_methods!(TV)];
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // UIResponder
@@ -565,6 +793,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (c, ev) = (e.arg(0), e.arg(2));
         send_actions(e, c, ev)
     }),
+    // Enabled unless turned off (React Native's text field reads `editable` from it).
+    ("UIControl", false, "isEnabled", |e| {
+        let v = objc::bag_get(e, e.arg(0), "enabled").is_none_or(|x| x & 0xff != 0) as u64;
+        ret(e, v)
+    }),
+    ("UIControl", false, "setEnabled:", |e| {
+        let (c, x) = (e.arg(0), e.arg(2) & 0xff);
+        objc::bag_set(e, c, "enabled", x);
+        Ok(())
+    }),
     ("UIControl", false, "allTargets", |e| {
         let mut t: Vec<u64> = e.input.targets.get(&e.arg(0)).map(|l| l.iter().map(|x| x.0).filter(|&x| x != 0).collect()).unwrap_or_default();
         t.dedup();
@@ -573,27 +811,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let s = send(e, cls, "setWithArray:", &[a])?;
         ret(e, s)
     }),
-    // UITextField: editing
-    (TF, false, "canBecomeFirstResponder", |e| ret(e, 1)),
-    (TF, false, "becomeFirstResponder", tf_become),
-    (TF, false, "resignFirstResponder", tf_resign),
-    (TF, false, "isEditing", |e| {
-        let f = e.arg(0);
-        let v = field(e, f).editing as u64;
-        ret(e, v)
-    }),
-    (TF, false, "delegate", |e| {
-        let d = objc::bag_get(e, e.arg(0), "delegate").unwrap_or(0);
-        ret(e, d)
-    }),
-    (TF, false, "setDelegate:", |e| {
-        let (f, d) = (e.arg(0), e.arg(2));
-        objc::bag_set(e, f, "delegate", d);
-        Ok(())
-    }),
-    (TF, false, "text", tf_get_text),
-    (TF, false, "setText:", tf_set_text),
-    (TF, false, "attributedText", tf_attributed_text),
+    // UITextField only (the rest is shared with UITextView: TEXT_METHODS)
     // UIKit's: the field's font (17 pt system unless set) and text color; or what the app set.
     (TF, false, "defaultTextAttributes", |e| {
         let f = e.arg(0);
@@ -604,25 +822,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
             Some(x) => x,
             None => crate::uiview::new_font(e, ".SFUI-Regular", 17.0, 0.0)?,
         };
-        let mut pairs = vec![(foundation::new_nsstring(e, "NSFont")?, font)];
+        let mut pairs = vec![(foundation::new_nsstring(e, "NSFontAttributeName")?, font)];
         if let Some(c) = objc::bag_get(e, f, "textColor").filter(|&x| x != 0) {
-            pairs.push((foundation::new_nsstring(e, "NSColor")?, c));
+            pairs.push((foundation::new_nsstring(e, "NSForegroundColorAttributeName")?, c));
         }
         let d = foundation::new_dict_of(e, &pairs)?;
         ret(e, d)
     }),
-    (TF, false, "setAttributedText:", tf_set_attributed_text),
-    (TF, false, "hasText", |e| {
-        let f = e.arg(0);
-        let v = !field(e, f).text.is_empty() as u64;
-        ret(e, v)
-    }),
-    (TF, false, "insertText:", tf_insert_text),
-    (TF, false, "deleteBackward", tf_delete_backward),
-    (TF, false, "touchesBegan:withEvent:", |_| Ok(())),
-    (TF, false, "touchesMoved:withEvent:", |_| Ok(())),
-    (TF, false, "touchesEnded:withEvent:", tf_touches_ended),
-    (TF, false, "touchesCancelled:withEvent:", |_| Ok(())),
     // UITextField: geometry (no border, no side views: the bounds)
     (TF, false, "textRectForBounds:", |e| {
         let r = rect_arg(e);
@@ -635,68 +841,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (TF, false, "placeholderRectForBounds:", |e| {
         let r = rect_arg(e);
         ret_rect(e, r)
-    }),
-    (TF, false, "caretRectForPosition:", |e| {
-        let b = crate::uiview::view(e, e.arg(0)).bounds;
-        ret_rect(e, [0.0, 0.0, 2.0, b[3]])
-    }),
-    (TF, false, "firstRectForRange:", |e| {
-        let b = crate::uiview::view(e, e.arg(0)).bounds;
-        ret_rect(e, [0.0, 0.0, b[2], b[3]])
-    }),
-    (TF, false, "selectionRectsForRange:", |e| {
-        let a = foundation::new_array_of(e, &[])?;
-        ret(e, a)
-    }),
-    // UITextInput positions and ranges
-    (TF, false, "beginningOfDocument", |e| {
-        let p = position(e, 0)?;
-        ret(e, p)
-    }),
-    (TF, false, "endOfDocument", |e| {
-        let f = e.arg(0);
-        let n = field(e, f).text.len();
-        let p = position(e, n)?;
-        ret(e, p)
-    }),
-    (TF, false, "selectedTextRange", tf_selected_range),
-    (TF, false, "setSelectedTextRange:", tf_set_selected_range),
-    (TF, false, "markedTextRange", |e| ret(e, 0)),
-    (TF, false, "positionFromPosition:offset:", tf_position_offset),
-    (TF, false, "positionFromPosition:inDirection:offset:", tf_position_direction),
-    (TF, false, "textRangeFromPosition:toPosition:", |e| {
-        let (a, b) = (e.arg(2), e.arg(3));
-        if a == 0 || b == 0 {
-            return ret(e, 0);
-        }
-        let (oa, ob) = (offset_of(e, a), offset_of(e, b));
-        let r = text_range(e, oa, ob)?;
-        ret(e, r)
-    }),
-    (TF, false, "offsetFromPosition:toPosition:", |e| {
-        let (a, b) = (e.arg(2), e.arg(3));
-        let d = offset_of(e, b) as i64 - offset_of(e, a) as i64;
-        ret(e, d as u64)
-    }),
-    (TF, false, "comparePosition:toPosition:", |e| {
-        let (a, b) = (offset_of(e, e.arg(2)), offset_of(e, e.arg(3)));
-        // NSComparisonResult: ascending -1, same 0, descending 1.
-        ret(e, a.cmp(&b) as i64 as u64)
-    }),
-    (TF, false, "textInRange:", |e| {
-        let (f, r) = (e.arg(0), e.arg(2));
-        let (a, b) = range_offsets(e, r);
-        let fd = field(e, f);
-        let (a, b) = (a.min(fd.text.len()), b.min(fd.text.len()));
-        let s = String::from_utf16_lossy(&fd.text[a..b]);
-        let ns = foundation::new_nsstring(e, &s)?;
-        ret(e, ns)
-    }),
-    (TF, false, "replaceRange:withText:", |e| {
-        let (f, r, s) = (e.arg(0), e.arg(2), e.arg(3));
-        let range = range_offsets(e, r);
-        let text = nsstring(e, s)?;
-        edit(e, f, range, &text)
     }),
     (TP, false, "isEqual:", |e| {
         let (a, b) = (e.arg(0), e.arg(2));

@@ -10,6 +10,7 @@
 
 pub mod heap;
 mod bundle;
+pub use bundle::bundle_resource;
 mod calayer;
 mod cg;
 mod constants;
@@ -46,6 +47,8 @@ pub mod host;
 pub mod touch;
 pub mod autolayout;
 pub mod clipboard;
+pub mod textview;
+pub mod label;
 pub mod textinput;
 pub mod device;
 mod uikit;

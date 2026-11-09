@@ -22,8 +22,8 @@ use crate::uikit::{ret_f64, ret_rect};
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
 
-const LINE_HEIGHT: f64 = 1.193;
-const ASCENT: f64 = 0.952;
+pub(crate) const LINE_HEIGHT: f64 = 1.193;
+pub(crate) const ASCENT: f64 = 0.952;
 const DEFAULT_SIZE: f64 = 12.0; // TextKit's default (Helvetica 12)
 const NOT_FOUND: u64 = i64::MAX as u64;
 
@@ -98,7 +98,7 @@ pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, col
 }
 
 /// Advance width of `ch` in points.
-fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
+pub(crate) fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
     let wght = ot_weight(weight).round() as u16;
     let opsz = size.clamp(14.0, 32.0).round() as u16;
     let key = (ch, wght, opsz);
@@ -285,6 +285,23 @@ fn size_with_attributes(emu: &mut Emu) -> Result<()> {
     let height = if text.is_empty() { 0.0 } else { (size * LINE_HEIGHT).ceil() };
     emu.cpu.q[0] = width.to_bits() as u128;
     emu.cpu.q[1] = height.to_bits() as u128;
+    Ok(())
+}
+
+/// `-[NSString boundingRectWithSize:options:attributes:context:]`: wrapped at
+/// the width given with NSStringDrawingUsesLineFragmentOrigin (1), else one line.
+fn bounding_rect_with_size(emu: &mut Emu) -> Result<()> {
+    let (string, options, attrs) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let (w, h) = (d(emu, 0), d(emu, 1));
+    let text: Vec<u16> = foundation::nsstring(emu, string)?.encode_utf16().collect();
+    let font = font_in_attributes(emu, attrs)?;
+    let (size, weight) = font_info(emu, font)?;
+    let runs = [Run { len: text.len(), size, weight }];
+    let (width, height, max_lines) = if options & 1 != 0 { (w, h, 0) } else { (f64::INFINITY, f64::INFINITY, 1) };
+    let lines = layout(&text, &runs, |ch, s, wt| advance(emu, ch, s, wt), width, height, max_lines);
+    let used_w = lines.iter().map(|l| l.width).fold(0.0, f64::max);
+    let used_h = lines.last().map_or(0.0, |l| l.y + l.height);
+    ret_rect(emu, [0.0, 0.0, used_w, used_h]);
     Ok(())
 }
 
@@ -702,6 +719,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (TC, false, "initWithSize:", tc_init_with_size),
     (TC, false, "size", tc_size),
     ("NSString", false, "sizeWithAttributes:", size_with_attributes),
+    ("NSString", false, "boundingRectWithSize:options:attributes:context:", bounding_rect_with_size),
     (TC, false, "setSize:", tc_set_size),
     (TC, false, "lineFragmentPadding", tc_padding),
     (TC, false, "setLineFragmentPadding:", tc_set_padding),

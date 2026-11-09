@@ -345,7 +345,7 @@ fn open_path(emu: &mut Emu, path: String, flags: u64) -> Result<()> {
 }
 
 fn close(emu: &mut Emu) -> Result<()> {
-    let fd = emu.arg(0);
+    let fd = emu.arg(0) & 0xffff_ffff;
     if let Some((id, read_end)) = emu.fs.pipe_ends.remove(&fd)
         && let Some(p) = emu.fs.pipes.get_mut(&id)
     {
@@ -376,7 +376,7 @@ fn read_at(emu: &mut Emu, fd: u64, buf: u64, n: u64, at: Option<u64>) -> Result<
 }
 
 fn read(emu: &mut Emu) -> Result<()> {
-    let (fd, buf, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (fd, buf, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
     if emu.fs.pipe_ends.contains_key(&fd) {
         return pipe_read(emu, fd, buf, n);
     }
@@ -391,7 +391,7 @@ fn read(emu: &mut Emu) -> Result<()> {
 
 /// `pread(fd, buf, n, offset)`
 fn pread(emu: &mut Emu) -> Result<()> {
-    let (fd, buf, n, off) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    let (fd, buf, n, off) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2), emu.arg(3));
     match read_at(emu, fd, buf, n, Some(off))? {
         Some(r) => {
             emu.ret(r);
@@ -424,7 +424,7 @@ fn write_at(emu: &mut Emu, fd: u64, bytes: &[u8], at: Option<u64>) -> Option<u64
 
 /// `write(fd, buf, n)`: stdout/stderr print; data-container files are written.
 fn write(emu: &mut Emu) -> Result<()> {
-    let (fd, buf, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (fd, buf, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
     let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
     if fd == 1 || fd == 2 {
         print!("{}", String::from_utf8_lossy(&bytes));
@@ -496,7 +496,7 @@ fn fcntl(emu: &mut Emu) -> Result<()> {
     const F_SETFD: u64 = 2;
     const F_GETFL: u64 = 3;
     const F_SETFL: u64 = 4;
-    let (fd, cmd) = (emu.arg(0), emu.arg(1));
+    let (fd, cmd) = (emu.arg(0) & 0xffff_ffff, emu.arg(1) & 0xffff_ffff);
     // The variadic argument is on the stack.
     let arg = emu.read_u64(emu.cpu.sp)?;
     let r = match cmd {
@@ -649,7 +649,7 @@ fn kevent(emu: &mut Emu) -> Result<()> {
 }
 
 fn pwrite(emu: &mut Emu) -> Result<()> {
-    let (fd, buf, n, off) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    let (fd, buf, n, off) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2), emu.arg(3));
     let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
     match write_at(emu, fd, &bytes, Some(off)) {
         Some(w) => {
@@ -661,7 +661,7 @@ fn pwrite(emu: &mut Emu) -> Result<()> {
 }
 
 fn ftruncate(emu: &mut Emu) -> Result<()> {
-    let (fd, len) = (emu.arg(0), emu.arg(1) as usize);
+    let (fd, len) = (emu.arg(0) & 0xffff_ffff, emu.arg(1) as usize);
     let Some(f) = emu.fs.files.get_mut(&fd) else { return fail(emu, EBADF) };
     let Some(path) = f.path.clone() else { return fail(emu, EACCES) };
     f.data.resize(len, 0);
@@ -720,7 +720,7 @@ fn rename(emu: &mut Emu) -> Result<()> {
 
 /// `lseek(fd, offset, whence)`
 fn lseek(emu: &mut Emu) -> Result<()> {
-    let (fd, off, whence) = (emu.arg(0), emu.arg(1) as i64, emu.arg(2));
+    let (fd, off, whence) = (emu.arg(0) & 0xffff_ffff, emu.arg(1) as i64, emu.arg(2) & 0xffff_ffff);
     let Some(f) = emu.fs.files.get_mut(&fd) else { return fail(emu, EBADF) };
     let base = match whence {
         0 => 0,
@@ -748,7 +748,7 @@ fn write_stat(emu: &mut Emu, buf: u64, size: u64, is_dir: bool) -> Result<()> {
 }
 
 fn fstat(emu: &mut Emu) -> Result<()> {
-    let (fd, buf) = (emu.arg(0), emu.arg(1));
+    let (fd, buf) = (emu.arg(0) & 0xffff_ffff, emu.arg(1));
     if emu.fs.dir_fds.contains_key(&fd) {
         write_stat(emu, buf, 0, true)?;
         emu.ret(0);

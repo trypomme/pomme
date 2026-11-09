@@ -932,6 +932,14 @@ pub fn set_errno(emu: &mut Emu, v: u64) -> Result<()> {
     Ok(())
 }
 
+/// The guest's errno.
+pub fn errno(emu: &mut Emu) -> Result<u32> {
+    if emu.sys.errno == 0 {
+        return Ok(0);
+    }
+    Ok(emu.p.memory.read_u32(emu.sys.errno)?)
+}
+
 fn errno_location(emu: &mut Emu) -> Result<()> {
     if emu.sys.errno == 0 {
         emu.sys.errno = emu.alloc(8)?;
@@ -1338,7 +1346,7 @@ fn dlerror(emu: &mut Emu) -> Result<()> {
 }
 
 fn write_fd(emu: &mut Emu) -> Result<()> {
-    let (fd, buf, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (fd, buf, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
     if fd == 1 || fd == 2 {
         let b = bytes(emu, buf, n)?;
         print!("{}", String::from_utf8_lossy(&b));

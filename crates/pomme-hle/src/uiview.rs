@@ -1084,6 +1084,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "colorNamed:", ret_zero),
     ("UIColor", true, "secondarySystemBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
     ("UIColor", true, "secondaryLabelColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.6])),
+    ("UIColor", true, "placeholderTextColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.3])),
     ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),
     ("UIColor", true, "linkColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
     ("UIColor", true, "systemBlueColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),

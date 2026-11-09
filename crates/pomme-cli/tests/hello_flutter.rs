@@ -303,3 +303,43 @@ fn paste_into_text_field() {
     assert!(pasted > typed * 3, "\"Hi Ada Lovelace\": {pasted} dark pixels against {typed}");
     assert_eq!(prompts, 0);
 }
+
+/// Flutter finds its resources in its own framework's bundle:
+/// `[NSBundle bundleForClass:]` of an engine class is Flutter.framework, where
+/// its ICU data (icudtl.dat, for line breaks) is. And a long greeting wraps at
+/// a word: "Lovelace!" starts the second line, at the left edge, which a short
+/// greeting leaves empty.
+#[test]
+fn framework_bundle_and_text_wrapping() {
+    let run = |name: &str| -> Option<(Emu, usize)> {
+        let mut emu = boot()?;
+        tap(&mut emu, (195.0, 800.0), 2.0);
+        emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: 3_500_000_000, text: name.into() });
+        emu.time_limit_ns = Some(5_000_000_000);
+        match emu.run_main() {
+            Err(pomme_hle::Stop::TimeLimit(_)) => {}
+            other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        }
+        if emu.metal.gpu_error.is_some() {
+            return None;
+        }
+        let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+        // The greeting's second line, left of "Tapped 0 times".
+        let mut n = 0;
+        for y in (438 * 3)..(457 * 3) {
+            for x in (17 * 3)..(92 * 3) {
+                if pix.pixel(x, y).unwrap().red() < 100 {
+                    n += 1;
+                }
+            }
+        }
+        Some((emu, n))
+    };
+    let Some((_, short)) = run("Ada") else { return };
+    let (mut emu, long) = run("Augusta Ada King, Countess of Lovelace").unwrap();
+    assert!(short < 20, "\"Hello, Ada!\" is one centered line: {short} dark pixels at the left");
+    assert!(long > 300, "\"Lovelace!\" should wrap onto the second line: {long} dark pixels");
+
+    let icu = pomme_hle::bundle_resource(&mut emu, "FlutterViewController", "icudtl.dat").unwrap();
+    assert!(icu.as_deref().is_some_and(|p| p.ends_with("/Runner.app/Frameworks/Flutter.framework/icudtl.dat")), "{icu:?}");
+}

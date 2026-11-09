@@ -546,7 +546,7 @@ fn dyld_image_path_containing_address(emu: &mut Emu) -> Result<()> {
 }
 
 fn writev(emu: &mut Emu) -> Result<()> {
-    let (fd, iov, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (fd, iov, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
     let mut total = 0;
     for i in 0..n {
         let base = emu.read_u64(iov + i * 16)?;

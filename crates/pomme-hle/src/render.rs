@@ -973,8 +973,11 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
         draw_contents(p, &img, ly.contents_center, w, h, a, &vt, mask);
     }
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
-    let clipped = if vw.clips { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &vt) } else { None };
-    let m = if vw.clips { clipped.as_ref() } else { mask };
+    // A text view is a scroll view, which clips to its bounds.
+    let text_view = crate::textinput::is_text_view(emu, v);
+    let clips = vw.clips || text_view;
+    let clipped = if clips { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &vt) } else { None };
+    let m = if clips { clipped.as_ref() } else { mask };
     if let Some(ops) = emu.render.content.get(&v).cloned() {
         p.ops(&ops, a, &inner, m);
     }
@@ -983,6 +986,10 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     }
     if crate::textinput::is_text_field(emu, v) {
         let _ = draw_text_field(emu, p, v, vw.bounds, a, &inner, m);
+    } else if text_view {
+        let _ = draw_text_view(emu, p, v, a, &inner, m);
+    } else if crate::label::is_label(emu, v) {
+        let _ = draw_label(emu, p, v, vw.bounds, a, &inner, m);
     }
     if let Ok(Some(look)) = crate::navigation::bar_look(emu, v) {
         let above = crate::uiview::window_origin(emu, v)[1] as f32;
@@ -1003,6 +1010,43 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
     let baseline = r[1] + r[3] / 2.0 + size * 0.35;
     let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, size, weight, color, r[0], baseline);
     p.glyphs(&glyphs, alpha, t, mask);
+    Ok(())
+}
+
+/// A UITextView's text: wrapped lines in its text container, in its content
+/// (`t` already scrolls by the bounds' origin).
+fn draw_text_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) -> Result<()> {
+    let laid = crate::textview::lay_out(emu, v)?;
+    for l in &laid.lines {
+        let units = &laid.text[l.start..l.start + l.len];
+        let text: String = String::from_utf16_lossy(units).trim_end_matches(['\n', '\r', '\u{2028}', '\u{2029}']).to_string();
+        let dx = match laid.alignment {
+            1 => (laid.width - l.width) / 2.0,
+            2 => laid.width - l.width,
+            _ => 0.0,
+        };
+        let baseline = laid.origin.1 + l.y + l.ascent;
+        let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, laid.size, laid.weight, laid.color, laid.origin.0 + dx, baseline);
+        p.glyphs(&glyphs, alpha, t, mask);
+    }
+    Ok(())
+}
+
+/// A UILabel's text: wrapped at its width, centered vertically in its bounds.
+fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) -> Result<()> {
+    let laid = crate::label::lay_out(emu, v, bounds[2])?;
+    let top = bounds[1] + (bounds[3] - laid.height()) / 2.0;
+    for l in &laid.lines {
+        let units = &laid.text[l.start..l.start + l.len];
+        let text: String = String::from_utf16_lossy(units).trim_end_matches(['\n', '\r', '\u{2028}', '\u{2029}']).to_string();
+        let dx = match laid.alignment {
+            1 => (bounds[2] - l.width) / 2.0,
+            2 => bounds[2] - l.width,
+            _ => 0.0,
+        };
+        let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, laid.size, laid.weight, laid.color, bounds[0] + dx, top + l.y + l.ascent);
+        p.glyphs(&glyphs, alpha, t, mask);
+    }
     Ok(())
 }
 

@@ -48,6 +48,9 @@ Debugging:
   `--type 'Ada\n@4'` types on the software keyboard at 4 s (`\n` return, `\b` delete) into
   whatever has focus (tap a text field first with `--tap`). The keyboard reports iOS 26's
   frame (335 pt, measured in the Simulator) with the usual will/did notifications.
+  Multiline input works too: `UITextView` (React Native's `multiline` TextInput) wraps its
+  lines, takes return as a newline and scrolls to keep the caret in sight, and Flutter's
+  multiline TextField breaks lines (it finds its ICU data in Flutter.framework's bundle).
 - The clipboard: `--clipboard host` shares this machine's clipboard with the app (paste in
   what you copied; the app's copies land here); `--clipboard 'some text'` starts it with
   text, and the default is empty, so runs repeat. `--paste 'Ada@4'` pastes "Ada" (copied by
@@ -82,7 +85,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 
 | App kind | Renders through | Test app | Status |
 |---|---|---|---|
-| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router, TextInput + KeyboardAvoidingView |
+| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router, TextInput (multiline too) + KeyboardAvoidingView |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
 | Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders, counts taps, TextField with the keyboard inset; matches the iOS Simulator to 3/255 except the font |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |

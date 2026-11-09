@@ -378,3 +378,77 @@ fn paste_into_text_input() {
     assert_eq!(emu.clipboard.prompts, 0);
     assert_eq!(emu.clipboard.text().as_deref(), Some("Ada Lovelace"));
 }
+
+// ---- multiline text input (the /notes screen) ----
+
+const NOTES: (f64, f64) = (195.0, 129.0);
+
+/// The notes screen, opened by deep link, after `script` and `secs` of virtual time.
+fn notes_screen(script: impl FnOnce(&mut Emu), secs: f64) -> Option<(Emu, String)> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///notes".into());
+    script(&mut emu);
+    let views = run_for(&mut emu, secs);
+    Some((emu, views))
+}
+
+/// The height in a view line like `ClassName (x, y, w×h) …` holding `needle`.
+fn height_of(views: &str, needle: &str) -> f64 {
+    let line = views.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle:?} in\n{views}"));
+    let size = line.split(", ").nth(2).unwrap();
+    size.split('×').nth(1).unwrap().split(')').next().unwrap().parse().unwrap()
+}
+
+/// A multiline TextInput is a UITextView (RCTUITextView): its placeholder is
+/// a UILabel; return types a newline; React sees each change, and the input
+/// grows with its content (10 pt padding + 20.3 pt lines) up to its maxHeight.
+#[test]
+fn multiline_text_input_grows() {
+    let Some((_, before)) = notes_screen(|_| {}, 3.0) else { return };
+    assert!(before.contains("UILabel (12.0, 10.0, 332.0×21.0) \"Write a note\""), "{before}");
+    assert_eq!(height_of(&before, "RCTTextInputComponentView"), 44.0, "{before}");
+    assert!(before.contains("\"content 40\""), "{before}");
+
+    let (emu, three) = notes_screen(
+        |emu| {
+            tap(emu, NOTES, 3.0);
+            type_text(emu, "Shopping\nmilk\neggs", 4.0);
+        },
+        5.0,
+    )
+    .unwrap();
+    assert!(emu.input.keyboard_shown);
+    assert!(three.contains("\"Shopping\\nmilk\\neggs\""), "{three}");
+    assert!(three.contains("\"Editing · 3 lines · 18 characters\""), "{three}");
+    assert!(three.contains("hidden \"Write a note\""), "the placeholder hides\n{three}");
+    assert!(three.contains("\"content 81\""), "{three}");
+    assert_eq!(height_of(&three, "RCTTextInputComponentView"), 83.0, "{three}");
+
+    let (_, seven) = notes_screen(
+        |emu| {
+            tap(emu, NOTES, 3.0);
+            type_text(emu, "Shopping\nmilk\neggs", 4.0);
+            type_text(emu, "\nbread\ncoffee\njam\ntea", 5.0);
+        },
+        6.0,
+    )
+    .unwrap();
+    assert!(seven.contains("\"Editing · 7 lines · 39 characters\""), "{seven}");
+    // Capped at maxHeight: the rest scrolls.
+    assert_eq!(height_of(&seven, "RCTTextInputComponentView"), 140.0, "{seven}");
+}
+
+/// A paste into the multiline input goes through UITextView's `paste:`,
+/// newlines and all.
+#[test]
+fn paste_into_multiline_text_input() {
+    let script = |emu: &mut Emu| {
+        tap(emu, NOTES, 3.0);
+        type_text(emu, "Shopping", 4.0);
+        emu.clipboard.script.push(pomme_hle::clipboard::PasteInput { at_ns: 4_500_000_000, text: Some("\nmilk\neggs".into()) });
+    };
+    let Some((mut emu, v)) = notes_screen(script, 5.5) else { return };
+    assert!(v.contains("\"Shopping\\nmilk\\neggs\""), "{v}");
+    assert!(v.contains("\"Editing · 3 lines · 18 characters\""), "{v}");
+    assert_eq!(emu.clipboard.prompts, 0);
+}

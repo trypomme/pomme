@@ -251,7 +251,7 @@ fn text_value(emu: &mut Emu, v: u64) -> Result<Option<String>> {
 
 // ---- edit actions on text fields ----
 
-/// `paste:` on a UITextField: the clipboard's text replaces the selection, as typing does.
+/// `paste:` on a text field or view: the clipboard's text replaces the selection, as typing does.
 fn tf_paste(emu: &mut Emu) -> Result<()> {
     let f = emu.arg(0);
     let p = general(emu)?;
@@ -312,6 +312,40 @@ pub fn schedule_script(emu: &mut Emu) -> Result<()> {
 
 const P: &str = "UIPasteboard";
 const TF: &str = "UITextField";
+const TV: &str = "UITextView";
+
+/// The edit actions (the edit menu's Paste, Copy, …) of both text controls.
+macro_rules! edit_actions {
+    ($c:expr) => {
+        [
+        ($c, false, "paste:", tf_paste),
+        ($c, false, "copy:", |e| tf_copy(e, false)),
+        ($c, false, "cut:", |e| tf_copy(e, true)),
+        ($c, false, "selectAll:", |e| {
+            let f = e.arg(0);
+            crate::textinput::select_all(e, f);
+            Ok(())
+        }),
+        ($c, false, "canPerformAction:withSender:", |e| {
+            let (f, action) = (e.arg(0), e.arg(2));
+            let name = objc::sel_name(e, action);
+            let has_selection = crate::textinput::selected_text(e, f).is_some();
+            let ok = match name.as_str() {
+                "paste:" => {
+                    let p = general(e)?;
+                    peek(e, p).is_some()
+                }
+                "copy:" | "cut:" => has_selection,
+                "selectAll:" => true,
+                _ => false,
+            };
+            ret(e, ok as u64)
+        }),
+        ]
+    };
+}
+
+pub(crate) const EDIT_ACTIONS: [&[(&str, bool, &str, HostFn)]; 2] = [&edit_actions!(TF), &edit_actions!(TV)];
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (P, true, "generalPasteboard", |e| {
@@ -474,30 +508,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
             write(e, p, s.as_deref())?;
         }
         Ok(())
-    }),
-    // Edit actions
-    (TF, false, "paste:", tf_paste),
-    (TF, false, "copy:", |e| tf_copy(e, false)),
-    (TF, false, "cut:", |e| tf_copy(e, true)),
-    (TF, false, "selectAll:", |e| {
-        let f = e.arg(0);
-        crate::textinput::select_all(e, f);
-        Ok(())
-    }),
-    (TF, false, "canPerformAction:withSender:", |e| {
-        let (f, action) = (e.arg(0), e.arg(2));
-        let name = objc::sel_name(e, action);
-        let has_selection = crate::textinput::selected_text(e, f).is_some();
-        let ok = match name.as_str() {
-            "paste:" => {
-                let p = general(e)?;
-                peek(e, p).is_some()
-            }
-            "copy:" | "cut:" => has_selection,
-            "selectAll:" => true,
-            _ => false,
-        };
-        ret(e, ok as u64)
     }),
 ];
 

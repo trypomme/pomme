@@ -92,7 +92,21 @@ fn bridge_to_nsstring(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `Darwin.errno` (libswift_errno): the C errno, read and written.
+fn errno_get(emu: &mut Emu) -> Result<()> {
+    let v = crate::libsystem::errno(emu)?;
+    emu.ret(v as u64);
+    Ok(())
+}
+
+fn errno_set(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0) & 0xffff_ffff;
+    crate::libsystem::set_errno(emu, v)
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_$s6Darwin5errnos5Int32Vvg", errno_get),
+    ("_$s6Darwin5errnos5Int32Vvs", errno_set),
     ("_$ss11CommandLineO4argcs5Int32VvgZ", command_line_argc),
     ("_$ss11CommandLineO10unsafeArgvSpySpys4Int8VGSgGvgZ", command_line_argv),
     ("_swift_getObjCClassFromMetadata", ret_self),
