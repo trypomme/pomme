@@ -94,6 +94,19 @@ overlay CoreGraphics swiftCoreGraphics -import-underlying-module -L "$LIB" -Xlin
   "$HERE/overlays/CoreGraphics/CoreGraphics.swift"
 
 
+# Symbols: the Swift half of Symbols.framework (SF Symbol effects), ours,
+# written from the SDK's interface, at the framework's own install name.
+SYM="$VENDOR/sysroot/System/Library/Frameworks/Symbols.framework"
+mkdir -p "$SYM"
+echo "overlay Symbols → Symbols.framework"
+xcrun --sdk macosx swiftc -target "$TARGET" -sdk "$SDK" -O -wmo -parse-as-library \
+  -module-name Symbols -enable-library-evolution -import-underlying-module \
+  -emit-module -emit-module-path "$OUT/Symbols.swiftmodule" \
+  -emit-library -o "$SYM/Symbols" \
+  -Xlinker -install_name -Xlinker /System/Library/Frameworks/Symbols.framework/Symbols \
+  -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
+  "$HERE/overlays/Symbols/Symbols.swift"
+
 # Regex: _RegexParser, _StringProcessing (with its C Unicode tables) and
 # RegexBuilder, from swiftlang/swift-experimental-string-processing at the
 # toolchain's tag, built the way Runtimes/Supplemental/StringProcessing does:

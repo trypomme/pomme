@@ -31,8 +31,72 @@ const STRING_PREFIXES: &[&str] = &[
     "NSUserActivityType",
     "NSFile",
     "kSec",
-    "kUT",
     "kCTFont",
+    // ImageIO's option keys are their own names.
+    "kCGImageSource",
+    "kCGImageDestination",
+];
+
+/// String constants whose values aren't their names: (name, value).
+const STRINGS: &[(&str, &str)] = &[
+    // ImageIO property keys and dictionaries.
+    ("kCGImagePropertyPixelWidth", "PixelWidth"),
+    ("kCGImagePropertyPixelHeight", "PixelHeight"),
+    ("kCGImagePropertyOrientation", "Orientation"),
+    ("kCGImagePropertyHasAlpha", "HasAlpha"),
+    ("kCGImagePropertyDepth", "Depth"),
+    ("kCGImagePropertyColorModel", "ColorModel"),
+    ("kCGImagePropertyDPIWidth", "DPIWidth"),
+    ("kCGImagePropertyDPIHeight", "DPIHeight"),
+    ("kCGImagePropertyFileSize", "FileSize"),
+    ("kCGImagePropertyGIFDictionary", "{GIF}"),
+    ("kCGImagePropertyGIFDelayTime", "DelayTime"),
+    ("kCGImagePropertyGIFUnclampedDelayTime", "UnclampedDelayTime"),
+    ("kCGImagePropertyGIFLoopCount", "LoopCount"),
+    ("kCGImagePropertyPNGDictionary", "{PNG}"),
+    ("kCGImagePropertyAPNGDelayTime", "DelayTime"),
+    ("kCGImagePropertyAPNGUnclampedDelayTime", "UnclampedDelayTime"),
+    ("kCGImagePropertyAPNGLoopCount", "LoopCount"),
+    ("kCGImagePropertyWebPDictionary", "{WebP}"),
+    ("kCGImagePropertyWebPDelayTime", "DelayTime"),
+    ("kCGImagePropertyWebPUnclampedDelayTime", "UnclampedDelayTime"),
+    ("kCGImagePropertyWebPLoopCount", "LoopCount"),
+    ("kCGImagePropertyHEICSDictionary", "{HEICS}"),
+    ("kCGImagePropertyHEICSDelayTime", "DelayTime"),
+    ("kCGImagePropertyHEICSUnclampedDelayTime", "UnclampedDelayTime"),
+    ("kCGImagePropertyHEICSLoopCount", "LoopCount"),
+    ("kCGImagePropertyJFIFDictionary", "{JFIF}"),
+    ("kCGImagePropertyTIFFDictionary", "{TIFF}"),
+    ("kCGImagePropertyTIFFOrientation", "Orientation"),
+    ("kCGImagePropertyExifDictionary", "{Exif}"),
+    // Uniform Type Identifiers (MobileCoreServices' kUTType…).
+    ("kUTTypeItem", "public.item"),
+    ("kUTTypeContent", "public.content"),
+    ("kUTTypeData", "public.data"),
+    ("kUTTypeText", "public.text"),
+    ("kUTTypePlainText", "public.plain-text"),
+    ("kUTTypeUTF8PlainText", "public.utf8-plain-text"),
+    ("kUTTypeUTF16PlainText", "public.utf16-plain-text"),
+    ("kUTTypeRTF", "public.rtf"),
+    ("kUTTypeHTML", "public.html"),
+    ("kUTTypeFlatRTFD", "com.apple.flat-rtfd"),
+    ("kUTTypeURL", "public.url"),
+    ("kUTTypeFileURL", "public.file-url"),
+    ("kUTTypeJSON", "public.json"),
+    ("kUTTypePDF", "com.adobe.pdf"),
+    ("kUTTypeImage", "public.image"),
+    ("kUTTypePNG", "public.png"),
+    ("kUTTypeJPEG", "public.jpeg"),
+    ("kUTTypeGIF", "com.compuserve.gif"),
+    ("kUTTypeTIFF", "public.tiff"),
+    ("kUTTypeBMP", "com.microsoft.bmp"),
+    ("kUTTypeICO", "com.microsoft.ico"),
+    ("kUTTypeAudiovisualContent", "public.audiovisual-content"),
+    ("kUTTypeMovie", "public.movie"),
+    ("kUTTypeVideo", "public.video"),
+    ("kUTTypeAudio", "public.audio"),
+    ("kUTTagClassFilenameExtension", "public.filename-extension"),
+    ("kUTTagClassMIMEType", "public.mime-type"),
 ];
 
 /// Numeric constants: (name, f64 value).
@@ -112,6 +176,16 @@ pub(crate) fn bind(emu: &mut Emu) -> Result<()> {
         if !stubs.is_empty() {
             let cell = emu.alloc(8)?;
             emu.write_u64(cell, v)?;
+            rebind_all(emu, stubs, cell)?;
+        }
+        handled.insert(name);
+    }
+    for &(name, value) in STRINGS {
+        let stubs = emu.p.stubs.find(&format!("_{name}"));
+        if !stubs.is_empty() {
+            let s = foundation::new_nsstring(emu, value)?;
+            let cell = emu.alloc(8)?;
+            emu.write_u64(cell, s)?;
             rebind_all(emu, stubs, cell)?;
         }
         handled.insert(name);

@@ -304,6 +304,9 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CACurrentMediaTime", ca_current_media_time),
     // CAFrameRateRange is three floats in, the same three out (s0-s2).
     ("_CAFrameRateRangeMake", |_| Ok(())),
+    // UIImageView.removeAllSymbolEffects(options:animated:) (Swift; self in x20):
+    // pomme runs no SF Symbol effects, so there are none to remove.
+    ("_$sSo11UIImageViewC5UIKitE22removeAllSymbolEffects7options8animatedy7Symbols0F13EffectOptionsV_SbtF", |_| Ok(())),
     // Swift's AccessibilitySettings (default settings): animated images on, no
     // preference for non-blinking cursors; change notifications are their names.
     ("_$sSo21AccessibilitySettingsV0A0E21animatedImagesEnabledSbvgZ", |e| {

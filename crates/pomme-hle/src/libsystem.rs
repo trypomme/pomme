@@ -1093,6 +1093,12 @@ fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Re
     Ok(())
 }
 
+/// Run `f(ctx)` on the main thread, in turn with the main queue's other work.
+pub(crate) fn run_on_main(emu: &mut Emu, f: u64, ctx: u64) {
+    emu.sys.queue.push_back((f, ctx));
+    crate::threads::wake_main_queue(emu);
+}
+
 fn dispatch_async(emu: &mut Emu) -> Result<()> {
     let queue = emu.arg(0);
     let (invoke, block) = copied_block(emu, emu.arg(1))?;
@@ -1746,6 +1752,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_queue_set_specific", dispatch_queue_set_specific),
     ("_dispatch_get_specific", dispatch_get_specific),
     ("_dispatch_queue_attr_make_with_qos_class", ret_self),
+    // Autorelease pools around work items: pomme's queues keep the attribute's concurrency only.
+    ("_dispatch_queue_attr_make_with_autorelease_frequency", ret_self),
     ("_dispatch_set_target_queue", noop),
     ("_dispatch_semaphore_create", dispatch_semaphore_create),
     ("_dispatch_semaphore_signal", dispatch_semaphore_signal),

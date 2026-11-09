@@ -74,6 +74,8 @@ struct UrlResponse {
     url: u64,
     status: u16,
     headers: Vec<(String, String)>,
+    /// A plain NSURLResponse (a file URL's), not an HTTP one.
+    plain: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -255,7 +257,7 @@ fn resp(emu: &Emu, r: u64) -> UrlResponse {
 }
 
 fn new_response(emu: &mut Emu, state: UrlResponse) -> Result<u64> {
-    let r = new_object(emu, "NSHTTPURLResponse")?;
+    let r = new_object(emu, if state.plain { "NSURLResponse" } else { "NSHTTPURLResponse" })?;
     emu.net.responses.insert(r, state);
     Ok(r)
 }
@@ -263,7 +265,7 @@ fn new_response(emu: &mut Emu, state: UrlResponse) -> Result<u64> {
 fn response_init(emu: &mut Emu) -> Result<()> {
     let (r, url, status, headers) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(5));
     let headers = dict_strings(emu, headers)?;
-    emu.net.responses.insert(r, UrlResponse { url, status: status as u16, headers });
+    emu.net.responses.insert(r, UrlResponse { url, status: status as u16, headers, plain: false });
     ret(emu, r)
 }
 
@@ -349,9 +351,13 @@ fn resume(emu: &mut Emu) -> Result<()> {
     if r.body != 0 {
         request.body = foundation::data_bytes(emu, r.body)?;
     }
-    let result = match emu.net.client.as_mut() {
-        Some(c) => c.fetch(&request),
-        None => Err("offline".to_string()),
+    let result = if let Some(path) = request.url.strip_prefix("file://") {
+        read_file_url(emu, path)
+    } else {
+        match emu.net.client.as_mut() {
+            Some(c) => c.fetch(&request),
+            None => Err("offline".to_string()),
+        }
     };
     if emu.trace {
         println!("[net] {} {} → {}", request.method, request.url, match &result {
@@ -365,6 +371,38 @@ fn resume(emu: &mut Emu) -> Result<()> {
     }
     send(emu, t, "retain", &[])?;
     crate::uikit::after_on_main(emu, LATENCY_S, deliver, t)
+}
+
+/// A file URL, read as the URL loading system does on iOS: the file's bytes
+/// with a plain (not HTTP) response, its MIME type from the extension; a
+/// missing file is NSURLErrorFileDoesNotExist.
+fn read_file_url(emu: &mut Emu, path: &str) -> std::result::Result<Response, String> {
+    let path = percent_decode(path);
+    let Some(body) = crate::fs::read_file(emu, &path) else { return Err("no such file".into()) };
+    let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    let mime = crate::uttype::for_tag("public.filename-extension", ext, None)
+        .and_then(crate::uttype::mime_of)
+        .unwrap_or("application/octet-stream");
+    let headers = vec![("Content-Type".into(), mime.to_string()), ("Content-Length".into(), body.len().to_string())];
+    Ok(Response { status: 0, headers, body })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn cancel(emu: &mut Emu) -> Result<()> {
@@ -388,6 +426,7 @@ fn url_error(emu: &mut Emu, what: &str, url: u64) -> Result<u64> {
     let code: i64 = match what {
         "cancelled" => -999,
         "offline" => -1009,
+        "no such file" => -1100, // NSURLErrorFileDoesNotExist
         _ => -1003,
     };
     let desc = match what {
@@ -437,7 +476,9 @@ fn deliver(emu: &mut Emu) -> Result<()> {
     if tk.stage == 0 {
         let (response, data, error) = match tk.result.clone().unwrap_or(Err("offline".into())) {
             Ok(r) => {
-                let response = new_response(emu, UrlResponse { url, status: r.status, headers: r.headers })?;
+                // A file URL's response is a plain NSURLResponse (status 0 marks it).
+                let plain = r.status == 0;
+                let response = new_response(emu, UrlResponse { url, status: r.status, headers: r.headers, plain })?;
                 let data = foundation::new_data(emu, &r.body)?;
                 (response, data, 0)
             }
@@ -577,7 +618,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (RS, false, "initWithURL:statusCode:HTTPVersion:headerFields:", response_init),
-    (RS, false, "URL", |e| {
+    ("NSURLResponse", false, "URL", |e| {
         let u = resp(e, e.arg(0)).url;
         ret(e, u)
     }),
@@ -595,19 +636,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let v = response_header(e, e.arg(0), &name);
         opt_string(e, v)
     }),
-    (RS, false, "MIMEType", |e| {
+    ("NSURLResponse", false, "MIMEType", |e| {
         let (m, _) = content_type(e, e.arg(0));
         opt_string(e, m)
     }),
-    (RS, false, "textEncodingName", |e| {
+    ("NSURLResponse", false, "textEncodingName", |e| {
         let (_, c) = content_type(e, e.arg(0));
         opt_string(e, c)
     }),
-    (RS, false, "expectedContentLength", |e| {
+    ("NSURLResponse", false, "expectedContentLength", |e| {
         let n = response_header(e, e.arg(0), "Content-Length").and_then(|v| v.parse::<i64>().ok()).unwrap_or(-1);
         ret(e, n as u64)
     }),
-    (RS, false, "suggestedFilename", |e| opt_string(e, None)),
+    ("NSURLResponse", false, "suggestedFilename", |e| opt_string(e, None)),
     (RS, true, "localizedStringForStatusCode:", |e| {
         let s = string(e, &format!("status {}", e.arg(2)))?;
         ret(e, s)

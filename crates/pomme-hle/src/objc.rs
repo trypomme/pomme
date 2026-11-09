@@ -105,7 +105,6 @@ const PERMISSIVE: &[&str] = &[
     "NSURLResponse",
     "NSURLCache",
     "NSHTTPCookieStorage",
-    "NSOperationQueue",
     // Device properties: 0 is a fine answer (no proximity sensor, battery unknown, ...).
     "UIDevice",
     // Traits pomme doesn't model are "unspecified" (0), which is what UIKit reports too.
@@ -307,6 +306,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("__NSCFTimer", "NSTimer"),
     ("NSMutableCharacterSet", "NSCharacterSet"),
     ("NSMutableIndexSet", "NSIndexSet"),
+    ("NSMutableIndexSet", "NSIndexSet"),
     ("NSMutableOrderedSet", "NSOrderedSet"),
     ("NSMutableParagraphStyle", "NSParagraphStyle"),
     ("NSDateFormatter", "NSFormatter"),
@@ -444,7 +444,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -545,6 +545,16 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
         None if name == "NSObject" || name == "NSProxy" => 0,
         None => host_class(emu, "NSObject")?,
     };
+    // Host classes that keep state in the object itself declare their size.
+    let own_size = HOST_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s);
+    let cls = new_class(emu, name, superclass, own_size)?;
+    emu.objc.by_name.insert(name.to_string(), cls);
+    Ok(cls)
+}
+
+/// A class and its metaclass named `name` under `superclass`, not yet in
+/// the table of named classes (objc_getClass doesn't find it).
+fn new_class(emu: &mut Emu, name: &str, superclass: u64, own_size: Option<u64>) -> Result<u64> {
     let (super_meta, root_meta) = if superclass == 0 {
         (0, 0) // fixed up below: root meta's isa is itself, its superclass the root class
     } else {
@@ -552,23 +562,22 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
         (sm, emu.objc.classes[&sm].isa)
     };
 
-    let cls = emu.alloc(CLASS_SIZE + RO_SIZE)?;
-    let meta = emu.alloc(CLASS_SIZE + RO_SIZE)?;
+    let (cls, swift_bits) = alloc_class_for_subclass(emu, superclass)?;
+    let meta = emu.alloc(CLASS_SIZE)?;
     let name_ptr = emu.alloc_cstr(name)?;
     let root_meta = if superclass == 0 { meta } else { root_meta };
     let super_meta = if superclass == 0 { cls } else { super_meta };
     for (c, isa, sup, meta_flag) in [(cls, meta, superclass, 0), (meta, root_meta, super_meta, RO_META)] {
-        let ro = c + CLASS_SIZE;
+        let ro = emu.alloc(RO_SIZE)?;
         emu.write_u64(c, isa)?;
         emu.write_u64(c + 8, sup)?;
-        emu.write_u64(c + 32, ro)?;
+        // A Swift superclass's subclass is a Swift class too (the data word's low bits say so).
+        emu.write_u64(c + 32, ro | if c == cls { swift_bits } else { 0 })?;
         emu.p.memory.write_u32(ro, meta_flag)?;
         emu.p.memory.write_u32(ro + 4, 8)?;
         emu.p.memory.write_u32(ro + 8, 8)?;
         emu.write_u64(ro + 24, name_ptr)?;
     }
-    // Host classes that keep state in the object itself declare their size.
-    let own_size = HOST_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s);
     let size = own_size.unwrap_or_else(|| emu.objc.classes.get(&superclass).map_or(8, |k| k.instance_size));
     for (c, isa, sup, is_meta) in [(cls, meta, superclass, false), (meta, root_meta, super_meta, true)] {
         emu.objc.classes.insert(
@@ -588,8 +597,34 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
             },
         );
     }
-    emu.objc.by_name.insert(name.to_string(), cls);
     Ok(cls)
+}
+
+/// Room for a new class under `superclass`, as objc4's
+/// `alloc_class_for_subclass` makes it: a plain objc_class, or, under a
+/// Swift class, a copy of the superclass's whole Swift metadata (its
+/// prefix, vtable and field offsets) with the Objective-C part cleared and
+/// no type descriptor, so the Swift runtime takes it for the Swift class it
+/// is. Returns the class and the Swift bits for its data word.
+fn alloc_class_for_subclass(emu: &mut Emu, superclass: u64) -> Result<(u64, u64)> {
+    const SWIFT_BITS: u64 = 3; // FAST_IS_SWIFT_LEGACY | FAST_IS_SWIFT_STABLE
+    let bits = if superclass == 0 { 0 } else { emu.read_u64(superclass + 32)? & SWIFT_BITS };
+    if bits == 0 {
+        return Ok((emu.alloc(CLASS_SIZE)?, 0));
+    }
+    // swift_class_t after objc_class: flags u32 @40, instanceAddressOffset u32 @44,
+    // instanceSize u32 @48, instanceAlignMask u16 @52, reserved u16 @54,
+    // classSize u32 @56, classAddressOffset u32 @60, description @64.
+    let class_size = emu.p.memory.read_u32(superclass + 56)? as u64;
+    let address_offset = emu.p.memory.read_u32(superclass + 60)? as u64;
+    let base = superclass - address_offset;
+    let copy = emu.p.memory.read(base, class_size as usize)?.to_vec();
+    let new_base = emu.alloc(class_size)?;
+    emu.p.memory.write(new_base, &copy)?;
+    let cls = new_base + address_offset;
+    emu.p.memory.write(cls, &[0; CLASS_SIZE as usize])?;
+    emu.write_u64(cls + 64, 0)?;
+    Ok((cls, bits))
 }
 
 /// Register a class compiled into a guest image, and its metaclass.
@@ -1029,6 +1064,16 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
     }
 }
 
+/// Send a message with floating-point arguments that returns an object
+/// (`initWithFrame:` and the like).
+pub(crate) fn send_fp_id(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: &[f64]) -> Result<u64> {
+    if recv == 0 {
+        return Ok(0);
+    }
+    send_fp(emu, recv, sel, args, fargs)?;
+    Ok(emu.last_x01[0])
+}
+
 /// Send a message with floating-point arguments (in d0…, after the integer
 /// ones) and floating-point results: d0…d3 come back (a CGRect, a CGSize …).
 pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: &[f64]) -> Result<[f64; 4]> {
@@ -1059,6 +1104,7 @@ pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: 
             }
             f(emu)?;
             let r = [0, 1, 2, 3].map(|i| f64::from_bits(emu.cpu.q[i] as u64));
+            emu.last_x01 = [emu.cpu.x[0], emu.cpu.x[1]];
             emu.cpu.x[..18].copy_from_slice(&saved_x);
             emu.cpu.q[..8].copy_from_slice(&saved_q);
             emu.cpu.pc = pc;
@@ -1076,6 +1122,7 @@ pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: 
             }
             let forwarded = crate::invocation::forward(emu, recv, sel_addr)?;
             let r = [0, 1, 2, 3].map(|i| f64::from_bits(emu.cpu.q[i] as u64));
+            emu.last_x01 = [emu.cpu.x[0], emu.cpu.x[1]];
             emu.cpu.x = sx;
             emu.cpu.q = sq;
             emu.cpu.pc = pc;
@@ -2153,19 +2200,54 @@ fn class_get_instance_variable(emu: &mut Emu) -> Result<()> {
         emu.ret(0);
         return Ok(());
     };
+    let h = ivar_handle(emu, cls, &name, offset_var, &ty, prop)?;
+    emu.ret(h);
+    Ok(())
+}
+
+/// The `Ivar` (an ivar_t: offset variable, name, type, alignment, size) for
+/// `name` as seen from `cls`, made once.
+fn ivar_handle(emu: &mut Emu, cls: u64, name: &str, offset_var: u64, ty: &str, prop: Option<&'static str>) -> Result<u64> {
+    if let Some(&h) = emu.objc.ivar_handles.get(&(cls, name.to_string())) {
+        return Ok(h);
+    }
     let h = emu.alloc(32)?;
-    let n = emu.alloc_cstr(&name)?;
-    let t = emu.alloc_cstr(&ty)?;
+    let n = emu.alloc_cstr(name)?;
+    let t = emu.alloc_cstr(ty)?;
     emu.write_u64(h, offset_var)?;
     emu.write_u64(h + 8, n)?;
     emu.write_u64(h + 16, t)?;
     emu.p.memory.write_u32(h + 24, 3)?; // log2 alignment
     emu.p.memory.write_u32(h + 28, 8)?;
-    emu.objc.ivar_handles.insert((cls, name), h);
+    emu.objc.ivar_handles.insert((cls, name.to_string()), h);
     if let Some(p) = prop {
         emu.objc.virtual_ivars.insert(h, p);
     }
-    emu.ret(h);
+    Ok(h)
+}
+
+/// `class_copyIvarList(cls, &count)`: the class's own ivars (not its
+/// superclasses'), in declaration order, in a malloc'd array the caller frees.
+fn class_copy_ivar_list(emu: &mut Emu) -> Result<()> {
+    let (cls, out_count) = (emu.arg(0), emu.arg(1));
+    let ivars = emu.objc.classes.get(&cls).map(|c| c.ivars.clone()).unwrap_or_default();
+    let mut handles = Vec::new();
+    for (name, offset_var, ty) in &ivars {
+        handles.push(ivar_handle(emu, cls, name, *offset_var, ty, None)?);
+    }
+    if out_count != 0 {
+        emu.p.memory.write_u32(out_count, handles.len() as u32)?;
+    }
+    if handles.is_empty() {
+        emu.ret(0);
+        return Ok(());
+    }
+    let list = emu.alloc(8 * (handles.len() as u64 + 1))?;
+    for (i, h) in handles.iter().enumerate() {
+        emu.write_u64(list + 8 * i as u64, *h)?;
+    }
+    emu.write_u64(list + 8 * handles.len() as u64, 0)?;
+    emu.ret(list);
     Ok(())
 }
 
@@ -2198,14 +2280,6 @@ fn object_get_ivar(emu: &mut Emu) -> Result<()> {
         emu.read_u64(obj + off)?
     };
     emu.ret(v);
-    Ok(())
-}
-
-fn class_copy_ivar_list(emu: &mut Emu) -> Result<()> {
-    if emu.arg(1) != 0 {
-        emu.p.memory.write_u32(emu.arg(1), 0)?;
-    }
-    emu.ret(0);
     Ok(())
 }
 
@@ -2349,6 +2423,10 @@ fn objc_get_protocol(emu: &mut Emu) -> Result<()> {
 }
 
 /// `objc_allocateClassPair(superclass, name, extraBytes)`
+/// `objc_allocateClassPair(superclass, name, extraBytes)`: a new class,
+/// found by name only once registered (objc_registerClassPair). Like the
+/// real runtime, it fails only if a registered class has the name, so
+/// unregistered classes may share one (Expo makes two per native view).
 fn objc_allocate_class_pair(emu: &mut Emu) -> Result<()> {
     let (sup, name_ptr) = (emu.arg(0), emu.arg(1));
     let name = emu.cstr(name_ptr)?;
@@ -2356,23 +2434,21 @@ fn objc_allocate_class_pair(emu: &mut Emu) -> Result<()> {
         emu.ret(0);
         return Ok(());
     }
-    // Build it like a host class, then point it at the requested superclass.
-    let cls = host_class(emu, &name)?;
+    let cls = new_class(emu, &name, sup, None)?;
     let meta = emu.objc.classes[&cls].isa;
-    let sup_meta = if sup == 0 { cls } else { emu.objc.classes.get(&sup).map_or(0, |c| c.isa) };
-    let root_meta = if sup == 0 { meta } else { emu.objc.classes.get(&sup_meta).map_or(meta, |c| c.isa) };
-    let size = emu.objc.classes.get(&sup).map_or(8, |c| c.instance_size);
-    emu.write_u64(cls + 8, sup)?;
-    emu.write_u64(meta, root_meta)?;
-    emu.write_u64(meta + 8, sup_meta)?;
-    for (c, s) in [(cls, sup), (meta, sup_meta)] {
-        let k = emu.objc.classes.get_mut(&c).unwrap();
-        k.superclass = s;
-        k.host = false;
-        k.instance_size = size;
+    for c in [cls, meta] {
+        emu.objc.classes.get_mut(&c).unwrap().host = false;
     }
-    emu.objc.classes.get_mut(&meta).unwrap().isa = root_meta;
     emu.ret(cls);
+    Ok(())
+}
+
+/// `objc_registerClassPair`: the class can now be found by its name.
+fn objc_register_class_pair(emu: &mut Emu) -> Result<()> {
+    let cls = emu.arg(0);
+    if let Some(name) = emu.objc.classes.get(&cls).map(|c| c.name.clone()) {
+        emu.objc.by_name.entry(name).or_insert(cls);
+    }
     Ok(())
 }
 
@@ -2506,7 +2582,7 @@ pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
     ("_protocol_conformsToProtocol", protocol_conforms_to_protocol),
     ("_objc_getProtocol", objc_get_protocol),
     ("_objc_allocateClassPair", objc_allocate_class_pair),
-    ("_objc_registerClassPair", noop),
+    ("_objc_registerClassPair", objc_register_class_pair),
     ("__objc_rootAutorelease", ret_self),
     ("_objc_setHook_getClass", objc_set_hook_get_class),
     ("_objc_setHook_getImageName", objc_set_hook_get_image_name),

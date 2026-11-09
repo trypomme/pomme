@@ -173,17 +173,28 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         }
     }
     crate::constants::bind(emu)?;
-    // `@[]` and friends compile to references to Apple's empty-collection singletons.
-    for (sym, make) in [
-        ("___NSArray0__struct", new_array as fn(&mut Emu, bool) -> Result<u64>),
-        ("___NSDictionary0__struct", |e: &mut Emu, _| new_dict(e)),
-        ("___NSSet0__struct", |e: &mut Emu, _| new_set(e)),
+    // `@[]` and friends compile to references to Apple's empty-collection
+    // singletons: the object itself (`__NSArray0__struct`) or a pointer to it
+    // (`__NSArray0__`), depending on the compiler.
+    for (name, make) in [
+        ("___NSArray0__", new_array as fn(&mut Emu, bool) -> Result<u64>),
+        ("___NSDictionary0__", |e: &mut Emu, _| new_dict(e)),
+        ("___NSSet0__", |e: &mut Emu, _| new_set(e)),
     ] {
-        let stubs = emu.p.stubs.find(sym);
-        if !stubs.is_empty() {
-            let obj = make(emu, false)?;
-            for s in stubs {
-                emu.p.rebind(s, obj).map_err(|e| Stop::Unsupported(e.to_string()))?;
+        let objects = emu.p.stubs.find(&format!("{name}struct"));
+        let pointers = emu.p.stubs.find(name);
+        if objects.is_empty() && pointers.is_empty() {
+            continue;
+        }
+        let obj = make(emu, false)?;
+        for s in objects {
+            emu.p.rebind(s, obj).map_err(|e| Stop::Unsupported(e.to_string()))?;
+        }
+        if !pointers.is_empty() {
+            let cell = emu.alloc(8)?;
+            emu.write_u64(cell, obj)?;
+            for s in pointers {
+                emu.p.rebind(s, cell).map_err(|e| Stop::Unsupported(e.to_string()))?;
             }
         }
     }
@@ -1205,6 +1216,26 @@ fn array_remove_object(emu: &mut Emu) -> Result<()> {
     while let Some(i) = index_of(emu, a, emu.arg(2))? {
         cf(emu, "_CFArrayRemoveValueAtIndex", &[a, i])?;
     }
+    Ok(())
+}
+
+/// `-removeObjectIdenticalTo:`: every occurrence of this very object (by address, not isEqual:).
+fn array_remove_identical(emu: &mut Emu) -> Result<()> {
+    let (a, obj) = (emu.arg(0), emu.arg(2));
+    let values = array_values(emu, a)?;
+    for (i, &v) in values.iter().enumerate().rev() {
+        if v == obj {
+            cf(emu, "_CFArrayRemoveValueAtIndex", &[a, i as u64])?;
+        }
+    }
+    Ok(())
+}
+
+/// `-indexOfObjectIdenticalTo:`: the first index holding this very object, or NSNotFound.
+fn array_index_identical(emu: &mut Emu) -> Result<()> {
+    let (a, obj) = (emu.arg(0), emu.arg(2));
+    let i = array_values(emu, a)?.iter().position(|&v| v == obj).map_or(i64::MAX as u64, |i| i as u64);
+    emu.ret(i);
     Ok(())
 }
 
@@ -2777,6 +2808,146 @@ pub fn data_bytes(emu: &mut Emu, d: u64) -> Result<Vec<u8>> {
     Ok(if n == 0 { Vec::new() } else { emu.p.memory.read(p, n as usize)?.to_vec() })
 }
 
+// ---- base64 (RFC 4648) ----
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// NSDataBase64DecodingIgnoreUnknownCharacters.
+const IGNORE_UNKNOWN: u64 = 1;
+
+/// Decode base64 as NSData does: padding optional, whitespace and other
+/// characters refused unless `options` says to ignore them.
+pub(crate) fn base64_decode(text: &[u8], options: u64) -> Option<Vec<u8>> {
+    let mut bits = 0u32;
+    let mut n = 0;
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut padding = 0;
+    for &c in text {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                continue;
+            }
+            _ if options & IGNORE_UNKNOWN != 0 => continue,
+            _ => return None,
+        };
+        if padding > 0 {
+            return None; // data after the padding
+        }
+        bits = bits << 6 | v as u32;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    // Leftover bits must be zero padding, and a lone sextet can't be a byte.
+    if n >= 6 || padding > 2 {
+        return None;
+    }
+    Some(out)
+}
+
+/// Encode as NSData does: no line breaks unless `options` asks for 64- or
+/// 76-character lines (ended CRLF unless just CR or LF is asked for).
+pub(crate) fn base64_encode(bytes: &[u8], options: u64) -> String {
+    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let v = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                s.push(BASE64[(v >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    let line = if options & 1 != 0 { 64 } else if options & 2 != 0 { 76 } else { 0 };
+    if line == 0 {
+        return s;
+    }
+    let end = match (options & 16 != 0, options & 32 != 0) {
+        (true, false) => "\r",
+        (false, true) => "\n",
+        _ => "\r\n",
+    };
+    let lines: Vec<&str> = s.as_bytes().chunks(line).map(|c| std::str::from_utf8(c).unwrap()).collect();
+    lines.join(end)
+}
+
+/// `-rangeOfData:options:range:`: where `needle` occurs in the range
+/// (NSDataSearchBackwards: the last place; NSDataSearchAnchored: only at the
+/// range's start, or its end when backwards). {NSNotFound, 0} if nowhere.
+fn data_range_of(emu: &mut Emu) -> Result<()> {
+    const BACKWARDS: u64 = 1;
+    const ANCHORED: u64 = 2;
+    let (d, needle, options, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5));
+    let hay = data_bytes(emu, d)?;
+    let pat = data_bytes(emu, needle)?;
+    let end = (loc + len).min(hay.len() as u64) as usize;
+    let start = (loc as usize).min(end);
+    let window = &hay[start..end];
+    let found = if pat.is_empty() || pat.len() > window.len() {
+        None
+    } else {
+        let last = window.len() - pat.len();
+        let at = |i: usize| window[i..i + pat.len()] == pat[..];
+        match (options & BACKWARDS != 0, options & ANCHORED != 0) {
+            (false, false) => (0..=last).find(|&i| at(i)),
+            (true, false) => (0..=last).rev().find(|&i| at(i)),
+            (false, true) => at(0).then_some(0),
+            (true, true) => at(last).then_some(last),
+        }
+    };
+    let (l, n) = match found {
+        Some(i) => ((start + i) as u64, pat.len() as u64),
+        None => (i64::MAX as u64, 0),
+    };
+    emu.cpu.x[0] = l;
+    emu.cpu.x[1] = n;
+    Ok(())
+}
+
+/// Write the receiver's bytes to `path` (a file in the data container).
+/// NSDataWritingWithoutOverwriting (2) refuses an existing file. On failure,
+/// `*error` (if given) gets NSCocoaErrorDomain's NSFileWriteUnknownError (512).
+fn data_write(emu: &mut Emu, path: &str, options: u64, error: u64) -> Result<()> {
+    const WITHOUT_OVERWRITING: u64 = 2;
+    let bytes = data_bytes(emu, emu.arg(0))?;
+    let exists = crate::fs::exists(emu, path).is_some();
+    let ok = !(options & WITHOUT_OVERWRITING != 0 && exists) && crate::fs::write_data_file(emu, path, &bytes);
+    if !ok && error != 0 {
+        let domain = new_nsstring(emu, "NSCocoaErrorDomain")?;
+        let cls = host_class(emu, "NSError")?;
+        let code = if exists && options & WITHOUT_OVERWRITING != 0 { 516 } else { 512 }; // NSFileWriteFileExistsError
+        let err = send(emu, cls, "errorWithDomain:code:userInfo:", &[domain, code, 0])?;
+        emu.write_u64(error, err)?;
+    }
+    ret_bool(emu, ok)
+}
+
+fn url_file_path(emu: &mut Emu, url: u64) -> Result<String> {
+    let p = send(emu, url, "path", &[])?;
+    nsstring(emu, p)
+}
+
+fn data_from_base64(emu: &mut Emu, text: Vec<u8>) -> Result<()> {
+    let options = emu.arg(3);
+    match base64_decode(&text, options) {
+        Some(bytes) => ret_data(emu, &bytes),
+        None => {
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
 fn ret_data(emu: &mut Emu, bytes: &[u8]) -> Result<()> {
     let mutable = wants_mutable(emu, emu.arg(0), "NSMutableData")?;
     let d = if mutable { new_mutable_data(emu, bytes)? } else { new_data(emu, bytes)? };
@@ -2909,12 +3080,51 @@ fn data_set_length(emu: &mut Emu) -> Result<()> {
 // ---- strings ↔ data ----
 
 /// `-dataUsingEncoding:` (UTF-8 for every 8-bit encoding; UTF-16LE for NSUnicodeStringEncoding)
+/// The string's bytes in an NSStringEncoding, through CoreFoundation's
+/// converters: None if a character has no equivalent and `loss` is 0
+/// (otherwise it stands in for them). NSUnicodeStringEncoding gets a BOM,
+/// as Foundation writes it.
+fn encode(emu: &mut Emu, s: u64, enc: u64, loss: u8) -> Result<Option<Vec<u8>>> {
+    // A CFString for CF to read directly (other NSStrings would come back to pomme's getBytes:).
+    let s = as_cf_string(emu, s)?;
+    let len = cf(emu, "_CFStringGetLength", &[s])?;
+    let f = cf_sym(emu, "_CFStringGetBytes")?;
+    let used = emu.alloc(8)?;
+    emu.write_u64(used, 0)?;
+    // CFStringGetBytes(str, range, encoding, lossByte, isExternalRepresentation, buffer, maxBufLen, usedBufLen)
+    let external = (enc == 10) as u64;
+    emu.call_abi(f, &[s, 0, len, cf_encoding(enc), loss as u64, external, 0, 0], &[], &[used], None)?;
+    let converted = emu.last_x01[0];
+    let n = emu.read_u64(used)?;
+    if converted < len {
+        emu.heap.free(&emu.p.memory, used)?;
+        return Ok(None);
+    }
+    let buf = emu.alloc(n.max(1))?;
+    emu.call_abi(f, &[s, 0, len, cf_encoding(enc), loss as u64, external, buf, n], &[], &[used], None)?;
+    let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
+    emu.heap.free(&emu.p.memory, buf)?;
+    emu.heap.free(&emu.p.memory, used)?;
+    Ok(Some(bytes))
+}
+
+/// `-dataUsingEncoding:` / `-dataUsingEncoding:allowLossyConversion:`.
 fn string_data_using_encoding(emu: &mut Emu) -> Result<()> {
     let (s, enc) = (emu.arg(0), emu.arg(2));
-    let text = nsstring(emu, s)?;
-    let bytes: Vec<u8> = if enc == 10 || enc == 0x9400_0100 { text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect() } else { text.into_bytes() };
-    let d = new_data(emu, &bytes)?;
+    let lossy = emu.arg(3) & 0xff != 0 && objc::sel_name(emu, emu.arg(1)).ends_with("allowLossyConversion:");
+    let d = match encode(emu, s, enc, if lossy { b'?' } else { 0 })? {
+        Some(bytes) => new_data(emu, &bytes)?,
+        None => 0,
+    };
     emu.ret(d);
+    Ok(())
+}
+
+/// `-canBeConvertedToEncoding:`.
+fn can_be_converted(emu: &mut Emu) -> Result<()> {
+    let (s, enc) = (emu.arg(0), emu.arg(2));
+    let ok = encode(emu, s, enc, 0)?.is_some();
+    emu.ret(ok as u64);
     Ok(())
 }
 
@@ -3465,6 +3675,44 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSData", false, "initWithContentsOfURL:", data_with_contents_of_url),
     ("NSData", false, "initWithContentsOfURL:options:error:", data_with_contents_of_url),
     ("NSData", false, "length", data_length),
+    ("NSData", false, "rangeOfData:options:range:", data_range_of),
+    ("NSData", false, "writeToFile:atomically:", |e| {
+        let path = nsstring(e, e.arg(2))?;
+        data_write(e, &path, 0, 0)
+    }),
+    ("NSData", false, "writeToURL:atomically:", |e| {
+        let path = url_file_path(e, e.arg(2))?;
+        data_write(e, &path, 0, 0)
+    }),
+    ("NSData", false, "writeToFile:options:error:", |e| {
+        let (path, options, error) = (nsstring(e, e.arg(2))?, e.arg(3), e.arg(4));
+        data_write(e, &path, options, error)
+    }),
+    ("NSData", false, "writeToURL:options:error:", |e| {
+        let (options, error) = (e.arg(3), e.arg(4));
+        let path = url_file_path(e, e.arg(2))?;
+        data_write(e, &path, options, error)
+    }),
+    ("NSData", false, "initWithBase64EncodedString:options:", |e| {
+        let text = if e.arg(2) == 0 { return ret_nil(e) } else { nsstring(e, e.arg(2))?.into_bytes() };
+        data_from_base64(e, text)
+    }),
+    ("NSData", false, "initWithBase64EncodedData:options:", |e| {
+        let text = data_bytes(e, e.arg(2))?;
+        data_from_base64(e, text)
+    }),
+    ("NSData", false, "base64EncodedStringWithOptions:", |e| {
+        let (d, options) = (e.arg(0), e.arg(2));
+        let bytes = data_bytes(e, d)?;
+        ret_string(e, &base64_encode(&bytes, options))
+    }),
+    ("NSData", false, "base64EncodedDataWithOptions:", |e| {
+        let (d, options) = (e.arg(0), e.arg(2));
+        let bytes = data_bytes(e, d)?;
+        let out = new_data(e, base64_encode(&bytes, options).as_bytes())?;
+        e.ret(out);
+        Ok(())
+    }),
     ("NSData", false, "bytes", data_bytes_ptr),
     ("NSData", false, "getBytes:length:", data_get_bytes),
     ("NSData", false, "subdataWithRange:", data_subdata),
@@ -3482,6 +3730,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableData", false, "appendData:", data_append_data),
     ("NSMutableData", false, "setLength:", data_set_length),
     ("NSString", false, "dataUsingEncoding:", string_data_using_encoding),
+    ("NSString", false, "canBeConvertedToEncoding:", can_be_converted),
     ("NSString", false, "dataUsingEncoding:allowLossyConversion:", string_data_using_encoding),
     ("NSString", false, "initWithData:encoding:", string_with_data),
     ("NSString", false, "initWithBytes:length:encoding:", string_with_bytes),
@@ -3893,6 +4142,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableArray", false, "removeLastObject", array_remove_last),
     ("NSMutableArray", false, "removeAllObjects", array_remove_all),
     ("NSMutableArray", false, "removeObject:", array_remove_object),
+    ("NSMutableArray", false, "removeObjectIdenticalTo:", array_remove_identical),
+    ("NSArray", false, "indexOfObjectIdenticalTo:", array_index_identical),
     ("NSMutableArray", false, "replaceObjectAtIndex:withObject:", array_replace),
     ("NSMutableArray", false, "setObject:atIndexedSubscript:", array_set_subscript),
     // NSDictionary
@@ -4060,4 +4311,24 @@ pub fn as_cf_dict(emu: &mut Emu, d: u64) -> Result<u64> {
         cf(emu, "_CFDictionarySetValue", &[out, k, v])?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::{base64_decode, base64_encode};
+
+    #[test]
+    fn round_trips_like_nsdata() {
+        assert_eq!(base64_encode(b"pomme", 0), "cG9tbWU=");
+        assert_eq!(base64_decode(b"cG9tbWU=", 0).unwrap(), b"pomme");
+        assert_eq!(base64_decode(b"cG9tbWU", 0).unwrap(), b"pomme"); // padding optional
+        assert_eq!(base64_decode(b"", 0).unwrap(), b"");
+        // Whitespace is refused unless unknown characters are ignored.
+        assert!(base64_decode(b"cG9t bWU=", 0).is_none());
+        assert_eq!(base64_decode(b"cG9t\r\nbWU=", 1).unwrap(), b"pomme");
+        assert!(base64_decode(b"c", 0).is_none());
+        // 64-character lines, CRLF.
+        let long = base64_encode(&[0u8; 60], 1);
+        assert_eq!(long.split("\r\n").map(str::len).collect::<Vec<_>>(), vec![64, 16]);
+    }
 }

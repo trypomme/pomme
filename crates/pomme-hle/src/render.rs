@@ -47,6 +47,8 @@ pub(crate) enum Op {
     Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Clip },
     /// CTFontDrawGlyphs: glyph ids, each with its font-units → context-base transform.
     FontGlyphs { font: FontRef, glyphs: Vec<(u16, [f32; 6])>, color: [f32; 4], clip: Clip },
+    /// An image: its pixels through `m` (pixel space → context base).
+    Image { pix: std::rc::Rc<Pixmap>, m: [f32; 6], alpha: f32, clip: Clip },
 }
 
 /// A font file and the variation it's drawn at.
@@ -141,6 +143,8 @@ pub struct Image {
     pub scale: f64,
     /// UIEdgeInsets (top, left, bottom, right) for resizable images.
     pub caps: [f64; 4],
+    /// UIImageOrientation: how the pixels are turned to show upright (0, up: as they are).
+    pub orientation: u8,
 }
 
 #[derive(Default)]
@@ -148,7 +152,7 @@ pub struct State {
     pub images: HashMap<u64, Image>,
     contexts: HashMap<u64, Ctx>,
     /// UIGraphicsPushContext stack; the top is the current context.
-    stack: Vec<u64>,
+    pub(crate) stack: Vec<u64>,
     paths: HashMap<u64, Vec<El>>,
     bitmaps: HashMap<u64, Bitmap>,
     glyph_dumps: usize,
@@ -300,7 +304,7 @@ fn with_ctx(emu: &mut Emu, f: impl FnOnce(&mut Ctx)) -> Result<()> {
 // ---- bitmap contexts: drawing lands in guest memory right away ----
 
 /// (r, g, b, a) byte offsets in a 4-byte pixel, and whether alpha is ignored.
-fn layout(info: u32) -> ([usize; 4], bool) {
+pub(crate) fn pixel_layout(info: u32) -> ([usize; 4], bool) {
     let alpha = info & 0x1f;
     let little = info & 0x7000 == 0x2000;
     let first = matches!(alpha, 2 | 4 | 6); // PremultipliedFirst, First, NoneSkipFirst
@@ -310,15 +314,11 @@ fn layout(info: u32) -> ([usize; 4], bool) {
     (if little { big.map(|i| 3 - i) } else { big }, skip)
 }
 
-fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
-    let Some(b) = emu.render.bitmaps.get(&c).copied() else { return Ok(()) };
-    let ops = match emu.render.contexts.get_mut(&c) {
-        Some(x) if !x.ops.is_empty() => std::mem::take(&mut x.ops),
-        _ => return Ok(()),
-    };
-    let Some(mut pix) = Pixmap::new(b.w, b.h) else { return Ok(()) };
+/// A bitmap context's pixels as they are in guest memory.
+fn read_bitmap(emu: &Emu, b: &Bitmap) -> Result<Option<Pixmap>> {
+    let Some(mut pix) = Pixmap::new(b.w, b.h) else { return Ok(None) };
     let alpha_only = b.bpp == 1 && b.info & 0x1f == 7;
-    let (order, skip) = layout(b.info);
+    let (order, skip) = pixel_layout(b.info);
     for y in 0..b.h {
         let row = emu.p.memory.read(b.data + y as u64 * b.bpr, (b.w * b.bpp) as usize)?.to_vec();
         for x in 0..b.w as usize {
@@ -335,6 +335,33 @@ fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
             }
         }
     }
+    Ok(Some(pix))
+}
+
+/// Draw an image into context `c` filling `rect` (user space). CoreGraphics
+/// draws it with its top at the rect's max y (y-up); UIKit's drawing
+/// (`-[UIImage drawInRect:]`) with its top at the rect's min y.
+pub(crate) fn draw_image(emu: &mut Emu, c: u64, pix: std::rc::Rc<Pixmap>, rect: [f64; 4], uikit: bool, alpha: f32) -> Result<()> {
+    let (pw, ph) = (pix.width() as f32, pix.height() as f32);
+    let r = rect.map(|v| v as f32);
+    let place = if uikit { [r[2] / pw, 0.0, 0.0, r[3] / ph, r[0], r[1]] } else { [r[2] / pw, 0.0, 0.0, -r[3] / ph, r[0], r[1] + r[3]] };
+    if let Some(ctx) = ctx_mut(emu, c) {
+        let m = concat(&place, &ctx.gs.ctm);
+        let clip = ctx.gs.clip.clone();
+        ctx.ops.push(Op::Image { pix, m, alpha, clip });
+    }
+    flush_bitmap(emu, c)
+}
+
+fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
+    let Some(b) = emu.render.bitmaps.get(&c).copied() else { return Ok(()) };
+    let ops = match emu.render.contexts.get_mut(&c) {
+        Some(x) if !x.ops.is_empty() => std::mem::take(&mut x.ops),
+        _ => return Ok(()),
+    };
+    let Some(pix) = read_bitmap(emu, &b)? else { return Ok(()) };
+    let alpha_only = b.bpp == 1 && b.info & 0x1f == 7;
+    let (order, skip) = pixel_layout(b.info);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
     let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
     p.ops(&ops, 1.0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None);
@@ -720,7 +747,7 @@ impl Painter<'_> {
     fn ops(&mut self, ops: &[Op], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         for op in ops {
             let clip = match op {
-                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } | Op::FontGlyphs { clip, .. } => clip,
+                Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } | Op::FontGlyphs { clip, .. } | Op::Image { clip, .. } => clip,
             };
             let mut clipped: Option<Mask> = None;
             for (els, even_odd) in clip {
@@ -732,6 +759,10 @@ impl Painter<'_> {
                 Op::Stroke { path, color, width, .. } => self.stroke(path, *color, alpha, *width, t, m),
                 Op::Glyphs { glyphs, ctm, .. } => self.glyphs(glyphs, alpha, &concat(ctm, t), m),
                 Op::FontGlyphs { font, glyphs, color, .. } => self.font_glyphs(font, glyphs, *color, alpha, t, m),
+                Op::Image { pix, m: place, alpha: a, .. } => {
+                    let paint = tiny_skia::PixmapPaint { opacity: (alpha * a).clamp(0.0, 1.0), quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                    self.pix.draw_pixmap(0, 0, (**pix).as_ref(), &paint, ts(&concat(place, t)), m);
+                }
             }
         }
     }
@@ -950,7 +981,10 @@ fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f
         let (w, h) = (frame[2] as f32, frame[3] as f32);
         draw_layer_box(p, &ly, ly.background, &emu.ui.views.colors, w, h, a, &lt, mask);
         if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
-            draw_contents(p, &img, ly.contents_center, w, h, a, &lt, mask);
+            let r = contents_rect(emu, &ly, &img, w, h);
+            let clip = if ly.masks { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &lt) } else { None };
+            let m = if ly.masks { clip.as_ref() } else { mask };
+            draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &lt), m);
         }
         let inner = [1.0, 0.0, 0.0, 1.0, -ly.bounds[0] as f32, -ly.bounds[1] as f32];
         draw_sublayers(emu, p, s, a, &concat(&inner, &lt), mask);
@@ -969,15 +1003,17 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     let vt = concat(&placement(frame, &ly), t);
     let (w, h) = (frame[2] as f32, frame[3] as f32);
     draw_layer_box(p, &ly, vw.background, &emu.ui.views.colors, w, h, a, &vt, mask);
-    if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
-        draw_contents(p, &img, ly.contents_center, w, h, a, &vt, mask);
-    }
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
     // A text view is a scroll view, which clips to its bounds.
     let text_view = crate::textinput::is_text_view(emu, v);
-    let clips = vw.clips || text_view;
+    let clips = vw.clips || ly.masks || text_view;
     let clipped = if clips { p.intersect(mask, &rounded_rect(w, h, ly.corner_radius as f32), &vt) } else { None };
     let m = if clips { clipped.as_ref() } else { mask };
+    // The layer's own contents are clipped with it too (masksToBounds).
+    if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
+        let r = contents_rect(emu, &ly, &img, w, h);
+        draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &vt), m);
+    }
     if let Some(ops) = emu.render.content.get(&v).cloned() {
         p.ops(&ops, a, &inner, m);
     }
@@ -1120,6 +1156,40 @@ pub(crate) fn rasterize(emu: &mut Emu, ops: &[Op], size: [f64; 2], scale: f64) -
     let s = scale as f32;
     p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None);
     Ok(p.pix)
+}
+
+/// Where a layer's `contents` goes in its w×h bounds, by `contentsGravity`:
+/// stretched (resize), fitted or filled keeping its aspect, or at its own size
+/// (pixels / contentsScale) against an edge or corner. iOS layers are y-down
+/// but the gravities are named y-up, so "bottom" is the top edge (which is
+/// why UIKit maps UIViewContentModeTop to kCAGravityBottom).
+fn contents_rect(emu: &mut Emu, ly: &Layer, img: &Image, w: f32, h: f32) -> [f32; 4] {
+    let gravity = if ly.contents_gravity == 0 { "resize".to_string() } else { crate::foundation::nsstring(emu, ly.contents_gravity).unwrap_or_default() };
+    let scale = if ly.contents_scale > 0.0 { ly.contents_scale as f32 } else { 1.0 };
+    let (iw, ih) = (img.pix.width() as f32 / scale, img.pix.height() as f32 / scale);
+    let aspect = |fill: bool| {
+        if iw <= 0.0 || ih <= 0.0 {
+            return [0.0, 0.0, w, h];
+        }
+        let k = if fill { (w / iw).max(h / ih) } else { (w / iw).min(h / ih) };
+        let (dw, dh) = (iw * k, ih * k);
+        [(w - dw) / 2.0, (h - dh) / 2.0, dw, dh]
+    };
+    let (hx, vy) = match gravity.as_str() {
+        "resizeAspect" => return aspect(false),
+        "resizeAspectFill" => return aspect(true),
+        "center" => (0.5, 0.5),
+        "top" => (0.5, 1.0),
+        "bottom" => (0.5, 0.0),
+        "left" => (0.0, 0.5),
+        "right" => (1.0, 0.5),
+        "topLeft" => (0.0, 1.0),
+        "topRight" => (1.0, 1.0),
+        "bottomLeft" => (0.0, 0.0),
+        "bottomRight" => (1.0, 0.0),
+        _ => return [0.0, 0.0, w, h], // resize
+    };
+    [(w - iw) * hx, (h - ih) * vy, iw, ih]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1525,6 +1595,28 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         Ok(())
     }),
     ("_CGBitmapContextCreate", bitmap_create),
+    // A CGImage of what's been drawn so far.
+    ("_CGBitmapContextCreateImage", |e| {
+        let c = e.arg(0);
+        flush_bitmap(e, c)?;
+        let Some(b) = e.render.bitmaps.get(&c).copied() else {
+            e.ret(0);
+            return Ok(());
+        };
+        let img = match read_bitmap(e, &b)? {
+            Some(pix) => crate::imageio::new_cg_image(e, std::rc::Rc::new(pix))?,
+            None => 0,
+        };
+        e.ret(img);
+        Ok(())
+    }),
+    // (c, rect in d0–d3, image)
+    ("_CGContextDrawImage", |e| {
+        let (c, img) = (e.arg(0), e.arg(1));
+        let rect = [d(e, 0), d(e, 1), d(e, 2), d(e, 3)].map(|v| v as f64);
+        let Some(pix) = e.render.images.get(&img).map(|i| i.pix.clone()) else { return Ok(()) };
+        draw_image(e, c, pix, rect, false, 1.0)
+    }),
     ("_CGBitmapContextCreateWithData", bitmap_create),
     ("_CGBitmapContextGetData", |e| bitmap_get(e, |b| b.data)),
     ("_CGBitmapContextGetWidth", |e| bitmap_get(e, |b| b.w as u64)),

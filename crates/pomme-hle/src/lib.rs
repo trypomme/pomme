@@ -56,6 +56,11 @@ pub mod control;
 pub mod valuecontrols;
 pub mod device;
 pub mod orientation;
+pub mod imageio;
+pub mod indexset;
+pub mod commoncrypto;
+pub mod operation;
+pub mod uttype;
 mod uikit;
 mod uiview;
 
@@ -232,6 +237,10 @@ pub struct Emu {
     timers: nstimer::State,
     /// Image renderers and their formats.
     images: image::State,
+    pub(crate) imageio: imageio::State,
+    pub(crate) indexsets: indexset::State,
+    pub(crate) crypto: commoncrypto::State,
+    pub(crate) ops: operation::State,
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
@@ -251,9 +260,10 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
+        registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
         objc::register_reg_variants(&mut registry);
         // Thread-aware versions take precedence over libSystem's simpler ones.
         registry.extend(threads::FUNCS.iter().copied());
@@ -310,6 +320,10 @@ impl Emu {
             net: Default::default(),
             timers: Default::default(),
             images: Default::default(),
+            imageio: Default::default(),
+            indexsets: Default::default(),
+            crypto: Default::default(),
+            ops: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
             system: Default::default(),

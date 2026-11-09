@@ -415,9 +415,28 @@ fn autoresizing(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `-setContentMode:`: and, as UIKit does, the layer's contentsGravity to match.
 fn set_content_mode(emu: &mut Emu) -> Result<()> {
     let (v, m) = (emu.arg(0), emu.arg(2));
     view_mut(emu, v).content_mode = m;
+    // UIViewContentMode → kCAGravity (top and bottom swap: layers name them y-up).
+    let gravity = match m {
+        1 => "resizeAspect",
+        2 => "resizeAspectFill",
+        4 => "center",
+        5 => "bottom",
+        6 => "top",
+        7 => "left",
+        8 => "right",
+        9 => "bottomLeft",
+        10 => "bottomRight",
+        11 => "topLeft",
+        12 => "topRight",
+        _ => "resize", // scale to fill, redraw
+    };
+    let layer = send(emu, v, "layer", &[])?;
+    let g = foundation::new_nsstring(emu, gravity)?;
+    crate::calayer::layer_mut(emu, layer).contents_gravity = g;
     Ok(())
 }
 

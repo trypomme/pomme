@@ -307,6 +307,23 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         e.ret(0);
         Ok(())
     }),
+    // Device RGB: no name, standard dynamic range.
+    ("_CGColorSpaceCopyName", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_CGColorSpaceUsesITUR_2100TF", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_CGColorSpaceIsHDR", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_CGColorSpaceUsesExtendedRange", |e| {
+        e.ret(0);
+        Ok(())
+    }),
     ("_CGColorSpaceRelease", |_| Ok(())),
     ("_CGColorSpaceRetain", |_| Ok(())),
     ("_CGColorSpaceCreateWithName", color_space),
