@@ -585,6 +585,9 @@ fn set_state_flag(emu: &mut Emu, key: &str) -> Result<()> {
     objc::bag_set(emu, c, key, x);
     if is_button(emu, c)? {
         update_title(emu, c)?;
+    } else {
+        // Controls that draw themselves show the new state on their next layout.
+        send(emu, c, "setNeedsLayout", &[])?;
     }
     Ok(())
 }
