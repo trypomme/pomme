@@ -179,10 +179,21 @@ fn switch_init(emu: &mut Emu) -> Result<()> {
     ret(emu, s)
 }
 
-fn switch_set_on(emu: &mut Emu) -> Result<()> {
+/// How long a switch takes to flip when animated.
+const SWITCH_FLIP: f64 = 0.25;
+
+/// `setOn:` (at once) and `setOn:animated:`: animated, the thumb slides and
+/// the track's colour fades, as UIKit's switch does.
+fn switch_set_on(emu: &mut Emu, animated: bool) -> Result<()> {
     let (s, on) = (emu.arg(0), emu.arg(2) & 0xff);
+    let changed = (on != 0) != is_on(emu, s);
     objc::bag_set(emu, s, "on", on);
-    draw_switch(emu, s)
+    if animated && changed {
+        let timing = crate::animation::named_timing("easeInEaseOut");
+        crate::animation::in_block(emu, 0.0, SWITCH_FLIP, timing, 0, |e| draw_switch(e, s))
+    } else {
+        draw_switch(emu, s)
+    }
 }
 
 fn switch_begin(emu: &mut Emu) -> Result<()> {
@@ -557,8 +568,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let v = is_on(e, e.arg(0)) as u64;
         ret(e, v)
     }),
-    (SW, false, "setOn:", switch_set_on),
-    (SW, false, "setOn:animated:", switch_set_on),
+    (SW, false, "setOn:", |e| switch_set_on(e, false)),
+    (SW, false, "setOn:animated:", |e| {
+        let animated = e.arg(3) & 0xff != 0;
+        switch_set_on(e, animated)
+    }),
     (SW, false, "onTintColor", |e| {
         let v = objc::bag_get(e, e.arg(0), "onTintColor").unwrap_or(0);
         ret(e, v)
