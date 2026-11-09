@@ -41,6 +41,10 @@ pub struct State {
     groups: HashMap<u64, Group>,
     /// Threads running a group's work → the group.
     group_threads: HashMap<usize, u64>,
+    /// Work waiting for its time (`dispatch_after`): (queue, function, context).
+    after: Vec<Option<(u64, u64, u64)>>,
+    /// Blocks cancelled with `dispatch_block_cancel`: they don't run.
+    cancelled: std::collections::HashSet<u64>,
     data: HashMap<&'static str, u64>,
     pub next_port: u64,
     /// Seeded random state (arc4random, UUIDs): the same every run.
@@ -1070,6 +1074,9 @@ fn copied_block(emu: &mut Emu, block: u64) -> Result<(u64, u64)> {
 /// may block, as Flutter's wait for its first frame does); every other queue
 /// is serviced in order by the main thread. Work for `group` counts toward it.
 fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Result<()> {
+    if emu.sys.cancelled.contains(&ctx) {
+        return Ok(());
+    }
     if queue != 0 && queue == emu.sys.global_queue {
         let tid = crate::threads::spawn(emu, f, ctx, "dispatch")?;
         if let Some(g) = group {
@@ -1117,6 +1124,9 @@ fn group_leave(emu: &mut Emu, g: u64) -> Result<()> {
 pub fn drain_queue(emu: &mut Emu) -> Result<usize> {
     let mut n = 0;
     while let Some((f, arg)) = emu.sys.queue.pop_front() {
+        if emu.sys.cancelled.contains(&arg) {
+            continue;
+        }
         emu.call(f, &[arg])?;
         n += 1;
     }
@@ -1218,14 +1228,42 @@ fn dispatch_group_wait(emu: &mut Emu) -> Result<()> {
 }
 
 
-/// `dispatch_after(when, queue, block)`: no timers yet; queue it.
-fn dispatch_after(emu: &mut Emu) -> Result<()> {
-    emu.cpu.x[1] = emu.cpu.x[2];
-    dispatch_async(emu)
+/// Run `f(ctx)` on `queue` at `when` (a `dispatch_time`: nanoseconds of
+/// virtual time), from a main-run-loop timer.
+fn submit_after(emu: &mut Emu, when: u64, queue: u64, f: u64, ctx: u64) -> Result<()> {
+    if when == u64::MAX {
+        return Ok(()); // DISPATCH_TIME_FOREVER
+    }
+    let now = crate::threads::now_ns(emu);
+    let delay = when.saturating_sub(now) as f64 / 1e9;
+    let i = emu.sys.after.len();
+    emu.sys.after.push(Some((queue, f, ctx)));
+    crate::uikit::after_on_main(emu, delay, fire_after, i as u64)
 }
 
+fn fire_after(emu: &mut Emu) -> Result<()> {
+    let i = emu.arg(1) as usize;
+    let Some((queue, f, ctx)) = emu.sys.after.get_mut(i).and_then(Option::take) else { return Ok(()) };
+    submit(emu, queue, f, ctx, None)
+}
+
+/// `dispatch_after(when, queue, block)`
+fn dispatch_after(emu: &mut Emu) -> Result<()> {
+    let (when, queue) = (emu.arg(0), emu.arg(1));
+    let (invoke, block) = copied_block(emu, emu.arg(2))?;
+    submit_after(emu, when, queue, invoke, block)
+}
+
+/// `dispatch_after_f(when, queue, context, function)`
 fn dispatch_after_f(emu: &mut Emu) -> Result<()> {
-    emu.sys.queue.push_back((emu.arg(3), emu.arg(2)));
+    let (when, queue, ctx, f) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    submit_after(emu, when, queue, f, ctx)
+}
+
+/// `dispatch_block_create(flags, block)`: a copy that can be cancelled.
+fn dispatch_block_create(emu: &mut Emu) -> Result<()> {
+    let (_, block) = copied_block(emu, emu.arg(1))?;
+    emu.ret(block);
     Ok(())
 }
 
@@ -1636,6 +1674,17 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_async_f", dispatch_async_f),
     ("_dispatch_after", dispatch_after),
     ("_dispatch_after_f", dispatch_after_f),
+    ("_dispatch_block_create", dispatch_block_create),
+    ("_dispatch_block_cancel", |e| {
+        let b = e.arg(0);
+        e.sys.cancelled.insert(b);
+        Ok(())
+    }),
+    ("_dispatch_block_testcancel", |e| {
+        let c = e.sys.cancelled.contains(&e.arg(0)) as u64;
+        e.ret(c);
+        Ok(())
+    }),
     ("_dispatch_queue_create", dispatch_queue_create),
     // The target queue doesn't matter: all queues are serviced, in order, by the main loop.
     ("_dispatch_queue_create_with_target$V2", dispatch_queue_create),

@@ -51,11 +51,30 @@ struct Recognizer {
     targets: Vec<(u64, u64)>,
     delegate: u64,
     enabled: bool,
+    /// UIPanGestureRecognizer: where the finger went down (window), the
+    /// translation's origin shift (`setTranslation:inView:`), recent
+    /// (time s, location) samples for the velocity, and its touch counts.
+    pan_start: [f64; 2],
+    pan_shift: [f64; 2],
+    pan_samples: Vec<(f64, [f64; 2])>,
+    min_touches: u64,
+    max_touches: u64,
 }
 
 impl Default for Recognizer {
     fn default() -> Self {
-        Recognizer { view: 0, state: POSSIBLE, targets: Vec::new(), delegate: 0, enabled: true }
+        Recognizer {
+            view: 0,
+            state: POSSIBLE,
+            targets: Vec::new(),
+            delegate: 0,
+            enabled: true,
+            pan_start: [0.0; 2],
+            pan_shift: [0.0; 2],
+            pan_samples: Vec::new(),
+            min_touches: 1,
+            max_touches: u64::MAX,
+        }
     }
 }
 
@@ -182,16 +201,46 @@ fn phase_selector(phase: u64) -> &'static str {
     }
 }
 
-/// Recognizers on `v` and its ancestors, innermost first.
-fn recognizers_for(emu: &mut Emu, mut v: u64) -> Vec<u64> {
+/// Whether a recognizer takes finger touches (UITouchTypeDirect, 0): all
+/// types unless `allowedTouchTypes` was set (Flutter limits its trackpad
+/// scroll recognizer to indirect pointers that way). Decided when it's set.
+fn takes_fingers(emu: &mut Emu, r: u64) -> Result<bool> {
+    Ok(objc::bag_get(emu, r, "pomme.noFingers").is_none_or(|x| x == 0))
+}
+
+fn set_allowed_touch_types(emu: &mut Emu) -> Result<()> {
+    let (r, types) = (emu.arg(0), emu.arg(2));
+    let mut fingers = types == 0;
+    // `@[]` compiles to CoreFoundation's empty-array constant, which pomme
+    // doesn't provide: an unreadable "array" is that empty list (no types).
+    if types != 0 && emu.read_u64(types).is_ok() {
+        let n = send(emu, types, "count", &[])?;
+        for i in 0..n {
+            let t = send(emu, types, "objectAtIndex:", &[i])?;
+            if send(emu, t, "integerValue", &[])? == 0 {
+                fingers = true;
+            }
+        }
+        send(emu, types, "retain", &[])?;
+        objc::bag_set(emu, r, "allowedTouchTypes", types);
+    }
+    objc::bag_set(emu, r, "pomme.noFingers", !fingers as u64);
+    Ok(())
+}
+
+/// Recognizers on `v` and its ancestors that take this touch, innermost first.
+fn recognizers_for(emu: &mut Emu, mut v: u64) -> Result<Vec<u64>> {
     let mut out = Vec::new();
     while v != 0 {
-        if let Some(rs) = emu.touch.view_recognizers.get(&v) {
-            out.extend(rs.iter().copied().filter(|r| emu.touch.recognizers.get(r).is_none_or(|x| x.enabled)));
+        let rs = emu.touch.view_recognizers.get(&v).cloned().unwrap_or_default();
+        for r in rs {
+            if emu.touch.recognizers.get(&r).is_none_or(|x| x.enabled) && takes_fingers(emu, r)? {
+                out.push(r);
+            }
         }
         v = view(emu, v).superview;
     }
-    out
+    Ok(out)
 }
 
 /// Deliver one touch phase at a window point.
@@ -219,7 +268,7 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
         emu.cpu.q[1] = y.to_bits() as u128;
         let hit = send(emu, window, "hitTest:withEvent:", &[0])?;
         let t = new_object(emu, "UITouch")?;
-        let recognizers = recognizers_for(emu, hit);
+        let recognizers = recognizers_for(emu, hit)?;
         emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false });
         emu.touch.active = t;
         crate::scrollview::touch_began(emu, hit, [x, y], at_ns)?;
@@ -297,7 +346,13 @@ pub fn swipe(script: &mut Vec<Input>, at_ns: u64, from: (f64, f64), to: (f64, f6
         let (x, y) = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
         script.push(Input { at_ns: at_ns + i * duration_ns / steps, phase: MOVED, x, y });
     }
-    script.push(Input { at_ns: at_ns + duration_ns + 1, phase: ENDED, x: to.0, y: to.1 });
+    // The finger lifts 1 ms after its last move (run-loop timers fire on
+    // CFAbsoluteTime, a double with ~0.1 µs resolution today, which can't
+    // order events closer), still moving: 1 ms further along, as a real flick
+    // lifts mid-motion (velocity trackers read a stop otherwise).
+    let ms = 1_000_000.0 / duration_ns.max(1) as f64;
+    let lift = (to.0 + (to.0 - from.0) * ms, to.1 + (to.1 - from.1) * ms);
+    script.push(Input { at_ns: at_ns + duration_ns + 1_000_000, phase: ENDED, x: lift.0, y: lift.1 });
 }
 
 /// Timer callout `(CFRunLoopTimerRef, info)`: info is the script index.
@@ -390,7 +445,12 @@ fn gr_init_with_target(emu: &mut Emu) -> Result<()> {
 
 fn gr_set_state(emu: &mut Emu) -> Result<()> {
     let (r, state) = (emu.arg(0), emu.arg(2));
+    let was = rec(emu, r).state;
     rec_mut(emu, r).state = state;
+    // Recognizing (Began, or Ended straight from Possible) prevents the others.
+    if was == POSSIBLE && matches!(state, STATE_BEGAN | RECOGNIZED) {
+        recognized(emu, r)?;
+    }
     if matches!(state, STATE_BEGAN | CHANGED | RECOGNIZED | STATE_CANCELLED) {
         for (target, action) in rec(emu, r).targets {
             let name = objc::sel_name(emu, action);
@@ -398,6 +458,160 @@ fn gr_set_state(emu: &mut Emu) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `a`'s delegate method `sel` answers YES for (a, b) (NO if not implemented).
+fn delegate_says(emu: &mut Emu, a: u64, sel: &str, b: u64) -> Result<bool> {
+    let d = rec(emu, a).delegate;
+    if d == 0 {
+        return Ok(false);
+    }
+    let s = objc::intern(emu, sel)?;
+    if send(emu, d, "respondsToSelector:", &[s])? & 0xff == 0 {
+        return Ok(false);
+    }
+    Ok(send(emu, d, sel, &[a, b])? & 0xff != 0)
+}
+
+/// UIKit's arbitration when `r` recognizes: every other recognizer on its
+/// touches stops (Possible → Failed, Began/Changed → Cancelled) unless one
+/// of the delegates lets both recognize at once, or either declines to
+/// prevent / be prevented; and with `cancelsTouchesInView` (the default) the
+/// view under the finger gets touchesCancelled.
+fn recognized(emu: &mut Emu, r: u64) -> Result<()> {
+    let touches: Vec<u64> = emu.touch.touches.iter().filter(|(_, t)| t.recognizers.contains(&r) && t.phase < ENDED).map(|(&k, _)| k).collect();
+    let mut others: Vec<u64> = Vec::new();
+    for t in &touches {
+        for &o in &emu.touch.touches[t].recognizers {
+            if o != r && !others.contains(&o) {
+                others.push(o);
+            }
+        }
+    }
+    const SIMULTANEOUS: &str = "gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:";
+    for o in others {
+        let st = rec(emu, o).state;
+        if !matches!(st, POSSIBLE | STATE_BEGAN | CHANGED) {
+            continue;
+        }
+        if delegate_says(emu, r, SIMULTANEOUS, o)? || delegate_says(emu, o, SIMULTANEOUS, r)? {
+            continue;
+        }
+        if send(emu, r, "canPreventGestureRecognizer:", &[o])? & 0xff == 0 || send(emu, o, "canBePreventedByGestureRecognizer:", &[r])? & 0xff == 0 {
+            continue;
+        }
+        let next = if st == POSSIBLE { FAILED } else { STATE_CANCELLED };
+        send(emu, o, "setState:", &[next])?;
+    }
+    if send(emu, r, "cancelsTouchesInView", &[])? & 0xff != 0 {
+        for t in touches {
+            let tc = emu.touch.touches[&t].clone();
+            if tc.view != 0 && !tc.view_cancelled {
+                let event = new_object(emu, "UIEvent")?;
+                emu.touch.events.insert(event, vec![t]);
+                let set = set_of(emu, &[t])?;
+                send(emu, tc.view, "touchesCancelled:withEvent:", &[set, event])?;
+                if let Some(x) = emu.touch.touches.get_mut(&t) {
+                    x.view_cancelled = true;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---- UIPanGestureRecognizer ----
+
+/// How far a finger moves before a pan begins.
+const PAN_SLOP: f64 = 10.0;
+
+/// The pan's finger: where it is, and how many fingers are down on it.
+fn pan_touch(emu: &Emu, r: u64) -> Option<([f64; 2], f64, u64)> {
+    let mine: Vec<&Touch> = emu.touch.touches.values().filter(|t| t.recognizers.contains(&r) && t.phase < ENDED).collect();
+    let t = mine.first()?;
+    Some((t.location, t.timestamp, mine.len() as u64))
+}
+
+fn pan_began(emu: &mut Emu) -> Result<()> {
+    let r = emu.arg(0);
+    if let Some((at, time, _)) = pan_touch(emu, r) {
+        let g = rec_mut(emu, r);
+        g.pan_start = at;
+        g.pan_shift = [0.0; 2];
+        g.pan_samples = vec![(time, at)];
+    }
+    Ok(())
+}
+
+fn pan_moved(emu: &mut Emu) -> Result<()> {
+    let r = emu.arg(0);
+    let Some((at, time, n)) = pan_touch(emu, r) else { return Ok(()) };
+    let g = rec_mut(emu, r);
+    g.pan_samples.push((time, at));
+    let g = g.clone();
+    match g.state {
+        POSSIBLE => {
+            let moved = (at[0] - g.pan_start[0]).hypot(at[1] - g.pan_start[1]);
+            if moved < PAN_SLOP || n < g.min_touches || n > g.max_touches {
+                return Ok(());
+            }
+            let d = g.delegate;
+            let s = objc::intern(emu, "gestureRecognizerShouldBegin:")?;
+            let begin = d == 0 || send(emu, d, "respondsToSelector:", &[s])? & 0xff == 0 || send(emu, d, "gestureRecognizerShouldBegin:", &[r])? & 0xff != 0;
+            send(emu, r, "setState:", &[if begin { STATE_BEGAN } else { FAILED }])?;
+        }
+        STATE_BEGAN | CHANGED => {
+            send(emu, r, "setState:", &[CHANGED])?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn pan_ended(emu: &mut Emu, cancelled: bool) -> Result<()> {
+    let r = emu.arg(0);
+    let st = rec(emu, r).state;
+    let next = match (st, cancelled) {
+        (STATE_BEGAN | CHANGED, false) => RECOGNIZED,
+        (STATE_BEGAN | CHANGED, true) => STATE_CANCELLED,
+        (POSSIBLE, _) => FAILED,
+        _ => return Ok(()),
+    };
+    send(emu, r, "setState:", &[next])?;
+    Ok(())
+}
+
+/// The finger's current location (or the last one seen).
+fn pan_location(emu: &Emu, r: u64) -> [f64; 2] {
+    let g = emu.touch.recognizers.get(&r);
+    g.and_then(|g| g.pan_samples.last().map(|s| s.1)).unwrap_or([0.0; 2])
+}
+
+fn pan_translation(emu: &mut Emu) -> Result<()> {
+    let r = emu.arg(0);
+    let at = pan_location(emu, r);
+    let g = rec(emu, r);
+    ret_point(emu, [at[0] - g.pan_start[0] - g.pan_shift[0], at[1] - g.pan_start[1] - g.pan_shift[1]])
+}
+
+/// `setTranslation:inView:`: the translation is `t` from here on.
+fn pan_set_translation(emu: &mut Emu) -> Result<()> {
+    let (r, t) = (emu.arg(0), [d(emu, 0), d(emu, 1)]);
+    let at = pan_location(emu, r);
+    let g = rec_mut(emu, r);
+    g.pan_shift = [at[0] - g.pan_start[0] - t[0], at[1] - g.pan_start[1] - t[1]];
+    Ok(())
+}
+
+/// `velocityInView:`: points per second over the last 100 ms.
+fn pan_velocity(emu: &mut Emu) -> Result<()> {
+    let r = emu.arg(0);
+    let s = rec(emu, r).pan_samples;
+    let Some(&(t1, p1)) = s.last() else { return ret_point(emu, [0.0; 2]) };
+    let (t0, p0) = s.iter().rev().find(|(t, _)| t1 - t >= 0.1).or(s.first()).copied().unwrap_or((t1, p1));
+    let dt = t1 - t0;
+    let v = if dt > 0.0 { [(p1[0] - p0[0]) / dt, (p1[1] - p0[1]) / dt] } else { [0.0; 2] };
+    ret_point(emu, v)
 }
 
 fn gr_location(emu: &mut Emu) -> Result<()> {
@@ -461,6 +675,7 @@ fn nothing(_: &mut Emu) -> Result<()> {
 }
 
 const GR: &str = "UIGestureRecognizer";
+const PAN: &str = "UIPanGestureRecognizer";
 
 /// `-convertPoint:toCoordinateSpace:` — the screen's space is the window's (one full-screen window).
 fn convert_to_space(emu: &mut Emu) -> Result<()> {
@@ -550,7 +765,43 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (GR, false, "touchesEnded:withEvent:", nothing),
     (GR, false, "touchesCancelled:withEvent:", nothing),
     (GR, false, "requireGestureRecognizerToFail:", nothing),
-    (GR, false, "cancelsTouchesInView", |e| ret(e, 0)),
+    (GR, false, "cancelsTouchesInView", |e| {
+        let v = objc::bag_get(e, e.arg(0), "cancelsTouchesInView").is_none_or(|x| x & 0xff != 0) as u64;
+        ret(e, v)
+    }),
+    (GR, false, "setCancelsTouchesInView:", |e| {
+        let (r, x) = (e.arg(0), e.arg(2) & 0xff);
+        objc::bag_set(e, r, "cancelsTouchesInView", x);
+        Ok(())
+    }),
+    (GR, false, "canPreventGestureRecognizer:", |e| ret(e, 1)),
+    (GR, false, "setAllowedTouchTypes:", set_allowed_touch_types),
+    (GR, false, "canBePreventedByGestureRecognizer:", |e| ret(e, 1)),
+    (PAN, false, "touchesBegan:withEvent:", pan_began),
+    (PAN, false, "touchesMoved:withEvent:", pan_moved),
+    (PAN, false, "touchesEnded:withEvent:", |e| pan_ended(e, false)),
+    (PAN, false, "touchesCancelled:withEvent:", |e| pan_ended(e, true)),
+    (PAN, false, "translationInView:", pan_translation),
+    (PAN, false, "setTranslation:inView:", pan_set_translation),
+    (PAN, false, "velocityInView:", pan_velocity),
+    (PAN, false, "minimumNumberOfTouches", |e| {
+        let n = rec(e, e.arg(0)).min_touches;
+        ret(e, n)
+    }),
+    (PAN, false, "setMinimumNumberOfTouches:", |e| {
+        let (r, n) = (e.arg(0), e.arg(2));
+        rec_mut(e, r).min_touches = n;
+        Ok(())
+    }),
+    (PAN, false, "maximumNumberOfTouches", |e| {
+        let n = rec(e, e.arg(0)).max_touches;
+        ret(e, n)
+    }),
+    (PAN, false, "setMaximumNumberOfTouches:", |e| {
+        let (r, n) = (e.arg(0), e.arg(2));
+        rec_mut(e, r).max_touches = n;
+        Ok(())
+    }),
     ("UITouch", false, "locationInView:", |e| touch_location(e, false)),
     ("UITouch", false, "previousLocationInView:", |e| touch_location(e, true)),
     ("UITouch", false, "view", |e| {

@@ -9,8 +9,21 @@ use std::process::Command;
 
 const SYSROOT: &str = "../../vendor/sysroot";
 
-/// Build `tests/fixtures/{name}/main.m` into `{Name}.app`; None without Xcode.
+/// Build `tests/fixtures/{name}/main.m` into `{Name}.app` (once per test
+/// process: tests run in parallel and would otherwise race on the binary);
+/// None without Xcode.
 pub fn build(name: &str) -> Option<PathBuf> {
+    static BUILT: std::sync::Mutex<Vec<(String, Option<PathBuf>)>> = std::sync::Mutex::new(Vec::new());
+    let mut built = BUILT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, app)) = built.iter().find(|(n, _)| n == name) {
+        return app.clone();
+    }
+    let app = build_now(name);
+    built.push((name.to_string(), app.clone()));
+    app
+}
+
+fn build_now(name: &str) -> Option<PathBuf> {
     Command::new("xcrun").args(["--sdk", "iphoneos", "--show-sdk-path"]).output().ok().filter(|o| o.status.success())?;
     let exe = name[..1].to_uppercase() + &name[1..];
     let app = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{exe}.app"));

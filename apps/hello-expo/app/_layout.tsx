@@ -12,6 +12,7 @@ export default function RootLayout() {
         <Stack.Screen name="keyboard" options={{ title: 'Keyboard' }} />
         <Stack.Screen name="notes" options={{ title: 'Notes' }} />
         <Stack.Screen name="list" options={{ title: 'List' }} />
+        <Stack.Screen name="gestures" options={{ title: 'Gestures' }} />
       </Stack>
     </QueryClientProvider>
   );

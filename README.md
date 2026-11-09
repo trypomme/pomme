@@ -56,6 +56,10 @@ Debugging:
   the edges, then deceleration at UIKit's rate after a flick, with the delegate calls apps
   hear (React Native's `onScroll`, FlatList's lazy rows, snapping). Flutter scrolls its own
   lists from the touches. Tests script the same with `touch::swipe` / `touch::tap`.
+  Gesture recognizers follow UIKit's rules: `UIPanGestureRecognizer` begins after 10 pt
+  and reports translation and velocity, a recognizer that begins stops the others on its
+  touches (unless their delegates allow both), and `allowedTouchTypes` is honoured — enough
+  for react-native-gesture-handler's pan and tap gestures.
 - The clipboard: `--clipboard host` shares this machine's clipboard with the app (paste in
   what you copied; the app's copies land here); `--clipboard 'some text'` starts it with
   text, and the default is empty, so runs repeat. `--paste 'Ada@4'` pastes "Ada" (copied by
@@ -92,7 +96,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 
 | App kind | Renders through | Test app | Status |
 |---|---|---|---|
-| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router, TextInput (multiline too) + KeyboardAvoidingView |
+| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, scrolls (FlatList), Expo Router, TextInput (multiline too) + KeyboardAvoidingView, gesture handler |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
 | Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders, counts taps, TextField with the keyboard inset; matches the iOS Simulator to 3/255 except the font |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |
