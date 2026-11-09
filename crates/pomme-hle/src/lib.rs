@@ -48,6 +48,7 @@ pub mod touch;
 pub mod autolayout;
 pub mod clipboard;
 pub mod textview;
+pub mod scrollview;
 pub mod label;
 pub mod textinput;
 pub mod device;
@@ -165,6 +166,11 @@ pub struct Emu {
     pub time_limit_ns: Option<u64>,
     /// Print every system call and message send.
     pub trace: bool,
+    /// Instructions by (thread, image), when profiling (`POMME_PROFILE=1`):
+    /// what ran since the last call out of guest code, charged to the image
+    /// that made the call.
+    pub profile: Option<std::collections::HashMap<(usize, String), u64>>,
+    profile_mark: u64,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
     /// main's argc/argv, for `CommandLine` and `_NSGetArgv`.
@@ -207,6 +213,7 @@ pub struct Emu {
     pub input: textinput::State,
     /// The clipboard (UIPasteboard) and its backend, paste permission and scripted pastes.
     pub clipboard: clipboard::State,
+    pub scroll: scrollview::State,
     /// Auto Layout: constraints, anchors and layout guides.
     pub(crate) layout: autolayout::State,
     /// The iPhone model pomme presents (`--device`).
@@ -260,6 +267,8 @@ impl Emu {
             max_steps: u64::MAX,
             time_limit_ns: None,
             trace: false,
+            profile: None,
+            profile_mark: 0,
             calls: HashMap::new(),
             argc: 0,
             argv: 0,
@@ -286,6 +295,7 @@ impl Emu {
             touch: Default::default(),
             input: Default::default(),
             clipboard: Default::default(),
+            scroll: Default::default(),
             layout: Default::default(),
             device: device::default(),
             live: Default::default(),
@@ -530,6 +540,13 @@ impl Emu {
     /// Handle a CPU exit that needs the host: a stub call, a hooked function,
     /// or a host thunk. Anything else is a stop.
     pub(crate) fn service_trap(&mut self, exit: Exit) -> Result<()> {
+        if self.profile.is_some() {
+            let n = self.cpu.steps.saturating_sub(self.profile_mark);
+            self.profile_mark = self.cpu.steps;
+            let image = self.p.image_at(self.cpu.x[30]).map_or_else(|| "?".to_string(), |i| i.name.clone());
+            let key = (self.th.current, image);
+            *self.profile.as_mut().unwrap().entry(key).or_default() += n;
+        }
         match exit {
             Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch(),
             Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {

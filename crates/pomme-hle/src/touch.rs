@@ -40,6 +40,8 @@ struct Touch {
     timestamp: f64,
     /// Recognizers this touch is delivered to (fixed when it begins).
     recognizers: Vec<u64>,
+    /// A scroll view took the touch: its view got touchesCancelled and hears no more.
+    view_cancelled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -199,19 +201,28 @@ pub(crate) fn active_location(emu: &Emu) -> Option<[f64; 2]> {
 }
 
 pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
+    let at = crate::threads::now_ns(emu);
+    send_touch_at(emu, phase, x, y, at)
+}
+
+/// Deliver a touch phase that happened at `at_ns` (its timestamp: scripted
+/// input carries the time it was scheduled for, so velocities don't depend on
+/// how busy the run loop was).
+pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> Result<()> {
     let window = if emu.ui.key_window != 0 { emu.ui.key_window } else { emu.ui.windows.first().copied().unwrap_or(0) };
     if window == 0 {
         return Ok(());
     }
-    let now = crate::threads::now_ns(emu) as f64 / 1e9;
+    let now = at_ns as f64 / 1e9;
     let touch = if phase == BEGAN {
         emu.cpu.q[0] = x.to_bits() as u128;
         emu.cpu.q[1] = y.to_bits() as u128;
         let hit = send(emu, window, "hitTest:withEvent:", &[0])?;
         let t = new_object(emu, "UITouch")?;
         let recognizers = recognizers_for(emu, hit);
-        emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers });
+        emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false });
         emu.touch.active = t;
+        crate::scrollview::touch_began(emu, hit, [x, y], at_ns)?;
         t
     } else {
         let t = emu.touch.active;
@@ -222,6 +233,22 @@ pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
         tc.timestamp = now;
         t
     };
+    // A scroll view starting to drag takes the touch from the view under the finger.
+    if phase == MOVED && crate::scrollview::touch_moved(emu, [x, y], at_ns)? {
+        let tc = emu.touch.touches[&touch].clone();
+        if tc.view != 0 && !tc.view_cancelled {
+            let event = new_object(emu, "UIEvent")?;
+            emu.touch.events.insert(event, vec![touch]);
+            let touches = set_of(emu, &[touch])?;
+            send(emu, tc.view, "touchesCancelled:withEvent:", &[touches, event])?;
+        }
+        if let Some(t) = emu.touch.touches.get_mut(&touch) {
+            t.view_cancelled = true;
+        }
+    }
+    if phase == ENDED || phase == CANCELLED {
+        crate::scrollview::touch_ended(emu, [x, y], at_ns)?;
+    }
     let tc = emu.touch.touches[&touch].clone();
     let event = new_object(emu, "UIEvent")?;
     emu.touch.events.insert(event, vec![touch]);
@@ -235,7 +262,7 @@ pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
         send(emu, r, sel, &[touches, event])?;
     }
     // The view's responder chain (UIView passes touches up by default).
-    if tc.view != 0 {
+    if tc.view != 0 && !tc.view_cancelled {
         send(emu, tc.view, sel, &[touches, event])?;
     }
     if phase == ENDED || phase == CANCELLED {
@@ -252,11 +279,32 @@ pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
     Ok(())
 }
 
+/// A scripted tap: down and, 80 ms later, up.
+pub fn tap(script: &mut Vec<Input>, at_ns: u64, x: f64, y: f64) {
+    script.push(Input { at_ns, phase: BEGAN, x, y });
+    script.push(Input { at_ns: at_ns + 80_000_000, phase: ENDED, x, y });
+}
+
+/// A scripted swipe: the finger goes down at `from`, moves in a straight
+/// line to `to` over `duration_ns` (a move every 1/60 s, as the screen
+/// samples), and lifts there. Fast swipes fling: the content keeps going.
+pub fn swipe(script: &mut Vec<Input>, at_ns: u64, from: (f64, f64), to: (f64, f64), duration_ns: u64) {
+    const FRAME_NS: u64 = 16_666_667;
+    script.push(Input { at_ns, phase: BEGAN, x: from.0, y: from.1 });
+    let steps = (duration_ns / FRAME_NS).max(1);
+    for i in 1..=steps {
+        let f = i as f64 / steps as f64;
+        let (x, y) = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+        script.push(Input { at_ns: at_ns + i * duration_ns / steps, phase: MOVED, x, y });
+    }
+    script.push(Input { at_ns: at_ns + duration_ns + 1, phase: ENDED, x: to.0, y: to.1 });
+}
+
 /// Timer callout `(CFRunLoopTimerRef, info)`: info is the script index.
 fn fire_input(emu: &mut Emu) -> Result<()> {
     let i = emu.arg(1) as usize;
     let Some(inp) = emu.touch.script.get(i).copied() else { return Ok(()) };
-    send_touch(emu, inp.phase, inp.x, inp.y)
+    send_touch_at(emu, inp.phase, inp.x, inp.y, inp.at_ns)
 }
 
 /// Put the scripted input on the main run loop as one-shot timers.

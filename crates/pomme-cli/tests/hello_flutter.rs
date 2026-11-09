@@ -343,3 +343,42 @@ fn framework_bundle_and_text_wrapping() {
     let icu = pomme_hle::bundle_resource(&mut emu, "FlutterViewController", "icudtl.dat").unwrap();
     assert!(icu.as_deref().is_some_and(|p| p.ends_with("/Runner.app/Frameworks/Flutter.framework/icudtl.dat")), "{icu:?}");
 }
+
+/// Scrolling in Flutter (the pommeflutter:///list deep link): Flutter drives
+/// its ListView from the raw touches, with its own iOS physics. Row i is
+/// painted with red = i, so the red at a point says which row is there. A
+/// fling carries the list well past where the finger left it; once it stops,
+/// a tap lands on the row under the finger (it turns black).
+#[test]
+fn list_flings_and_taps() {
+    // Red at (195, 500) after running `secs` with `script`; None if skipped.
+    let run = |secs: f64, script: &dyn Fn(&mut Vec<pomme_hle::touch::Input>)| -> Option<(u8, u8, u8)> {
+        let mut emu = boot()?;
+        emu.ui.launch_url = Some("pommeflutter:///list".into());
+        script(&mut emu.touch.script);
+        emu.time_limit_ns = Some((secs * 1e9) as u64);
+        match emu.run_main() {
+            Err(pomme_hle::Stop::TimeLimit(_)) => {}
+            other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        }
+        if emu.metal.gpu_error.is_some() {
+            return None;
+        }
+        let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+        let c = pix.pixel(195 * 3, 500 * 3).unwrap();
+        Some((c.red(), c.green(), c.blue()))
+    };
+    let Some(still) = run(3.0, &|_| {}) else { return };
+    // Rows start below the 47-pt safe area: (500 − 47) / 50 → row 9.
+    assert_eq!(still, (9, 246, 128));
+    let fling = |s: &mut Vec<pomme_hle::touch::Input>| pomme_hle::touch::swipe(s, 3_000_000_000, (195.0, 700.0), (195.0, 300.0), 200_000_000);
+    let flung = run(7.0, &fling).unwrap();
+    // Dragged 400 pt (8 rows) and then some.
+    assert!(flung.0 > 9 + 8 + 5 && flung.1 == 255 - flung.0 && flung.2 == 128, "{flung:?}");
+    let tapped = run(8.0, &|s| {
+        fling(s);
+        pomme_hle::touch::tap(s, 7_000_000_000, 195.0, 500.0);
+    })
+    .unwrap();
+    assert_eq!(tapped, (0, 0, 0));
+}

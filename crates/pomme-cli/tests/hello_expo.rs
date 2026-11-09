@@ -452,3 +452,25 @@ fn paste_into_multiline_text_input() {
     assert!(v.contains("\"Editing · 3 lines · 18 characters\""), "{v}");
     assert_eq!(emu.clipboard.prompts, 0);
 }
+
+// ---- scrolling (the /list screen) ----
+
+/// A fling scrolls a FlatList: React Native's scroll view (RCTEnhancedScrollView,
+/// sized by its autoresizing mask) drags 390 pt under a 400-pt, 0.2-s swipe
+/// and decelerates at UIKit's rate (2 pt/ms carries it 998 pt further). Its
+/// delegate is a splitter that forwards with NSInvocation, and React hears
+/// the drag and the glide end. The rows that scrolled in are tappable where
+/// they now are; the swipe itself taps nothing.
+#[test]
+fn flatlist_flings_and_taps() {
+    let mut emu = match boot() {
+        Some(e) => e,
+        None => return,
+    };
+    emu.ui.launch_url = Some("pommehello:///list".into());
+    pomme_hle::touch::swipe(&mut emu.touch.script, 3_000_000_000, (195.0, 700.0), (195.0, 300.0), 200_000_000);
+    // Row 30 sits at 50 × 30 − 1388 below the list's top (133): 245…295.
+    pomme_hle::touch::tap(&mut emu.touch.script, 7_500_000_000, 195.0, 269.0);
+    let v = run_for(&mut emu, 8.5);
+    assert!(v.contains("\"offset 1388 · still · tapped Row 30\""), "{v}");
+}

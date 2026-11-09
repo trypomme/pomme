@@ -404,6 +404,79 @@ fn invoke_with(emu: &mut Emu, inv: u64, target: u64) -> Result<()> {
     Ok(())
 }
 
+/// Full forwarding (`_objc_msgForward`): `recv` doesn't implement `sel`, but
+/// its class implements `-forwardInvocation:`. Ask it for the method's
+/// signature, capture the message's arguments from the registers (x0… and
+/// v0…, then the stack) into an NSInvocation, forward it, and put its return
+/// value back in x0/x1 or v0–v3. False (nothing done) when the class doesn't
+/// forward or has no signature for `sel`.
+pub(crate) fn forward(emu: &mut Emu, recv: u64, sel: u64) -> Result<bool> {
+    let cls = objc::class_of(emu, recv)?;
+    let fwd = objc::intern(emu, "forwardInvocation:")?;
+    if objc::lookup(emu, cls, fwd)?.is_none() {
+        return Ok(false);
+    }
+    let regs = (emu.cpu.x, emu.cpu.q);
+    let sp = emu.cpu.sp;
+    let sig = objc::send(emu, recv, "methodSignatureForSelector:", &[sel])?;
+    if sig == 0 {
+        return Ok(false);
+    }
+    let ns_inv = host_class(emu, "NSInvocation")?;
+    let inv = objc::send(emu, ns_inv, "invocationWithMethodSignature:", &[sig])?;
+    let (_, buf, rbuf) = inv_parts(emu, inv)?;
+    let (ret, args) = sig_parse(emu, sig)?;
+    let (x, q) = regs;
+    let (mut xi, mut vi, mut stack) = (0usize, 0usize, sp);
+    for (i, a) in args.iter().enumerate() {
+        let at = buf + i as u64 * SLOT;
+        if let Some((esize, count)) = a.hfa {
+            if vi + count as usize <= 8 {
+                for e in 0..count {
+                    let bits = q[vi] as u64;
+                    if esize == 4 { emu.p.memory.write_u32(at + e * 4, bits as u32)? } else { emu.write_u64(at + e * 8, bits)? }
+                    vi += 1;
+                }
+                continue;
+            }
+            vi = 8;
+            let bytes = emu.p.memory.read(stack, a.size as usize)?.to_vec();
+            emu.p.memory.write(at, &bytes[..bytes.len().min(SLOT as usize)])?;
+            stack += a.size.div_ceil(8) * 8;
+        } else if a.size > 16 {
+            // By reference: copy the struct in.
+            let ptr = if xi < 8 { xi += 1; x[xi - 1] } else { let p = emu.read_u64(stack)?; stack += 8; p };
+            let bytes = emu.p.memory.read(ptr, a.size.min(SLOT) as usize)?.to_vec();
+            emu.p.memory.write(at, &bytes)?;
+        } else {
+            let words = a.size.div_ceil(8).max(1) as usize;
+            for w in 0..words {
+                let word = if xi + words - w <= 8 && xi < 8 { xi += 1; x[xi - 1] } else { xi = 8; let p = emu.read_u64(stack)?; stack += 8; p };
+                emu.write_u64(at + w as u64 * 8, word)?;
+            }
+        }
+    }
+    objc::send(emu, recv, "forwardInvocation:", &[inv])?;
+    // The return value.
+    emu.cpu.x = x;
+    emu.cpu.q = q;
+    if let Some((esize, count)) = ret.hfa {
+        for e in 0..count as usize {
+            emu.cpu.q[e] = if esize == 4 { emu.p.memory.read_u32(rbuf + e as u64 * 4)? as u128 } else { emu.read_u64(rbuf + e as u64 * 8)? as u128 };
+        }
+    } else if ret.size > 0 && ret.size <= 16 {
+        emu.cpu.x[0] = emu.read_u64(rbuf)?;
+        if ret.size > 8 {
+            emu.cpu.x[1] = emu.read_u64(rbuf + 8)?;
+        }
+    } else if ret.size > 16 {
+        // Indirect: the caller's buffer is in x8.
+        let bytes = emu.p.memory.read(rbuf, ret.size as usize)?.to_vec();
+        emu.p.memory.write(x[8], &bytes)?;
+    }
+    Ok(true)
+}
+
 fn invoke(emu: &mut Emu) -> Result<()> {
     let inv = emu.arg(0);
     let (_, buf, _) = inv_parts(emu, inv)?;

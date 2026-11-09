@@ -650,6 +650,23 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("CADisplayLink", false, "setPreferredFrameRateRange:", noop),
     ("UIApplication", true, "sharedApplication", shared_application),
+    // Opening a URL in another app: there are no other apps. Report it
+    // (`--trace`) and answer "not opened".
+    ("UIApplication", false, "openURL:options:completionHandler:", |e| {
+        let (url, done) = (e.arg(2), e.arg(4));
+        if e.trace {
+            let s = crate::objc::send(e, url, "absoluteString", &[])?;
+            println!("[uikit] openURL {} (not opened)", if s == 0 { String::new() } else { foundation::nsstring(e, s)? });
+        }
+        if done != 0 {
+            crate::libsystem::call_block(e, done, &[0])?;
+        }
+        Ok(())
+    }),
+    ("UIApplication", false, "openURL:", |e| {
+        e.ret(0);
+        Ok(())
+    }),
     ("UIApplication", false, "delegate", app_delegate),
     ("UIApplication", false, "setDelegate:", set_app_delegate),
     ("UIApplication", false, "keyWindow", key_window),

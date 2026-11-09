@@ -214,7 +214,7 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
                 if emu.trace {
                     println!("{:>10} thread {tid} finished", emu.cpu.steps);
                 }
-                break Ok(());
+                break crate::libsystem::thread_finished(emu, tid);
             }
             Exit::StepLimit if emu.cpu.steps >= emu.max_steps => break Err(Stop::Cpu { exit: Exit::StepLimit, pc: emu.cpu.pc }),
             Exit::StepLimit => break Ok(()), // preempted; still runnable

@@ -73,12 +73,47 @@ pub(crate) fn view(emu: &mut Emu, v: u64) -> View {
 
 pub(crate) fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
     let vw = view_mut(emu, v);
+    let old = [vw.bounds[2], vw.bounds[3]];
     if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
         vw.needs_layout = true;
     }
     vw.bounds[2] = r[2];
     vw.bounds[3] = r[3];
     vw.center = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
+    autoresize_subviews(emu, v, old, [r[2], r[3]]);
+}
+
+/// One axis of autoresizing: the parent grew by `delta`; the flexible parts
+/// of (leading margin, size, trailing margin) share it in proportion to their
+/// sizes (equally when they're all zero). Returns the new (origin, size).
+pub(crate) fn autoresize_axis(origin: f64, size: f64, parent: f64, delta: f64, flexible: [bool; 3]) -> (f64, f64) {
+    let parts = [origin, size, parent - origin - size];
+    let total: f64 = (0..3).filter(|&i| flexible[i]).map(|i| parts[i]).sum();
+    let n = flexible.iter().filter(|&&f| f).count() as f64;
+    if n == 0.0 {
+        return (origin, size);
+    }
+    let share = |i: usize| if !flexible[i] { 0.0 } else if total > 0.0 { delta * parts[i] / total } else { delta / n };
+    (origin + share(0), size + share(1))
+}
+
+/// UIKit's autoresizing: when `v` changes size, subviews with an
+/// autoresizingMask follow (FlexibleLeftMargin 1, Width 2, RightMargin 4,
+/// TopMargin 8, Height 16, BottomMargin 32).
+fn autoresize_subviews(emu: &mut Emu, v: u64, old: [f64; 2], new: [f64; 2]) {
+    if old == new {
+        return;
+    }
+    for s in view(emu, v).subviews {
+        let m = view(emu, s).autoresizing;
+        if m == 0 {
+            continue;
+        }
+        let f = frame_of(emu, s);
+        let (x, w) = autoresize_axis(f[0], f[2], old[0], new[0] - old[0], [m & 1 != 0, m & 2 != 0, m & 4 != 0]);
+        let (y, h) = autoresize_axis(f[1], f[3], old[1], new[1] - old[1], [m & 8 != 0, m & 16 != 0, m & 32 != 0]);
+        set_frame_of(emu, s, [x, y, w, h]);
+    }
 }
 
 pub(crate) fn frame_of(emu: &mut Emu, v: u64) -> [f64; 4] {
@@ -125,10 +160,12 @@ fn view_bounds(emu: &mut Emu) -> Result<()> {
 fn view_set_bounds(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
     let vw = view_mut(emu, v);
+    let old = [vw.bounds[2], vw.bounds[3]];
     if vw.bounds[2] != r[2] || vw.bounds[3] != r[3] {
         vw.needs_layout = true;
     }
     vw.bounds = r;
+    autoresize_subviews(emu, v, old, [r[2], r[3]]);
     Ok(())
 }
 
@@ -1195,4 +1232,19 @@ pub fn describe_tree(emu: &mut Emu) -> Result<String> {
         walk(emu, w, 0, &mut out)?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autoresizing_shares_the_change() {
+        // Flexible width: all of it.
+        assert_eq!(autoresize_axis(0.0, 0.0, 0.0, 390.0, [false, true, false]), (0.0, 390.0));
+        // Flexible margins around a fixed size: it stays centered.
+        assert_eq!(autoresize_axis(50.0, 100.0, 200.0, 100.0, [true, false, true]), (100.0, 100.0));
+        // Fixed: nothing moves.
+        assert_eq!(autoresize_axis(10.0, 20.0, 100.0, 50.0, [false; 3]), (10.0, 20.0));
+    }
 }

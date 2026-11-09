@@ -457,6 +457,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::clipboard::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::textview::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::label::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::scrollview::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -498,7 +499,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, EXCEPTION_METHODS] {
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -942,13 +943,19 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
             let name = sel_name(emu, sel);
             permissive_answer(emu, cls, &name)
         }
-        None if forwards(emu, cls)? => {
-            // Fast forwarding: -forwardingTargetForSelector: names another receiver.
-            let target = send(emu, recv, "forwardingTargetForSelector:", &[sel])?;
-            if target != 0 && target != recv {
-                emu.cpu.x[0] = target;
-                let tcls = class_of(emu, target)?;
-                return dispatch(emu, tcls);
+        None => {
+            if forwards(emu, cls)? {
+                // Fast forwarding: -forwardingTargetForSelector: names another receiver.
+                let target = send(emu, recv, "forwardingTargetForSelector:", &[sel])?;
+                if target != 0 && target != recv {
+                    emu.cpu.x[0] = target;
+                    let tcls = class_of(emu, target)?;
+                    return dispatch(emu, tcls);
+                }
+            }
+            // Full forwarding: -forwardInvocation: with the message as an NSInvocation.
+            if crate::invocation::forward(emu, recv, sel)? {
+                return Ok(());
             }
             Err(Stop::MissingMethod {
                 class: emu.objc.class_name(k),
@@ -957,12 +964,6 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
                 caller: emu.cpu.x[30],
             })
         }
-        None => Err(Stop::MissingMethod {
-            class: emu.objc.class_name(k),
-            selector: sel_name(emu, sel),
-            class_method: emu.objc.classes[&cls].meta,
-            caller: emu.cpu.x[30],
-        }),
     }
 }
 
@@ -1003,12 +1004,29 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
             emu.cpu.x[30] = lr;
             Ok(result)
         }
-        None => Err(Stop::MissingMethod {
-            class: emu.objc.class_name(k),
-            selector: sel_name(emu, sel),
-            class_method: emu.objc.classes[&cls].meta,
-            caller: emu.cpu.pc,
-        }),
+        None => {
+            // Full forwarding (a proxy that forwards with -forwardInvocation:).
+            let (pc, lr) = (emu.cpu.pc, emu.cpu.x[30]);
+            let (x, q) = (emu.cpu.x, emu.cpu.q);
+            for (i, a) in all.iter().enumerate() {
+                emu.cpu.x[i] = *a;
+            }
+            let forwarded = crate::invocation::forward(emu, recv, sel)?;
+            let result = emu.cpu.x[0];
+            emu.cpu.x = x;
+            emu.cpu.q = q;
+            emu.cpu.pc = pc;
+            emu.cpu.x[30] = lr;
+            if forwarded {
+                return Ok(result);
+            }
+            Err(Stop::MissingMethod {
+                class: emu.objc.class_name(k),
+                selector: sel_name(emu, sel),
+                class_method: emu.objc.classes[&cls].meta,
+                caller: emu.cpu.pc,
+            })
+        }
     }
 }
 
@@ -1048,7 +1066,26 @@ pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: 
             emu.cpu.x[30] = lr;
             Ok(r)
         }
-        None => Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel.to_string(), class_method: emu.objc.classes[&cls].meta, caller: emu.cpu.pc }),
+        None => {
+            let (pc, lr) = (emu.cpu.pc, emu.cpu.x[30]);
+            let (sx, sq) = (emu.cpu.x, emu.cpu.q);
+            for (i, a) in x.iter().enumerate() {
+                emu.cpu.x[i] = *a;
+            }
+            for (i, a) in v.iter().enumerate() {
+                emu.cpu.q[i] = *a;
+            }
+            let forwarded = crate::invocation::forward(emu, recv, sel_addr)?;
+            let r = [0, 1, 2, 3].map(|i| f64::from_bits(emu.cpu.q[i] as u64));
+            emu.cpu.x = sx;
+            emu.cpu.q = sq;
+            emu.cpu.pc = pc;
+            emu.cpu.x[30] = lr;
+            if forwarded {
+                return Ok(r);
+            }
+            Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel.to_string(), class_method: emu.objc.classes[&cls].meta, caller: emu.cpu.pc })
+        }
     }
 }
 

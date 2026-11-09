@@ -35,6 +35,11 @@ enum Cmd {
         /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
         #[arg(long, value_parser = parse_tap)]
         tap: Vec<(f64, f64, f64)>,
+        /// Swipe from one point to another at a virtual time: `--swipe 195,700>195,200@2`
+        /// (0.3 s; `~0.1` after the time for a faster fling). Scroll views scroll and keep
+        /// going after a fast swipe (repeatable).
+        #[arg(long, value_parser = parse_swipe)]
+        swipe: Vec<Swipe>,
         /// Write a PNG of the screen (at the device's scale) when the run stops.
         #[arg(long)]
         screenshot: Option<PathBuf>,
@@ -171,7 +176,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -182,7 +187,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard)
+            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard)
         }
     }
 }
@@ -505,6 +510,28 @@ fn parse_typing(s: &str) -> std::result::Result<(String, f64), String> {
     Ok((pomme_hle::textinput::unescape(text), t))
 }
 
+#[derive(Clone, Debug)]
+struct Swipe {
+    from: (f64, f64),
+    to: (f64, f64),
+    at: f64,
+    duration: f64,
+}
+
+/// `x1,y1>x2,y2@secs` or `…@secs~duration`.
+fn parse_swipe(s: &str) -> std::result::Result<Swipe, String> {
+    const USAGE: &str = "expected x1,y1>x2,y2@seconds (or …@seconds~duration)";
+    let (path, when) = s.split_once('@').ok_or(USAGE)?;
+    let (at, duration) = when.split_once('~').unwrap_or((when, "0.3"));
+    let (a, b) = path.split_once('>').ok_or(USAGE)?;
+    let num = |v: &str| v.trim().parse::<f64>().map_err(|e| format!("{v}: {e}"));
+    let point = |p: &str| -> std::result::Result<(f64, f64), String> {
+        let (x, y) = p.split_once(',').ok_or(USAGE)?;
+        Ok((num(x)?, num(y)?))
+    };
+    Ok(Swipe { from: point(a)?, to: point(b)?, at: num(at)?, duration: num(duration)? })
+}
+
 fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
     let (xy, t) = s.split_once('@').ok_or("expected x,y@seconds")?;
     let (x, y) = xy.split_once(',').ok_or("expected x,y@seconds")?;
@@ -513,7 +540,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -551,12 +578,15 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
     emu.net.client = net;
     for &(x, y, t) in taps {
-        // A tap: down, then up 80 ms later.
-        let at = (t * 1e9) as u64;
-        emu.touch.script.push(pomme_hle::touch::Input { at_ns: at, phase: pomme_hle::touch::BEGAN, x, y });
-        emu.touch.script.push(pomme_hle::touch::Input { at_ns: at + 80_000_000, phase: pomme_hle::touch::ENDED, x, y });
+        pomme_hle::touch::tap(&mut emu.touch.script, (t * 1e9) as u64, x, y);
+    }
+    for s in swipes {
+        pomme_hle::touch::swipe(&mut emu.touch.script, (s.at * 1e9) as u64, s.from, s.to, (s.duration * 1e9) as u64);
     }
     emu.trace = trace;
+    if std::env::var("POMME_PROFILE").is_ok() {
+        emu.profile = Some(Default::default());
+    }
     // Debugging aid: POMME_BREAK=_sym1,Image:0xaddr,... prints the arguments of every call to those guest functions.
     if let Ok(list) = std::env::var("POMME_BREAK") {
         for sym in list.split(',') {
@@ -588,6 +618,16 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     let elapsed = start.elapsed();
     let steps = emu.cpu.steps;
     let mips = steps as f64 / elapsed.as_secs_f64() / 1e6;
+    if let Some(profile) = emu.profile.take() {
+        let total: u64 = profile.values().sum::<u64>().max(1);
+        let mut rows: Vec<_> = profile.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("\nprofile (instructions by thread and calling image):");
+        for ((tid, image), n) in rows.into_iter().take(20) {
+            let thread = emu.th.threads.get(tid).map_or("?", |t| t.name.as_str());
+            println!("  {:5.1}%  {n:>12}  thread {tid} {thread}  {image}", n as f64 * 100.0 / total as f64);
+        }
+    }
     match result {
         Ok(code) => println!("\nexit({code}) after {steps} instructions in {elapsed:.2?}"),
         Err(stop) => {

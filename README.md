@@ -51,6 +51,11 @@ Debugging:
   Multiline input works too: `UITextView` (React Native's `multiline` TextInput) wraps its
   lines, takes return as a newline and scrolls to keep the caret in sight, and Flutter's
   multiline TextField breaks lines (it finds its ICU data in Flutter.framework's bundle).
+- `--swipe 195,700>195,300@3` drags from one point to another at 3 s (0.3 s; `@3~0.1` for a
+  faster fling). Scroll views scroll the way UIKit's do: a 10 pt start, rubber-banding past
+  the edges, then deceleration at UIKit's rate after a flick, with the delegate calls apps
+  hear (React Native's `onScroll`, FlatList's lazy rows, snapping). Flutter scrolls its own
+  lists from the touches. Tests script the same with `touch::swipe` / `touch::tap`.
 - The clipboard: `--clipboard host` shares this machine's clipboard with the app (paste in
   what you copied; the app's copies land here); `--clipboard 'some text'` starts it with
   text, and the default is empty, so runs repeat. `--paste 'Ada@4'` pastes "Ada" (copied by
@@ -68,6 +73,8 @@ Debugging:
   (a propagating solver, not Cassowary: pinning, centering and fixed or proportional sizes).
 - `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
   local (non-exported) ones too, by name or by the address `nm` prints.
+- `POMME_PROFILE=1 pomme run …` adds a profile when the run stops: instructions by thread and
+  by the image that ran them (React Native apps: mostly Hermes on the JavaScript thread).
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`

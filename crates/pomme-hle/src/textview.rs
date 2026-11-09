@@ -326,22 +326,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         }
         Ok(())
     }),
-    // UIScrollView: the content offset is the bounds' origin.
-    ("UIScrollView", false, "contentOffset", |e| {
-        let b = view(e, e.arg(0)).bounds;
-        ret_rect(e, [b[0], b[1], 0.0, 0.0]);
-        Ok(())
-    }),
-    ("UIScrollView", false, "setContentOffset:", |e| {
-        let (v, x, y) = (e.arg(0), d(e, 0), d(e, 1));
-        view_mut(e, v).bounds[0] = x;
-        scroll_to(e, v, y)
-    }),
-    ("UIScrollView", false, "setContentOffset:animated:", |e| {
-        let (v, x, y) = (e.arg(0), d(e, 0), d(e, 1));
-        view_mut(e, v).bounds[0] = x;
-        scroll_to(e, v, y)
-    }),
 ];
 
 #[cfg(test)]

@@ -13,7 +13,11 @@ class HelloApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(debugShowCheckedModeBanner: false, home: HelloPage());
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: const HelloPage(),
+      routes: {'/list': (_) => const ListPage()},
+    );
   }
 }
 
@@ -119,4 +123,32 @@ class ChevronPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(ChevronPainter oldDelegate) => false;
+}
+
+/// Scrolling (the pommeflutter:///list link): 200 rows of 50 pt, each its own
+/// colour (red = its index, green = 255 − index) so a screenshot tells which
+/// row is where; a tapped row turns black.
+class ListPage extends StatefulWidget {
+  const ListPage({super.key});
+
+  @override
+  State<ListPage> createState() => _ListPageState();
+}
+
+class _ListPageState extends State<ListPage> {
+  int? _tapped;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: ListView.builder(
+        itemCount: 200,
+        itemExtent: 50,
+        itemBuilder: (context, i) => GestureDetector(
+          onTap: () => setState(() => _tapped = i),
+          child: Container(color: i == _tapped ? Colors.black : Color.fromARGB(255, i, 255 - i, 128)),
+        ),
+      ),
+    );
+  }
 }

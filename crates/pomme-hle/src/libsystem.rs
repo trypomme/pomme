@@ -35,10 +35,23 @@ pub struct State {
     /// Queued async work: (function, context). Blocks are queued as (invoke, block).
     pub queue: VecDeque<(u64, u64)>,
     queue_specific: HashMap<(u64, u64), u64>,
+    /// The global (concurrent) queue: its work runs on threads of its own.
+    global_queue: u64,
+    /// Dispatch groups: outstanding work and the notify blocks waiting on it.
+    groups: HashMap<u64, Group>,
+    /// Threads running a group's work → the group.
+    group_threads: HashMap<usize, u64>,
     data: HashMap<&'static str, u64>,
     pub next_port: u64,
     /// Seeded random state (arc4random, UUIDs): the same every run.
     rng: u64,
+}
+
+#[derive(Default)]
+struct Group {
+    count: u64,
+    /// (queue, function, context) to submit when the count reaches zero.
+    notify: Vec<(u64, u64, u64)>,
 }
 
 impl State {
@@ -1045,20 +1058,58 @@ fn dispatch_sync(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_async(emu: &mut Emu) -> Result<()> {
-    let block = emu.arg(1);
+/// Copy a block to the heap: (invoke, block).
+fn copied_block(emu: &mut Emu, block: u64) -> Result<(u64, u64)> {
     emu.cpu.x[0] = block;
     crate::libc::block_copy(emu)?;
     let block = emu.cpu.x[0];
-    let invoke = emu.read_u64(block + 16)?;
-    emu.sys.queue.push_back((invoke, block));
-    crate::threads::wake_main_queue(emu);
+    Ok((emu.read_u64(block + 16)?, block))
+}
+
+/// Run `f(ctx)` on `queue`: the global queue starts a thread for it (so it
+/// may block, as Flutter's wait for its first frame does); every other queue
+/// is serviced in order by the main thread. Work for `group` counts toward it.
+fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Result<()> {
+    if queue != 0 && queue == emu.sys.global_queue {
+        let tid = crate::threads::spawn(emu, f, ctx, "dispatch")?;
+        if let Some(g) = group {
+            emu.sys.groups.entry(g).or_default().count += 1;
+            emu.sys.group_threads.insert(tid, g);
+        }
+    } else {
+        emu.sys.queue.push_back((f, ctx));
+        crate::threads::wake_main_queue(emu);
+    }
     Ok(())
 }
 
+fn dispatch_async(emu: &mut Emu) -> Result<()> {
+    let queue = emu.arg(0);
+    let (invoke, block) = copied_block(emu, emu.arg(1))?;
+    submit(emu, queue, invoke, block, None)
+}
+
 fn dispatch_async_f(emu: &mut Emu) -> Result<()> {
-    emu.sys.queue.push_back((emu.arg(2), emu.arg(1)));
-    crate::threads::wake_main_queue(emu);
+    let (queue, ctx, f) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    submit(emu, queue, f, ctx, None)
+}
+
+/// A thread finished: if it was a group's work, the group has one less.
+pub(crate) fn thread_finished(emu: &mut Emu, tid: usize) -> Result<()> {
+    if let Some(g) = emu.sys.group_threads.remove(&tid) {
+        group_leave(emu, g)?;
+    }
+    Ok(())
+}
+
+fn group_leave(emu: &mut Emu, g: u64) -> Result<()> {
+    let grp = emu.sys.groups.entry(g).or_default();
+    grp.count = grp.count.saturating_sub(1);
+    if grp.count == 0 {
+        for (q, f, ctx) in std::mem::take(&mut grp.notify) {
+            submit(emu, q, f, ctx, None)?;
+        }
+    }
     Ok(())
 }
 
@@ -1083,8 +1134,17 @@ fn dispatch_queue_create(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The one global queue (every quality of service is the same here).
 fn dispatch_get_global_queue(emu: &mut Emu) -> Result<()> {
-    emu.ret(emu.sys.data.get("__dispatch_main_q").copied().unwrap_or(0));
+    if emu.sys.global_queue == 0 {
+        let cls = crate::objc::host_class(emu, "OS_dispatch_queue")?;
+        let q = emu.alloc(64)?;
+        emu.write_u64(q, cls)?;
+        let label = emu.alloc_cstr("com.apple.root.default-qos")?;
+        emu.write_u64(q + 8, label)?;
+        emu.sys.global_queue = q;
+    }
+    emu.ret(emu.sys.global_queue);
     Ok(())
 }
 
@@ -1129,6 +1189,26 @@ fn dispatch_group_create(emu: &mut Emu) -> Result<()> {
     let g = emu.alloc(16)?;
     emu.ret(g);
     Ok(())
+}
+
+/// `dispatch_group_async(group, queue, block)`
+fn dispatch_group_async(emu: &mut Emu) -> Result<()> {
+    let (g, queue) = (emu.arg(0), emu.arg(1));
+    let (invoke, block) = copied_block(emu, emu.arg(2))?;
+    submit(emu, queue, invoke, block, Some(g))
+}
+
+/// `dispatch_group_notify(group, queue, block)`: once the group's work is done.
+/// (Work on the main queue isn't counted: it runs in order, before this.)
+fn dispatch_group_notify(emu: &mut Emu) -> Result<()> {
+    let (g, queue) = (emu.arg(0), emu.arg(1));
+    let (invoke, block) = copied_block(emu, emu.arg(2))?;
+    if emu.sys.groups.get(&g).is_some_and(|x| x.count > 0) {
+        emu.sys.groups.get_mut(&g).unwrap().notify.push((queue, invoke, block));
+        Ok(())
+    } else {
+        submit(emu, queue, invoke, block, None)
+    }
 }
 
 fn dispatch_group_wait(emu: &mut Emu) -> Result<()> {
@@ -1568,9 +1648,18 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_semaphore_create", dispatch_semaphore_create),
     ("_dispatch_semaphore_signal", dispatch_semaphore_signal),
     ("_dispatch_group_create", dispatch_group_create),
-    ("_dispatch_group_enter", noop),
-    ("_dispatch_group_leave", noop),
+    ("_dispatch_group_enter", |e| {
+        let g = e.arg(0);
+        e.sys.groups.entry(g).or_default().count += 1;
+        Ok(())
+    }),
+    ("_dispatch_group_leave", |e| {
+        let g = e.arg(0);
+        group_leave(e, g)
+    }),
     ("_dispatch_group_wait", dispatch_group_wait),
+    ("_dispatch_group_async", dispatch_group_async),
+    ("_dispatch_group_notify", dispatch_group_notify),
     ("_dispatch_release", noop),
     ("_dispatch_data_create", dispatch_data_create),
     ("_dispatch_data_create_map", dispatch_data_create_map),
