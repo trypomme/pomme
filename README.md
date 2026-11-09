@@ -44,6 +44,10 @@ Debugging:
 - `pomme run … --views` prints the view hierarchy (class, frame, colours, text) when the run stops;
   `--seconds N` stops once the app is idle past N seconds of virtual time (default 10).
 - `pomme run … --trace` prints system calls, messages, thread switches and Mach traffic.
+- `pomme run … --url 'scheme:///path'` launches with a deep link, as iOS passes one;
+  `--type 'Ada\n@4'` types on the software keyboard at 4 s (`\n` return, `\b` delete) into
+  whatever has focus (tap a text field first with `--tap`). The keyboard reports iOS 26's
+  frame (335 pt, measured in the Simulator) with the usual will/did notifications.
 - `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
   local (non-exported) ones too, by name or by the address `nm` prints.
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
@@ -61,7 +65,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 
 | App kind | Renders through | Test app | Status |
 |---|---|---|---|
-| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router |
+| Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, Expo Router, TextInput + KeyboardAvoidingView |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
 | Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders and counts taps; matches the iOS Simulator to 3/255 except the font |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |

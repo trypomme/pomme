@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { KeyboardAvoidingView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Keyboard, KeyboardAvoidingView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 // Text input and the keyboard: a TextInput pinned to the bottom of a
 // KeyboardAvoidingView (so the keyboard would cover it unless the view moves
@@ -9,6 +9,19 @@ export default function KeyboardScreen() {
   const [name, setName] = useState('');
   const [submitted, setSubmitted] = useState('');
   const [focused, setFocused] = useState(false);
+  // The keyboard's frame as React Native reports it (screen coordinates).
+  const [kb, setKb] = useState('');
+  useEffect(() => {
+    const shown = Keyboard.addListener('keyboardDidShow', (e) => {
+      const c = e.endCoordinates;
+      setKb(`keyboard ${Math.round(c.screenY)}+${Math.round(c.height)}`);
+    });
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setKb('keyboard hidden'));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
   return (
     <KeyboardAvoidingView testID="avoider" behavior="padding" keyboardVerticalOffset={100} style={styles.container}>
       <View style={styles.top}>
@@ -16,6 +29,7 @@ export default function KeyboardScreen() {
         <Text testID="state" style={styles.state}>
           {focused ? 'Editing' : 'Not editing'} · {name.length} characters{submitted ? ` · submitted "${submitted}"` : ''}
         </Text>
+        <Text testID="keyboard" style={styles.state}>{kb || 'keyboard not shown yet'}</Text>
       </View>
       <View style={styles.bottom}>
         <TextInput

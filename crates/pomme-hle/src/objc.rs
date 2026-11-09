@@ -444,6 +444,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     names.extend(crate::pointer_array::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::storyboard::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::locale::METHODS.iter().map(|m| m.0.to_string()));
+    names.extend(crate::textinput::METHODS.iter().map(|m| m.0.to_string()));
     names.extend(crate::navigation::PROPS.iter().flatten().map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -483,7 +484,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         }
     }
     let props: Vec<_> = crate::navigation::PROPS.iter().flatten().copied().collect();
-    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, EXCEPTION_METHODS] {
+    for tables in [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, EXCEPTION_METHODS] {
         for &(class, class_method, sel, f) in tables {
             let mut cls = emu.objc.by_name[class];
             if class_method {
@@ -994,6 +995,46 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
             class_method: emu.objc.classes[&cls].meta,
             caller: emu.cpu.pc,
         }),
+    }
+}
+
+/// Send a message with floating-point arguments (in d0…, after the integer
+/// ones) and floating-point results: d0…d3 come back (a CGRect, a CGSize …).
+pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: &[f64]) -> Result<[f64; 4]> {
+    if recv == 0 {
+        return Ok([0.0; 4]);
+    }
+    let sel_addr = intern(emu, sel)?;
+    let cls = class_of(emu, recv)?;
+    let k = instance_class(emu, recv)?;
+    ensure_initialized(emu, k)?;
+    let mut x = vec![recv, sel_addr];
+    x.extend_from_slice(args);
+    let v: Vec<u128> = fargs.iter().map(|f| f.to_bits() as u128).collect();
+    match lookup(emu, cls, sel_addr)? {
+        Some(Imp::Guest(addr)) => {
+            emu.call_abi(addr, &x, &v, &[], None)?;
+            Ok(emu.last_v03.map(|q| f64::from_bits(q as u64)))
+        }
+        Some(Imp::Host(f)) => {
+            let (pc, lr) = (emu.cpu.pc, emu.cpu.x[30]);
+            let saved_x: Vec<u64> = emu.cpu.x[..18].to_vec();
+            let saved_q: Vec<u128> = emu.cpu.q[..8].to_vec();
+            for (i, a) in x.iter().enumerate() {
+                emu.cpu.x[i] = *a;
+            }
+            for (i, a) in v.iter().enumerate() {
+                emu.cpu.q[i] = *a;
+            }
+            f(emu)?;
+            let r = [0, 1, 2, 3].map(|i| f64::from_bits(emu.cpu.q[i] as u64));
+            emu.cpu.x[..18].copy_from_slice(&saved_x);
+            emu.cpu.q[..8].copy_from_slice(&saved_q);
+            emu.cpu.pc = pc;
+            emu.cpu.x[30] = lr;
+            Ok(r)
+        }
+        None => Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel.to_string(), class_method: emu.objc.classes[&cls].meta, caller: emu.cpu.pc }),
     }
 }
 

@@ -981,6 +981,9 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     if vw.layer != 0 {
         draw_sublayers(emu, p, vw.layer, a, &inner, m);
     }
+    if crate::textinput::is_text_field(emu, v) {
+        let _ = draw_text_field(emu, p, v, vw.bounds, a, &inner, m);
+    }
     if let Ok(Some(look)) = crate::navigation::bar_look(emu, v) {
         let above = crate::uiview::window_origin(emu, v)[1] as f32;
         draw_bar(emu, p, &look, w, h, above, a, &inner, m);
@@ -989,6 +992,29 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
         draw_view(emu, p, s, a, &inner, m);
     }
     draw_border(p, &ly, &emu.ui.views.colors, w, h, a, &vt, mask);
+}
+
+/// A UITextField's text (or placeholder): one line, vertically centered in its
+/// text rect (`textRectForBounds:`, which apps override for padding).
+fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) -> Result<()> {
+    let Some((text, size, weight, color)) = crate::textinput::appearance(emu, v)? else { return Ok(()) };
+    let sel = if crate::textinput::is_editing(emu, v) { "editingRectForBounds:" } else { "textRectForBounds:" };
+    let r = objc::send_fp(emu, v, sel, &[], &bounds)?;
+    let baseline = r[1] + r[3] / 2.0 + size * 0.35;
+    let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, size, weight, color, r[0], baseline);
+    p.glyphs(&glyphs, alpha, t, mask);
+    Ok(())
+}
+
+/// The software keyboard while it's up: iOS 26's light keyboard panel (its
+/// colour and rounded top corners, sampled from the Simulator) along the bottom
+/// edge. The keys aren't drawn.
+fn draw_keyboard(p: &mut Painter, t: &[f32; 6]) {
+    const RADIUS: f32 = 28.0;
+    let [x, y, w, h] = crate::textinput::keyboard_frame(true).map(|v| v as f32);
+    // Round the top corners only: the bottom ones fall below the screen.
+    let panel = transform_els(&rounded_rect(w, h + RADIUS, RADIUS), &[1.0, 0.0, 0.0, 1.0, x, y]);
+    p.fill(&panel, [226.0 / 255.0, 228.0 / 255.0, 232.0 / 255.0, 1.0], 1.0, false, t, None);
 }
 
 /// A navigation bar. iOS 26: no background, a centered title and a round
@@ -1093,6 +1119,9 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
     for w in emu.ui.windows.clone() {
         draw_view(emu, &mut p, w, 1.0, &t, None);
+    }
+    if emu.input.keyboard_shown {
+        draw_keyboard(&mut p, &t);
     }
     Ok(p.pix)
 }

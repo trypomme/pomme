@@ -2507,8 +2507,13 @@ fn deliver(emu: &mut Emu, note: u64) -> Result<()> {
 
 /// Post the notification named `name` (constants are their own names) from `object`.
 pub fn post_named(emu: &mut Emu, name: &str, object: u64) -> Result<()> {
+    post_named_info(emu, name, object, 0)
+}
+
+/// Post the notification named `name` with a userInfo dictionary.
+pub fn post_named_info(emu: &mut Emu, name: &str, object: u64, info: u64) -> Result<()> {
     let name = new_nsstring(emu, name)?;
-    let n = new_notification(emu, name, object, 0)?;
+    let n = new_notification(emu, name, object, info)?;
     deliver(emu, n)
 }
 

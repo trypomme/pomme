@@ -63,6 +63,10 @@ enum Cmd {
         /// Launch the app with this URL (a deep link), as iOS does: `--url 'myapp:///settings'`.
         #[arg(long)]
         url: Option<String>,
+        /// Type on the software keyboard at a virtual time: `--type 'Ada\n@4'` (`\n` is
+        /// return, `\b` delete). Keys go to the first responder (tap a text field first).
+        #[arg(long = "type", value_parser = parse_typing)]
+        typing: Vec<(String, f64)>,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -87,7 +91,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing, url } => {
+        Cmd::Run { path, steps, seconds, views, tap, screenshot, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing } => {
             let net = make_net(offline, &fixture)?;
             let (path, sysroot) = match bundle {
                 Some(b) => {
@@ -98,7 +102,7 @@ fn main() -> Result<()> {
                 }
                 None => (path, sysroot),
             };
-            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing, url)
+            run(&path, steps, seconds, views, &tap, screenshot.as_deref(), trace, &sysroot, net, ios, missing, url, &typing)
         }
     }
 }
@@ -404,6 +408,12 @@ fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<
 }
 
 /// `x,y@seconds`
+fn parse_typing(s: &str) -> std::result::Result<(String, f64), String> {
+    let (text, t) = s.rsplit_once('@').ok_or("expected text@seconds")?;
+    let t = t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?;
+    Ok((pomme_hle::textinput::unescape(text), t))
+}
+
 fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
     let (xy, t) = s.split_once('@').ok_or("expected x,y@seconds")?;
     let (x, y) = xy.split_once(',').ok_or("expected x,y@seconds")?;
@@ -412,7 +422,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], screenshot: Option<&Path>, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)]) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -424,6 +434,9 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.ui.launch_url = url;
+    for (text, t) in typing {
+        emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (t * 1e9) as u64, text: text.clone() });
+    }
     if missing {
         let list = emu.missing_functions();
         println!("{} system functions bound without an implementation:", list.len());

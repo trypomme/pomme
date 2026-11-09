@@ -96,6 +96,11 @@ fn words(emu: &Emu, v: u64) -> Result<(u64, [u64; 4])> {
     Ok((kind, w))
 }
 
+/// An NSValue holding a CGRect.
+pub(crate) fn new_rect_value(emu: &mut Emu, r: [f64; 4]) -> Result<u64> {
+    new_value(emu, RECT, &r.map(f64::to_bits))
+}
+
 fn ret_new(emu: &mut Emu, kind: u64, w: &[u64]) -> Result<()> {
     let v = new_value(emu, kind, w)?;
     emu.ret(v);

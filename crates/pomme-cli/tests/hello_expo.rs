@@ -295,3 +295,69 @@ fn live_host_gets_frames_and_delivers_input() {
     assert!(*n >= 2, "only {n} frames"); // frames come when the main run loop wakes
     assert_eq!(last.len(), 390 * 844 * 4);
 }
+
+// ---- text input and the keyboard (the /keyboard screen) ----
+
+const NAME_FIELD: (f64, f64) = (195.0, 806.0);
+
+fn type_text(emu: &mut Emu, text: &str, secs: f64) {
+    emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: (secs * 1e9) as u64, text: text.into() });
+}
+
+/// The y of a view line like `ClassName (x, y, w×h) "text"` holding `needle`.
+fn y_of(views: &str, needle: &str) -> f64 {
+    let line = views.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle:?} in\n{views}"));
+    let inner = &line[line.find('(').unwrap() + 1..];
+    inner.split(',').nth(1).unwrap().trim().parse().unwrap()
+}
+
+/// The keyboard screen, opened by deep link, after `script` and `secs` of virtual time.
+fn keyboard_screen(script: impl FnOnce(&mut Emu), secs: f64) -> Option<(Emu, String)> {
+    let mut emu = boot()?;
+    emu.ui.launch_url = Some("pommehello:///keyboard".into());
+    script(&mut emu);
+    let views = run_for(&mut emu, secs);
+    Some((emu, views))
+}
+
+/// A deep link opens the screen; tapping the TextInput focuses it (the keyboard
+/// comes up and the KeyboardAvoidingView lifts the content above it); typed
+/// keys reach React through UITextField's delegate; delete edits; return
+/// submits and ends editing, and the keyboard goes back down.
+#[test]
+fn text_input_and_keyboard_avoiding_view() {
+    let Some((emu, before)) = keyboard_screen(|_| {}, 2.5) else { return };
+    assert!(before.contains("\"Type your name below\""), "{before}");
+    assert!(before.contains("\"Not editing · 0 characters\""), "{before}");
+    assert!(!emu.input.keyboard_shown);
+    let resting = y_of(&before, "RCTTextInputComponentView");
+
+    let typing_script = |emu: &mut Emu| {
+        tap(emu, NAME_FIELD, 3.0);
+        type_text(emu, "Adx\u{8}", 4.0);
+        type_text(emu, "a", 4.5);
+    };
+    let (emu, typing) = keyboard_screen(typing_script, 5.5).unwrap();
+    assert!(emu.input.keyboard_shown, "the keyboard should be up");
+    assert!(typing.contains("\"Hello, Ada!\""), "{typing}");
+    assert!(typing.contains("\"Editing · 3 characters\""), "{typing}");
+    // React Native's keyboardDidShow: iOS 26's 335-pt keyboard on the 844-pt screen.
+    assert!(typing.contains("\"keyboard 509+335\""), "{typing}");
+    // Lifted by the keyboard's height (less the screen's offset).
+    let lifted = y_of(&typing, "RCTTextInputComponentView");
+    assert!(resting - lifted > 200.0, "the input moved from {resting} to {lifted}");
+
+    let (emu, done) = keyboard_screen(
+        |emu| {
+            typing_script(emu);
+            type_text(emu, "\n", 6.0);
+        },
+        7.0,
+    )
+    .unwrap();
+    assert!(!emu.input.keyboard_shown, "return should end editing");
+    assert!(done.contains("submitted \\\"Ada\\\""), "{done}");
+    assert!(done.contains("\"Not editing · 3 characters"), "{done}");
+    assert!(done.contains("\"keyboard hidden\""), "{done}");
+    assert_eq!(y_of(&done, "RCTTextInputComponentView"), resting);
+}

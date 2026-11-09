@@ -289,7 +289,7 @@ fn size_with_attributes(emu: &mut Emu) -> Result<()> {
 }
 
 /// Font size and weight of a UIFont (other fonts: TextKit's default).
-fn font_info(emu: &mut Emu, font: u64) -> Result<(f64, f64)> {
+pub(crate) fn font_info(emu: &mut Emu, font: u64) -> Result<(f64, f64)> {
     if font == 0 || foundation::is_cf(emu, font) || class_name_of(emu, font) != "UIFont" {
         return Ok((DEFAULT_SIZE, 0.0));
     }

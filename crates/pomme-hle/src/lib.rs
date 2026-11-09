@@ -44,6 +44,7 @@ mod nstimer;
 pub mod net;
 pub mod host;
 pub mod touch;
+pub mod textinput;
 mod uikit;
 mod uiview;
 
@@ -197,6 +198,7 @@ pub struct Emu {
     render: render::State,
     /// Touches, gesture recognizers and the input script.
     pub touch: touch::State,
+    pub input: textinput::State,
     /// A live host (browser, window) and its frames and input.
     pub live: host::State,
     /// The network (see net.rs) and URL-loading objects.
@@ -270,6 +272,7 @@ impl Emu {
             text: Default::default(),
             render: Default::default(),
             touch: Default::default(),
+            input: Default::default(),
             live: Default::default(),
             net: Default::default(),
             timers: Default::default(),
