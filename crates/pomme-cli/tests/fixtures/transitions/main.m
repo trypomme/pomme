@@ -5,7 +5,11 @@
 // dismissed at 8 s; at 9.5 s a magenta one in a medium-detent sheet with a
 // grabber, dismissed at 11; at 12.5 s an orange one with a custom 300 pt
 // detent, dismissed at 14; at 15.5 s a cyan one cross-dissolves in full
-// screen, dissolving out at 17. Label 1 (on the red screen) lists the completions.
+// screen, dissolving out at 17. At 18.5 s blue is pushed again and the main
+// thread keeps working for 0.15 s before its run loop sleeps (as an app
+// building a new screen does): the push still plays from the start; it pops at 19.5. Label 1
+// (on the red screen) lists the completions.
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
 static UIViewController *colored(UIColor *c) {
@@ -58,6 +62,12 @@ static UIViewController *colored(UIColor *c) {
         @[@14.0, ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
         @[@15.5, ^{ [nav presentViewController:cyan animated:YES completion:nil]; }],
         @[@17.0, ^{ [nav dismissViewControllerAnimated:YES completion:^{ note(@"faded"); }]; }],
+        @[@18.5, ^{
+            [nav pushViewController:blue animated:YES];
+            CFTimeInterval until = CACurrentMediaTime() + 0.15;
+            while (CACurrentMediaTime() < until) {}
+        }],
+        @[@19.5, ^{ [nav popViewControllerAnimated:YES]; }],
     ];
     for (NSArray *p in plan) {
         void (^action)(void) = p[1];

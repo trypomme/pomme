@@ -126,6 +126,7 @@ fn update(emu: &mut Emu, v: u64) -> Result<()> {
             additive: false,
             object: 0,
             delegate: 0,
+            added: Some(begin),
         };
         crate::animation::push(emu, l, anim);
     }

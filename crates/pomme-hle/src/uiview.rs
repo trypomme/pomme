@@ -940,7 +940,7 @@ fn animate(emu: &mut Emu, form: Form, completion: bool) -> Result<()> {
     if done != 0 && options & (1 << 3) == 0 {
         let c = copy_block(emu, done)?;
         let reverses = if options & (1 << 4) != 0 { 2.0 } else { 1.0 };
-        crate::uikit::after_on_main(emu, delay + duration * reverses, completion_fire, c)?;
+        crate::animation::after_commit(emu, delay + duration * reverses, completion_fire, c)?;
     }
     Ok(())
 }

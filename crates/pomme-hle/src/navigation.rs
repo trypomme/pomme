@@ -403,7 +403,7 @@ fn change_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool, interac
             let (timing, duration) = crate::animation::transition_spring(if forward { PUSH_SPRING } else { POP_SPRING });
             place(emu, &t, 0.0, 1.0, timing, duration);
             emu.nav.transitions.insert(nc, t);
-            crate::uikit::after_on_main(emu, duration, finish_fire, nc)
+            crate::animation::after_commit(emu, duration, finish_fire, nc)
         }
         _ => finish(emu, t),
     }
@@ -589,9 +589,9 @@ pub(crate) fn swipe_ended(emu: &mut Emu, p: [f64; 2], now: f64, cancelled: bool)
     let (timing, duration) = crate::animation::transition_spring((omega, zeta, v.max(0.0)));
     place(emu, &t, progress, to, timing, duration);
     if finish {
-        crate::uikit::after_on_main(emu, duration, finish_fire, sw.nc)
+        crate::animation::after_commit(emu, duration, finish_fire, sw.nc)
     } else {
-        crate::uikit::after_on_main(emu, duration, cancel_fire, sw.nc)
+        crate::animation::after_commit(emu, duration, cancel_fire, sw.nc)
     }
 }
 
@@ -1331,7 +1331,7 @@ fn present(emu: &mut Emu) -> Result<()> {
     }
     if animated {
         let duration = slide_modal(emu, &p, true, h)?;
-        crate::uikit::after_on_main(emu, duration, present_done_fire, vc)
+        crate::animation::after_commit(emu, duration, present_done_fire, vc)
     } else {
         present_done(emu, vc)
     }
@@ -1447,7 +1447,7 @@ fn dismiss(emu: &mut Emu) -> Result<()> {
     if animated {
         let h = view(emu, p.container).bounds[3];
         let duration = slide_modal(emu, &p, false, h)?;
-        crate::uikit::after_on_main(emu, duration, dismiss_done_fire, p.presented)
+        crate::animation::after_commit(emu, duration, dismiss_done_fire, p.presented)
     } else {
         dismiss_now(emu, p.presented, true)
     }
@@ -1622,7 +1622,7 @@ pub(crate) fn sheet_ended(emu: &mut Emu, p: [f64; 2], now: f64, cancelled: bool)
             }
             let h = view(emu, q.container).bounds[3];
             let duration = slide_modal_from(emu, &q, false, h, Some(shown), velocity.max(0.0))?;
-            return crate::uikit::after_on_main(emu, duration, dismiss_done_fire, q.presented);
+            return crate::animation::after_commit(emu, duration, dismiss_done_fire, q.presented);
         }
         sheet_delegate(emu, q.presented, "presentationControllerDidAttemptToDismiss:")?;
     }
@@ -1677,7 +1677,7 @@ fn settle(emu: &mut Emu, i: usize, target: usize, shown: [f64; 2], velocity: f64
         transition(emu, dl, Prop::Opacity, Val::N(from), Val::N(1.0), timing, duration);
     }
     let info = q.presented;
-    crate::uikit::after_on_main(emu, duration, settle_done_fire, info)
+    crate::animation::after_commit(emu, duration, settle_done_fire, info)
 }
 
 fn settle_done_fire(emu: &mut Emu) -> Result<()> {

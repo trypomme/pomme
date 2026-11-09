@@ -82,7 +82,7 @@ fn transitions_match_ios() {
     let frames: Frames = Default::default();
     emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
-    let v = common::views(&mut emu, 18.0);
+    let v = common::views(&mut emu, 20.5);
     let log = v.lines().find(|l| l.contains(" tag 1 ")).map(|l| l.trim().to_string()).unwrap_or_default();
     assert!(log.ends_with("\"presented dismissed full back faded \""), "{log}");
 
@@ -182,6 +182,13 @@ fn transitions_match_ios() {
         assert!((top_g - g).abs() <= 0.03, "it fades in place: top {top_g:.3}, middle {g:.3}");
         checked += 1;
     }
+
+    // A push the main thread is slow to commit starts when it commits: the
+    // first frame after shows blue only just coming in, and frames follow
+    // it across rather than finding it already there.
+    let after: Vec<f64> = frames.iter().filter(|f| f.0 as f64 / 1e9 > 18.5 && (f.0 as f64 / 1e9) < 19.2).map(|f| left_edge(f, 300, blue).unwrap_or(f.1) as f64).collect();
+    assert!(after.first().is_some_and(|&x| x > 0.9 * W), "the slow push's first frame: blue at {after:?}");
+    assert!(after.iter().filter(|&&x| x > 0.2 * W && x < 0.8 * W).count() >= 2, "the slow push slides: {after:?}");
 
     assert!(checked > 40, "{checked} frames checked");
 }

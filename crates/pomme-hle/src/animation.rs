@@ -139,6 +139,11 @@ pub struct Anim {
     pub object: u64,
     /// UIView animations: the block's completion runs when they're done (see `uiview::animate`).
     pub delegate: u64,
+    /// Added in a transaction not yet committed, at this time. Like Core
+    /// Animation, it starts when the transaction commits (its `begin` moves
+    /// on by however long the app kept working before then), so a slow
+    /// main thread delays an animation instead of cutting into it.
+    pub added: Option<f64>,
 }
 
 impl Anim {
@@ -153,7 +158,8 @@ impl Anim {
 
     /// Progress between the values at `now` (eased), or None when it has no effect.
     fn progress(&self, now: f64) -> Option<f64> {
-        let t = now - self.begin;
+        // Not committed yet: still where it starts.
+        let t = self.added.unwrap_or(now) - self.begin;
         if t < 0.0 {
             return self.fill_backwards.then_some(0.0);
         }
@@ -208,6 +214,8 @@ impl Anim {
 #[derive(Clone, Copy, Debug)]
 struct Block {
     begin: f64,
+    /// When the block ran (its animations start at the commit after).
+    added: f64,
     duration: f64,
     timing: Timing,
     repeat: f64,
@@ -224,6 +232,8 @@ pub struct State {
     blocks: Vec<Block>,
     /// Animations that ended, waiting for their delegates (run-loop callouts).
     stopped: Vec<(u64, u64, bool)>,
+    /// Main run-loop timers that count from the commit (see [`after_commit`]).
+    timers: Vec<(f64, HostFn, u64)>,
 }
 
 // ---- timing ----
@@ -554,7 +564,7 @@ pub fn animating(emu: &Emu) -> bool {
     }
     let now = crate::threads::now_ns(emu) as f64 / 1e9;
     // Until a frame after the end, so the last frame shows where it ended.
-    emu.anim.layers.values().flatten().any(|a| a.begin <= now + 1.0 / 30.0 && now < a.end() + 1.0 / 30.0)
+    emu.anim.layers.values().flatten().any(|a| a.added.is_some() || (a.begin <= now + 1.0 / 30.0 && now < a.end() + 1.0 / 30.0))
 }
 
 // ---- adding and removing ----
@@ -586,20 +596,38 @@ fn add_anim(emu: &mut Emu, l: u64, a: Anim) -> Result<()> {
     }
     let (object, end) = (a.object, a.end());
     let finite = a.repeat.is_finite();
+    let start = a.added.unwrap_or(crate::threads::now_ns(emu) as f64 / 1e9);
     push(emu, l, a);
-    let now = crate::threads::now_ns(emu) as f64 / 1e9;
     if finite && object != 0 {
         let info = emu.alloc(16)?;
         emu.write_u64(info, l)?;
         emu.write_u64(info + 8, object)?;
-        crate::uikit::after_on_main(emu, (end - now).max(0.0), end_fire, info)?;
+        after_commit(emu, (end - start).max(0.0), end_fire, info)?;
     }
-    commit(emu)
+    stopped_fire(emu)
 }
 
-/// Core Animation's commit (the run loop's before-waiting pass): delegates of
-/// animations that stopped hear about it.
+/// Run `callout` on the main run loop `delay` seconds after the current
+/// transaction commits: when animations added with it end (transition and
+/// animation completions), however long the app works before committing.
+pub fn after_commit(emu: &mut Emu, delay: f64, callout: HostFn, info: u64) -> Result<()> {
+    emu.anim.timers.push((delay, callout, info));
+    Ok(())
+}
+
+/// Core Animation's commit (the run loop's before-waiting pass): animations
+/// added since the last one start now, their completions are timed from now,
+/// and delegates of animations that stopped hear about it.
 pub fn commit(emu: &mut Emu) -> Result<()> {
+    let now = crate::threads::now_ns(emu) as f64 / 1e9;
+    for a in emu.anim.layers.values_mut().flatten() {
+        if let Some(at) = a.added.take() {
+            a.begin += now - at;
+        }
+    }
+    for (delay, callout, info) in std::mem::take(&mut emu.anim.timers) {
+        crate::uikit::after_on_main(emu, delay, callout, info)?;
+    }
     if emu.anim.stopped.is_empty() {
         return Ok(());
     }
@@ -609,7 +637,7 @@ pub fn commit(emu: &mut Emu) -> Result<()> {
 /// Drop animations that ended and leave nothing behind (UIView's, which have no delegate).
 fn prune(emu: &mut Emu, l: u64, now: f64) {
     if let Some(list) = emu.anim.layers.get_mut(&l) {
-        list.retain(|a| a.object != 0 || a.fill_forwards || !a.removed_on_completion || now < a.end());
+        list.retain(|a| a.object != 0 || a.fill_forwards || !a.removed_on_completion || a.added.is_some() || now < a.end());
         if list.is_empty() {
             emu.anim.layers.remove(&l);
         }
@@ -772,6 +800,11 @@ fn read_anim(emu: &mut Emu, o: u64, key: &str, now: f64, out: &mut Vec<Anim>, gr
         additive: bag_bool(emu, o, "additive").unwrap_or(false),
         object: o,
         delegate: 0,
+        // An explicit beginTime is a time already; otherwise it starts at the commit.
+        added: match group {
+            Some(g) => g.added,
+            None => (begin_time <= 0.0).then_some(now),
+        },
     };
     if cls_name(emu, "CAAnimationGroup")? {
         let children = objc::bag_get(emu, o, "animations").unwrap_or(0);
@@ -872,6 +905,7 @@ pub fn transition(emu: &mut Emu, l: u64, prop: Prop, from: Val, to: Val, timing:
             additive: false,
             object: 0,
             delegate: 0,
+            added: Some(begin),
         },
     );
 }
@@ -903,7 +937,7 @@ pub fn block_timing(options: u64) -> Timing {
 pub fn in_block(emu: &mut Emu, delay: f64, duration: f64, timing: Timing, options: u64, f: impl FnOnce(&mut Emu) -> Result<()>) -> Result<()> {
     let now = crate::threads::now_ns(emu) as f64 / 1e9;
     let repeat = if options & (1 << 3) != 0 { f64::INFINITY } else { 1.0 };
-    emu.anim.blocks.push(Block { begin: now + delay, duration, timing, repeat, autoreverses: options & (1 << 4) != 0, off: duration <= 0.0 });
+    emu.anim.blocks.push(Block { begin: now + delay, added: now, duration, timing, repeat, autoreverses: options & (1 << 4) != 0, off: duration <= 0.0 });
     let r = f(emu);
     emu.anim.blocks.pop();
     r
@@ -911,7 +945,7 @@ pub fn in_block(emu: &mut Emu, delay: f64, duration: f64, timing: Timing, option
 
 /// Run `f` with changes not animating (`performWithoutAnimation:`).
 pub fn without(emu: &mut Emu, f: impl FnOnce(&mut Emu) -> Result<()>) -> Result<()> {
-    emu.anim.blocks.push(Block { begin: 0.0, duration: 0.0, timing: Timing::Linear, repeat: 1.0, autoreverses: false, off: true });
+    emu.anim.blocks.push(Block { begin: 0.0, added: 0.0, duration: 0.0, timing: Timing::Linear, repeat: 1.0, autoreverses: false, off: true });
     let r = f(emu);
     emu.anim.blocks.pop();
     r
@@ -982,6 +1016,7 @@ pub fn after(emu: &mut Emu, v: u64, prop: Prop, old: Option<Val>) {
         additive: false,
         object: 0,
         delegate: 0,
+        added: Some(b.added),
     };
     push(emu, l, a);
 }
@@ -1170,6 +1205,7 @@ mod tests {
             additive: false,
             object: 0,
             delegate: 0,
+            added: None,
         };
         let model = Val::N(0.5);
         assert_eq!(a.value(0.5, model), None); // not started, no backwards fill
