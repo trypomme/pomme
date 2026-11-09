@@ -60,6 +60,12 @@ pub trait Host {
     fn biometry_prompt(&mut self, _reason: &str) {}
     /// The waiting Face ID prompts were answered (or failed): the sheet goes.
     fn biometry_answered(&mut self) {}
+    /// The wall clock as the app's time (ns), once the host has started
+    /// pacing: while the app is busy, its clock keeps up with this, as an
+    /// iPhone's animations keep real time however busy the app is.
+    fn wall_ns(&mut self) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -171,6 +177,26 @@ pub(crate) fn frame_due(emu: &Emu) -> Option<u64> {
     }
     let now = crate::threads::now_ns(emu);
     Some(emu.live.last_frame.map_or(now, |t| (t + FRAME_NS).max(now)))
+}
+
+/// Between thread slices while the main thread waits (its run loop asleep, its
+/// changes committed): keep the app's clock up with the wall clock and draw a
+/// frame if one is due, as iOS's render server plays animations whatever the
+/// app's threads are doing. Only with a live host: headless runs keep time
+/// by instructions alone, deterministically.
+pub(crate) fn keep_pace(emu: &mut Emu) -> Result<()> {
+    let Some(host) = emu.live.host.as_mut() else { return Ok(()) };
+    let wall = host.wall_ns();
+    let now = crate::threads::now_ns(emu);
+    if let Some(w) = wall
+        && w > now + 1_000_000
+    {
+        crate::threads::advance_to(emu, w);
+    }
+    if frame_due(emu).is_some_and(|due| due <= crate::threads::now_ns(emu)) {
+        draw(emu)?;
+    }
+    Ok(())
 }
 
 /// Tell the host a biometry prompt is waiting.

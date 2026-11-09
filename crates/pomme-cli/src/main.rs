@@ -90,6 +90,11 @@ enum Cmd {
         /// to turn the phone. Runs until the window closes (no step or time limit).
         #[arg(long)]
         window: bool,
+        /// With --window: print, for each second frames arrive, how many there
+        /// were (in wall time and in the app's own time) and the longest wait
+        /// between consecutive frames of motion, to see where it stutters.
+        #[arg(long, requires = "window")]
+        frame_stats: bool,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -264,7 +269,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, profile, window } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, profile, window, frame_stats } => {
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -275,7 +280,7 @@ fn main() -> Result<()> {
                 None => (path, sysroot),
             };
             if window {
-                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled };
+                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled, frame_stats };
                 let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
                 let out = result.clone();
                 pomme_desktop::launch(config, move |host, scale| {

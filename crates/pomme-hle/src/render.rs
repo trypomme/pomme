@@ -1656,7 +1656,9 @@ impl Shell {
         let mut p = Painter { pix, font: None, emoji: None };
         let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
         let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
-        let body = transform_els(&rounded_rect(bw, bh, body_r), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
+        // iPhone corners are continuous curves, the display's and the body's.
+        let continuous = !d.home_button;
+        let body = transform_els(&corner_shape(bw, bh, body_r, 15, continuous), &[1.0, 0.0, 0.0, 1.0, BUTTONS, 0.0]);
         // Side buttons first, so the body covers their inner edges.
         let button = |p: &mut Painter, x: f32, y: f32, h: f32| {
             let b = transform_els(&rounded_rect(BUTTONS + 3.0, h, 2.0), &[1.0, 0.0, 0.0, 1.0, x, y]);
@@ -1689,7 +1691,8 @@ impl Shell {
         let (y0, y1) = (corners[0].1.min(corners[1].1), corners[0].1.max(corners[1].1));
         let body = turn(&p.pix, m, ow, oh)?;
         // The display's corners where the screen landed (a rounded rectangle looks the same turned).
-        let shape = transform_els(&rounded_rect(x1 - x0, y1 - y0, d.corner_radius as f32 * scale), &[1.0, 0.0, 0.0, 1.0, x0, y0]);
+        // The display's corners (continuous, as moving screens' cards are, so the two coincide).
+        let shape = transform_els(&corner_shape(x1 - x0, y1 - y0, d.corner_radius as f32 * scale, 15, !d.home_button), &[1.0, 0.0, 0.0, 1.0, x0, y0]);
         let mask = Painter { pix: Pixmap::new(ow, oh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?, font: None, emoji: None }.intersect(None, &shape, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
         Ok(Shell { body, screen: [x0, y0, x1 - x0, y1 - y0], mask })
     }

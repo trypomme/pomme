@@ -363,6 +363,12 @@ fn fire_timers(emu: &mut Emu) -> bool {
 fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
     let next = next_deadline(emu, own);
     let Some(target) = next else { return Ok(false) };
+    skip_to(emu, target)?;
+    Ok(true)
+}
+
+/// Skip virtual time to `target` (a deadline): [`Stop::TimeLimit`] if it's past the run's limit.
+fn skip_to(emu: &mut Emu, target: u64) -> Result<()> {
     if let Some(limit) = emu.time_limit_ns
         && target > limit
     {
@@ -373,7 +379,7 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
     }
     advance_to(emu, target);
     crate::keychain::present_due(emu)?;
-    Ok(true)
+    Ok(())
 }
 
 /// Move virtual time forward to `target_ns` (never back) and fire due timers.
@@ -424,11 +430,25 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
             break Ok(r);
         }
         if schedule_round(emu)? {
+            // The main thread waiting while others work: time and frames keep up (live only).
+            if me == 0 {
+                crate::host::keep_pace(emu)?;
+            }
             continue;
         }
         // A live host paces time on the wall clock and may deliver input.
-        if emu.live.host.is_some() && crate::host::idle(emu, next_deadline(emu, wait.deadline()))? {
-            continue;
+        // It waits until the next deadline; time then goes exactly there (the
+        // host may have drawn a pending frame meanwhile, and a deadline
+        // recomputed now could be far later: time would jump ahead of the wall clock).
+        if emu.live.host.is_some() {
+            let next = next_deadline(emu, wait.deadline());
+            if crate::host::idle(emu, next)? {
+                continue;
+            }
+            if let Some(target) = next {
+                skip_to(emu, target)?;
+                continue;
+            }
         }
         if !advance_time(emu, wait.deadline())? {
             break Err(Stop::Idle(describe(emu, me, &wait)));
