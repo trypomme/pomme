@@ -280,10 +280,11 @@ pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) 
     out
 }
 
-/// A path that's a rectangle (as `CGPathCreateWithRect`), for pomme's own layers.
-pub(crate) fn new_rect_path(emu: &mut Emu, r: [f64; 4]) -> Result<u64> {
+/// A path that's a rectangle with continuous corners of radius `r` (0:
+/// square), for pomme's own layers.
+pub(crate) fn new_card_path(emu: &mut Emu, size: [f64; 2], r: f64) -> Result<u64> {
     let id = emu.alloc(16)?;
-    emu.render.paths.insert(id, rect_els(r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32));
+    emu.render.paths.insert(id, corner_shape(size[0] as f32, size[1] as f32, r as f32, 15, true));
     Ok(id)
 }
 
@@ -1227,6 +1228,10 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     let mut ly = if vw.layer != 0 { calayer::layer(emu, vw.layer) } else { Layer::default() };
     // What's on screen now: the model with running animations applied.
     let animated_bg = crate::animation::present_view(emu, v, &mut vw, &mut ly);
+    // A screen moving in a push or pop is a card with the display's corners.
+    if let Some(r) = crate::navigation::card_corner(emu, v) {
+        (ly.corner_radius, ly.continuous_corners, ly.masked_corners, vw.clips) = (r, true, 15, true);
+    }
     let a = alpha * vw.alpha as f32;
     if vw.hidden || a <= 0.0 {
         return;
@@ -1263,9 +1268,17 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     } else if crate::label::is_label(emu, v) {
         let _ = draw_label(emu, p, v, vw.bounds, a, &inner, m);
     }
-    if let Ok(Some(look)) = crate::navigation::bar_look(emu, v) {
+    if let Ok(parts) = crate::navigation::bar_parts(emu, v) {
         let above = crate::uiview::window_origin(emu, v)[1] as f32;
-        draw_bar(emu, p, &look, w, h, above, a, &inner, m);
+        for (look, dx, back, covered_from) in parts {
+            // Underneath: only what the upper card leaves showing, left of its edge.
+            let clip = covered_from.map(|x| p.intersect(m, &rect_els(-w, -above, w + x.max(-w as f64) as f32, h + above), &inner));
+            let mm = match &clip {
+                Some(c) => c.as_ref(),
+                None => m,
+            };
+            draw_bar(emu, p, &look, w, h, above, a, &inner, mm, dx as f32, back.map(|b| b as f32));
+        }
     }
     for s in vw.subviews {
         draw_view(emu, p, s, a, &inner, m);
@@ -1339,10 +1352,22 @@ fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64,
 /// glass back button. Before: the configured background (reaching up under
 /// the status bar, `above` points), a hairline, and a tinted chevron + label.
 #[allow(clippy::too_many_arguments)]
-fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+/// A navigation bar as `look` describes it: its title moved `title_dx` (with
+/// its screen, during a push or pop), and its back button at `back_alpha`
+/// (None: just the title, for the screen leaving).
+#[allow(clippy::too_many_arguments)]
+fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, title_dx: f32, back_alpha: Option<f32>) {
     use crate::navigation::{BACK_LABEL_X, TITLE_SIZE, TITLE_WEIGHT};
     const TINT: [f64; 4] = [0.0, 0.478, 1.0, 1.0]; // systemBlue
     let baseline = h as f64 / 2.0 + TITLE_SIZE * 0.35;
+    if back_alpha.is_none() {
+        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
+        let x = (w as f64 - width) / 2.0 + title_dx as f64;
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.glyphs(&placed, alpha, t, mask);
+        return;
+    }
+    let back_alpha = back_alpha.unwrap_or(1.0);
     if let Some(bg) = look.background {
         p.fill(&rect_els(0.0, -above, w, h + above), bg.map(|v| v as f32), alpha, false, t, mask);
     }
@@ -1351,10 +1376,11 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         p.fill(&rect_els(0.0, h, w, 1.0 / 3.0), sh.map(|v| v as f32), alpha, false, t, mask);
     }
     let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
-    let x = (w as f64 - width) / 2.0;
+    let x = (w as f64 - width) / 2.0 + title_dx as f64;
     let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
     p.glyphs(&placed, alpha, t, mask);
     let Some(back) = &look.back else { return };
+    let alpha = alpha * back_alpha;
     // The back button sits inside the bar's leading safe-area inset.
     let t = &concat(&[1.0, 0.0, 0.0, 1.0, look.leading as f32, 0.0], t);
     let round = Stroke { width: 2.6, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };

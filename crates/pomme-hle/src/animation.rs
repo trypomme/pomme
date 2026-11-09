@@ -526,6 +526,14 @@ pub fn present_view(emu: &mut Emu, v: u64, vw: &mut crate::uiview::View, ly: &mu
     shown.background
 }
 
+/// Where view `v`'s centre is on screen now (its model centre with animations applied).
+pub fn presented_center(emu: &mut Emu, v: u64) -> [f64; 2] {
+    let mut vw = crate::uiview::view(emu, v);
+    let mut ly = if vw.layer != 0 { crate::calayer::layer(emu, vw.layer) } else { Default::default() };
+    present_view(emu, v, &mut vw, &mut ly);
+    vw.center
+}
+
 /// What a standalone layer shows now.
 pub fn present_layer(emu: &mut Emu, l: u64, ly: &mut crate::calayer::Layer) -> Option<[f64; 4]> {
     if !emu.anim.layers.contains_key(&l) {

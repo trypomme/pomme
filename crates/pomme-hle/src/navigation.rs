@@ -94,6 +94,12 @@ const SHEET_DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.2];
 #[derive(Clone)]
 struct Transition {
     nc: u64,
+    /// The stack before the change (its top's bar shows while the old screen leaves).
+    old_stack: Vec<u64>,
+    /// A push (true) or pop.
+    forward: bool,
+    /// The two screens' views while they move (cards with the display's corners).
+    screens: Vec<u64>,
     old_top: Option<u64>,
     new_top: Option<u64>,
     removed: Vec<u64>,
@@ -296,7 +302,7 @@ fn set_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool) -> Result<
         }
     }
     layout_container(emu, container)?;
-    let mut t = Transition { nc, old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0, cards: Vec::new() };
+    let mut t = Transition { nc, old_stack: old.clone(), forward, screens: Vec::new(), old_top, new_top, removed, added, animated, moving: Vec::new(), dim: 0, cards: Vec::new() };
     view_mut(emu, container).needs_layout = true;
     match (old_top, new_top) {
         (Some(ot), Some(nt)) if animated && ot != nt => {
@@ -346,7 +352,7 @@ fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut
         let card = new_view(emu, frame)?;
         view_mut(emu, card).user_interaction = false;
         let cl = send(emu, card, "layer", &[])?;
-        let path = crate::render::new_rect_path(emu, [0.0, 0.0, frame[2], frame[3]])?;
+        let path = crate::render::new_card_path(emu, [frame[2], frame[3]], emu.device.corner_radius)?;
         {
             let ly = crate::calayer::layer_mut(emu, cl);
             ly.shadow_opacity = CARD_SHADOW.0;
@@ -360,6 +366,7 @@ fn slide(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mut
         transition(emu, cl, Prop::Position, Val::P(from), Val::P(to), timing, duration);
         t.moving.extend([l, cl]);
         t.cards.push(card);
+        t.screens.push(v);
     }
     let dl = send(emu, dim, "layer", &[])?;
     transition(emu, dl, Prop::Opacity, Val::N(from_dim), Val::N(to_dim), timing, duration);
@@ -379,7 +386,7 @@ fn finish_fire(emu: &mut Emu) -> Result<()> {
 
 /// The `did` half of a change of controllers.
 fn finish(emu: &mut Emu, t: Transition) -> Result<()> {
-    let Transition { nc, old_top, new_top, removed, added, animated, moving, dim, cards } = t;
+    let Transition { nc, old_top, new_top, removed, added, animated, moving, dim, cards, .. } = t;
     for l in moving {
         crate::animation::end_transition(emu, l);
     }
@@ -617,9 +624,54 @@ fn text_width(emu: &mut Emu, text: &str, weight: f64) -> f64 {
 }
 
 /// How a navigation bar looks now, if it belongs to a navigation controller.
+/// A screen moving in a push or pop: the corner radius its card has (the display's).
+pub fn card_corner(emu: &Emu, v: u64) -> Option<f64> {
+    emu.nav.transitions.values().any(|t| t.screens.contains(&v)).then_some(emu.device.corner_radius)
+}
+
+/// One screen's part of a navigation bar: its look, how far its title has
+/// moved, how visible the back button is (None: the title alone), and where
+/// the screen above it covers it from (x in the bar), if it's underneath.
+pub type BarPart = (BarLook, f64, Option<f64>, Option<f64>);
+
+/// What a navigation bar shows. During a push or pop (iOS 26) each screen's
+/// title rides with its screen, the lower screen's under the upper one's
+/// card, and the glass back button fades with the transition's progress.
+pub fn bar_parts(emu: &mut Emu, bar: u64) -> Result<Vec<BarPart>> {
+    let Some(&nc) = emu.nav.bars.get(&bar) else { return Ok(vec![]) };
+    let stack = nav(emu, nc).stack;
+    let Some(now) = look_for(emu, bar, &stack)? else { return Ok(vec![]) };
+    let Some(t) = emu.nav.transitions.get(&nc).cloned() else { return Ok(vec![(now, 0.0, Some(1.0), None)]) };
+    let (Some(ot), Some(nt)) = (t.old_top, t.new_top) else { return Ok(vec![(now, 0.0, Some(1.0), None)]) };
+    let Some(before) = look_for(emu, bar, &t.old_stack)? else { return Ok(vec![(now, 0.0, Some(1.0), None)]) };
+    let w = view(emu, bar).bounds[2].max(1.0);
+    let offset = |emu: &mut Emu, vc: u64| -> Result<f64> {
+        let v = send(emu, vc, "view", &[])?;
+        Ok(crate::animation::presented_center(emu, v)[0] - view(emu, v).center[0])
+    };
+    let (dx_old, dx_new) = (offset(emu, ot)?, offset(emu, nt)?);
+    // How far along it is: the incoming card's travel on a push, the leaving one's on a pop.
+    let progress = if t.forward { 1.0 - dx_new / w } else { dx_old / w }.clamp(0.0, 1.0);
+    let (b0, b1) = (before.back.is_some() as u8 as f64, now.back.is_some() as u8 as f64);
+    let back = b0 + (b1 - b0) * progress;
+    // The upper screen's card edge: the incoming one on a push, the leaving one on a pop.
+    // The back button is drawn with the upper screen's part (it has one: it's not the root).
+    Ok(if t.forward {
+        vec![(before, dx_old, None, Some(dx_new)), (now, dx_new, Some(back), None)]
+    } else {
+        vec![(now, dx_new, None, Some(dx_old)), (before, dx_old, Some(back), None)]
+    })
+}
+
 pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
     let Some(&nc) = emu.nav.bars.get(&bar) else { return Ok(None) };
     let stack = nav(emu, nc).stack;
+    look_for(emu, bar, &stack)
+}
+
+/// The bar as it looks for this stack.
+fn look_for(emu: &mut Emu, bar: u64, stack: &[u64]) -> Result<Option<BarLook>> {
+    let stack = stack.to_vec();
     let Some(&top) = stack.last() else { return Ok(None) };
     let glass = emu.system.liquid_glass();
     let title = vc_title(emu, top)?;

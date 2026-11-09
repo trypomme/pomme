@@ -3,10 +3,12 @@
 // view's presentation frame in window coordinates, opacity and transform),
 // UIKit's own transition views included. Run with run.sh; the log is
 // "M <step> <t> <depth> <class> <tag> <x> <y> <w> <h> <opacity> <a> <b> <c> <d> <tx> <ty>
-// <background r g b a> <corner radius> <shadow opacity> <shadow radius> <shadow dx> <shadow dy>".
+// <background r g b a> <corner radius> <shadow opacity> <shadow radius> <shadow dx> <shadow dy> [label text]".
 //
 // Steps (seconds after launch): push 1, pop 3, present (default style) 5,
-// dismiss 7, present full screen 9, dismiss 11, spinner 13–14.
+// dismiss 7, present full screen 9, dismiss 11, spinner 13–14, present
+// cross-dissolve 15, dismiss 17, present a medium-detent sheet with a grabber
+// 19, dismiss 21.
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
@@ -30,11 +32,12 @@ static void dump(UIView *v, int depth) {
         CGColorRef c = CGColorCreateCopyByMatchingToColorSpace(CGColorSpaceCreateWithName(kCGColorSpaceSRGB), kCGRenderingIntentDefault, p.backgroundColor, NULL);
         if (c && CGColorGetNumberOfComponents(c) == 4) memcpy(rgba, CGColorGetComponents(c), sizeof rgba);
     }
-    printf("M %s %.4f %d %s %ld %.2f %.2f %.2f %.2f %.3f %.4f %.4f %.4f %.4f %.2f %.2f %.3f %.3f %.3f %.3f %.2f %.3f %.2f %.2f %.2f\n", step.UTF8String,
+    NSString *text = [v isKindOfClass:UILabel.class] ? [((UILabel *)v).text stringByReplacingOccurrencesOfString:@" " withString:@"_"] : @"";
+    printf("M %s %.4f %d %s %ld %.2f %.2f %.2f %.2f %.3f %.4f %.4f %.4f %.4f %.2f %.2f %.3f %.3f %.3f %.3f %.2f %.3f %.2f %.2f %.2f %s\n", step.UTF8String,
            CACurrentMediaTime() - stepStart, depth, NSStringFromClass(v.class).UTF8String, (long)v.tag,
            r.origin.x, r.origin.y, r.size.width, r.size.height, p.opacity, t.a, t.b, t.c, t.d, t.tx, t.ty,
-           rgba[0], rgba[1], rgba[2], rgba[3], p.cornerRadius, p.shadowOpacity, p.shadowRadius, p.shadowOffset.width, p.shadowOffset.height);
-    if (depth < 8) {
+           rgba[0], rgba[1], rgba[2], rgba[3], p.cornerRadius, p.shadowOpacity, p.shadowRadius, p.shadowOffset.width, p.shadowOffset.height, (text ?: @"").UTF8String);
+    if (depth < 16) {
         for (UIView *s in v.subviews) dump(s, depth + 1);
     }
 }
@@ -71,6 +74,26 @@ static void animations(CALayer *l, int depth) {
 @implementation Probe
 - (void)tick:(CADisplayLink *)link {
     if (step && CACurrentMediaTime() - stepStart < 1.5) dump(window, 0);
+    // Snapshots of the screen at moments in the push and pop (as shown: presentation values):
+    // tmp/snap-<step>-<ms>.png, for looking at what the log can't say (the bar's titles).
+    static NSArray *moments;
+    static NSMutableSet *taken;
+    if (!moments) { moments = @[@50, @100, @150, @200, @300, @600]; taken = [NSMutableSet set]; }
+    if ([step isEqualToString:@"push"] || [step isEqualToString:@"pop"]) {
+        int ms = (int)((CACurrentMediaTime() - stepStart) * 1000);
+        for (NSNumber *m in moments) {
+            NSString *key = [NSString stringWithFormat:@"%@-%@", step, m];
+            if (ms >= m.intValue && ![taken containsObject:key]) {
+                [taken addObject:key];
+                UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(window.bounds.size.width, 140)];
+                UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
+                    [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:NO];
+                }];
+                NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"snap-%@-%03d.png", step, m.intValue]];
+                [UIImagePNGRepresentation(img) writeToFile:path atomically:YES];
+            }
+        }
+    }
 }
 @end
 
@@ -114,6 +137,12 @@ static void begin(NSString *name, void (^action)(void)) {
     __block UIViewController *sheet = colored(UIColor.greenColor, 3);
     __block UIViewController *full = colored(UIColor.yellowColor, 4);
     full.modalPresentationStyle = UIModalPresentationFullScreen;
+    UIViewController *fade = colored(UIColor.cyanColor, 5);
+    fade.modalPresentationStyle = UIModalPresentationFullScreen;
+    fade.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    UIViewController *mediumSheet = colored(UIColor.magentaColor, 6);
+    mediumSheet.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.mediumDetent];
+    mediumSheet.sheetPresentationController.prefersGrabberVisible = YES;
     NSArray *plan = @[
         @[@1, @"push", ^{ [nav pushViewController:pushed animated:YES]; }],
         @[@3, @"pop", ^{ [nav popViewControllerAnimated:YES]; }],
@@ -122,7 +151,11 @@ static void begin(NSString *name, void (^action)(void)) {
         @[@9, @"presentFull", ^{ [nav presentViewController:full animated:YES completion:nil]; }],
         @[@11, @"dismissFull", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
         @[@13, @"spinner", ^{ animations(spin.layer, 0); setenv("SPIN", "medium", 1); animations(medium.layer, 0); }],
-        @[@15, @"end", ^{ exit(0); }],
+        @[@15, @"presentFade", ^{ [nav presentViewController:fade animated:YES completion:nil]; }],
+        @[@17, @"dismissFade", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
+        @[@19, @"presentMedium", ^{ [nav presentViewController:mediumSheet animated:YES completion:nil]; }],
+        @[@21, @"dismissMedium", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
+        @[@23, @"end", ^{ exit(0); }],
     ];
     for (NSArray *p in plan) {
         NSString *name = p[1];
