@@ -6,18 +6,21 @@
 //! The emulator runs on its own thread with a [`DesktopHost`]: it paces
 //! virtual time against the wall clock while the app idles, and takes the
 //! window's input then. The window (winit, on the main thread as macOS
-//! requires) draws the phone around each frame with softbuffer, so it runs
-//! anywhere winit does: macOS, Windows, Linux (X11 and Wayland).
+//! requires) is the phone itself, as the Simulator's is: borderless, its
+//! rounded corners see-through (wgpu, see present.rs), dragged by its bezel,
+//! closed with ⌘W / ⌘Q (Ctrl elsewhere). It runs wherever winit and wgpu
+//! do: macOS, Windows, Linux (X11 and Wayland); where windows can't be
+//! transparent the phone sits on a dark backdrop.
+
+mod present;
 
 use pomme_hle::device::{Device, Orientation};
 use pomme_hle::host::{Event, Frame, Host, Idle};
 use pomme_hle::touch::{BEGAN, ENDED, Input, MOVED};
-use std::num::NonZeroU32;
-use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tiny_skia::{Pixmap, PixmapPaint, Transform};
+use tiny_skia::Pixmap;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -126,7 +129,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         app: Some(Box::new(app)),
         proxy: event_loop.create_proxy(),
         window: None,
-        surface: None,
+        presenter: None,
         events: None,
         frame: Arc::new(Mutex::new(None)),
         closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -152,8 +155,8 @@ struct App {
     config: Config,
     app: Option<AppFn>,
     proxy: EventLoopProxy<ToWindow>,
-    window: Option<Rc<Window>>,
-    surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    window: Option<Arc<Window>>,
+    presenter: Option<present::Presenter>,
     events: Option<Sender<Event>>,
     frame: Arc<Mutex<Option<LatestFrame>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
@@ -166,9 +169,6 @@ struct App {
     /// How the phone is held now.
     held: Orientation,
 }
-
-/// The window's background around the phone (the Simulator's dark backdrop).
-const BACKDROP: u32 = 0x1e1e20;
 
 impl App {
     /// The phone at this frame scale with a blank screen: the window's size before the first frame.
@@ -229,25 +229,23 @@ impl App {
     }
 
     fn draw(&mut self) {
-        let (Some(window), Some(phone)) = (self.window.clone(), self.phone.as_ref()) else { return };
-        let size = window.inner_size();
-        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
-        let Some((k, dx, dy)) = self.fit(phone) else { return };
-        // The phone, scaled to fit, over the backdrop.
-        let Some(mut canvas) = Pixmap::new(size.width, size.height) else { return };
-        canvas.fill(tiny_skia::Color::from_rgba8((BACKDROP >> 16) as u8, (BACKDROP >> 8) as u8, BACKDROP as u8, 255));
-        let paint = PixmapPaint { quality: if (k - 1.0).abs() < 1e-3 { tiny_skia::FilterQuality::Nearest } else { tiny_skia::FilterQuality::Bilinear }, ..Default::default() };
-        canvas.draw_pixmap(0, 0, phone.pix.as_ref(), &paint, Transform::from_row(k, 0.0, 0.0, k, dx, dy), None);
-        let Some(surface) = self.surface.as_mut() else { return };
-        if surface.resize(w, h).is_err() {
-            return;
+        let Some(phone) = self.phone.as_ref() else { return };
+        let Some(fit) = self.fit(phone) else { return };
+        let (data, w, h) = (phone.pix.data(), phone.pix.width(), phone.pix.height());
+        if let Some(p) = self.presenter.as_mut() {
+            p.present(data, w, h, fit);
         }
-        let Ok(mut buffer) = surface.buffer_mut() else { return };
-        for (dst, src) in buffer.iter_mut().zip(canvas.pixels()) {
-            // Opaque over the backdrop: premultiplied equals straight.
-            *dst = (src.red() as u32) << 16 | (src.green() as u32) << 8 | src.blue() as u32;
+    }
+
+    /// Whether a window position is on the phone (its body or screen), not the see-through corners.
+    fn on_phone(&self, p: PhysicalPosition<f64>) -> bool {
+        let Some(phone) = self.phone.as_ref() else { return false };
+        let Some((k, dx, dy)) = self.fit(phone) else { return false };
+        let (x, y) = (((p.x as f32 - dx) / k) as i64, ((p.y as f32 - dy) / k) as i64);
+        if x < 0 || y < 0 {
+            return false;
         }
-        let _ = buffer.present();
+        phone.pix.pixel(x as u32, y as u32).is_some_and(|c| c.alpha() > 0)
     }
 
     /// ⌘← / ⌘→ (Ctrl elsewhere): turn the phone a quarter, as the Simulator's Rotate Left / Right.
@@ -321,9 +319,10 @@ impl ApplicationHandler<ToWindow> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(&self.config.title);
+        // The phone is the window: no frame, see-through around it.
+        let attrs = Window::default_attributes().with_title(&self.config.title).with_decorations(false).with_transparent(true).with_resizable(false);
         let window = match event_loop.create_window(attrs) {
-            Ok(w) => Rc::new(w),
+            Ok(w) => Arc::new(w),
             Err(e) => {
                 eprintln!("can't open a window: {e}");
                 event_loop.exit();
@@ -332,8 +331,20 @@ impl ApplicationHandler<ToWindow> for App {
         };
         let scale = window.scale_factor() as f32;
         self.window = Some(window.clone());
-        let context = softbuffer::Context::new(window.clone()).expect("a display to draw on");
-        self.surface = Some(softbuffer::Surface::new(&context, window.clone()).expect("a surface to draw on"));
+        match present::Presenter::new(window.clone()) {
+            Ok(p) => {
+                // Can't see through it here: a normal window frame around the phone on its backdrop.
+                if !p.transparent() {
+                    window.set_decorations(true);
+                }
+                self.presenter = Some(p);
+            }
+            Err(e) => {
+                eprintln!("can't draw in the window: {e}");
+                event_loop.exit();
+                return;
+            }
+        }
         self.phone = self.blank_phone(scale);
         if let Some(p) = &self.phone {
             self.size_window_to(p);
@@ -374,7 +385,10 @@ impl ApplicationHandler<ToWindow> for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => self.draw(),
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(size) => {
+                if let Some(p) = self.presenter.as_mut() {
+                    p.resize(size.width, size.height);
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -394,6 +408,11 @@ impl ApplicationHandler<ToWindow> for App {
                     if let Some(p) = self.point_at(self.cursor) {
                         self.touching = true;
                         self.touch(BEGAN, p);
+                    } else if self.on_phone(self.cursor) {
+                        // The bezel: move the phone (the window) around, as in the Simulator.
+                        if let Some(w) = &self.window {
+                            let _ = w.drag_window();
+                        }
                     }
                 }
                 ElementState::Released => {
@@ -415,6 +434,12 @@ impl ApplicationHandler<ToWindow> for App {
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowLeft) if command => self.rotate(true),
                     Key::Named(NamedKey::ArrowRight) if command => self.rotate(false),
+                    // No title bar to close it with: ⌘W / ⌘Q.
+                    Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => {
+                        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        self.events = None;
+                        event_loop.exit();
+                    }
                     _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),
                     Key::Named(NamedKey::Backspace) => self.send(Event::Key('\u{8}')),
