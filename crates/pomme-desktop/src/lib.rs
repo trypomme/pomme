@@ -3,7 +3,8 @@
 //! focused text input (as a hardware keyboard does in the Simulator),
 //! ⌘← / ⌘→ (Ctrl on Windows and Linux) turn the phone, and the Simulator's
 //! Face ID shortcuts work: ⌥⌘M a matching face, ⌥⌘N one that doesn't match,
-//! and ⌥⌘E turns enrolment on or off (Features ▸ Face ID ▸ Enrolled).
+//! and ⌥⌘E turns enrolment on or off. They're menus too, as the Simulator's
+//! (Device, Features ▸ Face ID): see menu.rs.
 //!
 //! The emulator runs on its own thread with a [`DesktopHost`]: it paces
 //! virtual time against the wall clock while the app idles, and takes the
@@ -14,6 +15,8 @@
 //! do: macOS, Windows, Linux (X11 and Wayland); where windows can't be
 //! transparent the phone sits on a dark backdrop.
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), path = "menu_none.rs")]
+mod menu;
 mod present;
 
 use pomme_hle::device::{Device, Orientation};
@@ -38,12 +41,27 @@ pub struct Config {
     pub orientation: Orientation,
     /// The window's title (the Simulator shows the device and iOS version).
     pub title: String,
+    /// Face ID starts enrolled (the Features ▸ Face ID ▸ Enrolled check).
+    pub enrolled: bool,
+}
+
+/// What a menu item or shortcut does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+enum Action {
+    /// Turn the phone a quarter: left (true) or right.
+    Rotate(bool),
+    Face(Face),
+    /// Close the window (and stop the run).
+    Close,
 }
 
 /// The emulator thread's side: a frame for the window, or the run ended.
 enum ToWindow {
     Frame,
     Ended,
+    /// A menu item was chosen.
+    Menu(Action),
 }
 
 /// The latest frame from the emulator, waiting for the window.
@@ -116,7 +134,7 @@ impl Host for DesktopHost {
 
     fn biometry_prompt(&mut self, reason: &str) {
         let reason = if reason.is_empty() { String::new() } else { format!(" ({reason})") };
-        eprintln!("Face ID is asking{reason}: ⌥⌘M matching face, ⌥⌘N non-matching face");
+        eprintln!("Face ID is asking{reason}: Features ▸ Face ID ▸ Matching Face (⌥⌘M) or Non-matching Face (⌥⌘N)");
     }
 
     fn frame(&mut self, f: Frame<'_>) {
@@ -146,6 +164,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         touching: false,
         modifiers: ModifiersState::empty(),
         ended: false,
+        menus: None,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -176,6 +195,7 @@ struct App {
     ended: bool,
     /// How the phone is held now.
     held: Orientation,
+    menus: Option<menu::Menus>,
 }
 
 impl App {
@@ -260,6 +280,20 @@ impl App {
     fn rotate(&mut self, left: bool) {
         self.held = turned(self.held, left);
         self.send(Event::Rotate(self.held));
+    }
+
+    fn act(&mut self, event_loop: &ActiveEventLoop, a: Action) {
+        match a {
+            Action::Rotate(left) => self.rotate(left),
+            Action::Face(f) => self.send(Event::Face(f)),
+            Action::Close => self.close(event_loop),
+        }
+    }
+
+    fn close(&mut self, event_loop: &ActiveEventLoop) {
+        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.events = None; // the host sees the channel close
+        event_loop.exit();
     }
 }
 
@@ -346,6 +380,9 @@ impl ApplicationHandler<ToWindow> for App {
         if self.window.is_some() {
             return;
         }
+        let menus = menu::Menus::new(self.config.enrolled, self.proxy.clone(), ToWindow::Menu);
+        menus.install();
+        self.menus = Some(menus);
         // The phone is the window: no frame, see-through around it.
         let attrs = Window::default_attributes().with_title(&self.config.title).with_decorations(false).with_transparent(true).with_resizable(false);
         let window = match event_loop.create_window(attrs) {
@@ -392,8 +429,9 @@ impl ApplicationHandler<ToWindow> for App {
             .expect("the emulator thread");
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: ToWindow) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ToWindow) {
         match event {
+            ToWindow::Menu(a) => self.act(event_loop, a),
             ToWindow::Frame => self.take_frame(),
             ToWindow::Ended => {
                 self.ended = true;
@@ -406,10 +444,15 @@ impl ApplicationHandler<ToWindow> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => {
-                self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
-                self.events = None; // the host sees the channel close
-                event_loop.exit();
+            WindowEvent::CloseRequested => self.close(event_loop),
+            // Where there's no menu bar, the menus pop up from the bezel.
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                if self.point_at(self.cursor).is_none()
+                    && self.on_phone(self.cursor)
+                    && let (Some(m), Some(w)) = (&self.menus, &self.window)
+                {
+                    m.pop_up(w);
+                }
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::Resized(size) => {
@@ -458,11 +501,20 @@ impl ApplicationHandler<ToWindow> for App {
             },
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } if event.state == ElementState::Pressed => {
                 let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
+                // The menu bar has these shortcuts (macOS): it acts on them, not the window.
+                if command && self.menus.as_ref().is_some_and(|m| m.owns_shortcuts()) {
+                    return;
+                }
                 // ⌥ changes the character (⌥M is µ on a Mac): the Face ID shortcuts go by the key.
                 if command && self.modifiers.alt_key() {
                     if let PhysicalKey::Code(code) = event.physical_key
                         && let Some(face) = face_shortcut(code)
                     {
+                        if face == Face::ToggleEnrolled
+                            && let Some(m) = &self.menus
+                        {
+                            m.toggled_enrolled();
+                        }
                         self.send(Event::Face(face));
                     }
                     return;
@@ -471,11 +523,7 @@ impl ApplicationHandler<ToWindow> for App {
                     Key::Named(NamedKey::ArrowLeft) if command => self.rotate(true),
                     Key::Named(NamedKey::ArrowRight) if command => self.rotate(false),
                     // No title bar to close it with: ⌘W / ⌘Q.
-                    Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => {
-                        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
-                        self.events = None;
-                        event_loop.exit();
-                    }
+                    Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
                     _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),
                     Key::Named(NamedKey::Backspace) => self.send(Event::Key('\u{8}')),

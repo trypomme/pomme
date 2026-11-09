@@ -259,7 +259,7 @@ fn main() -> Result<()> {
                 None => (path, sysroot),
             };
             if window {
-                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name) };
+                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled };
                 let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
                 let out = result.clone();
                 pomme_desktop::launch(config, move |host, scale| {
