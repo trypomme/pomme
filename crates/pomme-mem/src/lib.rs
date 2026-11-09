@@ -44,6 +44,8 @@ pub struct Region {
     pub data: Vec<u8>,
     pub prot: Prot,
     pub name: String,
+    /// The CPU has cached decoded code from here: writing here changes the code generation.
+    has_code: bool,
 }
 
 impl Region {
@@ -79,11 +81,13 @@ pub struct Memory {
     tlb: Box<[std::cell::Cell<TlbEntry>]>,
     /// Bumped whenever regions move (a map), which empties the TLB.
     generation: u32,
+    /// Bumped whenever code the CPU may have cached is written (see [`Memory::mark_code`]).
+    code_generation: u64,
 }
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::default()); TLB_SLOTS].into_boxed_slice(), generation: 1 }
+        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::default()); TLB_SLOTS].into_boxed_slice(), generation: 1, code_generation: 0 }
     }
 }
 
@@ -128,10 +132,24 @@ impl Memory {
         if let Some(other) = clash {
             return Err(MemError::Overlap { name, base, size, other: other.name.clone() });
         }
-        self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name });
+        self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name, has_code: false });
         // Indices after it moved.
         self.generation = self.generation.wrapping_add(1).max(1);
         Ok(&mut self.regions[idx])
+    }
+
+    /// The CPU caches decoded code from `addr`'s region: writes there must
+    /// tell it (they bump [`Memory::code_generation`]).
+    pub fn mark_code(&mut self, addr: u64) {
+        if let Some(r) = self.region_of_mut(untag(addr)) {
+            r.has_code = true;
+        }
+    }
+
+    /// Changes whenever code the CPU may have cached was written (a hook, a trampoline).
+    #[inline(always)]
+    pub fn code_generation(&self) -> u64 {
+        self.code_generation
     }
 
     #[inline(always)]
@@ -155,13 +173,17 @@ impl Memory {
     #[inline]
     pub fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), MemError> {
         let addr = untag(addr);
-        let r = self.region_of_mut(addr).ok_or(MemError::Unmapped(addr))?;
+        let i = self.find(addr).ok_or(MemError::Unmapped(addr))?;
+        let r = &mut self.regions[i];
         let off = (addr - r.base) as usize;
         let dst = r
             .data
             .get_mut(off..off + bytes.len())
             .ok_or(MemError::Unmapped(addr + bytes.len() as u64))?;
         dst.copy_from_slice(bytes);
+        if r.has_code {
+            self.code_generation += 1;
+        }
         Ok(())
     }
 

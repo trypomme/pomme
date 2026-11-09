@@ -7,6 +7,7 @@
 //! Deterministic by construction: no host time, threads or randomness; the
 //! instruction counter is the only clock (see README "Design constraints").
 
+mod block;
 mod branch;
 mod dp;
 mod fp;
@@ -70,6 +71,9 @@ pub struct Cpu {
     pub clock_offset: u64,
     /// When `steps` reaches this, `run` stops with [`Exit::Sample`] (0: never).
     pub sample_at: u64,
+    /// Code fetched so far, in basic blocks (see block.rs). Shared by every
+    /// thread: whoever switches threads moves it to the incoming CPU.
+    pub blocks: block::Blocks,
     /// Address held by the exclusive monitor (LDXR/STXR).
     exclusive: Option<u64>,
     /// Next pc, set by branches during a step.
@@ -97,6 +101,13 @@ impl Cpu {
         let limit = self.steps.saturating_add(max_steps);
         // One check covers both the budget and the next profiler sample.
         let stop = if self.sample_at == 0 { limit } else { limit.min(self.sample_at) };
+        let mut blocks = std::mem::take(&mut self.blocks);
+        let exit = self.run_blocks(&mut blocks, mem, stop);
+        self.blocks = blocks;
+        exit
+    }
+
+    fn run_blocks(&mut self, blocks: &mut block::Blocks, mem: &mut Memory, stop: u64) -> Exit {
         loop {
             if self.pc == HOST_RETURN {
                 return Exit::Returned;
@@ -104,8 +115,21 @@ impl Cpu {
             if self.steps >= stop {
                 return if self.sample_at != 0 && self.steps >= self.sample_at { Exit::Sample } else { Exit::StepLimit };
             }
-            if let Err(exit) = self.step(mem) {
-                return exit;
+            // A whole block when it fits before the stop; otherwise one instruction at a time.
+            let room = stop - self.steps;
+            match blocks.get(self.pc, mem) {
+                Some(b) if b.len() as u64 <= room => {
+                    for &insn in b {
+                        if let Err(exit) = self.exec(insn, mem) {
+                            return exit;
+                        }
+                    }
+                }
+                _ => {
+                    if let Err(exit) = self.step(mem) {
+                        return exit;
+                    }
+                }
             }
         }
     }
@@ -113,6 +137,12 @@ impl Cpu {
     /// Execute one instruction.
     pub fn step(&mut self, mem: &mut Memory) -> Step {
         let insn = mem.read_u32(self.pc)?;
+        self.exec(insn, mem)
+    }
+
+    /// Execute `insn`, the instruction at pc.
+    #[inline(always)]
+    fn exec(&mut self, insn: u32, mem: &mut Memory) -> Step {
         self.next_pc = self.pc.wrapping_add(4);
         let r = match (insn >> 25) & 0xf {
             0b1000 | 0b1001 => self.dp_imm(insn),

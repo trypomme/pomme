@@ -165,11 +165,13 @@ fn switch_to(emu: &mut Emu, tid: usize) {
         return;
     }
     let (steps, offset, sample_at) = (emu.cpu.steps, emu.cpu.clock_offset, emu.cpu.sample_at);
+    let blocks = std::mem::take(&mut emu.cpu.blocks);
     let next = std::mem::take(&mut emu.th.threads[tid].cpu);
     emu.th.threads[cur].cpu = std::mem::replace(&mut emu.cpu, next);
     emu.cpu.steps = steps;
     emu.cpu.clock_offset = offset;
     emu.cpu.sample_at = sample_at;
+    emu.cpu.blocks = blocks;
     emu.th.current = tid;
     if emu.trace {
         println!("{:>10} --- thread {tid} ---", steps);
