@@ -656,9 +656,14 @@ fn offline_network_fails_requests() {
 
 /// The storage screen's lines (AsyncStorage, SecureStore, the Face ID-protected value).
 fn storage_screen(biometry: pomme_hle::keychain::Biometry) -> Option<(String, String, String)> {
+    storage_screen_with_faces(biometry, &[])
+}
+
+fn storage_screen_with_faces(biometry: pomme_hle::keychain::Biometry, faces: &[(f64, pomme_hle::keychain::Face)]) -> Option<(String, String, String)> {
     let mut emu = boot()?;
     emu.ui.launch_url = Some("pommehello:///storage".into());
     emu.keychain.biometry = biometry;
+    emu.keychain.faces = faces.iter().map(|&(t, f)| ((t * 1e9) as u64, f)).collect();
     let v = run_for(&mut emu, 5.0);
     let line = |needle: &str| v.lines().find(|l| l.contains(needle)).map(|l| l.trim().to_string()).unwrap_or_else(|| panic!("no {needle:?} in\n{v}"));
     Some((line("\"async "), line("\"secure "), line("\"protected ")))
@@ -687,6 +692,19 @@ fn secure_store_with_face_id() {
     assert!(protected.contains("\"protected error"), "{protected}");
 }
 
+/// On an enrolled phone, reading the protected value blocks expo-secure-store
+/// while the prompt waits; the face presented decides what it reads.
+#[test]
+fn secure_store_waits_for_a_face() {
+    use pomme_hle::keychain::{Biometry, Face};
+    let Some((_, _, protected)) = storage_screen_with_faces(Biometry::Enrolled, &[]) else { return };
+    assert!(protected.contains("\"protected …\""), "{protected}");
+    let (_, _, protected) = storage_screen_with_faces(Biometry::Enrolled, &[(3.0, Face::Matching)]).unwrap();
+    assert!(protected.contains("\"protected opensesame\""), "{protected}");
+    let (_, _, protected) = storage_screen_with_faces(Biometry::Enrolled, &[(3.0, Face::NonMatching)]).unwrap();
+    assert!(protected.contains("\"protected error"), "{protected}");
+}
+
 // ---- the lock screen: a PIN pad with Face ID ----
 
 /// The keypad's keys (pt).
@@ -700,9 +718,15 @@ const FACE_ID_BUTTON: (f64, f64) = (195.0, 587.0);
 
 /// Run the lock screen with this biometry and these taps (from 2 s, 0.3 s apart): its status line.
 fn lock_screen(biometry: pomme_hle::keychain::Biometry, taps: &[(f64, f64)]) -> Option<String> {
+    lock_screen_with_faces(biometry, taps, &[])
+}
+
+/// As [`lock_screen`], presenting these faces at these times (s).
+fn lock_screen_with_faces(biometry: pomme_hle::keychain::Biometry, taps: &[(f64, f64)], faces: &[(f64, pomme_hle::keychain::Face)]) -> Option<String> {
     let mut emu = boot()?;
     emu.ui.launch_url = Some("pommehello:///lock".into());
     emu.keychain.biometry = biometry;
+    emu.keychain.faces = faces.iter().map(|&(t, f)| ((t * 1e9) as u64, f)).collect();
     for (i, &p) in taps.iter().enumerate() {
         tap(&mut emu, p, 2.0 + 0.3 * i as f64);
     }
@@ -738,6 +762,42 @@ fn lock_screen_face_id() {
     taps.extend([FACE_ID_SWITCH, LOCK_BUTTON, FACE_ID_BUTTON]);
     let Some(status) = lock_screen(Biometry::Matching, &taps) else { return };
     assert!(status.ends_with("\"Unlocked with Face ID\""), "{status}");
+}
+
+/// On an enrolled phone each prompt waits for a face, as in the Simulator:
+/// nothing happens until one is presented, a face that doesn't match fails
+/// that prompt, and a matching one passes the next.
+#[test]
+fn lock_screen_face_id_waits_for_a_face() {
+    use pomme_hle::keychain::{Biometry, Face};
+    let mut taps = pin("1234");
+    taps.extend(pin("1234"));
+    taps.push(FACE_ID_SWITCH); // 4.4 s: the prompt waits
+    let switch_at = 2.0 + 0.3 * 8.0;
+    // No face yet: still unlocked, Face ID not turned on.
+    let Some(status) = lock_screen_with_faces(Biometry::Enrolled, &taps, &[]) else { return };
+    assert!(status.ends_with("\"Unlocked with PIN\""), "{status}");
+    // A matching face turns it on; locked, a face that doesn't match fails the
+    // button's prompt; tapped again, a matching face unlocks.
+    taps.extend([LOCK_BUTTON, FACE_ID_BUTTON]); // 4.7, 5.0
+    let faces = [(switch_at + 0.2, Face::Matching), (5.3, Face::NonMatching)];
+    let status = lock_screen_with_faces(Biometry::Enrolled, &taps, &faces).unwrap();
+    assert!(status.ends_with("\"Face ID failed: authentication_failed\""), "{status}");
+    taps.push(FACE_ID_BUTTON); // 5.3 (after the face that didn't match, also at 5.3)
+    let faces = [(switch_at + 0.2, Face::Matching), (5.25, Face::NonMatching), (5.6, Face::Matching)];
+    let status = lock_screen_with_faces(Biometry::Enrolled, &taps, &faces).unwrap();
+    assert!(status.ends_with("\"Unlocked with Face ID\""), "{status}");
+}
+
+/// Turning enrolment off while a prompt waits fails it: biometry isn't enrolled any more.
+#[test]
+fn lock_screen_unenrolled_while_asking() {
+    use pomme_hle::keychain::{Biometry, Face};
+    let mut taps = pin("1234");
+    taps.extend(pin("1234"));
+    taps.push(FACE_ID_SWITCH);
+    let Some(status) = lock_screen_with_faces(Biometry::Enrolled, &taps, &[(4.8, Face::ToggleEnrolled)]) else { return };
+    assert!(status.ends_with("\"Face ID failed: not_enrolled\""), "{status}");
 }
 
 /// A face that doesn't match can't turn Face ID on; without Face ID set up, the setting says so.

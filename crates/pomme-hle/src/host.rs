@@ -24,6 +24,8 @@ pub enum Event {
     Key(char),
     /// The phone turned to be held this way (the interface follows if the app allows).
     Rotate(crate::device::Orientation),
+    /// Something from the Simulator's Face ID menu: enrolment, or a face for a waiting prompt.
+    Face(crate::keychain::Face),
 }
 
 /// A rendered frame: RGBA8, `width` × `height`, rows top to bottom, upright
@@ -52,6 +54,8 @@ pub trait Host {
     fn idle(&mut self, now_ns: u64, next_ns: Option<u64>) -> Idle;
     /// A new frame.
     fn frame(&mut self, frame: Frame<'_>);
+    /// A Face ID prompt is up, waiting for a face, with the app's reason.
+    fn biometry_prompt(&mut self, _reason: &str) {}
 }
 
 #[derive(Default)]
@@ -89,7 +93,19 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
         Idle::Quit => Err(Stop::Exit(0)),
         Idle::Input { at_ns, events } => {
             crate::threads::advance_to(emu, at_ns);
-            emu.live.pending.extend(events);
+            // Face ID is the system's (its own process on iOS), not the app's
+            // run loop: a face answers a waiting prompt at once, even one
+            // that blocks the main thread.
+            let (system, app): (Vec<Event>, Vec<Event>) = events.into_iter().partition(|e| matches!(e, Event::Face(_)));
+            for ev in system {
+                if let Event::Face(f) = ev {
+                    crate::keychain::present(emu, f)?;
+                }
+            }
+            if app.is_empty() {
+                return Ok(true);
+            }
+            emu.live.pending.extend(app);
             if emu.live.source != 0 {
                 foundation::cf_call(emu, "_CFRunLoopSourceSignal", &[emu.live.source])?;
                 foundation::cf_call(emu, "_CFRunLoopWakeUp", &[emu.live.run_loop])?;
@@ -106,6 +122,7 @@ fn perform(emu: &mut Emu) -> Result<()> {
             Event::Touch(inp) => crate::touch::send_touch(emu, inp.phase, inp.x, inp.y)?,
             Event::Key(ch) => crate::textinput::key(emu, ch)?,
             Event::Rotate(o) => crate::orientation::turn_device(emu, o)?,
+            Event::Face(f) => crate::keychain::present(emu, f)?,
         }
     }
     Ok(())
@@ -131,6 +148,13 @@ pub(crate) fn install(emu: &mut Emu) -> Result<()> {
     emu.live.source = src;
     emu.live.run_loop = rl;
     Ok(())
+}
+
+/// Tell the host a biometry prompt is waiting.
+pub(crate) fn biometry_prompt(emu: &mut Emu, reason: &str) {
+    if let Some(host) = emu.live.host.as_mut() {
+        host.biometry_prompt(reason);
+    }
 }
 
 /// Something drew outside layout (a Metal frame): the next idle moment shows it.

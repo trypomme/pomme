@@ -9,10 +9,13 @@
 //! comes back. Status codes are Security's.
 //!
 //! Biometry is modeled as the iOS Simulator's Face ID / Touch ID menu has it:
-//! not enrolled (the default), enrolled with a matching face or finger, or
-//! with one that doesn't match (`--biometry`). Items made with an access
-//! control that asks for biometry need a match to be read. Like a fresh
-//! Simulator, the phone has no device passcode, so nothing falls back to one.
+//! not enrolled (the default) or enrolled. An enrolled phone's prompts wait
+//! for the person to present a matching or non-matching face (Features ▸
+//! Face ID ▸ Matching Face / Non-matching Face, a [`Face`] from the window),
+//! or are answered at once with one chosen up front (`--biometry match` /
+//! `no-match`, for runs nobody watches). Items made with an access control
+//! that asks for biometry need a match to be read. Like a fresh Simulator,
+//! the phone has no device passcode, so nothing falls back to one.
 
 use crate::foundation;
 use crate::objc::{self, host_class, send};
@@ -30,7 +33,22 @@ const AUTH_FAILED: i64 = -25293;
 pub enum Biometry {
     #[default]
     NotEnrolled,
+    /// Enrolled; each prompt waits for a [`Face`].
+    Enrolled,
+    /// Enrolled; every prompt sees a matching face.
     Matching,
+    /// Enrolled; every prompt sees a face that doesn't match.
+    NonMatching,
+}
+
+/// What the person does from the Simulator's Features ▸ Face ID menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// Enrolled on or off. Turning it off fails any waiting prompt.
+    ToggleEnrolled,
+    /// Present a matching face to the waiting prompts.
+    Matching,
+    /// Present a face that doesn't match.
     NonMatching,
 }
 
@@ -39,9 +57,22 @@ impl std::str::FromStr for Biometry {
     fn from_str(s: &str) -> std::result::Result<Self, String> {
         Ok(match s {
             "off" | "not-enrolled" => Biometry::NotEnrolled,
+            "enrolled" | "ask" => Biometry::Enrolled,
             "match" | "matching" => Biometry::Matching,
             "no-match" | "non-matching" => Biometry::NonMatching,
-            o => return Err(format!("{o}: expected off, match or no-match")),
+            o => return Err(format!("{o}: expected off, enrolled, match or no-match")),
+        })
+    }
+}
+
+impl std::str::FromStr for Face {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        Ok(match s {
+            "match" | "matching" => Face::Matching,
+            "no-match" | "non-matching" => Face::NonMatching,
+            "toggle-enrolled" => Face::ToggleEnrolled,
+            o => return Err(format!("{o}: expected match, no-match or toggle-enrolled")),
         })
     }
 }
@@ -64,6 +95,127 @@ pub struct State {
     access_controls: HashMap<u64, bool>,
     /// LAContext replies waiting to run: (reply block, success, error).
     replies: Vec<Option<(u64, bool, u64)>>,
+    /// Prompts shown on an enrolled phone, waiting for a face, and their answers.
+    prompts: Vec<(Prompt, Option<i64>)>,
+    /// Scripted faces: (virtual ns, what the person does then), in time order.
+    pub faces: Vec<(u64, Face)>,
+    faces_presented: usize,
+}
+
+/// When the next scripted face is due (a deadline for the scheduler).
+pub(crate) fn next_face_at(emu: &Emu) -> Option<u64> {
+    emu.keychain.faces.get(emu.keychain.faces_presented).map(|f| f.0)
+}
+
+/// Present the scripted faces that are due. Like the window's, they come from
+/// the system, not the app's run loop, so a prompt that blocks the main
+/// thread still hears them.
+pub(crate) fn present_due(emu: &mut Emu) -> Result<()> {
+    let now = crate::threads::now_ns(emu);
+    while let Some(&(at, face)) = emu.keychain.faces.get(emu.keychain.faces_presented) {
+        if at > now {
+            break;
+        }
+        emu.keychain.faces_presented += 1;
+        present(emu, face)?;
+    }
+    Ok(())
+}
+
+/// A biometry prompt waiting for the person.
+#[derive(Clone, Copy, Debug)]
+enum Prompt {
+    /// `evaluatePolicy:…reply:`: the reply block, for the policy.
+    Reply { block: u64, policy: u64 },
+    /// `SecItemCopyMatching` reading a protected item: where the result goes
+    /// (0: nowhere) and what it is (owned; released if the face fails).
+    Item { result: u64, value: u64 },
+}
+
+/// The status a waiting `SecItemCopyMatching` prompt ended with (the
+/// scheduler's check for [`crate::threads::Wait::Face`]).
+pub(crate) fn answer(emu: &Emu, prompt: usize) -> Option<u64> {
+    emu.keychain.prompts.get(prompt).and_then(|p| p.1).map(|s| s as u64)
+}
+
+/// Show a prompt: the host hears of it (the window says how to answer).
+fn show(emu: &mut Emu, prompt: Prompt, reason: u64) -> Result<usize> {
+    let reason = if reason != 0 { foundation::nsstring(emu, reason).unwrap_or_default() } else { String::new() };
+    crate::host::biometry_prompt(emu, &reason);
+    emu.keychain.prompts.push((prompt, None));
+    Ok(emu.keychain.prompts.len() - 1)
+}
+
+/// The person did something from the Face ID menu.
+pub(crate) fn present(emu: &mut Emu, face: Face) -> Result<()> {
+    match face {
+        Face::ToggleEnrolled if emu.keychain.biometry == Biometry::NotEnrolled => emu.keychain.biometry = Biometry::Enrolled,
+        Face::ToggleEnrolled => {
+            emu.keychain.biometry = Biometry::NotEnrolled;
+            answer_all(emu, false)?;
+        }
+        Face::Matching => answer_all(emu, true)?,
+        Face::NonMatching => answer_all(emu, false)?,
+    }
+    Ok(())
+}
+
+/// Answer every waiting prompt.
+fn answer_all(emu: &mut Emu, matched: bool) -> Result<()> {
+    for i in 0..emu.keychain.prompts.len() {
+        let (prompt, answered) = emu.keychain.prompts[i];
+        if answered.is_some() {
+            continue;
+        }
+        let status = match prompt {
+            Prompt::Reply { block, policy } => {
+                let code = if matched { 0 } else { failure(emu, policy) };
+                reply(emu, block, code)?;
+                SUCCESS
+            }
+            Prompt::Item { result, value } if matched => {
+                if result != 0 {
+                    emu.write_u64(result, value)?;
+                }
+                SUCCESS
+            }
+            Prompt::Item { value, .. } => {
+                if value != 0 {
+                    send(emu, value, "release", &[])?;
+                }
+                AUTH_FAILED
+            }
+        };
+        emu.keychain.prompts[i].1 = Some(status);
+    }
+    Ok(())
+}
+
+/// The LAError a failed prompt gives: authentication failed (-1) on an
+/// enrolled phone; otherwise passcode not set (-5) for the passcode policy,
+/// biometry not enrolled (-7) for biometrics.
+fn failure(emu: &Emu, policy: u64) -> i64 {
+    match emu.keychain.biometry {
+        Biometry::NotEnrolled => {
+            if policy == 2 {
+                -5
+            } else {
+                -7
+            }
+        }
+        _ => -1,
+    }
+}
+
+/// Run an LAContext reply block on a global queue, as LocalAuthentication
+/// does: success when `code` is 0, else an LAError with it.
+fn reply(emu: &mut Emu, block: u64, code: i64) -> Result<()> {
+    let err = if code == 0 { 0 } else { la_error(emu, code)? };
+    let i = emu.keychain.replies.len();
+    emu.keychain.replies.push(Some((block, code == 0, err)));
+    let f = emu.host_thunk(run_reply)?;
+    let q = crate::libsystem::global_queue(emu)?;
+    crate::libsystem::dispatch_on(emu, q, f, i as u64)
 }
 
 /// On a background thread: an LAContext reply.
@@ -160,10 +312,6 @@ fn find(emu: &mut Emu, query: &[(String, u64)]) -> Result<Option<(String, Vec<us
     Ok(Some((class, hits)))
 }
 
-/// Whether the user can be asked and passes (the item needs biometry).
-fn authenticate(emu: &Emu) -> bool {
-    emu.keychain.biometry == Biometry::Matching
-}
 
 /// `SecItemAdd(attributes, &result)`.
 fn item_add(emu: &mut Emu) -> Result<()> {
@@ -245,11 +393,14 @@ fn copy_matching(emu: &mut Emu) -> Result<()> {
     };
     let items: Vec<Item> = hits.iter().map(|&i| emu.keychain.items[i].clone()).collect();
     // Reading a protected item's data asks for the user.
-    if data && items.iter().take(if all { usize::MAX } else { 1 }).any(|it| it.needs_auth) && !authenticate(emu) {
+    let protected = data && items.iter().take(if all { usize::MAX } else { 1 }).any(|it| it.needs_auth);
+    let biometry = emu.keychain.biometry;
+    if protected && matches!(biometry, Biometry::NotEnrolled | Biometry::NonMatching) {
         return ret(emu, AUTH_FAILED);
     }
+    let mut r = 0;
     if result != 0 && (data || attrs) {
-        let r = if all {
+        r = if all {
             let mut list = Vec::new();
             for it in &items {
                 list.push(result_for(emu, it, data, attrs)?);
@@ -261,6 +412,17 @@ fn copy_matching(emu: &mut Emu) -> Result<()> {
         if r != 0 {
             send(emu, r, "retain", &[])?; // a Copy function: the caller owns it
         }
+    }
+    if protected && biometry == Biometry::Enrolled {
+        // The call blocks while the prompt waits for a face; the answer
+        // stores the result and is the status.
+        let reason = get(&q, "u_OpPrompt").unwrap_or(0);
+        let prompt = show(emu, Prompt::Item { result, value: r }, reason)?;
+        let status = crate::threads::block(emu, crate::threads::Wait::Face { prompt })?;
+        emu.ret(status);
+        return Ok(());
+    }
+    if result != 0 && (data || attrs) {
         emu.write_u64(result, r)?;
     }
     ret(emu, SUCCESS)
@@ -380,19 +542,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     // (policy, reason, reply(success, error)), answered on another queue as LocalAuthentication does.
     (LA, false, "evaluatePolicy:localizedReason:reply:", |e| {
-        let (policy, reply) = (e.arg(2), e.arg(4));
-        let (ok, code) = match e.keychain.biometry {
-            Biometry::Matching => (true, 0),
-            Biometry::NonMatching => (false, -1), // LAErrorAuthenticationFailed
-            Biometry::NotEnrolled => (false, if policy == 2 { -5 } else { -7 }),
-        };
-        let err = if ok { 0 } else { la_error(e, code)? };
-        let block = crate::libc::copy_block(e, reply)?;
-        let i = e.keychain.replies.len();
-        e.keychain.replies.push(Some((block, ok, err)));
-        let f = e.host_thunk(run_reply)?;
-        let q = crate::libsystem::global_queue(e)?;
-        crate::libsystem::dispatch_on(e, q, f, i as u64)
+        let (policy, reason, block) = (e.arg(2), e.arg(3), e.arg(4));
+        let block = crate::libc::copy_block(e, block)?;
+        match e.keychain.biometry {
+            Biometry::Enrolled => {
+                show(e, Prompt::Reply { block, policy }, reason)?;
+                Ok(())
+            }
+            Biometry::Matching => reply(e, block, 0),
+            Biometry::NonMatching | Biometry::NotEnrolled => {
+                let code = failure(e, policy);
+                reply(e, block, code)
+            }
+        }
     }),
     // The prompt's labels and options: kept for the app to read back.
     (LA, false, "localizedFallbackTitle", |e| la_get(e, "localizedFallbackTitle")),

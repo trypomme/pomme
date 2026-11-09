@@ -127,9 +127,15 @@ struct DeviceStateArgs {
     #[arg(long, value_parser = parse_network)]
     network: Vec<(pomme_hle::network::Path, Option<f64>)>,
     /// Face ID / Touch ID, as the Simulator's Features menu sets it: `off` (not enrolled,
-    /// the default), `match` (enrolled; a matching face or finger) or `no-match`.
+    /// the default) or `enrolled` (each prompt waits for a face: from `--face`, or ⌥⌘M /
+    /// ⌥⌘N in the window). `match` and `no-match` are enrolled with every prompt
+    /// answered at once by a matching face, or one that doesn't match.
     #[arg(long, default_value = "off")]
     biometry: pomme_hle::keychain::Biometry,
+    /// Present a face at a virtual time: `--face match@3`, `--face no-match@5`, or
+    /// `--face toggle-enrolled@2` (repeatable). A face answers the prompts waiting then.
+    #[arg(long, value_parser = parse_face)]
+    face: Vec<(pomme_hle::keychain::Face, f64)>,
 }
 
 impl DeviceStateArgs {
@@ -137,6 +143,8 @@ impl DeviceStateArgs {
         emu.ui.device_orientation = self.held;
         emu.ui.rotations = self.rotate.iter().map(|&(o, t)| ((t * 1e9) as u64, o)).collect();
         emu.keychain.biometry = self.biometry;
+        emu.keychain.faces = self.face.iter().map(|&(f, t)| ((t * 1e9) as u64, f)).collect();
+        emu.keychain.faces.sort_by_key(|f| f.0);
         for &(p, at) in &self.network {
             match at {
                 None => emu.network.path = p,
@@ -152,6 +160,11 @@ fn parse_network(s: &str) -> std::result::Result<(pomme_hle::network::Path, Opti
         Some((p, t)) => Ok((p.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
         None => Ok((s.parse()?, None)),
     }
+}
+
+fn parse_face(s: &str) -> std::result::Result<(pomme_hle::keychain::Face, f64), String> {
+    let (f, t) = s.rsplit_once('@').ok_or("expected face@seconds")?;
+    Ok((f.parse()?, t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))
 }
 
 fn parse_rotate(s: &str) -> std::result::Result<(pomme_hle::device::Orientation, f64), String> {

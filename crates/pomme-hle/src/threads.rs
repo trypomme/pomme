@@ -55,6 +55,8 @@ pub enum Wait {
     PipeRead { fd: u64, buf: u64, n: u64 },
     /// kevent() until an event is ready (or the deadline).
     Kevent { kq: u64, list: u64, n: u64, deadline: Option<u64> },
+    /// A biometry prompt until the person presents a face (keychain prompt index).
+    Face { prompt: usize },
 }
 
 impl Wait {
@@ -62,7 +64,7 @@ impl Wait {
         match *self {
             Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } | Wait::Kevent { deadline, .. } => deadline,
             Wait::Sleep { deadline } => Some(deadline),
-            Wait::Join { .. } | Wait::Flag { .. } | Wait::PipeRead { .. } => None,
+            Wait::Join { .. } | Wait::Flag { .. } | Wait::PipeRead { .. } | Wait::Face { .. } => None,
         }
     }
 }
@@ -289,6 +291,7 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
         Wait::Sleep { deadline } => (now >= deadline).then_some(0),
         Wait::Flag { addr } => (emu.p.memory.read_u32(addr)? != 0).then_some(0),
         Wait::PipeRead { fd, buf, n } => crate::fs::pipe_try_read(emu, fd, buf, n)?,
+        Wait::Face { prompt } => crate::keychain::answer(emu, prompt),
         Wait::Kevent { kq, list, n, deadline } => match crate::fs::kevent_try(emu, kq, list, n)? {
             Some(k) => Some(k),
             None if timed_out(deadline) => Some(0),
@@ -360,6 +363,7 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
         println!("{:>10}   [time] idle: skip to {:.3} ms", emu.cpu.steps, target as f64 / 1e6);
     }
     advance_to(emu, target);
+    crate::keychain::present_due(emu)?;
     Ok(true)
 }
 
@@ -388,6 +392,7 @@ fn next_deadline(emu: &Emu, own: Option<u64>) -> Option<u64> {
     for p in emu.th.ports.values() {
         consider(p.timer);
     }
+    consider(crate::keychain::next_face_at(emu));
     next
 }
 

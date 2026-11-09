@@ -1,7 +1,9 @@
 //! pomme in a desktop window, looking like the iOS Simulator: the app on a
 //! phone, live. Clicks and drags on the screen are touches, typing goes to the
-//! focused text input (as a hardware keyboard does in the Simulator), and
-//! ⌘← / ⌘→ (Ctrl on Windows and Linux) turn the phone.
+//! focused text input (as a hardware keyboard does in the Simulator),
+//! ⌘← / ⌘→ (Ctrl on Windows and Linux) turn the phone, and the Simulator's
+//! Face ID shortcuts work: ⌥⌘M a matching face, ⌥⌘N one that doesn't match,
+//! and ⌥⌘E turns enrolment on or off (Features ▸ Face ID ▸ Enrolled).
 //!
 //! The emulator runs on its own thread with a [`DesktopHost`]: it paces
 //! virtual time against the wall clock while the app idles, and takes the
@@ -16,6 +18,7 @@ mod present;
 
 use pomme_hle::device::{Device, Orientation};
 use pomme_hle::host::{Event, Frame, Host, Idle};
+use pomme_hle::keychain::Face;
 use pomme_hle::touch::{BEGAN, ENDED, Input, MOVED};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -25,7 +28,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 /// What the window shows and how.
@@ -109,6 +112,11 @@ impl Host for DesktopHost {
                 Err(RecvTimeoutError::Disconnected) => return Idle::Quit,
             }
         }
+    }
+
+    fn biometry_prompt(&mut self, reason: &str) {
+        let reason = if reason.is_empty() { String::new() } else { format!(" ({reason})") };
+        eprintln!("Face ID is asking{reason}: ⌥⌘M matching face, ⌥⌘N non-matching face");
     }
 
     fn frame(&mut self, f: Frame<'_>) {
@@ -255,6 +263,17 @@ impl App {
     }
 }
 
+/// The Simulator's Features ▸ Face ID shortcuts (with ⌥⌘): M a matching face,
+/// N a non-matching one; E (not one of the Simulator's) toggles Enrolled.
+fn face_shortcut(code: KeyCode) -> Option<Face> {
+    match code {
+        KeyCode::KeyM => Some(Face::Matching),
+        KeyCode::KeyN => Some(Face::NonMatching),
+        KeyCode::KeyE => Some(Face::ToggleEnrolled),
+        _ => None,
+    }
+}
+
 /// How the phone is held after a quarter turn to the left (counter-clockwise) or right.
 /// Turning left from portrait gives what UIKit calls (interface) LandscapeRight.
 fn turned(o: Orientation, left: bool) -> Orientation {
@@ -286,6 +305,14 @@ fn screen_point(fit: (f32, f32, f32), screen: [f32; 4], scale: f32, p: (f32, f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn face_id_shortcuts() {
+        assert_eq!(face_shortcut(KeyCode::KeyM), Some(Face::Matching));
+        assert_eq!(face_shortcut(KeyCode::KeyN), Some(Face::NonMatching));
+        assert_eq!(face_shortcut(KeyCode::KeyE), Some(Face::ToggleEnrolled));
+        assert_eq!(face_shortcut(KeyCode::KeyX), None);
+    }
     use Orientation::*;
 
     #[test]
@@ -431,6 +458,15 @@ impl ApplicationHandler<ToWindow> for App {
             },
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } if event.state == ElementState::Pressed => {
                 let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
+                // ⌥ changes the character (⌥M is µ on a Mac): the Face ID shortcuts go by the key.
+                if command && self.modifiers.alt_key() {
+                    if let PhysicalKey::Code(code) = event.physical_key
+                        && let Some(face) = face_shortcut(code)
+                    {
+                        self.send(Event::Face(face));
+                    }
+                    return;
+                }
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowLeft) if command => self.rotate(true),
                     Key::Named(NamedKey::ArrowRight) if command => self.rotate(false),
