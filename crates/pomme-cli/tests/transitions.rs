@@ -82,9 +82,9 @@ fn transitions_match_ios() {
     let frames: Frames = Default::default();
     emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
-    let v = common::views(&mut emu, 9.0);
+    let v = common::views(&mut emu, 18.0);
     let log = v.lines().find(|l| l.contains(" tag 1 ")).map(|l| l.trim().to_string()).unwrap_or_default();
-    assert!(log.ends_with("\"presented dismissed full back \""), "{log}");
+    assert!(log.ends_with("\"presented dismissed full back faded \""), "{log}");
 
     let frames = frames.lock().unwrap();
     let during = |start: f64| frames.iter().filter(move |f| {
@@ -152,7 +152,36 @@ fn transitions_match_ios() {
     }
     let full = last_before(8.0);
     assert!(is(pixel(full, 1, 1), yellow));
-    let back = frames.last().unwrap();
+    let back = last_before(9.5);
     assert!(is(pixel(back, 195, 300), red));
+
+    // A medium detent with a grabber floats: 8 pt in from the sides and
+    // bottom, its top where iOS put it on the 16e (393.6 pt), the grabber at
+    // its top centre, the bottom corners rounded like the display's.
+    let (magenta, orange) = ([255, 0, 255], [255, 128, 0]);
+    let medium = last_before(11.0);
+    let top = top_edge(medium, 195, magenta).unwrap() as f64;
+    assert!((top - 393.6).abs() <= 1.5, "medium sheet top {top}");
+    assert!(!is(pixel(medium, 4, 600), magenta) && is(pixel(medium, 12, 600), magenta), "8 pt in from the side");
+    assert!(is(pixel(medium, 195, 834), magenta) && !is(pixel(medium, 195, 839), magenta), "8 pt up from the bottom");
+    assert!(!is(pixel(medium, 195, top as u32 + 6), magenta), "the grabber: {:?}", pixel(medium, 195, top as u32 + 6));
+    assert!(!is(pixel(medium, 10, 834), magenta), "rounded bottom corner");
+    // A custom 300 pt detent: 20.5 pt taller, floating (iOS: top 515.7 on the 16e).
+    let custom = last_before(14.0);
+    let top = top_edge(custom, 195, orange).unwrap() as f64;
+    assert!((top - 515.5).abs() <= 1.5, "custom sheet top {top}");
+    // Cross-dissolve: cyan fades in over red where it'll be, on iOS's curve.
+    const FADE: &[(f64, f64)] = &[(0.0, 0.0), (0.017, 0.039), (0.033, 0.122), (0.05, 0.23), (0.067, 0.34), (0.084, 0.45), (0.1, 0.542), (0.117, 0.626), (0.133, 0.697), (0.15, 0.757), (0.167, 0.806), (0.183, 0.846), (0.2, 0.879), (0.25, 0.925), (0.3, 0.955), (0.4, 0.99), (0.5, 1.0)];
+    for f in during(15.5) {
+        let a = ios(FADE, f.0 as f64 / 1e9 - 15.5);
+        // Over red, cyan's green channel shows how far it's faded in.
+        let g = pixel(f, 195, 300)[1] as f64 / 255.0;
+        assert!((g - a).abs() <= 0.05, "fade at {:.3}: {g:.3}, iOS {a:.3}", f.0 as f64 / 1e9);
+        // Not sliding: the top of the screen fades just as the middle does.
+        let top_g = pixel(f, 20, 30)[1] as f64 / 255.0;
+        assert!((top_g - g).abs() <= 0.03, "it fades in place: top {top_g:.3}, middle {g:.3}");
+        checked += 1;
+    }
+
     assert!(checked > 40, "{checked} frames checked");
 }

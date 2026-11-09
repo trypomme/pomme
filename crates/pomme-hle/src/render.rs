@@ -235,11 +235,18 @@ fn arc_els(out: &mut Vec<El>, cx: f32, cy: f32, r: f32, start: f32, end: f32, cl
 /// into the straight edge over 1.528 × the radius (this reconstruction of
 /// the path matches iOS 26's sheet corners to 0.2 pt).
 pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) -> Vec<El> {
+    let on = |bit: u64| if mask & bit != 0 { r } else { 0.0 };
+    corner_shape_radii(w, h, [on(1), on(2), on(4), on(8)], continuous)
+}
+
+/// As [`corner_shape`], each corner with its own radius (top-left, top-right,
+/// bottom-left, bottom-right; 0: square).
+pub(crate) fn corner_shape_radii(w: f32, h: f32, radii: [f32; 4], continuous: bool) -> Vec<El> {
     // How far along each edge a corner reaches, per unit of radius.
     const REACH: f32 = 1.528_664_8;
     let reach = if continuous { REACH } else { 1.0 };
-    let r = r.max(0.0).min(w / 2.0 / reach).min(h / 2.0 / reach);
-    if r == 0.0 || mask & 15 == 0 {
+    let radii = radii.map(|r| r.max(0.0).min(w / 2.0 / reach).min(h / 2.0 / reach));
+    if radii.iter().all(|&r| r == 0.0) {
         return rect_els(0.0, 0.0, w, h);
     }
     // A corner as cubics in (a, b): a back along the edge arriving at the
@@ -251,28 +258,27 @@ pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) 
     ];
     const K: f32 = 0.447_715; // 1 − 0.552285, the circle's cubic handles
     const CIRCULAR: [[(f32, f32); 3]; 1] = [[(K, 0.0), (0.0, K), (0.0, 1.0)]];
-    // Corners clockwise from top-right: (corner point, arriving direction, leaving direction, mask bit).
-    let corners: [((f32, f32), (f32, f32), (f32, f32), u64); 4] = [
-        ((w, 0.0), (1.0, 0.0), (0.0, 1.0), 2),
-        ((w, h), (0.0, 1.0), (-1.0, 0.0), 8),
-        ((0.0, h), (-1.0, 0.0), (0.0, -1.0), 4),
-        ((0.0, 0.0), (0.0, -1.0), (1.0, 0.0), 1),
+    // Corners clockwise from top-right: (corner point, arriving direction, leaving direction, radius).
+    let corners: [((f32, f32), (f32, f32), (f32, f32), f32); 4] = [
+        ((w, 0.0), (1.0, 0.0), (0.0, 1.0), radii[1]),
+        ((w, h), (0.0, 1.0), (-1.0, 0.0), radii[3]),
+        ((0.0, h), (-1.0, 0.0), (0.0, -1.0), radii[2]),
+        ((0.0, 0.0), (0.0, -1.0), (1.0, 0.0), radii[0]),
     ];
-    let at = |c: (f32, f32), u: (f32, f32), v: (f32, f32), a: f32, b: f32| (c.0 - a * r * u.0 + b * r * v.0, c.1 - a * r * u.1 + b * r * v.1);
     let mut out = Vec::new();
     // Start on the top edge, where the top-left corner leaves it.
-    let tl = mask & 1 != 0;
-    out.push(El::Move(if tl { reach * r } else { 0.0 }, 0.0));
-    for &(c, u, v, bit) in &corners {
-        if mask & bit == 0 {
+    out.push(El::Move(reach * radii[0], 0.0));
+    for &(c, u, v, r) in &corners {
+        if r == 0.0 {
             out.push(El::Line(c.0, c.1));
             continue;
         }
-        let start = at(c, u, v, reach, 0.0);
+        let at = |a: f32, b: f32| (c.0 - a * r * u.0 + b * r * v.0, c.1 - a * r * u.1 + b * r * v.1);
+        let start = at(reach, 0.0);
         out.push(El::Line(start.0, start.1));
         let segs: &[[(f32, f32); 3]] = if continuous { &CONTINUOUS } else { &CIRCULAR };
         for seg in segs {
-            let (p1, p2, p3) = (at(c, u, v, seg[0].0, seg[0].1), at(c, u, v, seg[1].0, seg[1].1), at(c, u, v, seg[2].0, seg[2].1));
+            let (p1, p2, p3) = (at(seg[0].0, seg[0].1), at(seg[1].0, seg[1].1), at(seg[2].0, seg[2].1));
             out.push(El::Cubic(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1));
         }
     }
@@ -290,7 +296,10 @@ pub(crate) fn new_card_path(emu: &mut Emu, size: [f64; 2], r: f64) -> Result<u64
 
 /// A layer's own shape, `w` × `h`.
 fn layer_shape(ly: &Layer, w: f32, h: f32) -> Vec<El> {
-    corner_shape(w, h, ly.corner_radius as f32, ly.masked_corners, ly.continuous_corners)
+    match ly.corner_radii {
+        Some(r) => corner_shape_radii(w, h, r.map(|v| v as f32), ly.continuous_corners),
+        None => corner_shape(w, h, ly.corner_radius as f32, ly.masked_corners, ly.continuous_corners),
+    }
 }
 
 fn rounded_rect(w: f32, h: f32, r: f32) -> Vec<El> {

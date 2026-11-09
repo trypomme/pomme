@@ -8,7 +8,7 @@
 // Steps (seconds after launch): push 1, pop 3, present (default style) 5,
 // dismiss 7, present full screen 9, dismiss 11, spinner 13–14, present
 // cross-dissolve 15, dismiss 17, present a medium-detent sheet with a grabber
-// 19, dismiss 21.
+// 19, dismiss 21, present a sheet with a custom 300 pt detent 23, dismiss 25.
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
@@ -143,6 +143,12 @@ static void begin(NSString *name, void (^action)(void)) {
     UIViewController *mediumSheet = colored(UIColor.magentaColor, 6);
     mediumSheet.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.mediumDetent];
     mediumSheet.sheetPresentationController.prefersGrabberVisible = YES;
+    // A custom detent of 300, logging what the resolver is given ("D <maximumDetentValue>").
+    UIViewController *custom = colored(UIColor.orangeColor, 7);
+    custom.sheetPresentationController.detents = @[[UISheetPresentationControllerDetent customDetentWithIdentifier:@"custom" resolver:^CGFloat(id<UISheetPresentationControllerDetentResolutionContext> context) {
+        printf("D %.2f\n", context.maximumDetentValue);
+        return 300;
+    }]];
     NSArray *plan = @[
         @[@1, @"push", ^{ [nav pushViewController:pushed animated:YES]; }],
         @[@3, @"pop", ^{ [nav popViewControllerAnimated:YES]; }],
@@ -155,7 +161,9 @@ static void begin(NSString *name, void (^action)(void)) {
         @[@17, @"dismissFade", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
         @[@19, @"presentMedium", ^{ [nav presentViewController:mediumSheet animated:YES completion:nil]; }],
         @[@21, @"dismissMedium", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
-        @[@23, @"end", ^{ exit(0); }],
+        @[@23, @"presentCustom", ^{ [nav presentViewController:custom animated:YES completion:nil]; }],
+        @[@25, @"dismissCustom", ^{ [nav dismissViewControllerAnimated:YES completion:nil]; }],
+        @[@27, @"end", ^{ exit(0); }],
     ];
     for (NSArray *p in plan) {
         NSString *name = p[1];

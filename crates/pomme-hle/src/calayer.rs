@@ -33,6 +33,9 @@ pub struct Layer {
     pub masked_corners: u64,
     /// `cornerCurve` is continuous (Apple's squircle) rather than circular.
     pub continuous_corners: bool,
+    /// Each corner's own radius (top-left, top-right, bottom-left, bottom-right),
+    /// for system chrome pomme draws (a floating sheet's top and bottom differ).
+    pub corner_radii: Option<[f64; 4]>,
     pub border_width: f64,
     pub border_color: u64,
     pub shadow_color: u64,
@@ -68,6 +71,7 @@ impl Default for Layer {
             corner_radius: 0.0,
             masked_corners: 15,
             continuous_corners: false,
+            corner_radii: None,
             border_width: 0.0,
             border_color: 0,
             shadow_color: 0,

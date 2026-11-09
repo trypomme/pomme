@@ -29,5 +29,5 @@ DEVICE="${DEVICE:-iPhone 17 Pro}"
 xcrun simctl boot "$DEVICE" 2>/dev/null || true
 xcrun simctl bootstatus "$DEVICE" -b >/dev/null
 xcrun simctl install "$DEVICE" "$APP"
-xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.transitions-probe | grep -E '^(M|A|L|F) ' > "$OUT" || true
+xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.transitions-probe | grep -E '^(M|A|L|F|D) ' > "$OUT" || true
 echo "wrote $OUT ($(wc -l < "$OUT") lines)"

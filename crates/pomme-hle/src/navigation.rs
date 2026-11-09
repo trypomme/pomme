@@ -74,6 +74,8 @@ struct Presentation {
     sheet: u64,
     /// Full screen, the screen behind leaves the hierarchy once covered (not for `overFullScreen`).
     covers: bool,
+    /// `modalTransitionStyle` cross-dissolve: it fades in and out where it is, rather than sliding.
+    dissolve: bool,
     /// Presenting (true) or dismissing (false) right now, with the completion block to run.
     moving: Option<bool>,
     completion: u64,
@@ -88,6 +90,17 @@ struct Presentation {
 const PRESENT_SPRING: (f64, f64, f64) = (18.0, 0.99, 2.5);
 const DISMISS_SPRING: (f64, f64, f64) = (16.8, 0.94, 0.0);
 const SHEET_RADIUS: f64 = 37.6;
+// Sheet detents, measured on the iPhone 17 Pro and 16e: resolvers get the
+// height between the safe area's top and bottom; the medium detent is 0.553
+// of it; a sheet smaller than the largest floats 8 pt in from the sides and
+// bottom, 20.5 pt taller than its detent, its bottom corners the display's
+// less the inset; its grabber is a 34.6 × 4.8 pt pill 4.8 pt from its top.
+const MEDIUM_DETENT: f64 = 0.553;
+const FLOAT_INSET: f64 = 8.0;
+const FLOAT_EXTRA: f64 = 20.5;
+const GRABBER: [f64; 2] = [34.6, 4.8];
+const GRABBER_TOP: f64 = 4.8;
+const GRABBER_COLOR: [f64; 4] = [0.0, 0.0, 0.0, 0.23];
 const SHEET_DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.2];
 
 /// A change of the top controller: what's left to do when its transition settles.
@@ -858,6 +871,81 @@ fn root_of(emu: &Emu, mut vc: u64) -> u64 {
     vc
 }
 
+/// How a sheet shows: its height when it floats (None: the large detent,
+/// attached), whether the screen behind stays undimmed, and the grabber.
+struct SheetDetent {
+    height: Option<f64>,
+    undimmed: bool,
+    grabber: bool,
+}
+
+/// What `UISheetPresentationController` says for `vc`, its detents resolved
+/// against `max` (the height between the safe area's top and bottom).
+fn sheet_detent(emu: &mut Emu, vc: u64, max: f64) -> Result<SheetDetent> {
+    let sc = emu.nav.props.get(&(vc, "pomme.sheet")).copied().unwrap_or(0);
+    if sc == 0 {
+        return Ok(SheetDetent { height: None, undimmed: false, grabber: false });
+    }
+    let grabber = crate::objc::bag_get(emu, sc, "prefersGrabberVisible").is_some_and(|g| g & 0xff != 0);
+    let list = crate::objc::bag_get(emu, sc, "detents").unwrap_or(0);
+    let n = if list != 0 { send(emu, list, "count", &[])? } else { 0 };
+    let mut detents = Vec::new();
+    for i in 0..n {
+        let d = send(emu, list, "objectAtIndex:", &[i])?;
+        let id = crate::objc::bag_get(emu, d, "identifier").map(|s| foundation::nsstring(emu, s).unwrap_or_default()).unwrap_or_default();
+        detents.push((id, detent_value(emu, d, max)?));
+    }
+    if detents.is_empty() {
+        return Ok(SheetDetent { height: None, undimmed: false, grabber });
+    }
+    let id_of = |emu: &mut Emu, key: &str| crate::objc::bag_get(emu, sc, key).filter(|&s| s != 0).map(|s| foundation::nsstring(emu, s).unwrap_or_default());
+    // It shows at the selected detent, else the smallest.
+    let selected = id_of(emu, "selectedDetentIdentifier");
+    let (_, value) = selected
+        .and_then(|s| detents.iter().find(|d| d.0 == s).cloned())
+        .unwrap_or_else(|| detents.iter().cloned().fold((String::new(), f64::MAX), |a, b| if b.1 < a.1 { b } else { a }));
+    let undimmed = match id_of(emu, "largestUndimmedDetentIdentifier") {
+        Some(u) => detents.iter().find(|d| d.0 == u).is_some_and(|d| value <= d.1 + 0.5),
+        None => false,
+    };
+    let height = (value < max - 0.5).then_some(value + FLOAT_EXTRA);
+    Ok(SheetDetent { height, undimmed, grabber })
+}
+
+/// A detent's height: medium, large, or what its resolver returns.
+fn detent_value(emu: &mut Emu, d: u64, max: f64) -> Result<f64> {
+    match crate::objc::bag_get(emu, d, "pomme.kind").unwrap_or(2) {
+        1 => Ok(MEDIUM_DETENT * max),
+        3 => {
+            let resolver = crate::objc::bag_get(emu, d, "pomme.resolver").unwrap_or(0);
+            if resolver == 0 {
+                return Ok(max);
+            }
+            let cls = crate::objc::host_class(emu, "_PommeDetentResolutionContext")?;
+            let ctx = crate::objc::create_instance(emu, cls, 0)?;
+            emu.nav.props.insert((ctx, "maximumDetentValue"), max.to_bits());
+            crate::libsystem::call_block(emu, resolver, &[ctx])?;
+            let v = f64::from_bits(emu.last_q0 as u64);
+            Ok(if v.is_finite() && v > 0.0 { v.min(max) } else { max })
+        }
+        _ => Ok(max),
+    }
+}
+
+/// A detent object of `kind` (1 medium, 2 large, 3 custom) with this identifier.
+fn new_detent(emu: &mut Emu, kind: u64, id: &str, resolver: u64) -> Result<u64> {
+    let cls = crate::objc::host_class(emu, "UISheetPresentationControllerDetent")?;
+    let d = crate::objc::create_instance(emu, cls, 0)?;
+    let s = foundation::new_nsstring(emu, id)?;
+    crate::objc::bag_set(emu, d, "identifier", s);
+    crate::objc::bag_set(emu, d, "pomme.kind", kind);
+    if resolver != 0 {
+        let r = crate::libc::copy_block(emu, resolver)?;
+        crate::objc::bag_set(emu, d, "pomme.resolver", r);
+    }
+    Ok(d)
+}
+
 /// A plain UIView with this frame.
 fn new_view(emu: &mut Emu, frame: [f64; 4]) -> Result<u64> {
     let cls = crate::objc::host_class(emu, "UIView")?;
@@ -903,19 +991,44 @@ fn present(emu: &mut Emu) -> Result<()> {
         let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
         send(emu, dim, "setBackgroundColor:", &[black])?;
         send(emu, container, "addSubview:", &[dim])?;
-        let top = crate::orientation::safe_area(emu)[0];
-        let sheet = new_view(emu, [0.0, top, w, h - top])?;
+        let safe = crate::orientation::safe_area(emu);
+        let (top, bottom) = (safe[0], safe[2]);
+        let detent = sheet_detent(emu, vc, h - top - bottom)?;
+        // The large detent attaches at the safe area's top, full width; smaller
+        // ones float inset from the sides and bottom (iOS 26).
+        let frame = match detent.height {
+            Some(sh) => [FLOAT_INSET, h - FLOAT_INSET - sh, w - 2.0 * FLOAT_INSET, sh],
+            None => [0.0, top, w, h - top],
+        };
+        let sheet = new_view(emu, frame)?;
         view_mut(emu, sheet).clips = true;
         let l = send(emu, sheet, "layer", &[])?;
         {
+            let bottom_r = emu.device.corner_radius - FLOAT_INSET;
             let ly = crate::calayer::layer_mut(emu, l);
             ly.corner_radius = SHEET_RADIUS;
             ly.continuous_corners = true;
             ly.masked_corners = 3; // the top two
+            if detent.height.is_some() {
+                // Floating, its bottom corners follow the display's.
+                ly.corner_radii = Some([SHEET_RADIUS, SHEET_RADIUS, bottom_r, bottom_r]);
+            }
+        }
+        if detent.undimmed {
+            view_mut(emu, dim).hidden = true;
         }
         send(emu, container, "addSubview:", &[sheet])?;
-        set_frame_of(emu, vview, [0.0, 0.0, w, h - top]);
+        set_frame_of(emu, vview, [0.0, 0.0, frame[2], frame[3]]);
         send(emu, sheet, "addSubview:", &[vview])?;
+        if detent.grabber {
+            let g = new_view(emu, [(frame[2] - GRABBER[0]) / 2.0, GRABBER_TOP, GRABBER[0], GRABBER[1]])?;
+            let c = crate::uiview::new_color(emu, GRABBER_COLOR)?;
+            send(emu, g, "setBackgroundColor:", &[c])?;
+            let gl = send(emu, g, "layer", &[])?;
+            crate::calayer::layer_mut(emu, gl).corner_radius = GRABBER[1] / 2.0;
+            view_mut(emu, g).user_interaction = false;
+            send(emu, sheet, "addSubview:", &[g])?;
+        }
         (dim, sheet)
     } else {
         set_frame_of(emu, vview, [0.0, 0.0, w, h]);
@@ -923,7 +1036,9 @@ fn present(emu: &mut Emu) -> Result<()> {
         (0, 0)
     };
     let completion = if completion != 0 { crate::libc::copy_block(emu, completion)? } else { 0 };
-    let p = Presentation { presenter, presented: vc, container, dim, sheet, covers, moving: Some(true), completion };
+    // UIModalTransitionStyle: 0 cover vertical, 1 flip horizontal, 2 cross dissolve, 3 partial curl.
+    let dissolve = emu.nav.props.get(&(vc, "modalTransitionStyle")).copied().unwrap_or(0) == 2;
+    let p = Presentation { presenter, presented: vc, container, dim, sheet, covers, dissolve, moving: Some(true), completion };
     emu.nav.presentations.push(p.clone());
     let a = animated as u64;
     send(emu, vc, "viewWillAppear:", &[a])?;
@@ -948,8 +1063,14 @@ fn slide_modal(emu: &mut Emu, p: &Presentation, up: bool, h: f64) -> Result<f64>
     let top = crate::uiview::frame_of(emu, moving)[1];
     let down = [c[0], c[1] + (h - top)];
     let l = send(emu, moving, "layer", &[])?;
-    let (from, to) = if up { (down, c) } else { (c, down) };
-    transition(emu, l, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+    if p.dissolve {
+        // Cross-dissolve: the same spring, on its opacity (measured in the iOS 26 Simulator).
+        let (from, to) = if up { (0.0, 1.0) } else { (1.0, 0.0) };
+        transition(emu, l, Prop::Opacity, Val::N(from), Val::N(to), timing, duration);
+    } else {
+        let (from, to) = if up { (down, c) } else { (c, down) };
+        transition(emu, l, Prop::Position, Val::P(from), Val::P(to), timing, duration);
+    }
     if p.dim != 0 {
         let dl = send(emu, p.dim, "layer", &[])?;
         let (a, b) = if up { (0.0, 1.0) } else { (1.0, 0.0) };
@@ -1179,7 +1300,41 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (VC, false, "nibName", |e| ret(e, 0)),
     (VC, false, "nibBundle", |e| ret(e, 0)),
     (VC, false, "presentationController", |e| ret(e, 0)),
-    (VC, false, "sheetPresentationController", |e| ret(e, 0)),
+    // A page or form sheet's presentation controller: made on first use, read when presented.
+    (VC, false, "sheetPresentationController", |e| {
+        let vc = e.arg(0);
+        let style = e.nav.props.get(&(vc, "modalPresentationStyle")).copied().unwrap_or(1) as i64;
+        if !matches!(style, 1 | 2 | -2) {
+            return ret(e, 0);
+        }
+        if let Some(&sc) = e.nav.props.get(&(vc, "pomme.sheet")) {
+            return ret(e, sc);
+        }
+        let cls = crate::objc::host_class(e, "UISheetPresentationController")?;
+        let sc = crate::objc::create_instance(e, cls, 0)?;
+        e.nav.props.insert((vc, "pomme.sheet"), sc);
+        ret(e, sc)
+    }),
+    ("UISheetPresentationControllerDetent", true, "mediumDetent", |e| {
+        let d = new_detent(e, 1, "com.apple.UIKit.medium", 0)?;
+        ret(e, d)
+    }),
+    ("UISheetPresentationControllerDetent", true, "largeDetent", |e| {
+        let d = new_detent(e, 2, "com.apple.UIKit.large", 0)?;
+        ret(e, d)
+    }),
+    ("UISheetPresentationControllerDetent", true, "customDetentWithIdentifier:resolver:", |e| {
+        let (id, resolver) = (e.arg(2), e.arg(3));
+        let id = if id != 0 { foundation::nsstring(e, id)? } else { String::new() };
+        let d = new_detent(e, 3, &id, resolver)?;
+        ret(e, d)
+    }),
+    ("_PommeDetentResolutionContext", false, "maximumDetentValue", |e| {
+        let v = e.nav.props.get(&(e.arg(0), "maximumDetentValue")).copied().unwrap_or(0);
+        e.cpu.q[0] = v as u128;
+        Ok(())
+    }),
+    ("_PommeDetentResolutionContext", false, "containerTraitCollection", |e| ret(e, 0)),
     (VC, false, "popoverPresentationController", |e| ret(e, 0)),
     (VC, false, "setAdditionalSafeAreaInsets:", |_| Ok(())),
     (VC, false, "setPreferredContentSize:", |_| Ok(())),
