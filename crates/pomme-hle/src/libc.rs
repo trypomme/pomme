@@ -90,7 +90,12 @@ fn exit(emu: &mut Emu) -> Result<()> {
     Err(Stop::Exit(emu.arg(0) as i32))
 }
 
-fn abort(_: &mut Emu) -> Result<()> {
+fn abort(emu: &mut Emu) -> Result<()> {
+    if emu.sys.unwound_into_host {
+        return Err(Stop::Unsupported(
+            "abort() called: a C++ exception reached one of pomme's own frames (system code that called back into the app), which it can't unwind through; its handler, if any, is beyond that frame".into(),
+        ));
+    }
     Err(Stop::Unsupported("abort() called".into()))
 }
 

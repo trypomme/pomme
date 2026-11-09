@@ -267,6 +267,17 @@ fn sysroot_dylib(sysroot: Option<&Path>, install: &str) -> Option<PathBuf> {
     vfs::is_file(&file).then(|| vfs::canonicalize(&file))
 }
 
+/// Whether an image (by install name) is one pomme loads into every process.
+pub fn always_loaded(install_name: &str) -> bool {
+    LIBSYSTEM_PARTS.contains(&install_name) || ALWAYS_LOADED.contains(&install_name)
+}
+
+/// libSystem's sub-libraries that a sysroot may provide as real code.
+const LIBSYSTEM_PARTS: &[&str] = &["/usr/lib/system/libunwind.dylib"];
+/// System libraries every iOS process has loaded, whether or not the app
+/// links them (pomme's Foundation needs CoreFoundation's runtime).
+const ALWAYS_LOADED: &[&str] = &["/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"];
+
 pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
     let (bundle_id, exe, app_dir) = locate_executable(path)?;
 
@@ -276,6 +287,22 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
     let mut deps: Vec<Vec<Option<usize>>> = Vec::new();
     let mut queue = VecDeque::from([0usize]);
     let mut by_path: HashMap<PathBuf, usize> = HashMap::from([(paths[0].clone(), 0)]);
+
+    // Parts of libSystem the sysroot has real code for (libunwind, for C++
+    // exceptions): loaded up front, and libSystem imports they export bind to
+    // them instead of to host stubs (on iOS libSystem re-exports them).
+    let mut libsystem_parts = Vec::new();
+    for (k, part) in LIBSYSTEM_PARTS.iter().chain(ALWAYS_LOADED).enumerate() {
+        if let Some(f) = sysroot_dylib(opts.sysroot.as_deref(), part) {
+            let idx = paths.len();
+            by_path.insert(f.clone(), idx);
+            paths.push(f);
+            queue.push_back(idx);
+            if k < LIBSYSTEM_PARTS.len() {
+                libsystem_parts.push(idx);
+            }
+        }
+    }
 
     // Frameworks the app ships but doesn't link (it dlopens them, as Flutter
     // does App.framework): load them up front, after everything linked, so
@@ -384,7 +411,7 @@ pub fn load_with(path: &Path, opts: &LoadOptions) -> Result<Process> {
     }
 
     // Link.
-    let mut linker = Linker { images: &images, stubs: Stubs::default(), stats: LinkStats::default(), unresolved: Vec::new() };
+    let mut linker = Linker { images: &images, stubs: Stubs::default(), stats: LinkStats::default(), unresolved: Vec::new(), libsystem_parts };
     for (i, img) in parsed.iter().enumerate() {
         let slide = images[i].slide;
         for fixup in &img.fixups {
@@ -440,6 +467,8 @@ struct Linker<'i> {
     stubs: Stubs,
     stats: LinkStats,
     unresolved: Vec<Unresolved>,
+    /// Images that stand in for parts of libSystem (see LIBSYSTEM_PARTS).
+    libsystem_parts: Vec<usize>,
 }
 
 impl Linker<'_> {
@@ -449,7 +478,13 @@ impl Linker<'_> {
             LibOrdinal::Dylib(d) => match self.images[i].deps[d] {
                 Some(target) => self.lookup(target, name, 0),
                 None if img.dylibs[d].kind == DylibKind::System => {
-                    Some(self.stubs.get_or_insert(&img.dylibs[d].path, name))
+                    let path = &img.dylibs[d].path;
+                    let part = if path.ends_with("/libSystem.B.dylib") {
+                        self.libsystem_parts.clone().into_iter().find_map(|t| self.lookup(t, name, 0))
+                    } else {
+                        None
+                    };
+                    part.or_else(|| Some(self.stubs.get_or_insert(path, name)))
                 }
                 None => None, // weak bundled dylib that isn't present
             },

@@ -43,6 +43,9 @@ pub struct State {
     group_threads: HashMap<usize, u64>,
     /// Work waiting for its time (`dispatch_after`): (queue, function, context).
     after: Vec<Option<(u64, u64, u64)>>,
+    /// libunwind asked about a pomme frame (an exception tried to unwind
+    /// through host code that called back into the app).
+    pub unwound_into_host: bool,
     /// Blocks cancelled with `dispatch_block_cancel`: they don't run.
     cancelled: std::collections::HashSet<u64>,
     data: HashMap<&'static str, u64>,
@@ -1285,6 +1288,31 @@ fn unwind_raise_exception(emu: &mut Emu) -> Result<()> {
     Err(crate::Stop::Unsupported(format!("C++ exception thrown (pomme can't unwind it): {what}")))
 }
 
+/// `_dyld_find_unwind_sections(addr, info*)`: for libunwind, the image that
+/// holds `addr` and its unwind tables. dyld_unwind_sections is {mach_header,
+/// dwarf_section (__eh_frame), its length, compact_unwind_section
+/// (__unwind_info), its length}.
+fn dyld_find_unwind_sections(emu: &mut Emu) -> Result<()> {
+    let (addr, info) = (emu.arg(0), emu.arg(1));
+    let Some(img) = emu.p.image_at(addr) else {
+        // pomme's own frame (a host function that called back into the app):
+        // libunwind can't see through it, so the exception stops here.
+        if addr >= pomme_cpu::HOST_RETURN - 16 {
+            emu.sys.unwound_into_host = true;
+        }
+        emu.ret(0);
+        return Ok(());
+    };
+    let header = img.header;
+    let (eh, eh_len) = img.section("__TEXT", "__eh_frame").unwrap_or((0, 0));
+    let (cu, cu_len) = img.section("__TEXT", "__unwind_info").unwrap_or((0, 0));
+    for (i, v) in [header, eh, eh_len, cu, cu_len].into_iter().enumerate() {
+        emu.write_u64(info + i as u64 * 8, v)?;
+    }
+    emu.ret(1);
+    Ok(())
+}
+
 fn cxa_atexit(emu: &mut Emu) -> Result<()> {
     emu.ret(0); // destructors at exit: never run
     Ok(())
@@ -2266,6 +2294,9 @@ fn dladdr(emu: &mut Emu) -> Result<()> {
 pub(crate) const DYLD_FUNCS: &[(&str, HostFn)] = &[
     ("_getsectiondata", getsectiondata),
     ("__dyld_image_count", dyld_image_count),
+    ("__dyld_find_unwind_sections", dyld_find_unwind_sections),
+    // Images are never unloaded.
+    ("__dyld_register_func_for_remove_image", noop),
     ("__dyld_get_image_header", dyld_get_image_header),
     ("__dyld_get_image_vmaddr_slide", dyld_get_image_slide),
     ("__dyld_get_image_name", dyld_get_image_name),

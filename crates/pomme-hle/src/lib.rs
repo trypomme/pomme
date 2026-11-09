@@ -374,6 +374,12 @@ impl Emu {
         }
         let mut seen = vec![false; self.p.images.len()];
         let mut out = Vec::new();
+        // System libraries every process has (whether the app links them or not) first.
+        for i in 0..self.p.images.len() {
+            if self.p.images[i].install_name.as_deref().is_some_and(pomme_loader::always_loaded) {
+                visit(&self.p, i, &mut seen, &mut out);
+            }
+        }
         visit(&self.p, 0, &mut seen, &mut out);
         out
     }

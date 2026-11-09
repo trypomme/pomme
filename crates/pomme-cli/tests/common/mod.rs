@@ -28,9 +28,13 @@ fn build_now(name: &str) -> Option<PathBuf> {
     let exe = name[..1].to_uppercase() + &name[1..];
     let app = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{exe}.app"));
     std::fs::create_dir_all(&app).unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}/main.m"));
+    // main.m, or main.mm for Objective-C++ (linked with libc++).
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"));
+    let cxx = dir.join("main.mm").exists();
+    let src = dir.join(if cxx { "main.mm" } else { "main.m" });
     let status = Command::new("xcrun")
         .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation"])
+        .args(if cxx { &["-lc++", "-std=c++17"][..] } else { &[][..] })
         .arg(&src)
         .arg("-o")
         .arg(app.join(&exe))

@@ -77,6 +77,10 @@ Debugging:
   (a propagating solver, not Cassowary: pinning, centering and fixed or proportional sizes).
 - `POMME_BREAK=_sym1,Image:0xaddr,… pomme run …` prints every call to those guest functions —
   local (non-exported) ones too, by name or by the address `nm` prints.
+- C++ exceptions unwind for real: libunwind is built into the sysroot (iOS's
+  `/usr/lib/system/libunwind.dylib`), so throws are caught where the app catches them,
+  destructors and all. An exception that would unwind through pomme's own code (a system
+  call that called back into the app) stops the run, saying so.
 - `POMME_PROFILE=1 pomme run …` adds a profile when the run stops: instructions by thread and
   by the image that ran them (React Native apps: mostly Hermes on the JavaScript thread).
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.

@@ -6,7 +6,7 @@
 #
 #   - Swift runtime: libswiftCore, libswift_Concurrency, libswiftSwiftOnoneSupport
 #     (swiftlang/swift, via its standalone runtime build in Runtimes/)
-#   - libc++ and libc++abi (swiftlang/llvm-project, Apple's LLVM fork)
+#   - libc++, libc++abi and libunwind (swiftlang/llvm-project, Apple's LLVM fork)
 #   - Swift Foundation (swiftlang/swift-foundation) built as module `Foundation`,
 #     with pomme's Objective-C bridging overlay (scripts/sysroot/build-swift-foundation.sh)
 #   - Swift overlays (scripts/sysroot/build-overlays.sh)
@@ -73,6 +73,20 @@ cmake -G Ninja -S "$VENDOR/llvm-project/runtimes" -B "$VENDOR/build/libcxx" \
   -DCMAKE_INSTALL_PREFIX="$VENDOR/sysroot/usr"
 ninja -C "$VENDOR/build/libcxx" cxx cxxabi
 ninja -C "$VENDOR/build/libcxx" install-cxx install-cxxabi
+
+# libunwind (C++ exceptions' two-phase unwinder): libSystem re-exports it on
+# iOS, so it goes where iOS keeps it and pomme's loader binds libSystem's
+# _Unwind_* imports to it.
+cmake -G Ninja -S "$VENDOR/llvm-project/runtimes" -B "$VENDOR/build/libunwind" \
+  -DLLVM_ENABLE_RUNTIMES="libunwind" -DCMAKE_BUILD_TYPE=MinSizeRel \
+  -DCMAKE_C_COMPILER="$(xcrun -f clang)" -DCMAKE_CXX_COMPILER="$(xcrun -f clang++)" \
+  -DCMAKE_OSX_SYSROOT="$SDK" -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
+  -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_C_COMPILER_TARGET="$TARGET" -DCMAKE_CXX_COMPILER_TARGET="$TARGET" \
+  -DLIBUNWIND_ENABLE_STATIC=OFF -DLIBUNWIND_USE_COMPILER_RT=OFF -DLIBUNWIND_INCLUDE_TESTS=OFF
+ninja -C "$VENDOR/build/libunwind" unwind
+mkdir -p "$VENDOR/sysroot/usr/lib/system"
+cp "$VENDOR/build/libunwind/lib/libunwind.1.0.dylib" "$VENDOR/sysroot/usr/lib/system/libunwind.dylib"
+install_name_tool -id /usr/lib/system/libunwind.dylib "$VENDOR/sysroot/usr/lib/system/libunwind.dylib"
 
 # ICU, then CoreFoundation
 MAC_SDK="$(xcrun --sdk macosx --show-sdk-path)"
