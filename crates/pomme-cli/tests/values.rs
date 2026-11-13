@@ -13,8 +13,15 @@ fn field(views: &str, tag: u64) -> String {
     line.split_once(" \"").map(|(_, t)| t.trim_end_matches('"').to_string()).unwrap_or_default()
 }
 
+/// Run the app presented as iOS 18 (the controls' classic design; see
+/// `ios26_sizes` for iOS 26's), with `script`'s touches.
 fn run(script: impl FnOnce(&mut Vec<Input>)) -> Option<String> {
+    run_on("18.6", script)
+}
+
+fn run_on(ios: &str, script: impl FnOnce(&mut Vec<Input>)) -> Option<String> {
     let mut emu = common::boot("values")?;
+    emu.system.os = ios.parse().unwrap();
     script(&mut emu.touch.script);
     Some(common::views(&mut emu, 4.0))
 }
@@ -39,6 +46,15 @@ fn sizes_and_segments() {
     assert_eq!(field(&v, 205), "switch {51, 31} on 1 slider {300, 31} fresh {104, 32} 2 Zero,One sel -1", "{v}");
     // The asked-for 100×100 became 51×31.
     assert!(v.contains("UISwitch (40.0, 100.0, 51.0×31.0)"), "{v}");
+}
+
+/// iOS 26 (Liquid Glass): a 63×28 capsule switch, and sliders 39 tall with a
+/// 37×24 capsule thumb (measured on the iOS 26 simulator).
+#[test]
+fn ios26_sizes() {
+    let Some(v) = run_on("26.0", |_| {}) else { return };
+    assert!(field(&v, 205).starts_with("switch {63, 28} on 1 slider {300, 39} "), "{v}");
+    assert!(v.contains("UISwitch (40.0, 100.0, 63.0×28.0)"), "{v}");
 }
 
 /// Taps flip switches, each sending ValueChanged.

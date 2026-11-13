@@ -219,7 +219,8 @@ final class TextNode: Node {
 
     static let body = Style(font: .preferredFont(forTextStyle: .body), color: .label)
     /// A list section's header and footer.
-    static let sectionHeader = Style(font: .preferredFont(forTextStyle: .footnote), color: .secondaryLabel, uppercase: true)
+    /// (iOS 26: the headline style, in the secondary color, as written.)
+    static let sectionHeader = Style(font: .preferredFont(forTextStyle: .headline), color: .secondaryLabel)
     static let sectionFooter = Style(font: .preferredFont(forTextStyle: .footnote), color: .secondaryLabel)
   }
 

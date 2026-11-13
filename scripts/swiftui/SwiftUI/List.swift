@@ -30,15 +30,22 @@ extension List: PrimitiveView {
 final class ListNode: Node {
   let sections: [SectionNode]
 
-  // iOS's inset grouped metrics.
+  // iOS 26's inset grouped metrics (measured on its simulator, iPhone 16e).
   static let sectionMargin: CGFloat = 16
   static let sectionTop: CGFloat = 20
   static let sectionSpacing: CGFloat = 20
   static let cornerRadius: CGFloat = 26
-  static let rowInset: CGFloat = 20
+  /// The rows' content, headers and separators, from the group's edges.
+  static let rowInset: CGFloat = 16
   static let rowPadding: CGFloat = 11
   static let minRowHeight: CGFloat = 52
+  /// A header's baseline: below the safe area's top (the first one) or the
+  /// previous group, and above its own group.
+  static let firstHeaderBaseline: CGFloat = 26
+  static let headerBaselineAfterGroup: CGFloat = 43.67
+  static let headerBaselineAboveGroup: CGFloat = 14.33
   static let headerGap: CGFloat = 7
+  static let separatorColor = UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.12)
 
   init(path: ViewPath, rows: [Node]) {
     var sections: [SectionNode] = []
@@ -87,19 +94,22 @@ final class ListNode: Node {
     let x = Self.sectionMargin + safe.left
     let width = extended.width - x - Self.sectionMargin - safe.right
     let contentWidth = width - 2 * Self.rowInset
-    let scale = parent.window?.screen.scale ?? UIScreen.main.scale
-    var y = safe.top + Self.sectionTop
+    var y = safe.top
+    var previousBottom: CGFloat?
 
-    for (s, section) in sections.enumerated() {
-      if s > 0 {
-        y += Self.sectionSpacing
-      }
-      // The header, in the system's style, lined up with the rows' content.
-      for header in section.header {
-        (header as? TextNode)?.style = .sectionHeader
+    for section in sections {
+      // The header, in the system's style, lined up with the rows' content,
+      // placed by its baseline.
+      if let header = section.header.first {
+        let text = header as? TextNode
+        text?.style = .sectionHeader
+        let baseline = previousBottom.map { $0 + Self.headerBaselineAfterGroup } ?? safe.top + Self.firstHeaderBaseline
+        let ascender = text?.style.font.ascender ?? 0
         let size = header.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
-        header.place(in: CGRect(x: x + Self.rowInset, y: y, width: contentWidth, height: size.height), of: scroll, renderer)
-        y += size.height + Self.headerGap
+        header.place(in: CGRect(x: x + Self.rowInset, y: baseline - ascender, width: contentWidth, height: size.height), of: scroll, renderer)
+        y = baseline + Self.headerBaselineAboveGroup
+      } else {
+        y = previousBottom.map { $0 + Self.sectionSpacing } ?? safe.top + Self.sectionTop
       }
 
       let group = renderer.view(for: section.path.appending("group")) {
@@ -115,10 +125,11 @@ final class ListNode: Node {
         if i > 0 {
           let separator = renderer.view(for: row.path.appending("separator")) {
             let v = UIView()
-            v.backgroundColor = .separator
+            v.backgroundColor = Self.separatorColor
             return v
           }
-          separator.frame = CGRect(x: Self.rowInset, y: rowY, width: width - Self.rowInset, height: 1 / scale)
+          // (A full point, at the bottom of the row above: iOS 26's, measured.)
+          separator.frame = CGRect(x: Self.rowInset, y: rowY - 1, width: width - 2 * Self.rowInset, height: 1)
           group.pommeAdopt(separator)
         }
         let size = row.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
@@ -129,6 +140,7 @@ final class ListNode: Node {
       group.frame = CGRect(x: x, y: y, width: width, height: rowY)
       group.isHidden = section.rows.isEmpty
       y += rowY
+      previousBottom = y
 
       for footer in section.footer {
         (footer as? TextNode)?.style = .sectionFooter

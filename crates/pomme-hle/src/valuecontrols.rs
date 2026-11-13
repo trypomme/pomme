@@ -120,13 +120,65 @@ fn shape(emu: &mut Emu, p: u64, frame: [f64; 4], fill: u64, radius: f64) -> Resu
     Ok(())
 }
 
-/// A round thumb: a faint ring with a white disc inside, `d` across.
-fn thumb(emu: &mut Emu, parent: u64, key: &str, x: f64, y: f64, d: f64, fill: u64) -> Result<()> {
+/// A thumb: a disc, or (iOS 26) a capsule, `w` × `h`, with a faint ring.
+fn thumb(emu: &mut Emu, parent: u64, key: &str, x: f64, y: f64, [w, h]: [f64; 2], fill: u64) -> Result<()> {
     let ring = part(emu, parent, key)?;
-    let ring_color = crate::uiview::new_color(emu, RING)?;
-    shape(emu, ring, [x, y, d, d], ring_color, d / 2.0)?;
+    let ring_color = crate::uiview::new_color(emu, design(emu).thumb_ring)?;
+    shape(emu, ring, [x, y, w, h], ring_color, h / 2.0)?;
     let disc = part(emu, ring, "disc")?;
-    shape(emu, disc, [0.5, 0.5, d - 1.0, d - 1.0], fill, (d - 1.0) / 2.0)
+    shape(emu, disc, [0.5, 0.5, w - 1.0, h - 1.0], fill, (h - 1.0) / 2.0)
+}
+
+/// The value controls' geometry and colors: iOS 18's, or iOS 26's (Liquid Glass).
+struct Design {
+    switch_size: [f64; 2],
+    switch_thumb: [f64; 2],
+    /// Between the switch's thumb and its track's edge.
+    switch_inset: f64,
+    switch_off: [f64; 4],
+    slider_height: f64,
+    slider_thumb: [f64; 2],
+    slider_track: f64,
+    slider_max: [f64; 4],
+    /// The thumbs' faint outline (none on iOS 26).
+    thumb_ring: [f64; 4],
+    /// The slider thumb's shadow: opacity, blur radius, vertical offset.
+    slider_shadow: Option<(f32, f64, f64)>,
+    blue: [f64; 4],
+}
+
+const IOS18: Design = Design {
+    switch_size: [51.0, 31.0],
+    switch_thumb: [27.0, 27.0],
+    switch_inset: 2.0,
+    switch_off: FILL,
+    slider_height: 31.0,
+    slider_thumb: [28.0, 28.0],
+    slider_track: 4.0,
+    slider_max: TRACK_FILL,
+    thumb_ring: RING,
+    slider_shadow: None,
+    blue: SYSTEM_BLUE,
+};
+
+/// Measured on the iOS 26 simulator: a capsule switch with a capsule thumb,
+/// and a slider with a capsule thumb on a 6-pt track, in the new system blue.
+const IOS26: Design = Design {
+    switch_size: [63.0, 28.0],
+    switch_thumb: [37.0, 24.0],
+    switch_inset: 2.0,
+    switch_off: [0.471, 0.471, 0.502, 0.43],
+    slider_height: 39.0,
+    slider_thumb: [37.0, 24.0],
+    slider_track: 6.0,
+    slider_max: [0.471, 0.471, 0.502, 0.19],
+    thumb_ring: [0.0, 0.0, 0.0, 0.0],
+    slider_shadow: Some((0.12, 6.0, 1.0)),
+    blue: [0.0, 0.533, 1.0, 1.0],
+};
+
+fn design(emu: &Emu) -> &'static Design {
+    if emu.system.liquid_glass() { &IOS26 } else { &IOS18 }
 }
 
 fn touch_point(emu: &mut Emu, c: u64) -> Option<[f64; 2]> {
@@ -144,8 +196,6 @@ fn changed(emu: &mut Emu, c: u64, extra: u64) -> Result<()> {
 
 // ---- UISwitch ----
 
-const SWITCH_SIZE: [f64; 2] = [51.0, 31.0];
-const SWITCH_THUMB: f64 = 27.0;
 /// How far a finger moves on a switch before it's a drag rather than a tap.
 const SWITCH_DRAG: f64 = 10.0;
 
@@ -154,13 +204,15 @@ fn is_on(emu: &Emu, s: u64) -> bool {
 }
 
 fn draw_switch(emu: &mut Emu, s: u64) -> Result<()> {
+    let d = design(emu);
     let on = is_on(emu, s);
     let track = part(emu, s, "track")?;
-    let fill = if on { color(emu, s, "onTintColor", SYSTEM_GREEN)? } else { crate::uiview::new_color(emu, FILL)? };
-    shape(emu, track, [0.0, 0.0, SWITCH_SIZE[0], SWITCH_SIZE[1]], fill, SWITCH_SIZE[1] / 2.0)?;
-    let x = if on { SWITCH_SIZE[0] - 2.0 - SWITCH_THUMB } else { 2.0 };
+    let fill = if on { color(emu, s, "onTintColor", SYSTEM_GREEN)? } else { crate::uiview::new_color(emu, d.switch_off)? };
+    shape(emu, track, [0.0, 0.0, d.switch_size[0], d.switch_size[1]], fill, d.switch_size[1] / 2.0)?;
+    let x = if on { d.switch_size[0] - d.switch_inset - d.switch_thumb[0] } else { d.switch_inset };
+    let y = (d.switch_size[1] - d.switch_thumb[1]) / 2.0;
     let thumb_fill = color(emu, s, "thumbTintColor", WHITE)?;
-    thumb(emu, s, "thumb", x, 2.0, SWITCH_THUMB, thumb_fill)?;
+    thumb(emu, s, "thumb", x, y, d.switch_thumb, thumb_fill)?;
     crate::host::frame_changed(emu);
     Ok(())
 }
@@ -168,7 +220,8 @@ fn draw_switch(emu: &mut Emu, s: u64) -> Result<()> {
 /// A switch is always its own size, wherever it's put.
 fn switch_set_frame(emu: &mut Emu) -> Result<()> {
     let (s, r) = (emu.arg(0), rect_arg(emu));
-    set_frame_of(emu, s, [r[0], r[1], SWITCH_SIZE[0], SWITCH_SIZE[1]]);
+    let size = design(emu).switch_size;
+    set_frame_of(emu, s, [r[0], r[1], size[0], size[1]]);
     Ok(())
 }
 
@@ -212,7 +265,7 @@ fn switch_end(emu: &mut Emu) -> Result<()> {
     let Some(p) = touch_point(emu, s) else { return Ok(()) };
     let start = objc::bag_get(emu, s, "pomme.trackStart").map_or(p[0], f64::from_bits);
     let was = is_on(emu, s);
-    let on = if (p[0] - start).abs() < SWITCH_DRAG { !was } else { p[0] > SWITCH_SIZE[0] / 2.0 };
+    let on = if (p[0] - start).abs() < SWITCH_DRAG { !was } else { p[0] > design(emu).switch_size[0] / 2.0 };
     if on != was {
         send(emu, s, "setOn:animated:", &[on as u64, 1])?;
         changed(emu, s, PRIMARY_ACTION_TRIGGERED)?;
@@ -222,9 +275,6 @@ fn switch_end(emu: &mut Emu) -> Result<()> {
 
 // ---- UISlider ----
 
-const SLIDER_HEIGHT: f64 = 31.0;
-const SLIDER_THUMB: f64 = 28.0;
-const SLIDER_TRACK: f64 = 4.0;
 /// How far around the thumb a touch still picks it up.
 const THUMB_SLOP: f64 = 10.0;
 
@@ -251,15 +301,16 @@ fn fraction(emu: &Emu, s: u64) -> f64 {
     if max <= min { 0.0 } else { ((v - min) / (max - min)) as f64 }
 }
 
-/// `trackRectForBounds:`: a 4-pt bar along the middle.
-fn track_rect(b: [f64; 4]) -> [f64; 4] {
-    [b[0], b[1] + (b[3] - SLIDER_TRACK) / 2.0, b[2], SLIDER_TRACK]
+/// `trackRectForBounds:`: a bar along the middle (4 pt; 6 on iOS 26).
+fn track_rect(d: &Design, b: [f64; 4]) -> [f64; 4] {
+    [b[0], b[1] + (b[3] - d.slider_track) / 2.0, b[2], d.slider_track]
 }
 
 /// `thumbRectForBounds:trackRect:value:`: the thumb travels the track, flush with its ends.
-fn thumb_rect(b: [f64; 4], track: [f64; 4], fraction: f64) -> [f64; 4] {
-    let x = track[0] + (track[2] - SLIDER_THUMB).max(0.0) * fraction.clamp(0.0, 1.0);
-    [x, b[1] + (b[3] - SLIDER_THUMB) / 2.0, SLIDER_THUMB, SLIDER_THUMB]
+fn thumb_rect(d: &Design, b: [f64; 4], track: [f64; 4], fraction: f64) -> [f64; 4] {
+    let [w, h] = d.slider_thumb;
+    let x = track[0] + (track[2] - w).max(0.0) * fraction.clamp(0.0, 1.0);
+    [x, b[1] + (b[3] - h) / 2.0, w, h]
 }
 
 /// The track as the slider (or a subclass) says, and the thumb on it.
@@ -268,20 +319,30 @@ fn slider_geometry(emu: &mut Emu, s: u64) -> Result<([f64; 4], [f64; 4])> {
     let b = [0.0, 0.0, b[2], b[3]];
     let t = objc::send_fp(emu, s, "trackRectForBounds:", &[], &b)?;
     let f = fraction(emu, s);
-    Ok((t, thumb_rect(b, t, f)))
+    Ok((t, thumb_rect(design(emu), b, t, f)))
 }
 
 fn draw_slider(emu: &mut Emu, s: u64) -> Result<()> {
     let (t, th) = slider_geometry(emu, s)?;
     let mid = th[0] + th[2] / 2.0;
-    let min_fill = color(emu, s, "minimumTrackTintColor", SYSTEM_BLUE)?;
-    let max_fill = color(emu, s, "maximumTrackTintColor", TRACK_FILL)?;
+    let d = design(emu);
+    let min_fill = color(emu, s, "minimumTrackTintColor", d.blue)?;
+    let max_fill = color(emu, s, "maximumTrackTintColor", d.slider_max)?;
     let lo = part(emu, s, "minimumTrack")?;
     shape(emu, lo, [t[0], t[1], (mid - t[0]).max(0.0), t[3]], min_fill, t[3] / 2.0)?;
     let hi = part(emu, s, "maximumTrack")?;
     shape(emu, hi, [mid, t[1], (t[0] + t[2] - mid).max(0.0), t[3]], max_fill, t[3] / 2.0)?;
     let thumb_fill = color(emu, s, "thumbTintColor", WHITE)?;
-    thumb(emu, s, "thumb", th[0], th[1], th[2], thumb_fill)?;
+    thumb(emu, s, "thumb", th[0], th[1], [th[2], th[3]], thumb_fill)?;
+    if let Some((opacity, radius, dy)) = d.slider_shadow {
+        // A soft shadow all round the thumb.
+        let ring = part(emu, s, "thumb")?;
+        let layer = send(emu, ring, "layer", &[])?;
+        let l = crate::calayer::layer_mut(emu, layer);
+        l.shadow_opacity = opacity;
+        l.shadow_radius = radius;
+        l.shadow_offset = [0.0, dy];
+    }
     crate::host::frame_changed(emu);
     Ok(())
 }
@@ -324,8 +385,9 @@ fn slider_continue(emu: &mut Emu) -> Result<()> {
     let Some(p) = touch_point(emu, s) else { return ret(emu, 1) };
     let (t, _) = slider_geometry(emu, s)?;
     let grab = objc::bag_get(emu, s, "pomme.grab").map_or(0.0, f64::from_bits);
-    let travel = (t[2] - SLIDER_THUMB).max(0.0);
-    let f = if travel > 0.0 { ((p[0] - grab - SLIDER_THUMB / 2.0 - t[0]) / travel).clamp(0.0, 1.0) } else { 0.0 };
+    let thumb_w = design(emu).slider_thumb[0];
+    let travel = (t[2] - thumb_w).max(0.0);
+    let f = if travel > 0.0 { ((p[0] - grab - thumb_w / 2.0 - t[0]) / travel).clamp(0.0, 1.0) } else { 0.0 };
     let (old, min, max) = slider_values(emu, s);
     let v = clamp(min + (max - min) * f as f32, min, max);
     if v != old {
@@ -562,8 +624,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // UISwitch
     (SW, false, "initWithFrame:", switch_init),
     (SW, false, "setFrame:", switch_set_frame),
-    (SW, false, "sizeThatFits:", |e| ret_size(e, SWITCH_SIZE[0], SWITCH_SIZE[1])),
-    (SW, false, "intrinsicContentSize", |e| ret_size(e, SWITCH_SIZE[0], SWITCH_SIZE[1])),
+    (SW, false, "sizeThatFits:", |e| {
+        let size = design(e).switch_size;
+        ret_size(e, size[0], size[1])
+    }),
+    (SW, false, "intrinsicContentSize", |e| {
+        let size = design(e).switch_size;
+        ret_size(e, size[0], size[1])
+    }),
     (SW, false, "isOn", |e| {
         let v = is_on(e, e.arg(0)) as u64;
         ret(e, v)
@@ -618,7 +686,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (SL, false, "trackRectForBounds:", |e| {
-        let r = track_rect(rect_arg(e));
+        let r = track_rect(design(e), rect_arg(e));
         crate::uikit::ret_rect(e, r);
         Ok(())
     }),
@@ -629,14 +697,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let v = f32::from_bits(e.read_u64(e.cpu.sp)? as u32);
         let (_, min, max) = slider_values(e, e.arg(0));
         let f = if max <= min { 0.0 } else { ((clamp(v, min, max) - min) / (max - min)) as f64 };
-        crate::uikit::ret_rect(e, thumb_rect(b, t, f));
+        crate::uikit::ret_rect(e, thumb_rect(design(e), b, t, f));
         Ok(())
     }),
     (SL, false, "sizeThatFits:", |e| {
         let w = view(e, e.arg(0)).bounds[2];
-        ret_size(e, w, SLIDER_HEIGHT)
+        ret_size(e, w, design(e).slider_height)
     }),
-    (SL, false, "intrinsicContentSize", |e| ret_size(e, -1.0, SLIDER_HEIGHT)),
+    (SL, false, "intrinsicContentSize", |e| ret_size(e, -1.0, design(e).slider_height)),
     (SL, false, "layoutSubviews", |e| {
         let s = e.arg(0);
         draw_slider(e, s)

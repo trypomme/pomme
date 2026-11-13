@@ -847,6 +847,31 @@ fn ret_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<()> {
     Ok(())
 }
 
+/// `preferredFontForTextStyle:`: the style's font at the default text size
+/// (Large), as iOS sizes them.
+fn preferred_font(emu: &mut Emu) -> Result<()> {
+    let style = emu.arg(2);
+    let name = if style == 0 { String::new() } else { foundation::nsstring(emu, style)? };
+    // (UIFontTextStyleHeadline, or UIKit's own UICTFontTextStyleHeadline.)
+    let style = name.rsplit("TextStyle").next().unwrap_or("");
+    let (size, semibold) = match style {
+        "ExtraLargeTitle" => (36.0, true),
+        "ExtraLargeTitle2" => (28.0, true),
+        "LargeTitle" | "Title0" => (34.0, false),
+        "Title1" => (28.0, false),
+        "Title2" => (22.0, false),
+        "Title3" => (20.0, false),
+        "Headline" => (17.0, true),
+        "Callout" => (16.0, false),
+        "Subheadline" => (15.0, false),
+        "Footnote" => (13.0, false),
+        "Caption1" => (12.0, false),
+        "Caption2" => (11.0, false),
+        _ => (17.0, false), // Body
+    };
+    if semibold { ret_font(emu, ".SFUI-Semibold", size, 0.3) } else { ret_font(emu, ".SFUI-Regular", size, 0.0) }
+}
+
 fn font_metric(emu: &mut Emu, factor: f64) -> Result<()> {
     let s = font_size(emu, emu.arg(0))?;
     ret_f64(emu, s * factor);
@@ -1087,7 +1112,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let s = f(e, 0);
         ret_font(e, &name, s, 0.0)
     }),
-    ("UIFont", true, "preferredFontForTextStyle:", |e| ret_font(e, ".SFUI-Regular", 17.0, 0.0)),
+    ("UIFont", true, "preferredFontForTextStyle:", preferred_font),
     ("UIFont", true, "familyNames", |e| {
         let a = foundation::new_array_of(e, &[])?;
         e.ret(a);
@@ -1266,10 +1291,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "secondaryLabelColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.6])),
     ("UIColor", true, "placeholderTextColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.3])),
     ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),
-    ("UIColor", true, "linkColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
-    ("UIColor", true, "systemBlueColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    ("UIColor", true, "linkColor", |e| ret_color(e, system_blue(e))),
+    ("UIColor", true, "systemBlueColor", |e| ret_color(e, system_blue(e))),
     // The app's accent (iOS 15): the system blue, as for an app without one of its own.
-    ("UIColor", true, "tintColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    ("UIColor", true, "tintColor", |e| ret_color(e, system_blue(e))),
     ("UIColor", true, "systemRedColor", |e| ret_color(e, [1.0, 0.231, 0.188, 1.0])),
     ("UIColor", true, "systemGrayColor", |e| ret_color(e, [0.557, 0.557, 0.576, 1.0])),
     ("UIColor", true, "darkGrayColor", |e| ret_color(e, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0])),
@@ -1318,6 +1343,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 // ---- inspection ----
 
 /// The window hierarchy as indented text: class, frame, colour, text.
+/// The system blue: #007AFF, and #0088FF in the iOS 26 design (measured on its simulator).
+fn system_blue(emu: &Emu) -> [f64; 4] {
+    if emu.system.liquid_glass() { [0.0, 0.533, 1.0, 1.0] } else { [0.0, 0.478, 1.0, 1.0] }
+}
+
 pub fn describe_tree(emu: &mut Emu) -> Result<String> {
     fn rgba_hex(emu: &Emu, c: u64) -> Option<String> {
         let [r, g, b, a] = *emu.ui.views.colors.get(&c)?;

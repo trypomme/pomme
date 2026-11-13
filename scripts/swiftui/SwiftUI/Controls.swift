@@ -65,7 +65,11 @@ final class PommeSwitch: UISwitch {
 final class ToggleNode: Node {
   let label: [Node]
   let isOn: Binding<Bool>
-  static let switchSize = CGSize(width: 51, height: 31)
+  /// The switch's size, as UIKit has it (it depends on the design).
+  static var switchSize: CGSize { measuringSwitch.intrinsicContentSize }
+  private static let measuringSwitch = UISwitch()
+  /// iOS 26's switch reaches 2 pt past the row's content (measured).
+  static let switchOverhang: CGFloat = 2
   static let spacing: CGFloat = 8
 
   init(path: ViewPath, label: [Node], isOn: Binding<Bool>) {
@@ -91,7 +95,7 @@ final class ToggleNode: Node {
       label.place(in: CGRect(x: frame.minX, y: frame.midY - size.height / 2, width: size.width, height: size.height), of: parent, renderer)
     }
     let control: PommeSwitch = renderer.view(for: path.appending("switch")) { PommeSwitch(frame: .zero) }
-    control.frame = CGRect(x: frame.maxX - Self.switchSize.width, y: frame.midY - Self.switchSize.height / 2,
+    control.frame = CGRect(x: frame.maxX + Self.switchOverhang - Self.switchSize.width, y: frame.midY - Self.switchSize.height / 2,
                            width: Self.switchSize.width, height: Self.switchSize.height)
     if control.isOn != isOn.wrappedValue {
       control.isOn = isOn.wrappedValue
@@ -174,7 +178,9 @@ final class SliderNode: Node {
   let fraction: Double
   let setFraction: (Double) -> Void
   let editingChanged: (Bool) -> Void
-  static let height: CGFloat = 28
+  /// The slider's height, as UIKit has it (it depends on the design).
+  static var height: CGFloat { measuringSlider.intrinsicContentSize.height }
+  private static let measuringSlider = UISlider()
 
   init(path: ViewPath, fraction: Double, setFraction: @escaping (Double) -> Void, editingChanged: @escaping (Bool) -> Void) {
     self.fraction = fraction

@@ -45,20 +45,25 @@ fn run_for(emu: &mut Emu, secs: f64) -> String {
 /// The form: Expo UI's Host (a SwiftUI hosting controller in React Native's
 /// tree) shows a Form, its sections' headers, a text, a toggle (on), a row
 /// with a Spacer between two texts, a slider at its value, and a button.
+/// Laid out as on the iOS 26 simulator (iPhone 16e): content 16 pt in from
+/// the groups' edges, headers as written, the iOS 26 switch (63 × 28) and
+/// slider (39 tall).
 #[test]
 fn shows_the_form() {
     let Some(mut emu) = boot() else { return };
     let views = run_for(&mut emu, 6.0);
-    for text in ["\"EXPO UI\"", "\"Hello from SwiftUI\"", "\"Wi-Fi\"", "\"Brightness\"", "\"50%\"", "\"TAPS\"", "\"Tapped 0 times\""] {
+    for text in ["\"Expo UI\"", "\"Hello from SwiftUI\"", "\"Wi-Fi\"", "\"Brightness\"", "\"50%\"", "\"Taps\"", "\"Tapped 0 times\""] {
         assert!(views.contains(text), "{text} missing\n{views}");
     }
     let switch = views.lines().find(|l| l.contains("PommeSwitch")).expect("no switch");
-    assert!(switch.ends_with(" on"), "{switch}");
+    assert!(switch.contains("63.0×28.0") && switch.ends_with(" on"), "{switch}");
     let slider = views.lines().find(|l| l.contains("PommeSlider")).expect("no slider");
-    assert!(slider.ends_with(" value 0.50"), "{slider}");
+    assert!(slider.contains("(16.0, 167.0, 326.0×39.0)") && slider.ends_with(" value 0.50"), "{slider}");
+    let header = views.lines().find(|l| l.contains("\"Expo UI\"")).unwrap();
+    assert!(header.contains("(32.0, "), "{header}");
     // The Spacer pushes the value to the row's trailing edge.
     let value = views.lines().find(|l| l.contains("\"50%\"")).unwrap();
-    assert!(value.contains("(280.0, 0.0"), "{value}");
+    assert!(value.contains("(288.0, 0.0"), "{value}");
 }
 
 /// React state through SwiftUI and back: the button's taps count, the switch
