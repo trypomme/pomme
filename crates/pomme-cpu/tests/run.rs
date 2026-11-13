@@ -477,3 +477,41 @@ fn crc32_extension() {
         check_int("crc_mix", &[I(x)], reference(x));
     }
 }
+
+#[test]
+fn aes_rounds() {
+    // FIPS-197 appendix C.1: AES-128 of 00112233..ff under key 00010203..0f.
+    let cipher = [0x69c4_e0d8_6a7b_0430u64, 0xd8cd_b780_70b4_c55a];
+    let plain = [0x7766_5544_3322_1100u64, 0xffee_ddcc_bbaa_9988];
+    for sel in 0..2 {
+        check_int("aes128", &[I(sel)], cipher[sel as usize].swap_bytes());
+        check_int("aes128", &[I(sel + 2)], plain[sel as usize]);
+    }
+}
+
+#[test]
+fn sha_hashes() {
+    // FIPS 180's "abc" examples.
+    let sha256 = [0xba78_16bf_8f01_cfeau64, 0x4141_40de_5dae_2223, 0xb003_61a3_9617_7a9c, 0xb410_ff61_f200_15ad];
+    for (sel, &d) in sha256.iter().enumerate() {
+        check_int("sha256_abc", &[I(sel as u64)], d);
+    }
+    let sha1 = [0xa999_3e36_4706_816au64, 0xba3e_2571_7850_c26c, 0x9cd0_d89d_0000_0000];
+    for (sel, &d) in sha1.iter().enumerate() {
+        check_int("sha1_abc", &[I(sel as u64)], d);
+    }
+}
+
+#[test]
+fn polynomial_multiply() {
+    let clmul = |a: u64, b: u64| (0..64).filter(|i| b >> i & 1 != 0).fold(0u128, |acc, i| acc ^ (a as u128) << i);
+    let reference = |a: u64, b: u64| {
+        let lo = clmul(a, b);
+        let hi = clmul(a, !b);
+        let bytes = (0..8).fold(0u128, |r, i| r | (clmul((a >> (8 * i)) & 0xff, (b >> (8 * i)) & 0xff) << (16 * i)));
+        (lo as u64) ^ ((lo >> 64) as u64).wrapping_mul(3) ^ (hi as u64).wrapping_mul(5) ^ ((hi >> 64) as u64).wrapping_mul(7) ^ (bytes as u64).wrapping_mul(11) ^ ((bytes >> 64) as u64).wrapping_mul(13)
+    };
+    for (a, b) in [(0u64, 0u64), (3, 3), (0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210), (u64::MAX, u64::MAX)] {
+        check_int("poly_mul", &[I(a), I(b)], reference(a, b));
+    }
+}

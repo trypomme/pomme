@@ -261,3 +261,118 @@ uint64_t crc_mix(uint64_t x) {
     c = __crc32cd(c, ~x);
     return ((uint64_t)a << 32) | c;
 }
+
+// The cryptographic extension (BoringSSL's TLS, Abseil's Randen). AES-128 on
+// FIPS-197's example, encrypting with AESE/AESMC and decrypting with
+// AESD/AESIMC; `sel` picks a half of the ciphertext (0, 1) or plaintext (2, 3).
+__attribute__((target("aes")))
+uint64_t aes128(int sel) {
+    uint8_t key[16], text[16];
+    for (int i = 0; i < 16; i++) {
+        key[i] = (uint8_t)i;
+        text[i] = (uint8_t)(i * 0x11);
+    }
+    static const uint8_t rcon[10] = {1, 2, 4, 8, 16, 32, 64, 128, 0x1b, 0x36};
+    uint32_t w[44];
+    for (int i = 0; i < 4; i++) w[i] = key[4 * i] | key[4 * i + 1] << 8 | key[4 * i + 2] << 16 | (uint32_t)key[4 * i + 3] << 24;
+    for (int i = 4; i < 44; i++) {
+        uint32_t t = w[i - 1];
+        if (i % 4 == 0) {
+            // SubWord with AESE on equal columns, where ShiftRows does nothing.
+            uint8x16_t s = vaeseq_u8(vreinterpretq_u8_u32(vdupq_n_u32(t)), vdupq_n_u8(0));
+            t = vgetq_lane_u32(vreinterpretq_u32_u8(s), 0);
+            t = ((t >> 8) | (t << 24)) ^ rcon[i / 4 - 1];
+        }
+        w[i] = w[i - 4] ^ t;
+    }
+    uint8x16_t k[11], dk[11];
+    for (int r = 0; r < 11; r++) k[r] = vld1q_u8((const uint8_t *)&w[4 * r]);
+    uint8x16_t s = vld1q_u8(text);
+    for (int r = 0; r < 9; r++) s = vaesmcq_u8(vaeseq_u8(s, k[r]));
+    s = veorq_u8(vaeseq_u8(s, k[9]), k[10]);
+    uint8x16_t c = s;
+    dk[0] = k[10];
+    for (int r = 1; r < 10; r++) dk[r] = vaesimcq_u8(k[10 - r]);
+    dk[10] = k[0];
+    for (int r = 0; r < 9; r++) s = vaesimcq_u8(vaesdq_u8(s, dk[r]));
+    s = veorq_u8(vaesdq_u8(s, dk[9]), dk[10]);
+    uint64x2_t out = vreinterpretq_u64_u8(sel < 2 ? c : s);
+    return (sel & 1) ? vgetq_lane_u64(out, 1) : vgetq_lane_u64(out, 0);
+}
+
+// "abc" as SHA's one padded block of big-endian words.
+static void abc_block(uint32_t m[16]) {
+    for (int i = 0; i < 16; i++) m[i] = 0;
+    m[0] = 0x61626380;
+    m[15] = 24;
+}
+
+// SHA-256 of "abc" with SHA256H/H2/SU0/SU1; `sel` picks a pair of digest words.
+__attribute__((target("sha2")))
+uint64_t sha256_abc(int sel) {
+    static const uint32_t K[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+    static const uint32_t H[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uint32_t m[16];
+    abc_block(m);
+    uint32x4_t msg[4];
+    for (int i = 0; i < 4; i++) msg[i] = vld1q_u32(&m[4 * i]);
+    uint32x4_t s0 = vld1q_u32(H), s1 = vld1q_u32(H + 4);
+    for (int i = 0; i < 16; i++) {
+        uint32x4_t t = vaddq_u32(msg[i % 4], vld1q_u32(&K[4 * i]));
+        if (i < 12) msg[i % 4] = vsha256su1q_u32(vsha256su0q_u32(msg[i % 4], msg[(i + 1) % 4]), msg[(i + 2) % 4], msg[(i + 3) % 4]);
+        uint32x4_t prev = s0;
+        s0 = vsha256hq_u32(s0, s1, t);
+        s1 = vsha256h2q_u32(s1, prev, t);
+    }
+    uint32_t d[8];
+    vst1q_u32(d, vaddq_u32(s0, vld1q_u32(H)));
+    vst1q_u32(d + 4, vaddq_u32(s1, vld1q_u32(H + 4)));
+    return ((uint64_t)d[2 * sel] << 32) | d[2 * sel + 1];
+}
+
+// SHA-1 of "abc" with SHA1C/P/M/H/SU0/SU1; `sel` picks a pair of digest words.
+__attribute__((target("sha2")))
+uint64_t sha1_abc(int sel) {
+    static const uint32_t H[5] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
+    static const uint32_t K[4] = {0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6};
+    uint32_t m[16];
+    abc_block(m);
+    uint32x4_t msg[4];
+    for (int i = 0; i < 4; i++) msg[i] = vld1q_u32(&m[4 * i]);
+    uint32x4_t abcd = vld1q_u32(H);
+    uint32_t e = H[4];
+    for (int i = 0; i < 20; i++) {
+        uint32x4_t t = vaddq_u32(msg[i % 4], vdupq_n_u32(K[i / 5]));
+        if (i < 16) msg[i % 4] = vsha1su1q_u32(vsha1su0q_u32(msg[i % 4], msg[(i + 1) % 4], msg[(i + 2) % 4]), msg[(i + 3) % 4]);
+        uint32_t next = vsha1h_u32(vgetq_lane_u32(abcd, 0));
+        if (i < 5) abcd = vsha1cq_u32(abcd, e, t);
+        else if (i < 10 || i >= 15) abcd = vsha1pq_u32(abcd, e, t);
+        else abcd = vsha1mq_u32(abcd, e, t);
+        e = next;
+    }
+    uint32_t d[6];
+    d[5] = 0;
+    vst1q_u32(d, vaddq_u32(abcd, vld1q_u32(H)));
+    d[4] = e + H[4];
+    return ((uint64_t)d[2 * sel] << 32) | d[2 * sel + 1];
+}
+
+// PMULL / PMULL2 on 64-bit halves and on bytes, folded into one value.
+__attribute__((target("aes")))
+uint64_t poly_mul(uint64_t a, uint64_t b) {
+    poly128_t lo = vmull_p64(a, b);
+    poly64x2_t va = vcombine_p64(vcreate_p64(b), vcreate_p64(a)), vb = vcombine_p64(vcreate_p64(a), vcreate_p64(~b));
+    poly128_t hi = vmull_high_p64(va, vb);
+    poly16x8_t bytes = vmull_p8(vcreate_p8(a), vcreate_p8(b));
+    uint64x2_t by = vreinterpretq_u64_p16(bytes);
+    uint64_t l0 = (uint64_t)lo, l1 = (uint64_t)(lo >> 64), h0 = (uint64_t)hi, h1 = (uint64_t)(hi >> 64);
+    return l0 ^ (l1 * 3) ^ (h0 * 5) ^ (h1 * 7) ^ (vgetq_lane_u64(by, 0) * 11) ^ (vgetq_lane_u64(by, 1) * 13);
+}

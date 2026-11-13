@@ -8,6 +8,7 @@
 //! instruction counter is the only clock (see README "Design constraints").
 
 mod block;
+mod crypto;
 mod branch;
 mod fast;
 mod dp;
@@ -89,6 +90,13 @@ pub const STEPS_PER_SEC: u64 = 1_000_000_000;
 
 impl Cpu {
     /// Mach ticks since boot: instructions retired at [`STEPS_PER_SEC`], plus idle time skipped.
+    /// Clear the exclusive monitor (CLREX), as the kernel does on every context
+    /// switch: a store-exclusive after the thread resumes fails and its loop retries,
+    /// since another thread may have written the location meanwhile.
+    pub fn clear_exclusive(&mut self) {
+        self.exclusive = None;
+    }
+
     pub fn ticks(&self) -> u64 {
         (self.steps as u128 * TICKS_PER_SEC as u128 / STEPS_PER_SEC as u128) as u64 + self.clock_offset
     }

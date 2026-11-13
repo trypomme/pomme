@@ -114,6 +114,9 @@ macro_rules! fp_cmp_lanes {
 
 impl Cpu {
     pub(crate) fn neon(&mut self, insn: u32) -> Step {
+        if crate::crypto::is_crypto(insn) {
+            return self.crypto(insn);
+        }
         let unimpl = Err(Exit::Unimplemented { insn });
         let q = bit(insn, 30);
         let u = bit(insn, 29);
@@ -452,6 +455,16 @@ impl Cpu {
     #[allow(clippy::too_many_arguments)]
     fn neon_three_different(&mut self, insn: u32, q: bool, u: bool, size: u32, rd: u32, vn: u128, vm: u128, vd: u128) -> Step {
         let unimpl = Err(Exit::Unimplemented { insn });
+        // PMULL / PMULL2: polynomial products of bytes, or of 64-bit halves.
+        if bits(insn, 15, 12) == 0b1110 && !u && (size == 0 || size == 3) {
+            let (hn, hm) = (half(vn, q) as u64, half(vm, q) as u64);
+            self.q[rd as usize] = if size == 3 {
+                crate::crypto::clmul(hn, hm)
+            } else {
+                (0..8).fold(0, |r, i| put(r, 16, i, crate::crypto::clmul(el(hn as u128, 8, i), el(hm as u128, 8, i)) as u64))
+            };
+            return Ok(());
+        }
         if size == 3 {
             return unimpl;
         }
