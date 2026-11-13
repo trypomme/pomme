@@ -1268,6 +1268,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),
     ("UIColor", true, "linkColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
     ("UIColor", true, "systemBlueColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    // The app's accent (iOS 15): the system blue, as for an app without one of its own.
+    ("UIColor", true, "tintColor", |e| ret_color(e, [0.0, 0.478, 1.0, 1.0])),
+    ("UIColor", true, "systemRedColor", |e| ret_color(e, [1.0, 0.231, 0.188, 1.0])),
     ("UIColor", true, "systemGrayColor", |e| ret_color(e, [0.557, 0.557, 0.576, 1.0])),
     ("UIColor", true, "darkGrayColor", |e| ret_color(e, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0])),
     ("UIColor", true, "lightGrayColor", |e| ret_color(e, [2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0])),
@@ -1366,6 +1369,13 @@ pub fn describe_tree(emu: &mut Emu) -> Result<String> {
         }
         if let Some(t) = text_of(emu, v)? {
             line += &format!(" {t:?}");
+        }
+        // A value control's value.
+        let (switch, slider) = (objc::host_class(emu, "UISwitch")?, objc::host_class(emu, "UISlider")?);
+        if objc::is_kind_of(emu, v, switch)? {
+            line += if objc::send(emu, v, "isOn", &[])? & 0xff != 0 { " on" } else { " off" };
+        } else if objc::is_kind_of(emu, v, slider)? {
+            line += &format!(" value {:.2}", crate::valuecontrols::slider_values(emu, v).0);
         }
         out.push_str(&line);
         out.push('\n');

@@ -234,6 +234,12 @@ fn banded(x: f64, min: f64, max: f64) -> f64 {
     }
 }
 
+/// Whether a touch may still become a scroll view's drag (its pan hasn't
+/// started or failed).
+pub(crate) fn panning(emu: &Emu) -> bool {
+    emu.scroll.pan.is_some()
+}
+
 /// Whether a touch on `v` reaches it only after the delay: a scroll view it's
 /// in (or is) delays content touches.
 pub(crate) fn delays_content_touches(emu: &mut Emu, mut v: u64) -> Result<bool> {
@@ -296,7 +302,12 @@ pub(crate) fn touch_moved(emu: &mut Emu, at: [f64; 2], now: u64, content: u64) -
             }
         }
         if chosen == 0 {
-            emu.scroll.pan = Some(pan);
+            // No scroll view scrolls this way: their pans fail, as UIKit's do,
+            // and the touch is the view's (touch.rs delivers a held one now).
+            for &c in &pan.candidates {
+                set_flag(emu, c, "tracking", false);
+            }
+            emu.scroll.pan = None;
             return Ok(false);
         }
         // The view under the finger keeps its touch: this touch doesn't scroll.

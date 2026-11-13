@@ -72,6 +72,9 @@ class Node: LayoutProxy {
 final class Renderer {
   private var views: [ViewPath: UIView] = [:]
   private var used: Set<ViewPath> = []
+  /// The view the tree is shown in, and the safe area its content keeps clear of.
+  private(set) weak var root: UIView?
+  private(set) var safeArea: UIEdgeInsets = .zero
 
   func view<V: UIView>(for path: ViewPath, make: () -> V) -> V {
     used.insert(path)
@@ -88,8 +91,10 @@ final class Renderer {
   /// screen): offered the safe area, and centered in it.
   func show(_ nodes: [Node], in view: UIView, respectingSafeArea: Bool = true) {
     used = []
+    root = view
+    safeArea = respectingSafeArea ? view.safeAreaInsets : .zero
     let bounds = view.bounds
-    let safe = respectingSafeArea ? bounds.inset(by: view.safeAreaInsets) : bounds
+    let safe = bounds.inset(by: safeArea)
     for node in nodes {
       if node.fillsScreen {
         node.place(in: bounds, of: view, self)
@@ -103,6 +108,26 @@ final class Renderer {
       v.removeFromSuperview()
       views[path] = nil
     }
+  }
+}
+
+extension Renderer {
+  /// `frame` (in `parent`) grown under the safe area at the edges where it meets
+  /// it, as a list's or scroll view's background does; and how far it grew
+  /// at each edge (its content's insets).
+  func extendingUnderSafeArea(_ frame: CGRect, in parent: UIView) -> (frame: CGRect, insets: UIEdgeInsets) {
+    guard let root else { return (frame, .zero) }
+    let f = parent.convert(frame, to: root)
+    let safe = root.bounds.inset(by: safeArea)
+    let touching: (CGFloat, CGFloat) -> Bool = { abs($0 - $1) < 0.5 }
+    var insets = UIEdgeInsets.zero
+    if touching(f.minY, safe.minY) { insets.top = safeArea.top }
+    if touching(f.maxY, safe.maxY) { insets.bottom = safeArea.bottom }
+    if touching(f.minX, safe.minX) { insets.left = safeArea.left }
+    if touching(f.maxX, safe.maxX) { insets.right = safeArea.right }
+    let grown = CGRect(x: frame.minX - insets.left, y: frame.minY - insets.top,
+                       width: frame.width + insets.left + insets.right, height: frame.height + insets.top + insets.bottom)
+    return (grown, insets)
   }
 }
 
@@ -129,6 +154,12 @@ final class LayoutNode: Node {
     self.layout = layout
     self.children = children
     super.init(path: path)
+    // A stack's spacers grow along its axis.
+    if let stack = layout as? any PommeStackLayout {
+      for case let spacer as SpacerNode in children {
+        spacer.axis = stack.pommeEngine.axis
+      }
+    }
   }
 
   private var subviews: LayoutSubviews {
@@ -180,24 +211,38 @@ final class LayoutNode: Node {
 final class TextNode: Node {
   let string: String
 
+  /// How text looks: its font, its color, and whether it's shown in capitals.
+  struct Style {
+    var font: UIFont
+    var color: UIColor
+    var uppercase = false
+
+    static let body = Style(font: .preferredFont(forTextStyle: .body), color: .label)
+    /// A list section's header and footer.
+    static let sectionHeader = Style(font: .preferredFont(forTextStyle: .footnote), color: .secondaryLabel, uppercase: true)
+    static let sectionFooter = Style(font: .preferredFont(forTextStyle: .footnote), color: .secondaryLabel)
+  }
+
+  var style = Style.body
+
   init(path: ViewPath, string: String) {
     self.string = string
     super.init(path: path)
   }
 
-  static let font = UIFont.preferredFont(forTextStyle: .body)
+  private var shown: String { style.uppercase ? string.uppercased() : string }
 
   /// Measures text without a view of its own.
   private static let measurer: UILabel = {
     let l = UILabel()
     l.numberOfLines = 0
-    l.font = font
     return l
   }()
 
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     let label = Self.measurer
-    label.text = string
+    label.font = style.font
+    label.text = shown
     let width = proposal.width ?? .greatestFiniteMagnitude
     let size = label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
     return CGSize(width: min(ceil(size.width), width), height: ceil(size.height))
@@ -205,12 +250,11 @@ final class TextNode: Node {
 
   /// Its baselines: the first line's and the last's.
   override func explicitGuide(_ key: AlignmentKey, size: CGSize) -> CGFloat? {
-    let font = Self.font
     if key == VerticalAlignment.firstTextBaseline.key {
-      return font.ascender
+      return style.font.ascender
     }
     if key == VerticalAlignment.lastTextBaseline.key {
-      return size.height + font.descender
+      return size.height + style.font.descender
     }
     return nil
   }
@@ -219,12 +263,12 @@ final class TextNode: Node {
     let label: UILabel = renderer.view(for: path) {
       let l = UILabel()
       l.numberOfLines = 0
-      l.font = Self.font
-      l.textColor = .label
       return l
     }
-    if label.text != string {
-      label.text = string
+    label.font = style.font
+    label.textColor = style.color
+    if label.text != shown {
+      label.text = shown
     }
     label.accessibilityIdentifier = accessibilityIdentifier
     label.frame = frame
@@ -284,4 +328,38 @@ extension _GeometryActionModifier: PrimitiveModifier {
       }
     }
   }
+}
+
+// ---- Spacers ----
+
+extension Spacer: PrimitiveView {
+  func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    [SpacerNode(path: path, minLength: minLength)]
+  }
+}
+
+/// Space that grows along its stack's axis (both axes outside a stack), never
+/// shorter than its minimum length (the system's spacing, by default).
+final class SpacerNode: Node {
+  let minLength: CGFloat
+  /// The axis of the stack it's in (set by the stack's node).
+  var axis: Axis?
+
+  init(path: ViewPath, minLength: CGFloat?) {
+    self.minLength = minLength ?? 8
+    super.init(path: path)
+  }
+
+  override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
+    switch axis {
+    case .horizontal: return CGSize(width: max(minLength, proposal.width ?? 0), height: 0)
+    case .vertical: return CGSize(width: 0, height: max(minLength, proposal.height ?? 0))
+    case nil: return CGSize(width: max(minLength, proposal.width ?? 0), height: max(minLength, proposal.height ?? 0))
+    }
+  }
+
+  /// No space between a spacer and its neighbours: it is the space.
+  nonisolated override var pommeSpacing: ViewSpacing { .zero }
+
+  override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {}
 }

@@ -66,6 +66,9 @@ final class ViewHost {
       view.invalidateIntrinsicContentSize()
     }
     runLifecycle()
+    for action in graph.takeAfterUpdate() {
+      action()
+    }
   }
 
   /// Lay the tree out in the hosting view.

@@ -286,8 +286,12 @@ def qualified_name(head, top, modules):
     return f'{top[4]}.{name}' if top[0] == 'type' and len(top) > 4 else name
 
 
-def derived_body(k, cases):
-    """`==` and `hash(into:)` of an enum without payloads, as Swift derives them."""
+def derived_body(k, cases, info=None):
+    """`==`, `hash(into:)` and `init?(rawValue:)` of an enum without payloads,
+    as Swift derives them."""
+    if info and info.get('raw') and re.fullmatch(r'public init\?\(rawValue: [\w.]+\)', k):
+        arms = ' '.join(f'case {v}: self = .{c}' for c, v in zip(cases, info['values']))
+        return f'{{ switch rawValue {{ {arms} default: return nil }} }}'
     if re.fullmatch(r'public static func == \(a: [\w.]+, b: [\w.]+\) -> Swift\.Bool', k):
         pairs = ', '.join(f'(.{c}, .{c})' for c in cases)
         return f'{{ switch (a, b) {{ case {pairs}: return true; default: return false }} }}'
@@ -386,6 +390,13 @@ def generate(src, owns=None, replaces=None, inside=None):
                         out.append(f'{indent}{mods}set {{ pommeSetEnvironmentValue("{value}", newValue) }}')
                 elif overridden == '#hashValue' and kw == 'get':
                     out.append(f'{indent}{mods}get {{ var h = Swift.Hasher(); hash(into: &h); return h.finalize() }}')
+                elif overridden in ('#rawValue', '#allCases') and kw == 'get':
+                    info = enums[top[3]]
+                    if overridden == '#rawValue':
+                        arms = ' '.join(f'case .{c}: return {v}' for c, v in zip(info['cases'], info['values']))
+                        out.append(f'{indent}{mods}get {{ switch self {{ {arms} }} }}')
+                    else:
+                        out.append(f'{indent}{mods}get {{ return [{", ".join("." + c for c in info["cases"])}] }}')
                 elif overridden and kw == 'get':
                     out.append(f'{indent}{mods}{kw} {asy}{thr}{{ return super.{overridden} }}')
                 elif overridden and kw == 'set':
@@ -465,7 +476,7 @@ def generate(src, owns=None, replaces=None, inside=None):
                 if kw == 'deinit':
                     out.append(line + ' {}')
                 elif kind == 'type' and (info := enums.get(top[4])) and not info['payload'] and info['cases'] \
-                        and (body := derived_body(key(stripped), info['cases'])):
+                        and (body := derived_body(key(stripped), info['cases'], info)):
                     out.append(f'{line} {body}')
                 elif kind == 'type' and re.fullmatch(r'public init\(rawValue: [\w.]+\)', key(stripped)):
                     # A raw-value type (an option set, a string-backed name …): its raw value is all it holds.
@@ -541,12 +552,14 @@ def generate(src, owns=None, replaces=None, inside=None):
                 # (An overriding property's accessors are the superclass's, until pomme has its own.)
                 name = re.search(r'\b(?:var|let)\s+([`\w]+)', head).group(1)
                 overriding = kind == 'type' and re.search(r'\boverride\b', MODIFIERS.match(ATTRIBUTES.sub('', stripped)).group(0))
-                derived = kind == 'type' and name == 'hashValue' and (info := enums.get(top[4])) and not info['payload'] and info['cases']
+                info = enums.get(top[4]) if kind == 'type' else None
+                plain = info and not info['payload'] and info['cases']
+                derived = plain and name in ('hashValue', 'allCases') or plain and name == 'rawValue' and info['raw']
                 # An environment value (`EnvironmentValues.layoutDirection` …): kept by name.
                 environment = kind == 'type' and top[4] == 'EnvironmentValues' and top[1].startswith('extension') \
                     and not re.search(r'\bstatic\b', head)
-                marker = '#hashValue' if derived else f'#env:{name}' if environment else name if overriding else None
-                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head), marker))
+                marker = f'#{name}' if derived else f'#env:{name}' if environment else name if overriding else None
+                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head), marker, top[4] if kind == 'type' else None))
             else:
                 stack.extend([('body',)] * d)
             out.append(line)
@@ -561,10 +574,20 @@ def generate(src, owns=None, replaces=None, inside=None):
 
         # An enum's cases, for its derived members (see derived_body).
         if kind == 'type' and re.match(r'(indirect\s+)?case\s', code) and re.search(r'\benum\s', top[1]):
-            info = enums.setdefault(top[4], {'cases': [], 'payload': False})
+            raw = re.search(r'\benum\s+\w+(?:<[^>]*>)?\s*:\s*(Swift\.(?:U?Int\d*|String|Double|Float))\b', top[1])
+            info = enums.setdefault(top[4], {'cases': [], 'payload': False, 'raw': raw and raw.group(1), 'values': []})
             for c in split_top(re.sub(r'^(indirect\s+)?case\s+', '', code)):
                 info['payload'] |= '(' in c
-                info['cases'].append(re.match(r'\s*`?(\w+)', c).group(1))
+                name = re.match(r'\s*`?(\w+)', c).group(1)
+                explicit = re.search(r'=\s*(.+)$', c)
+                if explicit:
+                    value = explicit.group(1).strip()
+                elif info['raw'] == 'Swift.String':
+                    value = f'"{name}"'
+                else:
+                    value = str(int(info['values'][-1]) + 1) if info['values'] else '0'
+                info['cases'].append(name)
+                info['values'].append(value)
 
         # An option set's options: bits in the order they're declared (as Apple
         # declares them); `none`, `all`, `horizontal` and `vertical` combine them.

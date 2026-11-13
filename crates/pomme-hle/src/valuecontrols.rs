@@ -237,7 +237,7 @@ fn set_slider_f32(emu: &mut Emu, s: u64, key: &str, v: f32) {
 }
 
 /// (value, minimum, maximum)
-fn slider_values(emu: &Emu, s: u64) -> (f32, f32, f32) {
+pub(crate) fn slider_values(emu: &Emu, s: u64) -> (f32, f32, f32) {
     (slider_f32(emu, s, "value", 0.0), slider_f32(emu, s, "minimumValue", 0.0), slider_f32(emu, s, "maximumValue", 1.0))
 }
 

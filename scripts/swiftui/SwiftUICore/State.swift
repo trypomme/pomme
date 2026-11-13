@@ -89,6 +89,12 @@ extension State {
     get { _location?.value ?? _value }
     nonmutating set { _location?.value = newValue }
   }
+
+  // pomme: replaces public struct State<Value> : SwiftUICore.DynamicProperty :: public var projectedValue: SwiftUICore.Binding<Value>
+  /// `$state`: a binding to the state's value (a constant outside a view in the graph).
+  public var projectedValue: Binding<Value> {
+    Binding(location: _location ?? ConstantLocation(_value))
+  }
 }
 
 // pomme: in public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject

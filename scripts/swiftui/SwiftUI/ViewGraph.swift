@@ -101,8 +101,10 @@ final class ViewGraph {
     appearances = [:]
     environment = EnvironmentValues()
     let preferences = Preferences()
+    followedNow = []
     let nodes = resolve(root, at: ViewPath(), preferences)
     storages = storages.filter { visited.contains($0.key) }
+    followed = followed.filter { followedNow.contains($0.key) }
     return (nodes, preferences)
   }
 
@@ -160,6 +162,31 @@ final class ViewGraph {
     if let last = geometry[path] as? V, last == value { return false }
     geometry[path] = value
     return true
+  }
+
+  /// The values followed with `onChange(of:)`, by the modifier's place.
+  private var followed: [ViewPath: Any] = [:]
+  private var followedNow: Set<ViewPath> = []
+  /// Actions to run once the update is done (`onChange`).
+  private(set) var afterUpdate: [() -> Void] = []
+
+  /// Whether the value followed at `path` changed since the last update (not
+  /// the first time it's seen); it's remembered either way.
+  func valueChanged<V: Equatable>(at path: ViewPath, to value: V) -> Bool {
+    followedNow.insert(path)
+    defer { followed[path] = value }
+    guard let last = followed[path] as? V else { return false }
+    return last != value
+  }
+
+  func runAfterUpdate(_ action: @escaping () -> Void) {
+    afterUpdate.append(action)
+  }
+
+  /// The actions queued by the update, which they leave the graph without.
+  func takeAfterUpdate() -> [() -> Void] {
+    defer { afterUpdate = [] }
+    return afterUpdate
   }
 
   func addTask(_ work: TaskWork, at path: ViewPath) {
@@ -325,5 +352,15 @@ extension _TraitWritingModifier: NodeModifier {
         node.layoutValues[layoutTrait.pommeLayoutKey] = value
       }
     }
+  }
+}
+
+extension _ValueActionModifier: NodeModifier {
+  /// `onChange(of:)`: the action runs after an update in which the value changed.
+  func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
+    guard graph.valueChanged(at: path, to: value) else { return }
+    let action = action
+    let value = value
+    graph.runAfterUpdate { action(value) }
   }
 }

@@ -543,7 +543,7 @@ extension AnyLayout {
 
 /// Lay views out one after another along an axis, the way SwiftUI's stacks do.
 package struct StackLayoutEngine {
-  let axis: Axis
+  package let axis: Axis
   let spacing: CGFloat?
   /// The cross-axis guide the views line up on.
   let guide: (ViewDimensions) -> CGFloat

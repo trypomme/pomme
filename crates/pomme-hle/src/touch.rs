@@ -333,8 +333,16 @@ pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> R
     if phase == MOVED {
         let tc = emu.touch.touches[&touch].clone();
         let content = if tc.delivered && !tc.view_cancelled { tc.view } else { 0 };
+        let panning = crate::scrollview::panning(emu);
         if crate::scrollview::touch_moved(emu, [x, y], at_ns, content)? {
             take_from_view(emu, touch)?;
+        } else if panning && !crate::scrollview::panning(emu) && !tc.delivered && !tc.view_cancelled && tc.view != 0 {
+            // The scroll views' pans failed (none scrolls this way): the view
+            // they held the touch back from gets it now, not after the delay.
+            let event = new_object(emu, "UIEvent")?;
+            emu.touch.events.insert(event, vec![touch]);
+            let touches = set_of(emu, &[touch])?;
+            deliver_began(emu, touch, touches, event)?;
         }
     }
     if phase == ENDED || phase == CANCELLED {
