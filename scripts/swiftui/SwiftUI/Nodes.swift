@@ -20,9 +20,9 @@ class Node: LayoutProxy {
     self.path = path
   }
 
-  /// Whether it takes the whole screen, under the bars, as lists do (its
-  /// content keeps clear of them itself).
-  var fillsScreen: Bool { false }
+  /// What tapping the list row it's the content of does: a button's action
+  /// (on iOS the whole row is the button).
+  var rowAction: (@MainActor () -> Void)? { nil }
 
   /// The size it takes when offered `proposal` (a nil dimension: its ideal size).
   func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
@@ -96,13 +96,9 @@ final class Renderer {
     let bounds = view.bounds
     let safe = bounds.inset(by: safeArea)
     for node in nodes {
-      if node.fillsScreen {
-        node.place(in: bounds, of: view, self)
-      } else {
-        let size = node.sizeThatFits(ProposedViewSize(safe.size))
-        let frame = CGRect(x: safe.midX - size.width / 2, y: safe.midY - size.height / 2, width: size.width, height: size.height)
-        node.place(in: frame, of: view, self)
-      }
+      let size = node.sizeThatFits(ProposedViewSize(safe.size))
+      let frame = CGRect(x: safe.midX - size.width / 2, y: safe.midY - size.height / 2, width: size.width, height: size.height)
+      node.place(in: frame, of: view, self)
     }
     for (path, v) in views where !used.contains(path) {
       v.removeFromSuperview()
@@ -303,7 +299,7 @@ final class GeometryNode: Node {
     super.init(path: path)
   }
 
-  override var fillsScreen: Bool { child.fillsScreen }
+  override var rowAction: (@MainActor () -> Void)? { child.rowAction }
 
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize { child.sizeThatFits(proposal) }
 
@@ -311,11 +307,11 @@ final class GeometryNode: Node {
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     child.place(in: frame, of: parent, renderer)
-    let safe = parent.safeAreaInsets
+    // Its safe-area insets: the safe area's, at the edges where it meets it.
+    let safe = renderer.extendingUnderSafeArea(frame, in: parent).insets
     let proxy = GeometryProxy(
       size: frame.size,
-      safeArea: EdgeInsets(top: max(safe.top - frame.minY, 0), leading: max(safe.left - frame.minX, 0),
-                           bottom: max(safe.bottom - (parent.bounds.height - frame.maxY), 0), trailing: max(safe.right - (parent.bounds.width - frame.maxX), 0))
+      safeArea: EdgeInsets(top: safe.top, leading: safe.left, bottom: safe.bottom, trailing: safe.right)
     ) { space in
       switch space {
       case .local: return CGRect(origin: .zero, size: frame.size)

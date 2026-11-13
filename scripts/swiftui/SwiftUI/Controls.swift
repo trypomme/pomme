@@ -307,7 +307,8 @@ extension Button: PrimitiveView {
   }
 }
 
-/// A control the size of a button's label, that runs its action when tapped.
+/// A control that runs a button's action when tapped: the size of its label,
+/// or of its list row.
 final class PommeButtonControl: UIControl {
   var action: (() -> Void)?
 
@@ -332,6 +333,8 @@ final class ButtonNode: Node {
     self.action = action
     super.init(path: path)
   }
+
+  override var rowAction: (@MainActor () -> Void)? { action }
 
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     label.first?.sizeThatFits(proposal) ?? .zero

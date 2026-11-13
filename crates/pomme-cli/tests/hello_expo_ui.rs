@@ -11,7 +11,8 @@ const APP: &str = "../../apps/hello-expo-ui/ios/build/Build/Products/Release-iph
 const SYSROOT: &str = "../../vendor/sysroot";
 
 // Where the controls are (points; from `pomme run --views`).
-const BUTTON: (f64, f64) = (150.0, 378.0);
+/// In the button's row, past its label: on iOS the whole row is the button.
+const BUTTON: (f64, f64) = (300.0, 378.0);
 const SWITCH: (f64, f64) = (328.0, 173.0);
 const SLIDER_THUMB: (f64, f64) = (195.0, 278.0);
 

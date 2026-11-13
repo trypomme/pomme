@@ -1437,7 +1437,10 @@ fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64,
 fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, title_dx: f32, back_alpha: Option<f32>) {
     use crate::navigation::{BACK_LABEL_X, TITLE_SIZE, TITLE_WEIGHT};
     const TINT: [f64; 4] = [0.0, 0.478, 1.0, 1.0]; // systemBlue
-    let baseline = h as f64 / 2.0 + TITLE_SIZE * 0.35;
+    // The bar's usual row (the back button, a small title): its top 44 pt
+    // when it also shows a large title below.
+    let row = if look.large { h - crate::navigation::large_title_metrics(emu).0 as f32 } else { h };
+    let baseline = row as f64 / 2.0 + TITLE_SIZE * 0.35;
     if back_alpha.is_none() {
         let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
         let x = (w as f64 - width) / 2.0 + title_dx as f64;
@@ -1453,10 +1456,20 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         // One device pixel (1/3 pt) along the bottom edge.
         p.fill(&rect_els(0.0, h, w, 1.0 / 3.0), sh.map(|v| v as f32), alpha, false, t, mask);
     }
-    let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
-    let x = (w as f64 - width) / 2.0 + title_dx as f64;
-    let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
-    p.glyphs(&placed, alpha, t, mask);
+    if look.large {
+        // The title large, at the leading edge, under the bar's usual row (which shows none).
+        use crate::navigation::{LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, LARGE_TITLE_X};
+        let large_baseline = h as f64 - crate::navigation::large_title_metrics(emu).1;
+        let (glyphs, _) = crate::textkit::line_glyphs(emu, &look.title, LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, large_baseline);
+        let x = look.leading + LARGE_TITLE_X + title_dx as f64;
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.glyphs(&placed, alpha, t, mask);
+    } else {
+        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
+        let x = (w as f64 - width) / 2.0 + title_dx as f64;
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.glyphs(&placed, alpha, t, mask);
+    }
     let Some(back) = &look.back else { return };
     let alpha = alpha * back_alpha;
     // The back button sits inside the bar's leading safe-area inset.
@@ -1471,7 +1484,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
     };
     if look.glass {
         // A 44-pt glass circle 16 pt in, with a chevron.
-        let (d, cx, cy) = (44.0f32, 16.0 + 22.0, h / 2.0);
+        let (d, cx, cy) = (44.0f32, 16.0 + 22.0, row / 2.0);
         let mut circle = Vec::new();
         arc_els(&mut circle, cx, cy, d / 2.0, 0.0, std::f32::consts::TAU, false);
         circle.push(El::Close);
@@ -1479,7 +1492,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         p.stroke(&circle, [0.0, 0.0, 0.0, 0.06], alpha, 0.5, t, mask);
         chevron(p, cx - 0.5, cy, 8.0, 8.0, [0.0, 0.0, 0.0, 1.0], 2.6);
     } else {
-        chevron(p, 8.0 + 6.0, h / 2.0, 10.5, 10.0, TINT, 3.0);
+        chevron(p, 8.0 + 6.0, row / 2.0, 10.5, 10.0, TINT, 3.0);
         if let Some(label) = &back.label {
             let (glyphs, _) = crate::textkit::line_glyphs(emu, label, TITLE_SIZE, 0.0, TINT, BACK_LABEL_X, baseline);
             p.glyphs(&glyphs, alpha, t, mask);

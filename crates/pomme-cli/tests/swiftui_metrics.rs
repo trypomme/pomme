@@ -25,15 +25,25 @@ fn parse(text: &str) -> Frames {
 
 #[test]
 fn layout_matches_ios() {
+    compare("swiftuimetrics");
+}
+
+/// Under a navigation bar with a large title: where the list starts.
+#[test]
+fn layout_under_a_large_title_matches_ios() {
+    compare("swiftuinavmetrics");
+}
+
+fn compare(probe: &str) {
     let sysroot = Path::new("../../vendor/sysroot");
     if !sysroot.join("System/Library/Frameworks/SwiftUI.framework/SwiftUI").exists() {
         eprintln!("skipping: build pomme's SwiftUI first (scripts/swiftui/build.sh)");
         return;
     }
-    let Some(mut emu) = common::boot("swiftuimetrics") else { return };
+    let Some(mut emu) = common::boot(probe) else { return };
     common::views(&mut emu, 3.0);
     let ours = parse(&emu.console);
-    let ios = parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/swiftuimetrics/ios26.txt")).unwrap());
+    let ios = parse(&std::fs::read_to_string(format!("{}/tests/fixtures/{probe}/ios26.txt", env!("CARGO_MANIFEST_DIR"))).unwrap());
     let mut wrong = Vec::new();
     for (name, want) in &ios {
         let Some(got) = ours.get(name) else {

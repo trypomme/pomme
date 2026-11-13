@@ -91,6 +91,8 @@ final class ViewHost {
     if navigation == nil {
       let content = ContentController()
       let navigationController = UINavigationController(rootViewController: content)
+      // SwiftUI's titles are large by default (automatic: the root's large).
+      navigationController.navigationBar.prefersLargeTitles = true
       controller?.addChild(navigationController)
       navigationController.view.frame = view.bounds
       navigationController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]

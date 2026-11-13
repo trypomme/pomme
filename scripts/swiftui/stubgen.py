@@ -301,6 +301,18 @@ def derived_body(k, cases, info=None):
     return None
 
 
+def struct_derived_body(k, props):
+    """`==` and `hash(into:)` of a frozen struct, as Swift derives them: over
+    every stored property."""
+    names = [n for n, _ in props]
+    if re.fullmatch(r'public static func == \(a: [\w.]+, b: [\w.]+\) -> Swift\.Bool', k):
+        return '{ return ' + ' && '.join(f'a.{p} == b.{p}' for p in names) + ' }'
+    # (A type-erasing box, `AnyColorBox` …, hashes through its own code: left a stub.)
+    if k == 'public func hash(into hasher: inout Swift.Hasher)' and not any(re.search(r'Box\b', t) for _, t in props):
+        return '{ ' + '; '.join(f'hasher.combine({p})' for p in names) + ' }'
+    return None
+
+
 def camel_words(name):
     """`topLeading` → ['top', 'leading']."""
     return [w.lower() for w in re.findall(r'[a-z0-9]+|[A-Z][a-z0-9]*', name)]
@@ -326,6 +338,7 @@ def generate(src, owns=None, replaces=None, inside=None):
     used = set()
     option_bits = {}  # by option set: its options' values so far
     enums = {}  # by qualified name: an enum's cases, and whether any has a payload
+    frozen_structs = {}  # by key: a frozen struct's stored properties
     # The module and those it imports (an extension's type is named without them).
     modules = set(re.findall(r'^(?:@_exported\s+)?import\s+(\w+)', src, re.M)) | set(re.findall(r'-module-name (\w+)', src[:2000]))
     out = []
@@ -478,6 +491,9 @@ def generate(src, owns=None, replaces=None, inside=None):
                 elif kind == 'type' and (info := enums.get(top[4])) and not info['payload'] and info['cases'] \
                         and (body := derived_body(key(stripped), info['cases'], info)):
                     out.append(f'{line} {body}')
+                elif kind == 'type' and (props := frozen_structs.get(top[1])) \
+                        and (body := struct_derived_body(key(stripped), props)):
+                    out.append(f'{line} {body}')
                 elif kind == 'type' and re.fullmatch(r'public init\(rawValue: [\w.]+\)', key(stripped)):
                     # A raw-value type (an option set, a string-backed name …): its raw value is all it holds.
                     store = '_pommeStorage = (); ' if top[3] else ''
@@ -508,6 +524,8 @@ def generate(src, owns=None, replaces=None, inside=None):
                 owned = hk in owns
                 if kind == 'file' and not re.search(r'^extension\b', hk):
                     SEEN.append(f'// pomme: owns {hk}')
+                if re.search(r'\bstruct\s', head) and (frozen_pending or re.search(r'@frozen\b', head)):
+                    frozen_structs[hk] = []
                 # ('type', key, owned, whether it gets hidden storage, qualified name)
                 stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned, m_storage_needed(head, frozen_pending), qualified_name(head, top, modules)))
                 stack.extend([('body',)] * (d - 1))
@@ -571,6 +589,13 @@ def generate(src, owns=None, replaces=None, inside=None):
                 if stack:
                     stack.pop()
             continue
+
+        # A frozen struct's stored properties (all of them are listed), for its
+        # derived == and hash (see struct_derived_body).
+        if kind == 'type' and top[1] in frozen_structs and '{' not in code and not re.search(r'\bstatic\b', code):
+            m = re.match(r'(?:(?:public|internal|package|private|fileprivate|final|nonisolated)\s+)*(?:var|let)\s+`?(\w+)`?\s*:\s*(.+)$', code)
+            if m:
+                frozen_structs[top[1]].append((m.group(1), m.group(2)))
 
         # An enum's cases, for its derived members (see derived_body).
         if kind == 'type' and re.match(r'(indirect\s+)?case\s', code) and re.search(r'\benum\s', top[1]):

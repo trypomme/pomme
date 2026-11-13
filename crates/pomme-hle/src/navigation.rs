@@ -17,6 +17,17 @@ use std::collections::HashMap;
 /// The navigation bar's height (below the status bar).
 pub const BAR_HEIGHT: f64 = 44.0;
 pub const COMPACT_BAR_HEIGHT: f64 = 32.0;
+/// A large title: 34-pt bold, 16 pt in, under the bar's usual 44 pt. iOS 26
+/// (measured on its simulator with the swiftuinavmetrics probe): 62 pt more
+/// bar, the baseline 16.33 above its bottom. Before: UIKit's 52 pt, 8.67 above.
+pub const LARGE_TITLE_SIZE: f64 = 34.0;
+pub const LARGE_TITLE_WEIGHT: f64 = 0.4; // bold
+pub const LARGE_TITLE_X: f64 = 16.0;
+
+/// The space a large title adds to the bar, and its baseline above the bar's bottom.
+pub fn large_title_metrics(emu: &Emu) -> (f64, f64) {
+    if emu.system.liquid_glass() { (62.0, 16.33) } else { (52.0, 8.67) }
+}
 
 #[derive(Clone, Default)]
 struct Nav {
@@ -36,6 +47,8 @@ struct Item {
     back_title: u64,
     title_view: u64,
     hides_back: bool,
+    /// UINavigationItemLargeTitleDisplayMode: automatic (0), always (1), never (2).
+    large_title_mode: u64,
 }
 
 #[derive(Default)]
@@ -298,7 +311,7 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     let b = view(emu, container).bounds;
     let (w, h) = (b[2], b[3]);
     let safe_top = crate::orientation::safe_area(emu)[0];
-    let bar_h = bar_height(emu);
+    let bar_h = nav_bar_height(emu, nc)?;
     let bar_bottom = safe_top + bar_h;
     set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
@@ -820,6 +833,8 @@ pub struct BarLook {
     /// Where the bar's leading content starts: its left safe-area inset
     /// (the sensor housing's side in landscape).
     pub leading: f64,
+    /// The title shown large, under the bar's usual row.
+    pub large: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -972,7 +987,11 @@ fn look_for(emu: &mut Emu, bar: u64, stack: &[u64]) -> Result<Option<BarLook>> {
         });
     }
     let (background, shadow) = if glass { (None, None) } else { bar_background(emu, top_item) };
-    Ok(Some(BarLook { title, back, glass, background, shadow, leading }))
+    let large = match emu.nav.bars.get(&bar).copied() {
+        Some(nc) if nav(emu, nc).stack.last() == Some(&top) => shows_large_title(emu, nc)? && bar_height(emu) == BAR_HEIGHT,
+        _ => false,
+    };
+    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large }))
 }
 
 fn bar_width(emu: &mut Emu, bar: u64) -> f64 {
@@ -1063,7 +1082,7 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
     while cur != 0 {
         if let Some(&nc) = emu.nav.containers.get(&cur) {
             if !nav(emu, nc).bar_hidden {
-                top += bar_height(emu);
+                top += nav_bar_height(emu, nc).unwrap_or(BAR_HEIGHT);
             }
             break;
         }
@@ -1076,6 +1095,43 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
 /// vertical size class is compact (phones in landscape).
 pub fn bar_height(emu: &Emu) -> f64 {
     if crate::orientation::size_classes(emu).1 == crate::device::COMPACT { COMPACT_BAR_HEIGHT } else { BAR_HEIGHT }
+}
+
+/// Whether the navigation controller's bar shows its top item's title large:
+/// the bar prefers large titles, and the item says always, or automatic with
+/// the item below it large (the root's automatic is large), as UIKit decides.
+pub fn shows_large_title(emu: &mut Emu, nc: u64) -> Result<bool> {
+    let n = nav(emu, nc);
+    if n.bar == 0 || objc::bag_get(emu, n.bar, "prefersLargeTitles").is_none_or(|v| v & 0xff == 0) {
+        return Ok(false);
+    }
+    let mut large = true;
+    for vc in n.stack {
+        let item = item_of(emu, vc)?;
+        match item_state(emu, item).large_title_mode {
+            1 => large = true,
+            2 => large = false,
+            _ => {}
+        }
+    }
+    Ok(large)
+}
+
+/// The bar's height for the navigation controller's top screen: taller with a large title.
+pub fn nav_bar_height(emu: &mut Emu, nc: u64) -> Result<f64> {
+    let base = bar_height(emu);
+    Ok(if base == BAR_HEIGHT && shows_large_title(emu, nc)? { base + large_title_metrics(emu).0 } else { base })
+}
+
+/// Lay out the controller whose bar this is (its height may have changed).
+fn relayout_bar(emu: &mut Emu, bar: u64) -> Result<()> {
+    if let Some(&nc) = emu.nav.bars.get(&bar) {
+        let c = nav(emu, nc).container;
+        if c != 0 {
+            layout_container(emu, c)?;
+        }
+    }
+    Ok(())
 }
 
 /// A view's safe-area insets (top, left, bottom, right): the device's, plus a
@@ -1932,6 +1988,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (NB, false, "touchesMoved:withEvent:", |_| Ok(())),
     (NB, false, "touchesCancelled:withEvent:", |_| Ok(())),
     (NB, false, "touchesEnded:withEvent:", bar_touches_ended),
+    (NB, false, "prefersLargeTitles", |e| {
+        let v = objc::bag_get(e, e.arg(0), "prefersLargeTitles").unwrap_or(0) & 0xff;
+        ret(e, v)
+    }),
+    (NB, false, "setPrefersLargeTitles:", |e| {
+        let (bar, v) = (e.arg(0), e.arg(2) & 0xff);
+        objc::bag_set(e, bar, "prefersLargeTitles", v);
+        relayout_bar(e, bar)
+    }),
     (NB, false, "isTranslucent", |e| {
         let nc = e.nav.bars.get(&e.arg(0)).copied().unwrap_or(0);
         let t = nc == 0 || nav(e, nc).translucent;
@@ -1975,6 +2040,20 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (NI, false, "setTitleView:", |e| {
         let (i, t) = (e.arg(0), e.arg(2));
         e.nav.item_state.entry(i).or_default().title_view = t;
+        Ok(())
+    }),
+    (NI, false, "largeTitleDisplayMode", |e| {
+        let m = item_state(e, e.arg(0)).large_title_mode;
+        ret(e, m)
+    }),
+    (NI, false, "setLargeTitleDisplayMode:", |e| {
+        let (i, m) = (e.arg(0), e.arg(2));
+        e.nav.item_state.entry(i).or_default().large_title_mode = m;
+        // The bar of a controller showing this item changes height.
+        let bars: Vec<u64> = e.nav.bars.keys().copied().collect();
+        for bar in bars {
+            relayout_bar(e, bar)?;
+        }
         Ok(())
     }),
     (NI, false, "hidesBackButton", |e| {

@@ -44,7 +44,8 @@ final class ListNode: Node {
   static let firstHeaderTop: CGFloat = 10
   static let headerAfterGroup: CGFloat = 27.33
   static let headerAboveGroup: CGFloat = 10
-  /// A section without a header: below the previous group (or the safe area's top).
+  /// A section without a header: below the previous group; the first one at
+  /// the safe area's top.
   static let sectionWithoutHeader: CGFloat = 35
   static let headerGap: CGFloat = 7
   static let separatorColor = UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.12)
@@ -71,8 +72,6 @@ final class ListNode: Node {
     super.init(path: path)
   }
 
-  override var fillsScreen: Bool { true }
-
   /// All it's offered (with nothing offered, a list's ideal size is 10 × 10, as SwiftUI's).
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     proposal.replacingUnspecifiedDimensions()
@@ -85,11 +84,10 @@ final class ListNode: Node {
       s.alwaysBounceVertical = true
       return s
     }
-    // The background goes under the bars and the home indicator where the list
-    // meets them; its rows keep clear of them.
-    let (extended, safe) = fillsScreen && parent === renderer.root
-      ? (frame, parent.safeAreaInsets)
-      : renderer.extendingUnderSafeArea(frame, in: parent)
+    // The list is the safe area it's given; its background goes under the
+    // bars and the home indicator where it meets them, and its rows keep clear
+    // of them.
+    let (extended, safe) = renderer.extendingUnderSafeArea(frame, in: parent)
     scroll.frame = extended
     parent.pommeAdopt(scroll)
 
@@ -109,7 +107,7 @@ final class ListNode: Node {
         header.place(in: CGRect(x: x + Self.rowInset, y: top, width: contentWidth, height: size.height), of: scroll, renderer)
         y = top + size.height + Self.headerAboveGroup
       } else {
-        y = (previousBottom ?? safe.top) + Self.sectionWithoutHeader
+        y = previousBottom.map { $0 + Self.sectionWithoutHeader } ?? safe.top
       }
 
       let group = renderer.view(for: section.path.appending("group")) {
@@ -132,9 +130,17 @@ final class ListNode: Node {
           separator.frame = CGRect(x: Self.rowInset, y: rowY - 1, width: width - 2 * Self.rowInset, height: 1)
           group.pommeAdopt(separator)
         }
+        // The row's content at its own size, at the leading edge.
         let size = row.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
         let height = max(Self.minRowHeight, size.height + 2 * Self.rowPadding)
-        row.place(in: CGRect(x: Self.rowInset, y: rowY + (height - size.height) / 2, width: contentWidth, height: size.height), of: group, renderer)
+        // A button's row is the button: a tap anywhere in it runs the action.
+        if let action = row.rowAction {
+          let control: PommeButtonControl = renderer.view(for: row.path.appending("row")) { PommeButtonControl(frame: .zero) }
+          control.frame = CGRect(x: 0, y: rowY, width: width, height: height)
+          control.action = { MainActor.assumeIsolated { action() } }
+          group.pommeAdopt(control)
+        }
+        row.place(in: CGRect(x: Self.rowInset, y: rowY + (height - size.height) / 2, width: min(size.width, contentWidth), height: size.height), of: group, renderer)
         rowY += height
       }
       group.frame = CGRect(x: x, y: y, width: width, height: rowY)
