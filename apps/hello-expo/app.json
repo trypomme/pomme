@@ -8,7 +8,8 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "dev.pomme.helloexpo"
+      "bundleIdentifier": "dev.pomme.helloexpo",
+      "googleServicesFile": "./GoogleService-Info.plist"
     },
     "android": {
       "adaptiveIcon": {
@@ -26,7 +27,24 @@
       "expo-router",
       "expo-status-bar",
       "expo-image",
-      ["expo-secure-store", { "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to protect your secrets." }]
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to protect your secrets."
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "@react-native-firebase/analytics",
+      "@react-native-firebase/crashlytics",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "dynamic"
+          }
+        }
+      ]
     ],
     "scheme": "pommehello"
   }

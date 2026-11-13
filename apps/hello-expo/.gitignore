@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Firebase: the app's config holds the project's API key
+GoogleService-Info.plist

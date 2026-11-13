@@ -1,0 +1,4 @@
+{
+  "firestore": { "database": "(default)", "location": "australia-southeast1", "rules": "firestore.rules" },
+  "auth": { "providers": { "anonymous": true } }
+}
