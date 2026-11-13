@@ -6,6 +6,7 @@ extension ForEach {
   package var pommeID: (Data.Element) -> ID
 }
 
+// pomme: in extension SwiftUICore.ForEach where Content : SwiftUICore.View
 extension ForEach where Content: View {
   // pomme: replaces extension SwiftUICore.ForEach where Content : SwiftUICore.View :: public init(_ data: Data, id: Swift.KeyPath<Data.Element, ID>, @SwiftUICore.ViewBuilder content: @escaping (Data.Element) -> Content)
   public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {

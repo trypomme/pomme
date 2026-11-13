@@ -23,6 +23,10 @@ final class ViewHost {
   var sizesToContent = false {
     didSet { view?.invalidateIntrinsicContentSize() }
   }
+  /// The safe areas its content keeps clear of (`safeAreaRegions`).
+  var safeAreaRegions: SafeAreaRegions = .all {
+    didSet { view?.setNeedsLayout() }
+  }
 
   private var graph: ViewGraph!
   private let renderer = Renderer()
@@ -68,14 +72,14 @@ final class ViewHost {
   func layout() {
     guard let view else { return }
     if navigation == nil {
-      renderer.show(nodes, in: view)
+      renderer.show(nodes, in: view, respectingSafeArea: safeAreaRegions.contains(.container))
     }
   }
 
-  /// The content's size when offered `proposal` (an infinite dimension: its ideal size).
-  func sizeThatFits(_ proposal: CGSize) -> CGSize {
+  /// The content's size when offered `proposal` (a nil dimension: its ideal size).
+  func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     nodes.reduce(CGSize.zero) { size, node in
-      let s = node.sizeThatFits(proposal, renderer)
+      let s = node.sizeThatFits(proposal)
       return CGSize(width: max(size.width, s.width), height: max(size.height, s.height))
     }
   }
@@ -137,11 +141,11 @@ final class HostingView: UIView {
 
   override var intrinsicContentSize: CGSize {
     guard host.sizesToContent else { return super.intrinsicContentSize }
-    return host.sizeThatFits(CGSize(width: CGFloat.infinity, height: .infinity))
+    return host.sizeThatFits(.unspecified)
   }
 
   override func sizeThatFits(_ size: CGSize) -> CGSize {
-    host.sizeThatFits(size)
+    host.sizeThatFits(ProposedViewSize(size))
   }
 }
 
@@ -191,7 +195,18 @@ extension UIHostingController {
   // pomme: replaces open class UIHostingController<Content> : UIKit.UIViewController where Content : SwiftUICore.View :: public func sizeThatFits(in size: CoreFoundation.CGSize) -> CoreFoundation.CGSize
   @MainActor @preconcurrency
   public func sizeThatFits(in size: CGSize) -> CGSize {
-    pommeHost.sizeThatFits(size)
+    pommeHost.sizeThatFits(ProposedViewSize(size))
+  }
+}
+
+extension UIHostingController {
+  // pomme: replaces extension SwiftUI.UIHostingController :: public var safeAreaRegions: SwiftUICore.SafeAreaRegions
+  /// The safe areas the content keeps clear of; without `.container`, it goes under the bars too.
+  @available(iOS 16.4, tvOS 16.4, *)
+  @MainActor @preconcurrency
+  public var safeAreaRegions: SafeAreaRegions {
+    get { pommeHost.safeAreaRegions }
+    set { pommeHost.safeAreaRegions = newValue }
   }
 }
 

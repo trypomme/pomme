@@ -13,13 +13,15 @@ cd "$(dirname "$0")/../.."
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=vendor/swiftui-gen
 [ "${1:-}" = baseline ] && GEN=vendor/swiftui-gen/baseline
+BASELINE=()
+[ "${1:-}" = baseline ] && BASELINE=(-D POMME_BASELINE)
 OUT=vendor/sysroot/System/Library/Frameworks/SwiftUI.framework
 mkdir -p "$GEN" "$OUT"
 TARGET=arm64-apple-ios26.5
 FLAGS=(-target "$TARGET" -sdk "$SDK" -enable-library-evolution -swift-version 5 -enforce-exclusivity=checked -O
   -enable-experimental-feature Macros -enable-experimental-feature ExtensionMacros -enable-experimental-feature IsolatedAny2
   -enable-upcoming-feature InferSendableFromCaptures -enable-experimental-feature DebugDescriptionMacro -enable-bare-slash-regex
-  -parse-as-library -module-abi-name SwiftUI -package-name SwiftUI -I "$GEN" -suppress-warnings)
+  -parse-as-library -module-abi-name SwiftUI -package-name SwiftUI -I "$GEN" -suppress-warnings ${BASELINE[@]+"${BASELINE[@]}"})
 
 for M in SwiftUICore SwiftUI; do
   IFACE="$SDK/System/Library/Frameworks/$M.framework/Modules/$M.swiftmodule/arm64e-apple-ios.swiftinterface"

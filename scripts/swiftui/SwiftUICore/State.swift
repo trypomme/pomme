@@ -59,11 +59,11 @@ package final class StoredLocation<Value>: AnyLocation<Value>, @unchecked Sendab
 
 /// A dynamic property the graph prepares before asking a view for its body.
 package protocol PommeDynamicProperty {
-  mutating func pommeAttach(to storage: ViewStorage, slot: Int)
+  mutating func pommeAttach(to storage: ViewStorage, slot: Int, environment: EnvironmentValues)
 }
 
 extension State: PommeDynamicProperty {
-  package mutating func pommeAttach(to storage: ViewStorage, slot: Int) {
+  package mutating func pommeAttach(to storage: ViewStorage, slot: Int, environment: EnvironmentValues) {
     if let location = storage.locations[slot] as? StoredLocation<Value> {
       _location = location
     } else {
@@ -102,7 +102,7 @@ extension ObservedObject {
 
 extension ObservedObject: PommeDynamicProperty {
   /// The view updates when its object is about to change.
-  package mutating func pommeAttach(to storage: ViewStorage, slot: Int) {
+  package mutating func pommeAttach(to storage: ViewStorage, slot: Int, environment: EnvironmentValues) {
     let id = ObjectIdentifier(wrappedValue)
     guard storage.observing[slot]?.object != id else { return }
     let changed = storage.changed
@@ -111,6 +111,7 @@ extension ObservedObject: PommeDynamicProperty {
   }
 }
 
+// pomme: in extension SwiftUICore.DynamicProperty
 extension DynamicProperty {
   // pomme: replaces extension SwiftUICore.DynamicProperty :: public mutating func update()
   public mutating func update() {}
@@ -118,7 +119,7 @@ extension DynamicProperty {
 
 /// Give a view's dynamic properties (its stored properties that are, such as
 /// `@State`) their storage, in the order the view declares them.
-package func attachDynamicProperties<V>(_ view: inout V, to storage: ViewStorage) {
+package func attachDynamicProperties<V>(_ view: inout V, to storage: ViewStorage, environment: EnvironmentValues) {
   let count = _pommeFieldCount(V.self)
   guard count > 0 else { return }
   withUnsafeMutableBytes(of: &view) { bytes in
@@ -129,7 +130,7 @@ package func attachDynamicProperties<V>(_ view: inout V, to storage: ViewStorage
       guard let property = type as? any PommeDynamicProperty.Type else { continue }
       let at = bytes.baseAddress! + _pommeFieldOffset(V.self, index: i)
       func attach<P: PommeDynamicProperty>(_: P.Type) {
-        at.assumingMemoryBound(to: P.self).pointee.pommeAttach(to: storage, slot: i)
+        at.assumingMemoryBound(to: P.self).pointee.pommeAttach(to: storage, slot: i, environment: environment)
       }
       attach(property)
     }

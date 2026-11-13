@@ -34,26 +34,46 @@ extension KeyframeTrackContentBuilder.Conditional {
   public var body: Body { return _pommeUnimplementedValue("KeyframeTrackContentBuilder.Conditional.body") }
 }
 
-/// The stack layouts' Layout methods (Apple's binary has them through an
-/// internal protocol).
+#if POMME_BASELINE
+// (The stubs-only baseline that check-exports.sh compares with: what the
+// generated source needs, without pomme's code.)
+extension EnvironmentValues {
+  package func pommeEnvironmentValue<T>(_ name: StaticString) -> T { _pommeUnimplemented("an environment value") }
+  package mutating func pommeSetEnvironmentValue<T>(_ name: StaticString, _ value: T) { _pommeUnimplemented("an environment value") }
+}
+
 extension Layout where Cache == _StackLayoutCache {
-  public func makeCache(subviews: Subviews) -> Cache { _pommeUnimplemented("makeCache(subviews:) of a stack layout") }
+  public func makeCache(subviews: Subviews) -> Cache { _pommeUnimplemented("a stack layout") }
+  public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize { _pommeUnimplemented("a stack layout") }
+  public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) { _pommeUnimplemented("a stack layout") }
+}
+
+extension ZStackLayout {
+  public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize { _pommeUnimplemented("ZStackLayout") }
+  public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) { _pommeUnimplemented("ZStackLayout") }
+}
+#else
+/// The stack layouts' Layout methods (Apple's binary has them through an
+/// internal protocol): the stack engine, with each layout's axis, spacing and guide.
+extension Layout where Cache == _StackLayoutCache {
+  public func makeCache(subviews: Subviews) -> Cache { _StackLayoutCache() }
   public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-    _pommeUnimplemented("sizeThatFits(proposal:subviews:cache:) of a stack layout")
+    (self as! any PommeStackLayout).pommeEngine.sizeThatFits(proposal: proposal, subviews: subviews)
   }
   public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-    _pommeUnimplemented("placeSubviews(in:proposal:subviews:cache:) of a stack layout")
+    (self as! any PommeStackLayout).pommeEngine.placeSubviews(in: bounds, proposal: proposal, subviews: subviews)
   }
 }
 
 extension ZStackLayout {
   public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-    _pommeUnimplemented("ZStackLayout.sizeThatFits(proposal:subviews:cache:)")
+    ZStackLayoutEngine(alignment: alignment).sizeThatFits(proposal: proposal, subviews: subviews)
   }
   public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-    _pommeUnimplemented("ZStackLayout.placeSubviews(in:proposal:subviews:cache:)")
+    ZStackLayoutEngine(alignment: alignment).placeSubviews(in: bounds, proposal: proposal, subviews: subviews)
   }
 }
+#endif
 
 extension Spring {
   /// `Spring()`, as default arguments use it: the default spring.

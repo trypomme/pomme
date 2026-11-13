@@ -221,7 +221,7 @@ def read_markers(paths, processed_dir=None):
     """pomme's takeovers, from its sources:
       // pomme: owns <type declaration>
       // pomme: replaces <type or extension declaration> :: <member declaration>
-      // pomme: in <type declaration>        (on an `extension … {` block)
+      // pomme: in <type declaration or interface extension>   (on an `extension … {` block)
     each written as `key` gives it (copy it from the generated source).
 
     An `in` block's contents go into the type's own declaration, in place of
@@ -229,7 +229,11 @@ def read_markers(paths, processed_dir=None):
     property wrapper's `wrappedValue`, and members of SwiftUICore's types,
     which Swift mangles differently in an extension (the types were
     originally defined in SwiftUI). The sources are written to
-    `processed_dir` without those blocks, to be compiled from there."""
+    `processed_dir` without those blocks, to be compiled from there.
+
+    On an interface extension (`extension SwiftUICore.View`), the block goes
+    into the first one: an extension of a SwiftUICore type carries the type's
+    `@_originallyDefinedIn`, which its members' mangling depends on too."""
     owns, replaces, inside = {}, {}, {}
     for path in paths:
         lines = open(path).read().split('\n')
@@ -270,6 +274,34 @@ def read_markers(paths, processed_dir=None):
     return owns, replaces, inside
 
 
+def qualified_name(head, top, modules):
+    """A type's name with the types it's nested in (`Axis.Set`): for an
+    extension, the type it extends, without its module."""
+    m = re.match(r'\s*extension\s+([\w.]+)', head)
+    if m:
+        parts = m.group(1).split('.')
+        return '.'.join(parts[1:] if len(parts) > 1 and parts[0] in modules else parts)
+    m = re.search(r'\b(?:struct|class|enum|actor|protocol)\s+(\w+)', head)
+    name = m.group(1) if m else '?'
+    return f'{top[4]}.{name}' if top[0] == 'type' and len(top) > 4 else name
+
+
+def derived_body(k, cases):
+    """`==` and `hash(into:)` of an enum without payloads, as Swift derives them."""
+    if re.fullmatch(r'public static func == \(a: [\w.]+, b: [\w.]+\) -> Swift\.Bool', k):
+        pairs = ', '.join(f'(.{c}, .{c})' for c in cases)
+        return f'{{ switch (a, b) {{ case {pairs}: return true; default: return false }} }}'
+    if k == 'public func hash(into hasher: inout Swift.Hasher)':
+        arms = ' '.join(f'case .{c}: hasher.combine({i})' for i, c in enumerate(cases))
+        return f'{{ switch self {{ {arms} }} }}'
+    return None
+
+
+def camel_words(name):
+    """`topLeading` → ['top', 'leading']."""
+    return [w.lower() for w in re.findall(r'[a-z0-9]+|[A-Z][a-z0-9]*', name)]
+
+
 SEEN = []  # every marker the interface allows, for --markers
 OBJC_DEINIT = re.compile(r'@objc (?=(@[\w()_]+ )*deinit)')
 
@@ -288,7 +320,10 @@ def generate(src, owns=None, replaces=None, inside=None):
     returns them; each must match, or it's an error."""
     owns, replaces, inside = owns or {}, replaces or {}, inside or {}
     used = set()
-    option_bits = {}  # by option set: its next option's bit
+    option_bits = {}  # by option set: its options' values so far
+    enums = {}  # by qualified name: an enum's cases, and whether any has a payload
+    # The module and those it imports (an extension's type is named without them).
+    modules = set(re.findall(r'^(?:@_exported\s+)?import\s+(\w+)', src, re.M)) | set(re.findall(r'-module-name (\w+)', src[:2000]))
     out = []
     # Context stack entries: ('protocol',), ('type', key), ('var', result type),
     # ('pvar',) for a protocol's property requirements, ('body',) for code.
@@ -343,7 +378,15 @@ def generate(src, owns=None, replaces=None, inside=None):
                 asy, thr = m.group(4) or '', m.group(5) or ''
                 ty = top[1] if kw in ('get', 'unsafeAddress') else None
                 overridden = top[2] if len(top) > 2 else None
-                if overridden and kw == 'get':
+                if overridden and overridden.startswith('#env:') and kw in ('get', 'set'):
+                    value = overridden[5:]
+                    if kw == 'get':
+                        out.append(f'{indent}{mods}get {{ return pommeEnvironmentValue("{value}") }}')
+                    else:
+                        out.append(f'{indent}{mods}set {{ pommeSetEnvironmentValue("{value}", newValue) }}')
+                elif overridden == '#hashValue' and kw == 'get':
+                    out.append(f'{indent}{mods}get {{ var h = Swift.Hasher(); hash(into: &h); return h.finalize() }}')
+                elif overridden and kw == 'get':
                     out.append(f'{indent}{mods}{kw} {asy}{thr}{{ return super.{overridden} }}')
                 elif overridden and kw == 'set':
                     out.append(f'{indent}{mods}{kw} {{ super.{overridden} = newValue }}')
@@ -421,6 +464,9 @@ def generate(src, owns=None, replaces=None, inside=None):
             if rest is None and kind != 'protocol':
                 if kw == 'deinit':
                     out.append(line + ' {}')
+                elif kind == 'type' and (info := enums.get(top[4])) and not info['payload'] and info['cases'] \
+                        and (body := derived_body(key(stripped), info['cases'])):
+                    out.append(f'{line} {body}')
                 elif kind == 'type' and re.fullmatch(r'public init\(rawValue: [\w.]+\)', key(stripped)):
                     # A raw-value type (an option set, a string-backed name …): its raw value is all it holds.
                     store = '_pommeStorage = (); ' if top[3] else ''
@@ -451,10 +497,10 @@ def generate(src, owns=None, replaces=None, inside=None):
                 owned = hk in owns
                 if kind == 'file' and not re.search(r'^extension\b', hk):
                     SEEN.append(f'// pomme: owns {hk}')
-                # ('type', key, owned, whether it gets hidden storage)
-                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned, m_storage_needed(head, frozen_pending)))
+                # ('type', key, owned, whether it gets hidden storage, qualified name)
+                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned, m_storage_needed(head, frozen_pending), qualified_name(head, top, modules)))
                 stack.extend([('body',)] * (d - 1))
-                if hk in inside and not owned:
+                if hk in inside and not owned and hk not in used:
                     # pomme's members of the declaration itself, first.
                     used.add(hk)
                     out.append(line)
@@ -495,7 +541,12 @@ def generate(src, owns=None, replaces=None, inside=None):
                 # (An overriding property's accessors are the superclass's, until pomme has its own.)
                 name = re.search(r'\b(?:var|let)\s+([`\w]+)', head).group(1)
                 overriding = kind == 'type' and re.search(r'\boverride\b', MODIFIERS.match(ATTRIBUTES.sub('', stripped)).group(0))
-                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head), name if overriding else None))
+                derived = kind == 'type' and name == 'hashValue' and (info := enums.get(top[4])) and not info['payload'] and info['cases']
+                # An environment value (`EnvironmentValues.layoutDirection` …): kept by name.
+                environment = kind == 'type' and top[4] == 'EnvironmentValues' and top[1].startswith('extension') \
+                    and not re.search(r'\bstatic\b', head)
+                marker = '#hashValue' if derived else f'#env:{name}' if environment else name if overriding else None
+                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head), marker))
             else:
                 stack.extend([('body',)] * d)
             out.append(line)
@@ -508,12 +559,40 @@ def generate(src, owns=None, replaces=None, inside=None):
                     stack.pop()
             continue
 
-        # An option set's options: bits in the order they're declared (as Apple declares them).
-        m = re.search(r'\bstatic\s+let\s+[`\w]+\s*:\s*([\w.]+)\s*$', code)
-        if kind == 'type' and m and 'Swift.OptionSet' in top[1] and re.search(r'\b(struct|class)\s+' + re.escape(m.group(1).split('.')[-1]) + r'\b', top[1]):
-            bit = option_bits.get(top[1], 0)
-            option_bits[top[1]] = bit + 1
-            out.append(f'{line} = .init(rawValue: 1 << {bit})')
+        # An enum's cases, for its derived members (see derived_body).
+        if kind == 'type' and re.match(r'(indirect\s+)?case\s', code) and re.search(r'\benum\s', top[1]):
+            info = enums.setdefault(top[4], {'cases': [], 'payload': False})
+            for c in split_top(re.sub(r'^(indirect\s+)?case\s+', '', code)):
+                info['payload'] |= '(' in c
+                info['cases'].append(re.match(r'\s*`?(\w+)', c).group(1))
+
+        # An option set's options: bits in the order they're declared (as Apple
+        # declares them); `none`, `all`, `horizontal` and `vertical` combine them.
+        m = re.search(r'\bstatic\s+let\s+`?(\w+)`?\s*:\s*([\w.]+)\s*$', code)
+        if kind == 'type' and m and 'Swift.OptionSet' in top[1] and re.search(r'\b(struct|class)\s+' + re.escape(m.group(2).split('.')[-1]) + r'\b', top[1]):
+            options = option_bits.setdefault(top[1], {})
+            name = m.group(1)
+            parts = {'horizontal': ('leading', 'trailing', 'left', 'right'), 'vertical': ('top', 'bottom', 'up', 'down')}
+            if name == 'none':
+                value = 0
+            elif name == 'all':
+                value = 0
+                for v in options.values():
+                    value |= v
+            elif name in parts and any(p in options for p in parts[name]):
+                value = 0
+                for p in parts[name]:
+                    value |= options.get(p, 0)
+            elif len(named := [v for k, v in options.items() if name in camel_words(k)]) >= 2:
+                # Named by a word of earlier options' names: those together (`leading`: `topLeading`, `bottomLeading`).
+                value = 0
+                for v in named:
+                    value |= v
+            else:
+                singles = [v for v in options.values() if v and v & (v - 1) == 0]
+                value = 1 << len(singles)
+            options[name] = value
+            out.append(f'{line} = .init(rawValue: {value})')
             continue
 
         # A static or global stored property needs a value: using it stops.

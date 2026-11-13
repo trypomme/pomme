@@ -18,13 +18,13 @@ extension _TaskModifier2 {
   }
 }
 
-extension _TaskModifier2: PrimitiveModifier {
+extension _TaskModifier2: NodeModifier {
   func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
     graph.addTask(pommeWork, at: path)
   }
 }
 
-extension _TaskModifier: PrimitiveModifier {
+extension _TaskModifier: NodeModifier {
   func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
     graph.addTask(TaskWork(priority: priority, action: action), at: path)
   }
@@ -32,7 +32,7 @@ extension _TaskModifier: PrimitiveModifier {
 
 // ---- .onAppear, .onDisappear ----
 
-extension _AppearanceActionModifier: PrimitiveModifier {
+extension _AppearanceActionModifier: NodeModifier {
   func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
     graph.addAppearance(AppearanceActions(appear: appear, disappear: disappear), at: path)
   }
@@ -46,7 +46,7 @@ public struct AccessibilityAttachmentModifier: ViewModifier {
   var pommeIdentifier: String?
 }
 
-extension AccessibilityAttachmentModifier: PrimitiveModifier {
+extension AccessibilityAttachmentModifier: NodeModifier {
   func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
     if let id = pommeIdentifier {
       for node in nodes {

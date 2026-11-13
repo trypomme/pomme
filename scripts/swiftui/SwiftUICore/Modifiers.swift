@@ -1,5 +1,6 @@
 // Applying modifiers to views.
 
+// pomme: in extension SwiftUICore.View
 extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func modifier<T>(_ modifier: T) -> SwiftUICore.ModifiedContent<Self, T>
   nonisolated public func modifier<T>(_ modifier: T) -> ModifiedContent<Self, T> {
@@ -40,4 +41,15 @@ extension AnyView {
 extension AnyView {
   /// The view it erases.
   package var pommeView: any View { storage.pommeView }
+}
+
+// ---- if/else in a view builder ----
+
+// pomme: in extension SwiftUICore._ConditionalContent : SwiftUICore.View where TrueContent : SwiftUICore.View, FalseContent : SwiftUICore.View
+extension _ConditionalContent where TrueContent: View, FalseContent: View {
+  // pomme: replaces extension SwiftUICore._ConditionalContent : SwiftUICore.View where TrueContent : SwiftUICore.View, FalseContent : SwiftUICore.View :: internal init(storage: SwiftUICore._ConditionalContent<TrueContent, FalseContent>.Storage)
+  @usableFromInline
+  internal init(storage: Storage) {
+    self.storage = storage
+  }
 }

@@ -39,7 +39,7 @@ final class NavigationStackNode: Node {
 }
 
 /// `.navigationTitle(…)`: the title of the navigation stack's screen.
-struct NavigationTitleModifier: ViewModifier, PrimitiveModifier {
+struct NavigationTitleModifier: ViewModifier, NodeModifier {
   typealias Body = Never
   let title: () -> String
 

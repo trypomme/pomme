@@ -65,8 +65,16 @@ that affects them, such as `@_originallyDefinedIn`. Beyond that:
   `UIViewController` methods and properties) call `super` until pomme has its
   own: UIKit calls them on every controller.
 - **Raw-value types** (option sets, string-backed names) store their raw
-  value; an option set's options are bits in the order they're declared, as
-  Apple declares them.
+  value. An option set's options are bits in the order they're declared, as
+  Apple declares them. `none`, `all`, `horizontal` and `vertical`, and an
+  option named by a word of earlier ones (`leading` for `topLeading` and
+  `bottomLeading`), combine them.
+- **Enums without payloads** get `==`, `hash(into:)` and `hashValue` as Swift
+  derives them. The interface lists them, so they'd otherwise be stubs.
+- **Environment values** (`EnvironmentValues.layoutDirection` …) are kept by
+  name. What's written is read back; otherwise the system default pomme
+  defines for that name (`EnvironmentValues.pommeDefaults`), or a stop naming
+  the value.
 - **Declarations unavailable on iOS** are left out, along with extensions of
   the types left out.
 - **`$ld$hide$os…$` symbols** from `@_originallyDefinedIn` are dropped at
@@ -82,12 +90,13 @@ SDK change that renames something fails the build rather than going unnoticed.
 
 - `// pomme: replaces <type or extension> :: <member>`: the generator leaves
   the member out, and pomme's code declares it (usually in an extension).
-- `// pomme: in <type>`, on an `extension` block: the block's contents go into
-  the type's own declaration, in place of the stubbed members it replaces.
-  This is for what has to be there: stored properties, a property wrapper's
-  `wrappedValue`, and members of SwiftUICore's types. Those types are
-  `@_originallyDefinedIn(module: "SwiftUI")`, and Swift mangles their members
-  differently in an extension than in the declaration.
+- `// pomme: in <type or interface extension>`, on an `extension` block: the
+  block's contents go into that declaration (an extension's first block), in
+  place of the stubbed members it replaces. Use it for what has to be there:
+  stored properties, a property wrapper's `wrappedValue`, and every member of
+  SwiftUICore's types. Those types are `@_originallyDefinedIn(module:
+  "SwiftUI")`, and so are the interface's extensions of them. A member
+  declared outside them gets a different mangled name, one apps don't bind to.
 - A type nested in another type's declaration is named with it:
   `<outer> > <inner>` (`Published<Value>` has its own `Publisher`).
 - `// pomme: owns <type>`: pomme declares the type itself (its storage and
@@ -132,11 +141,23 @@ UIKit underneath.
   each `@State` gets a location kept at the view's place in the tree (its
   path), found through the runtime's field reflection. A write to a state
   updates the tree, after the current work is done.
-- **Nodes** (`Nodes.swift`, `List.swift`, `Navigation.swift`) lay out the way
-  SwiftUI does (the parent proposes a size, the child chooses its own) and
-  are shown with UIKit views kept per path: a `UILabel` for text, an inset
-  grouped section in a scroll view for a list, and a navigation controller
-  for a navigation stack.
+- **Layout** (SwiftUICore's `Layout.swift`): alignment guides (a registry of
+  `AlignmentID`s behind `AlignmentKey`), `ViewDimensions`, proposals, and the
+  `Layout` protocol. Its subviews are `LayoutSubview` proxies to pomme's nodes,
+  so any layout runs: the stacks (SwiftUI's algorithm: space shared out
+  least-flexible first, by priority), z-stacks, frames, `fixedSize`,
+  `AnyLayout`, an app's own.
+- **Nodes** (`Nodes.swift`, `List.swift`, `Navigation.swift`) are what views
+  resolve to. A layout node runs a layout over its children. Nodes are shown
+  with UIKit views kept per path: a `UILabel` for text, an inset grouped
+  section in a scroll view for a list, and a navigation controller for a
+  navigation stack.
+- **Modifiers** resolve the view they modify. Environment writers set what it
+  sees; layout modifiers (`frame`, `fixedSize`) wrap it in a layout;
+  `onGeometryChange` follows its geometry once placed; others (tasks, traits,
+  identifiers) mark its nodes. A custom `ViewModifier`'s body gets
+  `_ViewModifier_Content`, which stands for the modified view.
+- **The environment** flows down as views resolve, and `@Environment` reads it.
 - **Lifecycle** (`Hosting.swift`): after each update, the tasks of views that
   have appeared start (`.task`) and those of views that have gone are
   cancelled. `.onAppear` and `.onDisappear` work the same way.

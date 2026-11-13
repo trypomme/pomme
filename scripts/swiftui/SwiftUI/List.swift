@@ -43,8 +43,9 @@ final class ListNode: Node {
 
   override var fillsScreen: Bool { true }
 
-  override func sizeThatFits(_ proposal: CGSize, _ renderer: Renderer) -> CGSize {
-    proposal
+  /// All it's offered (with nothing offered, a list's ideal size is 10 × 10, as SwiftUI's).
+  override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
+    proposal.replacingUnspecifiedDimensions()
   }
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
@@ -83,7 +84,7 @@ final class ListNode: Node {
         separator.frame = CGRect(x: Self.rowInset, y: y, width: width - Self.rowInset, height: 1 / scale)
         section.pommeAdopt(separator)
       }
-      let size = row.sizeThatFits(CGSize(width: contentWidth, height: .greatestFiniteMagnitude), renderer)
+      let size = row.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
       let height = max(Self.minRowHeight, size.height + 2 * Self.rowPadding)
       row.place(in: CGRect(x: Self.rowInset, y: y + (height - size.height) / 2, width: contentWidth, height: size.height), of: section, renderer)
       y += height
