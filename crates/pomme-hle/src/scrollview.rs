@@ -66,6 +66,8 @@ pub struct State {
     pan: Option<Pan>,
     glide: Option<Glide>,
     generation: u64,
+    /// Each scroll view's adjusted content insets as last laid out.
+    adjusted: std::collections::HashMap<u64, [f64; 4]>,
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {
@@ -119,8 +121,66 @@ pub fn is_scroll_view(emu: &mut Emu, v: u64) -> bool {
 
 const INSET_KEYS: [&str; 4] = ["contentInsetTop", "contentInsetLeft", "contentInsetBottom", "contentInsetRight"];
 
-fn content_inset(emu: &Emu, v: u64) -> [f64; 4] {
+pub(crate) fn content_inset(emu: &Emu, v: u64) -> [f64; 4] {
     INSET_KEYS.map(|k| bag_f64(emu, v, k).unwrap_or(0.0))
+}
+
+// UIScrollViewContentInsetAdjustmentBehavior.
+const ADJUST_SCROLLABLE_AXES: u64 = 1;
+const ADJUST_NEVER: u64 = 2;
+const ADJUST_ALWAYS: u64 = 3;
+
+/// The insets the content rests within (`adjustedContentInset`): the app's,
+/// plus the safe area as `contentInsetAdjustmentBehavior` says: along the axes
+/// it scrolls (`scrollableAxes`), those and the top and bottom of a
+/// navigation controller's content scroll view (`automatic`, the default),
+/// every edge (`always`), or none (`never`).
+pub(crate) fn adjusted_inset(emu: &mut Emu, v: u64) -> Result<[f64; 4]> {
+    let own = content_inset(emu, v);
+    let behavior = objc::bag_get(emu, v, "contentInsetAdjustmentBehavior").unwrap_or(0);
+    if behavior == ADJUST_NEVER {
+        return Ok(own);
+    }
+    let size = content_size(emu, v)?;
+    let b = view(emu, v).bounds;
+    let bounces = |k: &str| objc::bag_get(emu, v, k).is_some_and(|x| x & 0xff != 0);
+    let scrolls = [size[0] + own[1] + own[3] > b[2] || bounces("alwaysBounceHorizontal"), size[1] + own[0] + own[2] > b[3] || bounces("alwaysBounceVertical")];
+    let [horizontal, vertical] = match behavior {
+        ADJUST_ALWAYS => [true, true],
+        ADJUST_SCROLLABLE_AXES => scrolls,
+        _ => [scrolls[0], scrolls[1] || crate::navigation::is_content_scroll_view(emu, v)],
+    };
+    let safe = crate::autolayout::view_safe_area(emu, v);
+    let add = |on: bool, x: f64| if on { x } else { 0.0 };
+    Ok([own[0] + add(vertical, safe[0]), own[1] + add(horizontal, safe[1]), own[2] + add(vertical, safe[2]), own[3] + add(horizontal, safe[3])])
+}
+
+/// The adjusted insets have changed since the last layout (the safe area, a
+/// bar, the content): the content keeps its distance past where it rests, as
+/// UIKit keeps it; a new scroll view starts at rest. Returns whether they changed.
+pub(crate) fn reconcile_insets(emu: &mut Emu, v: u64) -> Result<bool> {
+    let now = adjusted_inset(emu, v)?;
+    let before = emu.scroll.adjusted.insert(v, now).unwrap_or([0.0; 4]);
+    if before == now {
+        return Ok(false);
+    }
+    let o = offset(emu, v);
+    set_offset(emu, v, [o[0] + before[1] - now[1], o[1] + before[0] - now[0]])?;
+    Ok(true)
+}
+
+/// Take the adjusted insets as they are now as laid out: they changed with
+/// the content (a large title following it), which stays where it is.
+pub(crate) fn keep_insets(emu: &mut Emu, v: u64) -> Result<()> {
+    let now = adjusted_inset(emu, v)?;
+    emu.scroll.adjusted.insert(v, now);
+    Ok(())
+}
+
+/// Whether the content is moving under the user's hand: dragged, or
+/// decelerating or bouncing after it.
+pub(crate) fn user_scrolling(emu: &Emu, v: u64) -> bool {
+    flag(emu, v, "dragging") || flag(emu, v, "decelerating")
 }
 
 /// The content's size: what the app set (a text view's comes from its text).
@@ -135,10 +195,14 @@ fn content_size(emu: &mut Emu, v: u64) -> Result<[f64; 2]> {
 /// The offsets the content rests within: (min, max) per axis.
 fn range(emu: &mut Emu, v: u64) -> Result<([f64; 2], [f64; 2])> {
     let size = content_size(emu, v)?;
-    let [top, left, bottom, right] = content_inset(emu, v);
+    let [top, left, bottom, right] = adjusted_inset(emu, v)?;
     let b = view(emu, v).bounds;
-    let min = [0.0 - left, 0.0 - top]; // not -0.0
+    let mut min = [0.0 - left, 0.0 - top]; // not -0.0
     let max = [(size[0] + right - b[2]).max(min[0]), (size[1] + bottom - b[3]).max(min[1])];
+    // Under a collapsed large title, the content scrolls up into the title's space.
+    if let Some(rest) = crate::navigation::large_title_rest(emu, v)? {
+        min[1] = min[1].min(rest);
+    }
     Ok((min, max))
 }
 
@@ -180,6 +244,8 @@ pub(crate) fn set_offset(emu: &mut Emu, v: u64, offset: [f64; 2]) -> Result<()> 
     vw.bounds[0] = offset[0];
     vw.bounds[1] = offset[1];
     tell(emu, v, "scrollViewDidScroll:", &[v])?;
+    // A navigation bar's large title follows its screen's content.
+    crate::navigation::content_scrolled(emu, v)?;
     crate::host::frame_changed(emu);
     Ok(())
 }
@@ -381,6 +447,8 @@ pub(crate) fn touch_ended(emu: &mut Emu, at: [f64; 2], now: u64) -> Result<()> {
         let outside = o[i] < min[i] || o[i] > max[i];
         target[i] = if outside { o[i].clamp(min[i], max[i]) } else { projected(o[i], vel[i]).clamp(min[i], max[i]) };
     }
+    // A large title doesn't stop half collapsed.
+    target[1] = crate::navigation::settle_large_title(emu, v, target[1])?;
     // The delegate may move the target (snapping): CGPoint *targetContentOffset.
     let p = emu.alloc(16)?;
     emu.write_u64(p, target[0].to_bits())?;
@@ -497,10 +565,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         }
         Ok(())
     }),
-    // No automatic adjustment for the safe area: the insets the app set.
     (SV, false, "adjustedContentInset", |e| {
-        let r = content_inset(e, e.arg(0));
+        let r = adjusted_inset(e, e.arg(0))?;
         ret_rect(e, r);
+        Ok(())
+    }),
+    (SV, false, "contentInsetAdjustmentBehavior", |e| {
+        let b = objc::bag_get(e, e.arg(0), "contentInsetAdjustmentBehavior").unwrap_or(0);
+        ret(e, b)
+    }),
+    (SV, false, "setContentInsetAdjustmentBehavior:", |e| {
+        let (v, b) = (e.arg(0), e.arg(2));
+        objc::bag_set(e, v, "contentInsetAdjustmentBehavior", b);
+        crate::uiview::view_mut(e, v).needs_layout = true;
         Ok(())
     }),
     (SV, false, "isScrollEnabled", |e| {

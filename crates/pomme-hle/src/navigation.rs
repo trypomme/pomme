@@ -14,19 +14,22 @@ use crate::uiview::{set_frame_of, view, view_mut};
 use crate::{Emu, HostFn, Result, foundation};
 use std::collections::HashMap;
 
-/// The navigation bar's height (below the status bar).
+/// The navigation bar's height (below the status bar): 44 pt, 54 under
+/// Liquid Glass (iOS 26, measured on its simulator with the largetitles probe).
 pub const BAR_HEIGHT: f64 = 44.0;
+pub const GLASS_BAR_HEIGHT: f64 = 54.0;
 pub const COMPACT_BAR_HEIGHT: f64 = 32.0;
-/// A large title: 34-pt bold, 16 pt in, under the bar's usual 44 pt. iOS 26
-/// (measured on its simulator with the swiftuinavmetrics probe): 62 pt more
-/// bar, the baseline 16.33 above its bottom. Before: UIKit's 52 pt, 8.67 above.
+/// A large title: 34-pt bold, 16 pt in, under the bar's usual row, which it
+/// makes 52 pt taller; its baseline 16.33 above the bar's bottom under Liquid
+/// Glass (measured), 8.67 before.
 pub const LARGE_TITLE_SIZE: f64 = 34.0;
 pub const LARGE_TITLE_WEIGHT: f64 = 0.4; // bold
 pub const LARGE_TITLE_X: f64 = 16.0;
+pub const LARGE_TITLE_HEIGHT: f64 = 52.0;
 
 /// The space a large title adds to the bar, and its baseline above the bar's bottom.
 pub fn large_title_metrics(emu: &Emu) -> (f64, f64) {
-    if emu.system.liquid_glass() { (62.0, 16.33) } else { (52.0, 8.67) }
+    if emu.system.liquid_glass() { (LARGE_TITLE_HEIGHT, 16.33) } else { (LARGE_TITLE_HEIGHT, 8.67) }
 }
 
 #[derive(Clone, Default)]
@@ -76,6 +79,10 @@ pub struct State {
     swipe: Option<Swipe>,
     /// A finger that may be dragging a sheet.
     sheet_drag: Option<SheetDrag>,
+    /// View controller → how far its large title has collapsed as its content
+    /// scrolled (up to the title's height), or stretched (negative) as it was
+    /// pulled down.
+    large_title_offsets: HashMap<u64, f64>,
 }
 
 /// The back swipe: a touch that began at the left edge over a stack that can go back.
@@ -313,7 +320,12 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     let safe_top = crate::orientation::safe_area(emu)[0];
     let bar_h = nav_bar_height(emu, nc)?;
     let bar_bottom = safe_top + bar_h;
-    set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h]);
+    // (Pulled down, the bar stretches past the space it takes.)
+    let stretch = match n.stack.last() {
+        Some(&top) if shows_large_title(emu, nc)? => (-large_title_offset(emu, top)).max(0.0),
+        _ => 0.0,
+    };
+    set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h + stretch]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
     if let Some(&top) = n.stack.last() {
         let v = send(emu, top, "view", &[])?;
@@ -835,6 +847,8 @@ pub struct BarLook {
     pub leading: f64,
     /// The title shown large, under the bar's usual row.
     pub large: bool,
+    /// The height of the bar's usual row (the back button, a small title).
+    pub row: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -987,11 +1001,15 @@ fn look_for(emu: &mut Emu, bar: u64, stack: &[u64]) -> Result<Option<BarLook>> {
         });
     }
     let (background, shadow) = if glass { (None, None) } else { bar_background(emu, top_item) };
+    // The large title until it has collapsed; then the bar's own.
     let large = match emu.nav.bars.get(&bar).copied() {
-        Some(nc) if nav(emu, nc).stack.last() == Some(&top) => shows_large_title(emu, nc)? && bar_height(emu) == BAR_HEIGHT,
+        Some(nc) if nav(emu, nc).stack.last() == Some(&top) => shows_large_title(emu, nc)? && large_title_offset(emu, top) < LARGE_TITLE_HEIGHT,
         _ => false,
     };
-    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large }))
+    // (Under Liquid Glass the bar is 10 pt taller below its row, which is
+    // still 44: measured, the small title's baseline 28 below the bar's top.)
+    let row = if compact_bar(emu) { COMPACT_BAR_HEIGHT } else { BAR_HEIGHT };
+    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large, row }))
 }
 
 fn bar_width(emu: &mut Emu, bar: u64) -> f64 {
@@ -1091,10 +1109,20 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
     [left, top, w - right, h - bottom]
 }
 
-/// A navigation bar's height: 44 pt, or UIKit's compact 32 pt where the
-/// vertical size class is compact (phones in landscape).
+/// A navigation bar's height: 44 pt (54 under Liquid Glass), or UIKit's
+/// compact 32 pt where the vertical size class is compact (phones in landscape).
 pub fn bar_height(emu: &Emu) -> f64 {
-    if crate::orientation::size_classes(emu).1 == crate::device::COMPACT { COMPACT_BAR_HEIGHT } else { BAR_HEIGHT }
+    if compact_bar(emu) {
+        COMPACT_BAR_HEIGHT
+    } else if emu.system.liquid_glass() {
+        GLASS_BAR_HEIGHT
+    } else {
+        BAR_HEIGHT
+    }
+}
+
+fn compact_bar(emu: &Emu) -> bool {
+    crate::orientation::size_classes(emu).1 == crate::device::COMPACT
 }
 
 /// Whether the navigation controller's bar shows its top item's title large:
@@ -1102,7 +1130,7 @@ pub fn bar_height(emu: &Emu) -> f64 {
 /// the item below it large (the root's automatic is large), as UIKit decides.
 pub fn shows_large_title(emu: &mut Emu, nc: u64) -> Result<bool> {
     let n = nav(emu, nc);
-    if n.bar == 0 || objc::bag_get(emu, n.bar, "prefersLargeTitles").is_none_or(|v| v & 0xff == 0) {
+    if compact_bar(emu) || n.bar == 0 || objc::bag_get(emu, n.bar, "prefersLargeTitles").is_none_or(|v| v & 0xff == 0) {
         return Ok(false);
     }
     let mut large = true;
@@ -1117,10 +1145,135 @@ pub fn shows_large_title(emu: &mut Emu, nc: u64) -> Result<bool> {
     Ok(large)
 }
 
-/// The bar's height for the navigation controller's top screen: taller with a large title.
+/// The space the bar takes over the navigation controller's top screen:
+/// taller with a large title, less so as it collapses.
 pub fn nav_bar_height(emu: &mut Emu, nc: u64) -> Result<f64> {
     let base = bar_height(emu);
-    Ok(if base == BAR_HEIGHT && shows_large_title(emu, nc)? { base + large_title_metrics(emu).0 } else { base })
+    let Some(&top) = nav(emu, nc).stack.last() else { return Ok(base) };
+    if !shows_large_title(emu, nc)? {
+        return Ok(base);
+    }
+    Ok(base + LARGE_TITLE_HEIGHT - large_title_offset(emu, top).clamp(0.0, LARGE_TITLE_HEIGHT))
+}
+
+fn large_title_offset(emu: &Emu, vc: u64) -> f64 {
+    emu.nav.large_title_offsets.get(&vc).copied().unwrap_or(0.0)
+}
+
+// ---- large titles and the content under them ----
+//
+// A large title belongs to its screen's content (measured on the iOS 26
+// simulator, the largetitles probe). The bar follows the content's top as the
+// user scrolls: up, the title collapses point for point until the bar is its
+// usual height; pulled down, the bar stretches. The screen's safe area (and
+// so its scroll view's adjusted inset) follows the collapse, so the content
+// stays where the finger has it. Let go half collapsed, the content settles
+// where the title is whole or gone, whichever is nearer. Moved by the app,
+// the content doesn't drag the title: it collapses once the content's top
+// passes the usual bar, opens once it's back below it, and the content keeps
+// its distance from where it rests.
+
+/// The scroll view a navigation controller's bar follows: its top
+/// controller's view, or the first scroll view down its first subviews.
+fn content_scroll_view(emu: &mut Emu, nc: u64) -> u64 {
+    let Some(&top) = nav(emu, nc).stack.last() else { return 0 };
+    let mut v = emu.ui.views.vc_view.get(&top).copied().unwrap_or(0);
+    while v != 0 {
+        if crate::scrollview::is_scroll_view(emu, v) {
+            return v;
+        }
+        v = view(emu, v).subviews.first().copied().unwrap_or(0);
+    }
+    0
+}
+
+/// The navigation controller (and its top controller) whose bar follows `v`.
+fn observer_of(emu: &mut Emu, v: u64) -> Option<(u64, u64)> {
+    let mut cur = view(emu, v).superview;
+    while cur != 0 {
+        if let Some(&nc) = emu.nav.containers.get(&cur) {
+            let top = *nav(emu, nc).stack.last()?;
+            return (content_scroll_view(emu, nc) == v).then_some((nc, top));
+        }
+        cur = view(emu, cur).superview;
+    }
+    None
+}
+
+/// Whether `v` is the scroll view a navigation controller's bar follows.
+pub(crate) fn is_content_scroll_view(emu: &mut Emu, v: u64) -> bool {
+    observer_of(emu, v).is_some()
+}
+
+/// How far `v`'s content is past where it rests under the whole large title,
+/// at vertical offset `y`.
+fn past_full_rest(emu: &mut Emu, v: u64, y: f64) -> f64 {
+    let full_bottom = crate::orientation::safe_area(emu)[0] + bar_height(emu) + LARGE_TITLE_HEIGHT;
+    let top = crate::uiview::window_origin(emu, v)[1];
+    let own = crate::scrollview::content_inset(emu, v)[0];
+    y + own + full_bottom - top
+}
+
+/// Where `v`'s content rests under its whole large title, if a large title
+/// follows it: it can be scrolled up to there without stretching, the title
+/// opening as it comes.
+pub(crate) fn large_title_rest(emu: &mut Emu, v: u64) -> Result<Option<f64>> {
+    let Some((nc, _)) = observer_of(emu, v) else { return Ok(None) };
+    if !shows_large_title(emu, nc)? {
+        return Ok(None);
+    }
+    Ok(Some(-past_full_rest(emu, v, 0.0)))
+}
+
+/// `v`'s content moved: the large title over it follows.
+pub(crate) fn content_scrolled(emu: &mut Emu, v: u64) -> Result<()> {
+    let Some((nc, vc)) = observer_of(emu, v) else { return Ok(()) };
+    if !shows_large_title(emu, nc)? {
+        return Ok(());
+    }
+    let before = large_title_offset(emu, vc);
+    let y = view(emu, v).bounds[1];
+    let past = past_full_rest(emu, v, y);
+    let user = crate::scrollview::user_scrolling(emu, v);
+    let after = if user {
+        past.min(LARGE_TITLE_HEIGHT)
+    } else if past >= LARGE_TITLE_HEIGHT {
+        LARGE_TITLE_HEIGHT
+    } else if before >= LARGE_TITLE_HEIGHT {
+        0.0
+    } else {
+        before.max(0.0)
+    };
+    if after == before {
+        return Ok(());
+    }
+    emu.nav.large_title_offsets.insert(vc, after);
+    let c = nav(emu, nc).container;
+    if c != 0 {
+        layout_container(emu, c)?;
+    }
+    if user {
+        // The content stays under the finger: its insets moved with it.
+        crate::scrollview::keep_insets(emu, v)?;
+    }
+    Ok(())
+}
+
+/// Where content let go to rest at vertical offset `target` settles instead:
+/// not with its large title half collapsed.
+pub(crate) fn settle_large_title(emu: &mut Emu, v: u64, target: f64) -> Result<f64> {
+    let Some((nc, _)) = observer_of(emu, v) else { return Ok(target) };
+    if !shows_large_title(emu, nc)? {
+        return Ok(target);
+    }
+    let past = past_full_rest(emu, v, target);
+    Ok(if past <= 0.0 || past >= LARGE_TITLE_HEIGHT {
+        target
+    } else if past < LARGE_TITLE_HEIGHT / 2.0 {
+        target - past
+    } else {
+        target + LARGE_TITLE_HEIGHT - past
+    })
 }
 
 /// Lay out the controller whose bar this is (its height may have changed).

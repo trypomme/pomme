@@ -86,15 +86,17 @@ final class ListNode: Node {
     }
     // The list is the safe area it's given; its background goes under the
     // bars and the home indicator where it meets them, and its rows keep clear
-    // of them.
+    // of them: at the sides by its layout, at the top and bottom by the
+    // scroll view's adjusted insets (which a large title above follows).
     let (extended, safe) = renderer.extendingUnderSafeArea(frame, in: parent)
+    scroll.contentInsetAdjustmentBehavior = renderer.respectsSafeArea ? .automatic : .never
     scroll.frame = extended
     parent.pommeAdopt(scroll)
 
     let x = Self.sectionMargin + safe.left
     let width = extended.width - x - Self.sectionMargin - safe.right
     let contentWidth = width - 2 * Self.rowInset
-    var y = safe.top
+    var y: CGFloat = 0
     var previousBottom: CGFloat?
 
     for section in sections {
@@ -102,12 +104,12 @@ final class ListNode: Node {
       // placed by its baseline.
       if let header = section.header.first {
         (header as? TextNode)?.style = .sectionHeader
-        let top = previousBottom.map { $0 + Self.headerAfterGroup } ?? safe.top + Self.firstHeaderTop
+        let top = previousBottom.map { $0 + Self.headerAfterGroup } ?? Self.firstHeaderTop
         let size = header.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
         header.place(in: CGRect(x: x + Self.rowInset, y: top, width: contentWidth, height: size.height), of: scroll, renderer)
         y = top + size.height + Self.headerAboveGroup
       } else {
-        y = previousBottom.map { $0 + Self.sectionWithoutHeader } ?? safe.top
+        y = previousBottom.map { $0 + Self.sectionWithoutHeader } ?? 0
       }
 
       let group = renderer.view(for: section.path.appending("group")) {
@@ -156,6 +158,6 @@ final class ListNode: Node {
         y += size.height
       }
     }
-    scroll.contentSize = CGSize(width: extended.width, height: y + Self.sectionWithoutHeader + safe.bottom)
+    scroll.contentSize = CGSize(width: extended.width, height: y + Self.sectionWithoutHeader)
   }
 }

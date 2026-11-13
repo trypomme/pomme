@@ -115,3 +115,37 @@ pub fn views(emu: &mut Emu, secs: f64) -> String {
     }
     emu.describe_views()
 }
+
+/// A probe's reported frames (`METRIC name x y width height`), each view's last.
+pub type Frames = std::collections::BTreeMap<String, [f64; 4]>;
+
+pub fn parse_metrics(text: &str) -> Frames {
+    let mut frames = Frames::new();
+    for line in text.lines().filter(|l| l.starts_with("METRIC ")) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let v: Vec<f64> = f[2..6].iter().map(|x| x.parse().unwrap()).collect();
+        frames.insert(f[1].to_string(), [v[0], v[1], v[2], v[3]]);
+    }
+    frames
+}
+
+/// What `probe` reported in pomme against what it reported on the iOS 26
+/// simulator (fixtures/<probe>/ios26.txt): each value more than half a point
+/// off, except those `skip(name, index)` passes over.
+pub fn metric_differences(probe: &str, console: &str, skip: impl Fn(&str, usize) -> bool) -> Vec<String> {
+    let ours = parse_metrics(console);
+    let ios = parse_metrics(&std::fs::read_to_string(format!("{}/tests/fixtures/{probe}/ios26.txt", env!("CARGO_MANIFEST_DIR"))).unwrap());
+    let mut wrong = Vec::new();
+    for (name, want) in &ios {
+        let Some(got) = ours.get(name) else {
+            wrong.push(format!("{name}: not reported"));
+            continue;
+        };
+        for (i, what) in ["x", "y", "width", "height"].iter().enumerate() {
+            if !skip(name, i) && (got[i] - want[i]).abs() > 0.5 {
+                wrong.push(format!("{name}: {what} {:.2}, iOS {:.2}", got[i], want[i]));
+            }
+        }
+    }
+    wrong
+}

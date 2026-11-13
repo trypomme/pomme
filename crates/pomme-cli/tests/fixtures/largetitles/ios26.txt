@@ -1,0 +1,23 @@
+# The largetitles fixture on the iOS 26.2 Simulator (iPhone 16e): each view's last frame, in points.
+METRIC inline.bar 0.0 47.0 390.0 54.0
+METRIC s0.bar 0.0 47.0 390.0 106.0
+METRIC s0.insets 0.0 153.0 0.0 153.0
+METRIC s0.offset 0.0 -153.0 0.0 0.0
+METRIC s1.bar 0.0 47.0 390.0 106.0
+METRIC s1.insets 0.0 153.0 0.0 153.0
+METRIC s1.offset 0.0 -143.0 0.0 10.0
+METRIC s2.bar 0.0 47.0 390.0 106.0
+METRIC s2.insets 0.0 153.0 0.0 153.0
+METRIC s2.offset 0.0 -122.0 0.0 31.0
+METRIC s3.bar 0.0 47.0 390.0 54.0
+METRIC s3.insets 0.0 101.0 0.0 101.0
+METRIC s3.offset 0.0 -39.0 0.0 62.0
+METRIC s4.bar 0.0 47.0 390.0 54.0
+METRIC s4.insets 0.0 101.0 0.0 101.0
+METRIC s4.offset 0.0 -1.0 0.0 100.0
+METRIC s5.bar 0.0 47.0 390.0 54.0
+METRIC s5.insets 0.0 101.0 0.0 101.0
+METRIC s5.offset 0.0 199.0 0.0 300.0
+METRIC s6.bar 0.0 47.0 390.0 54.0
+METRIC s6.insets 0.0 101.0 0.0 101.0
+METRIC s6.offset 0.0 -101.0 0.0 0.0

@@ -22,7 +22,7 @@ extension NavigationStack: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     let inner = Preferences()
     let root = graph.resolve(pommeRoot, at: path.appending("root"), inner)
-    return [NavigationStackNode(path: path, root: root, title: inner.navigationTitle)]
+    return [NavigationStackNode(path: path, root: root, title: inner.navigationTitle, displayMode: inner.titleDisplayMode ?? .automatic)]
   }
 }
 
@@ -30,11 +30,34 @@ extension NavigationStack: PrimitiveView {
 final class NavigationStackNode: Node {
   let root: [Node]
   let title: String?
+  let displayMode: NavigationBarItem.TitleDisplayMode
 
-  init(path: ViewPath, root: [Node], title: String?) {
+  init(path: ViewPath, root: [Node], title: String?, displayMode: NavigationBarItem.TitleDisplayMode) {
     self.root = root
     self.title = title
+    self.displayMode = displayMode
     super.init(path: path)
+  }
+}
+
+extension NavigationBarItem.TitleDisplayMode {
+  /// The navigation item's mode for it.
+  var pommeLargeTitleDisplayMode: UINavigationItem.LargeTitleDisplayMode {
+    switch self {
+    case .automatic: .automatic
+    case .inline: .never
+    case .large: .always
+    }
+  }
+}
+
+/// `.navigationBarTitleDisplayMode(…)`: how the bar shows the screen's title.
+struct TitleDisplayModeModifier: ViewModifier, NodeModifier {
+  typealias Body = Never
+  let mode: NavigationBarItem.TitleDisplayMode
+
+  func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
+    preferences.titleDisplayMode = mode
   }
 }
 
@@ -57,5 +80,17 @@ extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func navigationTitle(_ title: SwiftUICore.Text) -> some SwiftUICore.View
   nonisolated public func navigationTitle(_ title: Text) -> some View {
     modifier(NavigationTitleModifier { title.pommeString })
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func navigationTitle<S>(_ title: S) -> some SwiftUICore.View where S : Swift.StringProtocol
+  @_disfavoredOverload
+  nonisolated public func navigationTitle<S>(_ title: S) -> some View where S: StringProtocol {
+    let title = String(title)
+    return modifier(NavigationTitleModifier { title })
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func navigationBarTitleDisplayMode(_ displayMode: SwiftUI.NavigationBarItem.TitleDisplayMode) -> some SwiftUICore.View
+  nonisolated public func navigationBarTitleDisplayMode(_ displayMode: NavigationBarItem.TitleDisplayMode) -> some View {
+    modifier(TitleDisplayModeModifier(mode: displayMode))
   }
 }

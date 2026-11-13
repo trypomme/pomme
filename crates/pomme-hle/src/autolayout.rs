@@ -571,6 +571,17 @@ pub fn safe_area_changes(emu: &mut Emu) -> Result<bool> {
         todo.extend(view(emu, v).subviews.iter().rev());
     }
     let mut any = false;
+    // Scroll views' adjusted insets follow the safe area; their content
+    // keeps its place, and what's around them lays out again.
+    for &v in &order {
+        if crate::scrollview::is_scroll_view(emu, v) && crate::scrollview::reconcile_insets(emu, v)? {
+            let sup = view(emu, v).superview;
+            if sup != 0 {
+                crate::uiview::view_mut(emu, sup).needs_layout = true;
+            }
+            any = true;
+        }
+    }
     let vc_of = |emu: &Emu, v: u64| emu.ui.views.vc_view.iter().find(|&(_, &x)| x == v).map(|(&vc, _)| vc);
     for &v in &order {
         let vc = vc_of(emu, v);

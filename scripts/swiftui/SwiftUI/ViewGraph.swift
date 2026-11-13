@@ -22,6 +22,8 @@ struct ViewPath: Hashable, CustomStringConvertible {
 @MainActor
 final class Preferences {
   var navigationTitle: String?
+  /// How the navigation bar shows the title (`navigationBarTitleDisplayMode`).
+  var titleDisplayMode: NavigationBarItem.TitleDisplayMode?
 }
 
 /// A view SwiftUI shows itself (text, a list …), rather than through its body.

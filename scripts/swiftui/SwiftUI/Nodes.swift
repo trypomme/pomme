@@ -75,6 +75,8 @@ final class Renderer {
   /// The view the tree is shown in, and the safe area its content keeps clear of.
   private(set) weak var root: UIView?
   private(set) var safeArea: UIEdgeInsets = .zero
+  /// Whether the content keeps clear of the safe area.
+  private(set) var respectsSafeArea = true
 
   func view<V: UIView>(for path: ViewPath, make: () -> V) -> V {
     used.insert(path)
@@ -92,6 +94,7 @@ final class Renderer {
   func show(_ nodes: [Node], in view: UIView, respectingSafeArea: Bool = true) {
     used = []
     root = view
+    respectsSafeArea = respectingSafeArea
     safeArea = respectingSafeArea ? view.safeAreaInsets : .zero
     let bounds = view.bounds
     let safe = bounds.inset(by: safeArea)

@@ -899,8 +899,15 @@ pub(crate) fn window_origin(emu: &mut Emu, mut v: u64) -> [f64; 2] {
 /// `-convertPoint:toView:` / `fromView:` (point in d0, d1; view in x2; nil = window)
 fn convert_point(emu: &mut Emu, to: bool) -> Result<()> {
     let (v, other, x, y) = (emu.arg(0), emu.arg(2), f(emu, 0), f(emu, 1));
-    let a = window_origin(emu, v);
-    let b = if other == 0 { [0.0, 0.0] } else { window_origin(emu, other) };
+    // Where each view's coordinates start in the window: its frame's origin,
+    // less its bounds' (a scroll view's content offset).
+    let space = |emu: &mut Emu, v: u64| {
+        let o = window_origin(emu, v);
+        let b = view(emu, v).bounds;
+        [o[0] - b[0], o[1] - b[1]]
+    };
+    let a = space(emu, v);
+    let b = if other == 0 { [0.0, 0.0] } else { space(emu, other) };
     let (dx, dy) = if to { (a[0] - b[0], a[1] - b[1]) } else { (b[0] - a[0], b[1] - a[1]) };
     emu.cpu.q[0] = (x + dx).to_bits() as u128;
     emu.cpu.q[1] = (y + dy).to_bits() as u128;
@@ -1396,6 +1403,10 @@ pub fn describe_tree(emu: &mut Emu) -> Result<String> {
             if l.border_width > 0.0 {
                 line += &format!(" border {}{}", l.border_width, rgba_hex(emu, l.border_color).map(|c| format!(" {c}")).unwrap_or_default());
             }
+        }
+        // A scroll view moved off its origin: where its content is.
+        if crate::scrollview::is_scroll_view(emu, v) && (vw.bounds[0] != 0.0 || vw.bounds[1] != 0.0) {
+            line += &format!(" offset ({:.1}, {:.1})", vw.bounds[0], vw.bounds[1]);
         }
         if let Some(t) = text_of(emu, v)? {
             line += &format!(" {t:?}");

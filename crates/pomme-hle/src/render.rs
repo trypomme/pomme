@@ -1437,9 +1437,9 @@ fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64,
 fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, title_dx: f32, back_alpha: Option<f32>) {
     use crate::navigation::{BACK_LABEL_X, TITLE_SIZE, TITLE_WEIGHT};
     const TINT: [f64; 4] = [0.0, 0.478, 1.0, 1.0]; // systemBlue
-    // The bar's usual row (the back button, a small title): its top 44 pt
-    // when it also shows a large title below.
-    let row = if look.large { h - crate::navigation::large_title_metrics(emu).0 as f32 } else { h };
+    // The bar's usual row (the back button, a small title): its top, above
+    // the large title's space.
+    let row = (look.row as f32).min(h);
     let baseline = row as f64 / 2.0 + TITLE_SIZE * 0.35;
     if back_alpha.is_none() {
         let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
@@ -1457,7 +1457,8 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         p.fill(&rect_els(0.0, h, w, 1.0 / 3.0), sh.map(|v| v as f32), alpha, false, t, mask);
     }
     if look.large {
-        // The title large, at the leading edge, under the bar's usual row (which shows none).
+        // The title large, at the leading edge, under the bar's usual row
+        // (which shows none), moving with the bar's bottom as it collapses.
         use crate::navigation::{LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, LARGE_TITLE_X};
         let large_baseline = h as f64 - crate::navigation::large_title_metrics(emu).1;
         let (glyphs, _) = crate::textkit::line_glyphs(emu, &look.title, LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, large_baseline);

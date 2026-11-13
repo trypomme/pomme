@@ -100,7 +100,7 @@ final class ViewHost {
       navigationController.didMove(toParent: controller)
       navigation = (navigationController, content)
     }
-    navigation!.content.show(stack.root, title: stack.title)
+    navigation!.content.show(stack.root, title: stack.title, displayMode: stack.displayMode)
   }
 
   /// Start the tasks of views that have appeared, cancel those of views that
@@ -225,11 +225,21 @@ final class ContentController: UIViewController {
     view.backgroundColor = .systemBackground
   }
 
-  func show(_ nodes: [Node], title: String?) {
+  func show(_ nodes: [Node], title: String?, displayMode: NavigationBarItem.TitleDisplayMode) {
     self.nodes = nodes
     if navigationItem.title != title {
       navigationItem.title = title
     }
+    let mode = displayMode.pommeLargeTitleDisplayMode
+    if navigationItem.largeTitleDisplayMode != mode {
+      navigationItem.largeTitleDisplayMode = mode
+    }
+    view.setNeedsLayout()
+  }
+
+  /// The bar grew or shrank (a large title collapsing): lay the content out again.
+  override func viewSafeAreaInsetsDidChange() {
+    super.viewSafeAreaInsetsDidChange()
     view.setNeedsLayout()
   }
 
