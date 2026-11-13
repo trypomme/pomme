@@ -61,6 +61,12 @@ that affects them, such as `@_originallyDefinedIn`. Beyond that:
   `@preconcurrency` main-actor protocol (`View`, `ViewModifier`) is inferred
   main-actor isolated, and Swift mangles it without those annotations.
   Apple's task modifiers' initializers have them.
+- **Overrides** of a superclass's members (UIHostingController's
+  `UIViewController` methods and properties) call `super` until pomme has its
+  own: UIKit calls them on every controller.
+- **Raw-value types** (option sets, string-backed names) store their raw
+  value; an option set's options are bits in the order they're declared, as
+  Apple declares them.
 - **Declarations unavailable on iOS** are left out, along with extensions of
   the types left out.
 - **`$ld$hide$os…$` symbols** from `@_originallyDefinedIn` are dropped at
@@ -82,6 +88,8 @@ SDK change that renames something fails the build rather than going unnoticed.
   `wrappedValue`, and members of SwiftUICore's types. Those types are
   `@_originallyDefinedIn(module: "SwiftUI")`, and Swift mangles their members
   differently in an extension than in the declaration.
+- A type nested in another type's declaration is named with it:
+  `<outer> > <inner>` (`Published<Value>` has its own `Publisher`).
 - `// pomme: owns <type>`: pomme declares the type itself (its storage and
   conformances), and the interface's members become an extension of it. This
   is for SwiftUI's own types (`WindowGroup`, `List`), which aren't moved, so
@@ -96,6 +104,15 @@ matters:
 - symbols that differ from Apple's only by `YA` (`@isolated(any)`), `Yb`
   (`@Sendable`) or `YT`;
 - with an app, every SwiftUI symbol it imports that isn't exported.
+
+## Combine
+
+pomme's Combine.framework comes from the same generator
+(`scripts/combine/build.sh`, its own code in `scripts/combine/Combine/`):
+subscriptions that deliver what their subscribers ask for, subjects,
+`ObservableObjectPublisher` and the default `objectWillChange`, `@Published`,
+`sink` and `AnyCancellable`. Observable objects (`@ObservedObject`) update the
+views that observe them.
 
 ## The runtime
 

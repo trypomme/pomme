@@ -48,7 +48,15 @@ EOF
 if [ $# -gt 0 ]; then
   BIN=$1
   [ -d "$BIN" ] && BIN="$BIN/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BIN/Info.plist")"
-  nm -u "$BIN" | grep -E '^_\$s7SwiftUI' | sort -u | comm -23 - <(nm -gU "$LIB" | awk '{print $3}' | sort -u) >"$T/missing"
+  # (Extensions of SwiftUI's types from other modules — Charts, the app's own —
+  # mangle with SwiftUI's prefix but come from those modules.)
+  nm -u "$BIN" | grep -E '^_\$s7SwiftUI' | sort -u | comm -23 - <(nm -gU "$LIB" | awk '{print $3}' | sort -u) |
+    while read -r s; do
+      d=$(xcrun swift-demangle --compact "$s")
+      echo "$d" | grep -qE '\(extension in [A-Za-z_]+\)|conformance descriptor for .* in [A-Za-z_]+$' &&
+        ! echo "$d" | grep -qE '\(extension in SwiftUI(Core)?\)| in SwiftUI(Core)?$' && continue
+      echo "$s"
+    done >"$T/missing"
   if [ -s "$T/missing" ]; then
     echo "SwiftUI symbols $(basename "$BIN") imports that aren't exported:"
     xcrun swift-demangle --simplified <"$T/missing" | sed 's/^/  /'

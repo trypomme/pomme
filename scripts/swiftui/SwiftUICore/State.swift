@@ -6,6 +6,7 @@
 // the view keeps its place in the tree. Reads and writes go through the
 // location; a write tells the graph to update.
 
+import Combine
 import Foundation
 
 // pomme: in open class AnyLocationBase : @unchecked Swift.Sendable
@@ -28,6 +29,8 @@ extension AnyLocation {
 /// view's stored properties, and what to do when one of them changes.
 package final class ViewStorage {
   package var locations: [Int: AnyLocationBase] = [:]
+  /// The view's subscriptions to the objects it observes, by slot.
+  package var observing: [Int: (object: ObjectIdentifier, subscription: AnyCancellable)] = [:]
   package let changed: () -> Void
 
   package init(changed: @escaping () -> Void) {
@@ -85,6 +88,26 @@ extension State {
   public var wrappedValue: Value {
     get { _location?.value ?? _value }
     nonmutating set { _location?.value = newValue }
+  }
+}
+
+// pomme: in public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject
+extension ObservedObject {
+  // pomme: replaces public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public init(wrappedValue: ObjectType)
+  @MainActor @preconcurrency
+  public init(wrappedValue: ObjectType) {
+    self.wrappedValue = wrappedValue
+  }
+}
+
+extension ObservedObject: PommeDynamicProperty {
+  /// The view updates when its object is about to change.
+  package mutating func pommeAttach(to storage: ViewStorage, slot: Int) {
+    let id = ObjectIdentifier(wrappedValue)
+    guard storage.observing[slot]?.object != id else { return }
+    let changed = storage.changed
+    let subscription = wrappedValue.objectWillChange.sink { _ in changed() }
+    storage.observing[slot] = (id, subscription)
   }
 }
 

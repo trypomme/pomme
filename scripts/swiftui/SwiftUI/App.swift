@@ -58,7 +58,7 @@ final class AppSceneDelegate: UIResponder, UIWindowSceneDelegate {
   func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
     guard let windowScene = scene as? UIWindowScene, let makeScene = AppHost.makeScene else { return }
     let window = UIWindow(windowScene: windowScene)
-    window.rootViewController = HostingController(rootView: rootView(of: makeScene()))
+    window.rootViewController = UIHostingController(rootView: rootView(of: makeScene()))
     self.window = window
     window.makeKeyAndVisible()
   }
@@ -68,12 +68,12 @@ final class AppSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 /// A scene SwiftUI shows itself (a window group …), rather than through its body.
 protocol PrimitiveScene {
-  @MainActor func pommeRootView() -> RootView
+  @MainActor func pommeRootView() -> AnyView
 }
 
 /// The view a scene shows in its window.
 @MainActor
-func rootView<S: Scene>(of scene: S) -> RootView {
+func rootView<S: Scene>(of scene: S) -> AnyView {
   if let primitive = scene as? any PrimitiveScene {
     return primitive.pommeRootView()
   }
@@ -115,8 +115,8 @@ extension WindowGroup {
 }
 
 extension WindowGroup: PrimitiveScene {
-  func pommeRootView() -> RootView {
-    RootView(pommeContent())
+  func pommeRootView() -> AnyView {
+    AnyView(pommeContent())
   }
 }
 

@@ -34,16 +34,6 @@ protocol PrimitiveModifier {
   @MainActor func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences)
 }
 
-/// The view a window shows, ready to resolve.
-@MainActor
-struct RootView {
-  let resolve: (ViewGraph, Preferences) -> [Node]
-
-  init<V: View>(_ view: V) {
-    resolve = { graph, preferences in graph.resolve(view, at: ViewPath(), preferences) }
-  }
-}
-
 /// Work a view starts when it appears and that stops when it goes (`.task`).
 struct TaskWork {
   let priority: TaskPriority
@@ -76,12 +66,12 @@ final class ViewGraph {
   }
 
   /// Resolve the tree from its root view, keeping the state of the views still in it.
-  func update(_ root: RootView) -> (nodes: [Node], preferences: Preferences) {
+  func update(_ root: AnyView) -> (nodes: [Node], preferences: Preferences) {
     visited = []
     tasks = [:]
     appearances = [:]
     let preferences = Preferences()
-    let nodes = root.resolve(self, preferences)
+    let nodes = resolve(root, at: ViewPath(), preferences)
     storages = storages.filter { visited.contains($0.key) }
     return (nodes, preferences)
   }
@@ -160,5 +150,13 @@ extension ModifiedContent: PrimitiveView where Content: View, Modifier: ViewModi
     let nodes = graph.resolve(content, at: path.appending("content"), preferences)
     primitive.pommeApply(to: nodes, at: path, in: graph, preferences)
     return nodes
+  }
+}
+
+extension AnyView: PrimitiveView {
+  /// The view it erases, at a place named for its type (another type is another view).
+  func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    let view = pommeView
+    return graph.resolve(view, at: path.appending(ObjectIdentifier(type(of: view))), preferences)
   }
 }

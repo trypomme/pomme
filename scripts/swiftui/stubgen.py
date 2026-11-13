@@ -130,6 +130,52 @@ def opaque_stand_in(ty):
     return f'_PommeOpaque{proto}{args}'
 
 
+def split_top(s, sep=','):
+    """Split at `sep` outside brackets."""
+    parts, depth, cur = [], 0, ''
+    for c in s.replace('->', '\x00'):
+        if c in '([<{':
+            depth += 1
+        elif c in ')]>}':
+            depth -= 1
+        if c == sep and depth == 0:
+            parts.append(cur)
+            cur = ''
+        else:
+            cur += c
+    parts.append(cur)
+    return [p.replace('\x00', '->') for p in parts if p.strip()]
+
+
+def super_call(sig):
+    """For an overriding method: a call of the superclass's (the arguments
+    passed on as they came), or None when it can't be written (variadics)."""
+    m = re.search(r'\bfunc\s+([`\w]+)\s*(<[^(]*>)?\s*\(', sig)
+    if not m:
+        return None
+    start = m.end()
+    depth, i = 1, start
+    while depth:
+        depth += {'(': 1, ')': -1}.get(sig[i], 0)
+        i += 1
+    params, after = sig[start:i - 1], sig[i:]
+    args = []
+    for param in split_top(params):
+        names, _, ty = param.partition(':')
+        names = names.split()
+        if '...' in ty:
+            return None
+        external, internal = (names[0], names[-1])
+        value = ('&' if re.match(r'\s*inout\b', ty) else '') + internal
+        args.append(value if external == '_' else f'{external}: {value}')
+    call = f'super.{m.group(1)}({", ".join(args)})'
+    if re.search(r'\basync\b', after.split('->')[0]):
+        call = 'await ' + call
+    if re.search(r'\b(throws|rethrows)\b', after.split('->')[0]):
+        call = 'try ' + call
+    return call
+
+
 def stub_body(what, ty):
     """A body that stops. Results are an explicit `return`, which also keeps a
     result builder (one the declaration or its requirement has) out of it."""
@@ -225,6 +271,7 @@ def read_markers(paths, processed_dir=None):
 
 
 SEEN = []  # every marker the interface allows, for --markers
+OBJC_DEINIT = re.compile(r'@objc (?=(@[\w()_]+ )*deinit)')
 
 
 def m_storage_needed(head, frozen_pending):
@@ -241,6 +288,7 @@ def generate(src, owns=None, replaces=None, inside=None):
     returns them; each must match, or it's an error."""
     owns, replaces, inside = owns or {}, replaces or {}, inside or {}
     used = set()
+    option_bits = {}  # by option set: its next option's bit
     out = []
     # Context stack entries: ('protocol',), ('type', key), ('var', result type),
     # ('pvar',) for a protocol's property requirements, ('body',) for code.
@@ -251,7 +299,9 @@ def generate(src, owns=None, replaces=None, inside=None):
     missing_inits = False
     dropped = set()  # top-level types left out (unavailable on iOS)
     for raw in src.split('\n'):
-        line = raw.rstrip()
+        # (`@objc deinit`, as interfaces print it: implicit, and in source it
+        # needs Foundation imported.)
+        line = OBJC_DEINIT.sub('', raw.rstrip())
         stripped = line.strip()
         top = stack[-1] if stack else ('file',)
         kind = top[0]
@@ -292,7 +342,13 @@ def generate(src, owns=None, replaces=None, inside=None):
                 indent, mods, kw = m.group(1), m.group(2) or '', m.group(3)
                 asy, thr = m.group(4) or '', m.group(5) or ''
                 ty = top[1] if kw in ('get', 'unsafeAddress') else None
-                out.append(f'{indent}{mods}{kw} {asy}{thr}{stub_body(kw, ty)}')
+                overridden = top[2] if len(top) > 2 else None
+                if overridden and kw == 'get':
+                    out.append(f'{indent}{mods}{kw} {asy}{thr}{{ return super.{overridden} }}')
+                elif overridden and kw == 'set':
+                    out.append(f'{indent}{mods}{kw} {{ super.{overridden} = newValue }}')
+                else:
+                    out.append(f'{indent}{mods}{kw} {asy}{thr}{stub_body(kw, ty)}')
                 continue
             # An inlinable accessor's body, or attributes before an accessor.
             out.append(line)
@@ -317,7 +373,7 @@ def generate(src, owns=None, replaces=None, inside=None):
         missing_inits = '@_hasMissingDesignatedInitializers' in attrs
         attr_lines = pending
         pending = []
-        ext = re.match(r'^extension\s+(?:Swift|SwiftUICore|SwiftUI)\.(\w+)', code)
+        ext = re.match(r'^extension\s+(?:\w+)\.(\w+)', code)
         named = re.search(r'\b(?:struct|class|enum|protocol|actor|typealias)\s+(\w+)', code)
         if (IOS_UNAVAILABLE.search(attrs) or (ext and ext.group(1) in dropped)) and kind != 'protocol' \
                 and stripped and not stripped.startswith('}'):
@@ -364,7 +420,15 @@ def generate(src, owns=None, replaces=None, inside=None):
             sig, rest = split_at_body(line)
             if rest is None and kind != 'protocol':
                 if kw == 'deinit':
-                    out.append(f'{line} {{}}')
+                    out.append(line + ' {}')
+                elif kind == 'type' and re.fullmatch(r'public init\(rawValue: [\w.]+\)', key(stripped)):
+                    # A raw-value type (an option set, a string-backed name …): its raw value is all it holds.
+                    store = '_pommeStorage = (); ' if top[3] else ''
+                    out.append(f'{line} {{ {store}self.rawValue = rawValue }}')
+                elif kind == 'type' and kw == 'func' and re.search(r'\boverride\b', MODIFIERS.match(ATTRIBUTES.sub('', stripped)).group(0)) \
+                        and (call := super_call(sig)):
+                    # Overriding: the superclass's behavior, until pomme has its own.
+                    out.append(f'{nonisolated_if_concurrent(line, sig, kind)} {{ return {call} }}')
                 else:
                     out.append(f'{nonisolated_if_concurrent(line, sig, kind)} {stub_body(stripped, result_type(sig))}')
                 continue
@@ -381,10 +445,14 @@ def generate(src, owns=None, replaces=None, inside=None):
             head = code[:-1]
             if TYPE_OPEN.search(head) and not re.search(r'\b(var|let)\b', head):
                 hk = key(stripped)
+                if kind == 'type' and not top[1].startswith('extension '):
+                    # Nested in a type's declaration: named with it (`Published<Value> > Publisher …`).
+                    hk = f'{top[1]} > {hk}'
                 owned = hk in owns
                 if kind == 'file' and not re.search(r'^extension\b', hk):
                     SEEN.append(f'// pomme: owns {hk}')
-                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned))
+                # ('type', key, owned, whether it gets hidden storage)
+                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned, m_storage_needed(head, frozen_pending)))
                 stack.extend([('body',)] * (d - 1))
                 if hk in inside and not owned:
                     # pomme's members of the declaration itself, first.
@@ -424,7 +492,10 @@ def generate(src, owns=None, replaces=None, inside=None):
                     out.append('  internal let _pommeStorage: ()')
                     continue
             elif re.search(r'\b(var|let)\b', head) and d == 1:
-                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head)))
+                # (An overriding property's accessors are the superclass's, until pomme has its own.)
+                name = re.search(r'\b(?:var|let)\s+([`\w]+)', head).group(1)
+                overriding = kind == 'type' and re.search(r'\boverride\b', MODIFIERS.match(ATTRIBUTES.sub('', stripped)).group(0))
+                stack.append(('pvar',) if kind == 'protocol' else ('var', property_type(head), name if overriding else None))
             else:
                 stack.extend([('body',)] * d)
             out.append(line)
@@ -435,6 +506,14 @@ def generate(src, owns=None, replaces=None, inside=None):
             for _ in range(-d):
                 if stack:
                     stack.pop()
+            continue
+
+        # An option set's options: bits in the order they're declared (as Apple declares them).
+        m = re.search(r'\bstatic\s+let\s+[`\w]+\s*:\s*([\w.]+)\s*$', code)
+        if kind == 'type' and m and 'Swift.OptionSet' in top[1] and re.search(r'\b(struct|class)\s+' + re.escape(m.group(1).split('.')[-1]) + r'\b', top[1]):
+            bit = option_bits.get(top[1], 0)
+            option_bits[top[1]] = bit + 1
+            out.append(f'{line} = .init(rawValue: 1 << {bit})')
             continue
 
         # A static or global stored property needs a value: using it stops.
@@ -452,17 +531,19 @@ def generate(src, owns=None, replaces=None, inside=None):
     return '\n'.join(out)
 
 
-# Defined once, in SwiftUICore: both modules mangle as SwiftUI, and share the
+# The stops. SwiftUI's two modules mangle as SwiftUI and share a package
+# (SwiftUI), so they're defined once, in SwiftUICore, with `package` access;
+# any other module has its own.
 # package (SwiftUI), so SwiftUI uses these through `package` access.
 SUPPORT = '''
 // ---- pomme ----
-/// An API pomme's SwiftUI doesn't implement yet: stop, naming it.
-package func _pommeUnimplemented(_ what: Swift.StaticString, file: Swift.StaticString = #fileID, line: Swift.UInt = #line) -> Swift.Never {
-  Swift.fatalError("SwiftUI in pomme doesn't implement \\(what) yet", file: file, line: line)
-}
-package func _pommeUnimplementedValue<T>(_ what: Swift.StaticString) -> T {
-  Swift.fatalError("SwiftUI in pomme doesn't implement \\(what) yet")
-}
+/// An API pomme's {framework} doesn't implement yet: stop, naming it.
+{access} func _pommeUnimplemented(_ what: Swift.StaticString, file: Swift.StaticString = #fileID, line: Swift.UInt = #line) -> Swift.Never {{
+  Swift.fatalError("{framework} in pomme doesn't implement \\(what) yet", file: file, line: line)
+}}
+{access} func _pommeUnimplementedValue<T>(_ what: Swift.StaticString) -> T {{
+  Swift.fatalError("{framework} in pomme doesn't implement \\(what) yet")
+}}
 '''
 
 if __name__ == '__main__' and sys.argv[1] == '--markers':
@@ -475,5 +556,6 @@ elif __name__ == '__main__':
     owns, replaces, inside = read_markers(sys.argv[4:], sys.argv[3])
     body = generate(text, owns, replaces, inside)
     body = '\n'.join(l for l in body.split('\n') if not l.startswith('// swift-'))
-    core = '-module-name SwiftUICore' in text.split('\n', 5)[2]
-    open(sys.argv[2], 'w').write(body + '\n' + (SUPPORT if core else ''))
+    module = re.search(r'-module-name (\w+)', text.split('\n', 5)[2]).group(1)
+    support = {'SwiftUICore': SUPPORT.format(framework='SwiftUI', access='package'), 'SwiftUI': ''}
+    open(sys.argv[2], 'w').write(body + '\n' + support.get(module, SUPPORT.format(framework=module, access='internal')))
