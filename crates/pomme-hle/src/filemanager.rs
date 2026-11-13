@@ -313,7 +313,53 @@ pub struct Flags {
 
 const FM: &str = "NSFileManager";
 
+/// NSDictionary's file-attribute accessors (NSFileAttributes): an object.
+fn attribute_object(emu: &mut Emu, key: &str) -> Result<()> {
+    let v = attribute(emu, emu.arg(0), key)?;
+    ret(emu, v)
+}
+
+/// … or a number's integer value (0 when absent).
+fn attribute_integer(emu: &mut Emu, key: &str) -> Result<()> {
+    let v = attribute(emu, emu.arg(0), key)?;
+    let n = if v == 0 { 0 } else { foundation::number_value(emu, v)?.0 };
+    ret(emu, n as u64)
+}
+
+/// Remove an item (and what's in it): NSFileNoSuchFileError when there's
+/// none, NSFileWriteNoPermissionError for the read-only app bundle.
+fn remove_item(emu: &mut Emu, path: &str, error: u64) -> Result<()> {
+    if crate::fs::remove(emu, path) {
+        return ret(emu, 1);
+    }
+    let code = if crate::fs::data_path(path).is_none() && crate::fs::exists(emu, path).is_some() { WRITE_NO_PERMISSION } else { NO_SUCH_FILE };
+    set_error(emu, error, code, path)?;
+    ret(emu, 0)
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSFileManager", false, "removeItemAtPath:error:", |e| {
+        let (path, error) = (path_of(e, e.arg(2))?, e.arg(3));
+        remove_item(e, &path, error)
+    }),
+    ("NSFileManager", false, "removeItemAtURL:error:", |e| {
+        let (path, error) = (url_path(e, e.arg(2))?, e.arg(3));
+        remove_item(e, &path, error)
+    }),
+    ("NSDictionary", false, "fileSize", |e| attribute_integer(e, "NSFileSize")),
+    ("NSDictionary", false, "fileType", |e| attribute_object(e, "NSFileType")),
+    ("NSDictionary", false, "fileModificationDate", |e| attribute_object(e, "NSFileModificationDate")),
+    ("NSDictionary", false, "fileCreationDate", |e| attribute_object(e, "NSFileCreationDate")),
+    ("NSDictionary", false, "filePosixPermissions", |e| attribute_integer(e, "NSFilePosixPermissions")),
+    ("NSDictionary", false, "fileOwnerAccountName", |e| attribute_object(e, "NSFileOwnerAccountName")),
+    ("NSDictionary", false, "fileGroupOwnerAccountName", |e| attribute_object(e, "NSFileGroupOwnerAccountName")),
+    ("NSDictionary", false, "fileOwnerAccountID", |e| attribute_object(e, "NSFileOwnerAccountID")),
+    ("NSDictionary", false, "fileGroupOwnerAccountID", |e| attribute_object(e, "NSFileGroupOwnerAccountID")),
+    ("NSDictionary", false, "fileSystemNumber", |e| attribute_integer(e, "NSFileSystemNumber")),
+    ("NSDictionary", false, "fileSystemFileNumber", |e| attribute_integer(e, "NSFileSystemFileNumber")),
+    ("NSDictionary", false, "fileExtensionHidden", |e| attribute_integer(e, "NSFileExtensionHidden")),
+    ("NSDictionary", false, "fileIsImmutable", |e| attribute_integer(e, "NSFileImmutable")),
+    ("NSDictionary", false, "fileIsAppendOnly", |e| attribute_integer(e, "NSFileAppendOnly")),
     ("NSURL", false, "getResourceValue:forKey:error:", get_resource_value),
     ("NSURL", false, "resourceValuesForKeys:error:", resource_values),
     ("NSURL", false, "setResourceValue:forKey:error:", |e| {

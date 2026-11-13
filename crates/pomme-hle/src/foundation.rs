@@ -860,6 +860,28 @@ fn substring_to(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &r)
 }
 
+/// `-stringByPaddingToLength:withString:startingAtIndex:` in UTF-16 units: cut
+/// to the length, or extended with the pad repeated from `start` on.
+fn pad_to_length(text: &[u16], len: usize, pad: &[u16], start: usize) -> Vec<u16> {
+    if len <= text.len() {
+        return text[..len].to_vec();
+    }
+    let mut out = text.to_vec();
+    out.extend(pad.iter().cycle().skip(start).take(len - text.len()));
+    out
+}
+
+fn string_padding(emu: &mut Emu) -> Result<()> {
+    let (s, len, pad, start) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3), emu.arg(4) as usize);
+    let text: Vec<u16> = nsstring(emu, s)?.encode_utf16().collect();
+    let pad: Vec<u16> = nsstring(emu, pad)?.encode_utf16().collect();
+    if len > text.len() && (pad.is_empty() || start >= pad.len()) {
+        return Err(Stop::Unsupported(format!("uncaught Objective-C exception NSRangeException: padding index {start} beyond the pad string's length {}", pad.len())));
+    }
+    let out = pad_to_length(&text, len, &pad, start);
+    ret_string(emu, &String::from_utf16_lossy(&out))
+}
+
 /// `+[NSString pathWithComponents:]`: the components joined with "/", a
 /// leading "/" component making the path absolute; empty ones are skipped.
 fn join_path_components(parts: &[String]) -> String {
@@ -1731,7 +1753,7 @@ fn new_set(emu: &mut Emu) -> Result<u64> {
     cf(emu, "_CFSetCreateMutable", &[0, 0, cb])
 }
 
-fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
+pub(crate) fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
     let n = cf(emu, "_CFSetGetCount", &[s])?;
     let buf = emu.alloc(n * 8 + 8)?;
     cf(emu, "_CFSetGetValues", &[s, buf])?;
@@ -2405,7 +2427,7 @@ fn set_get_objects(emu: &mut Emu) -> Result<()> {
 }
 
 /// An NSEnumerator over a snapshot: {isa, NSArray, next index}.
-fn new_enumerator(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
+pub(crate) fn new_enumerator(emu: &mut Emu, objs: &[u64]) -> Result<u64> {
     let cls = host_class(emu, "__NSFastEnumerationEnumerator")?;
     let e = objc::create_instance(emu, cls, 0)?;
     let a = array_from(emu, objs)?;
@@ -3595,9 +3617,31 @@ fn string_from_bytes(emu: &mut Emu, bytes: &[u8], enc: u64) -> Result<()> {
 /// `+stringWithContentsOfFile:encoding:error:`
 fn string_with_contents_of_file(emu: &mut Emu) -> Result<()> {
     let path = nsstring(emu, emu.arg(2))?;
-    match crate::fs::read_file(emu, &path) {
-        Some(bytes) => string_from_bytes(emu, &bytes, 4),
+    string_from_file(emu, &path)
+}
+
+/// `+stringWithContentsOfURL:encoding:error:` (file URLs).
+fn string_with_contents_of_url(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFURLCopyFileSystemPath", &[emu.arg(2), POSIX_PATH_STYLE])?;
+    let path = if p == 0 { String::new() } else { nsstring(emu, p)? };
+    string_from_file(emu, &path)
+}
+
+/// The file's text in the encoding (x3); a missing file is nil with
+/// NSFileReadNoSuchFileError (260) in `*error` (x4).
+fn string_from_file(emu: &mut Emu, path: &str) -> Result<()> {
+    let (enc, error) = (emu.arg(3), emu.arg(4));
+    match crate::fs::read_file(emu, path) {
+        Some(bytes) => string_from_bytes(emu, &bytes, enc),
         None => {
+            if error != 0 {
+                let domain = new_nsstring(emu, "NSCocoaErrorDomain")?;
+                let (k, v) = (new_nsstring(emu, "NSFilePath")?, new_nsstring(emu, path)?);
+                let info = new_dict_of(emu, &[(k, v)])?;
+                let cls = host_class(emu, "NSError")?;
+                let err = send(emu, cls, "errorWithDomain:code:userInfo:", &[domain, 260, info])?;
+                emu.write_u64(error, err)?;
+            }
             emu.ret(0);
             Ok(())
         }
@@ -4049,6 +4093,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("NSString", true, "stringWithContentsOfFile:encoding:error:", string_with_contents_of_file),
     ("NSString", false, "initWithContentsOfFile:encoding:error:", string_with_contents_of_file),
+    ("NSString", true, "stringWithContentsOfURL:encoding:error:", string_with_contents_of_url),
+    ("NSString", false, "initWithContentsOfURL:encoding:error:", string_with_contents_of_url),
     ("NSFileManager", true, "defaultManager", file_manager),
     ("NSFileManager", false, "fileExistsAtPath:", file_exists),
     ("NSFileManager", false, "fileExistsAtPath:isDirectory:", file_exists),
@@ -4110,17 +4156,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let ok = crate::fs::write_data_file(e, &path, &bytes);
         ret_bool(e, ok)
     }),
-    ("NSFileManager", false, "removeItemAtPath:error:", |e| {
-        let path = nsstring(e, e.arg(2))?;
-        let ok = crate::fs::remove(e, &path);
-        ret_bool(e, ok)
-    }),
-    ("NSFileManager", false, "removeItemAtURL:error:", |e| {
-        let p = send(e, e.arg(2), "path", &[])?;
-        let path = nsstring(e, p)?;
-        let ok = crate::fs::remove(e, &path);
-        ret_bool(e, ok)
-    }),
     ("NSString", false, "pathExtension", |e| string_map(e, path_extension)),
     ("NSString", false, "lastPathComponent", |e| string_map(e, |p| last_component(p).to_string())),
     ("NSString", false, "stringByDeletingLastPathComponent", |e| string_map(e, deleting_last_component)),
@@ -4131,6 +4166,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "stringByAppendingPathComponent:", appending_component),
     ("NSString", false, "stringByAppendingPathExtension:", appending_extension),
     ("NSString", false, "pathComponents", path_components),
+    ("NSString", false, "stringByPaddingToLength:withString:startingAtIndex:", string_padding),
     ("NSString", true, "pathWithComponents:", |e| {
         let a = e.arg(2);
         let mut parts = Vec::new();
@@ -4933,5 +4969,23 @@ mod base64_tests {
         // 64-character lines, CRLF.
         let long = base64_encode(&[0u8; 60], 1);
         assert_eq!(long.split("\r\n").map(str::len).collect::<Vec<_>>(), vec![64, 16]);
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use super::pad_to_length;
+
+    fn pad(s: &str, len: usize, with: &str, start: usize) -> String {
+        let (t, p): (Vec<u16>, Vec<u16>) = (s.encode_utf16().collect(), with.encode_utf16().collect());
+        String::from_utf16_lossy(&pad_to_length(&t, len, &p, start))
+    }
+
+    #[test]
+    fn pads_and_truncates_like_foundation() {
+        // Apple's examples: "abc" padded to 9 with ". " from 1, and cut to 2.
+        assert_eq!(pad("abc", 9, ". ", 1), "abc . . .");
+        assert_eq!(pad("abc", 2, ". ", 0), "ab");
+        assert_eq!(pad("7", 4, "0", 0), "7000");
     }
 }

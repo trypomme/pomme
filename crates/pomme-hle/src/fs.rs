@@ -384,6 +384,17 @@ fn host_app_dir(emu: &Emu) -> PathBuf {
     emu.p.main().path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
 
+/// Where image `i` is, as dyld reports it: inside the app bundle for the app's
+/// own code, the install name for system libraries.
+pub fn guest_image_path(emu: &Emu, i: usize) -> String {
+    let img = &emu.p.images[i];
+    let app = host_app_dir(emu);
+    if let Ok(rel) = img.path.strip_prefix(&app) {
+        return format!("{}/{}", guest_bundle_path(emu), rel.display());
+    }
+    img.install_name.clone().unwrap_or_else(|| format!("/usr/lib/{}", img.name))
+}
+
 /// The guest path of the app bundle.
 pub fn guest_bundle_path(emu: &Emu) -> String {
     let dir = host_app_dir(emu);
@@ -525,6 +536,25 @@ fn open_data(emu: &mut Emu, path: &str, flags: u64) -> std::result::Result<u64, 
 fn open(emu: &mut Emu) -> Result<()> {
     let (path, flags) = (emu.cstr(emu.arg(0))?, emu.arg(1));
     open_path(emu, path, flags)
+}
+
+/// `open_dprotected_np(path, flags, class, dpflags, mode)`: open, giving a file
+/// it creates that data-protection class (as NSFileProtection… names them).
+fn open_dprotected_np(emu: &mut Emu) -> Result<()> {
+    let (path, flags, class) = (emu.cstr(emu.arg(0))?, emu.arg(1), emu.arg(2) as i32);
+    let existed = attributes(emu, &path).is_some();
+    open_path(emu, path.clone(), flags)?;
+    let protection = match class {
+        1 => "NSFileProtectionComplete",
+        2 => "NSFileProtectionCompleteUnlessOpen",
+        3 => "NSFileProtectionCompleteUntilFirstUserAuthentication",
+        4 => "NSFileProtectionNone",
+        _ => return Ok(()),
+    };
+    if !existed && emu.cpu.x[0] as i64 >= 0 {
+        set_attributes(emu, &path, |m| m.protection = Some(protection.into()));
+    }
+    Ok(())
 }
 
 /// `openat(dirfd, path, flags, mode)`: relative to a directory fd (AT_FDCWD = -2: "/").
@@ -1732,6 +1762,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     }),
     ("_mkdtemp", mkdtemp),
     ("_open", open),
+    ("_open_dprotected_np", open_dprotected_np),
     ("_close", close),
     ("_read", read),
     ("_pread", pread),

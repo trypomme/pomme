@@ -142,6 +142,11 @@ pub(crate) fn index_list(emu: &Emu, o: u64) -> Vec<u64> {
     set(emu, o).indexes().collect()
 }
 
+/// An NSIndexSet's indexes, in order (for other modules).
+pub(crate) fn indexes_of(emu: &Emu, o: u64) -> Vec<u64> {
+    set(emu, o).indexes().collect()
+}
+
 fn set(emu: &Emu, o: u64) -> Indexes {
     emu.indexsets.sets.get(&o).cloned().unwrap_or_default()
 }

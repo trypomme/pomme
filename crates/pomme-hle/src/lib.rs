@@ -81,6 +81,8 @@ pub mod imageio;
 pub mod indexset;
 pub mod commoncrypto;
 pub mod operation;
+mod orderedset;
+mod rand;
 pub mod uttype;
 pub mod network;
 pub mod keychain;
@@ -205,6 +207,8 @@ pub struct Emu {
     pub profiler: Option<profile::Profiler>,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
+    /// NSSetUncaughtExceptionHandler's function, or 0.
+    pub uncaught_exception_handler: u64,
     /// Whether debug-level os_log messages print (as Xcode's "Include Debug Messages").
     pub os_log_debug: bool,
     /// The launch arguments after the executable's path, as an Xcode scheme passes them.
@@ -297,6 +301,10 @@ pub struct Emu {
     pub(crate) time: time::State,
     pub(crate) locks: locks::State,
     pub(crate) dsource: dsource::State,
+    pub(crate) ordered_sets: orderedset::State,
+    pub(crate) rand: rand::State,
+    /// NXArchInfo records made so far (sysctl.rs).
+    pub(crate) sysctl_arch: HashMap<usize, u64>,
     /// NSInvocations whose methods are running, per thread (see invocation.rs).
     pub(crate) invocations: std::collections::HashMap<usize, Vec<invocation::Pending>>,
     pub(crate) coretext: coretext::State,
@@ -310,7 +318,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, rand::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -339,6 +347,7 @@ impl Emu {
             argv: 0,
             launch_args: Vec::new(),
             os_log_debug: false,
+            uncaught_exception_handler: 0,
             depth: 0,
             last_q0: 0,
             last_x01: [0; 2],
@@ -400,6 +409,9 @@ impl Emu {
             time: Default::default(),
             locks: Default::default(),
             dsource: Default::default(),
+            ordered_sets: Default::default(),
+            rand: Default::default(),
+            sysctl_arch: HashMap::new(),
             invocations: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),

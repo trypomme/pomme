@@ -577,8 +577,15 @@ fn syscall(emu: &mut Emu) -> Result<()> {
     const SYS_KDEBUG_TRACE: u64 = 180;
     const SYS_KDEBUG_TRACE64: u64 = 179;
     const SYS_THREAD_SELFID: u64 = 372;
+    // gettid(uid_t *, gid_t *): the thread's own credentials (pthread_setugid_np).
+    // None is set, so ESRCH, as on a phone (it isn't Linux's gettid).
+    const SYS_GETTID: u64 = 286;
     match emu.arg(0) {
         SYS_THREAD_SELFID => ret(emu, emu.th.current as u64 + 1),
+        SYS_GETTID => {
+            crate::libsystem::set_errno(emu, 3)?; // ESRCH
+            fail(emu)
+        }
         SYS_KDEBUG_TRACE | SYS_KDEBUG_TRACE64 => ret_zero(emu),
         n => {
             println!("[syscall] {n} isn't implemented (returning ENOSYS)");
@@ -736,7 +743,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_atfork", ret_zero),
     ("_pthread_is_threaded_np", ret_zero),
     ("_pthread_main_thread_np", |e| ret(e, 0x3_2000_0000)),
-    ("_pthread_attr_destroy", ret_zero),
     ("_pthread_attr_setdetachstate", ret_zero),
     ("_pthread_attr_setscope", ret_zero),
     ("_pthread_attr_set_qos_class_np", ret_zero),
@@ -745,7 +751,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_getsegbyname", getsegbyname),
     ("_dyld_image_path_containing_address", dyld_image_path_containing_address),
     ("_dlopen_preflight", ret_zero),
-    ("_NXGetLocalArchInfo", ret_zero),
     ("_NXFindBestFatArch", ret_zero),
     ("_sysdir_start_search_path_enumeration", ret_zero),
     ("_sysdir_get_next_search_path_enumeration", ret_zero),

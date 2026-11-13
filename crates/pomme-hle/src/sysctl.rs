@@ -180,7 +180,65 @@ fn sysctlnametomib(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-pub(crate) const FUNCS: &[(&str, HostFn)] = &[("_sysctl", sysctl), ("_sysctlbyname", sysctlbyname), ("_sysctlnametomib", sysctlnametomib)];
+// ---- NXArchInfo (<mach-o/arch.h>): what the CPU is, by name and type ----
+
+const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+/// The architectures pomme knows: (name, cputype, cpusubtype, description).
+/// The phone's own is arm64 (CPU_SUBTYPE_ARM64_ALL), as apps are built for it.
+const ARCHS: &[(&str, u32, u32, &str)] = &[("arm64", CPU_TYPE_ARM64, 0, "arm64"), ("arm64e", CPU_TYPE_ARM64, 2, "arm64e")];
+
+/// A `const NXArchInfo *` for ARCHS[i]: {name, cputype, cpusubtype, byteorder, description}.
+fn arch_info(emu: &mut Emu, i: usize) -> Result<u64> {
+    if let Some(&p) = emu.sysctl_arch.get(&i) {
+        return Ok(p);
+    }
+    let (name, ty, sub, desc) = ARCHS[i];
+    let p = emu.alloc(32)?;
+    let (n, d) = (emu.alloc_cstr(name)?, emu.alloc_cstr(desc)?);
+    emu.write_u64(p, n)?;
+    emu.p.memory.write_u32(p + 8, ty)?;
+    emu.p.memory.write_u32(p + 12, sub)?;
+    emu.p.memory.write_u32(p + 16, 1)?; // NX_LittleEndian
+    emu.write_u64(p + 24, d)?;
+    emu.sysctl_arch.insert(i, p);
+    Ok(p)
+}
+
+fn nx_local(emu: &mut Emu) -> Result<()> {
+    let p = arch_info(emu, 0)?;
+    emu.ret(p);
+    Ok(())
+}
+
+fn nx_from_name(emu: &mut Emu) -> Result<()> {
+    let name = emu.cstr(emu.arg(0))?;
+    let p = match ARCHS.iter().position(|a| a.0 == name) {
+        Some(i) => arch_info(emu, i)?,
+        None => 0,
+    };
+    emu.ret(p);
+    Ok(())
+}
+
+/// `NXGetArchInfoFromCpuType(cputype, cpusubtype)`: CPU_SUBTYPE_MULTIPLE (-1) matches the family.
+fn nx_from_type(emu: &mut Emu) -> Result<()> {
+    let (ty, sub) = (emu.arg(0) as u32, emu.arg(1) as u32 & 0x00ff_ffff);
+    let p = match ARCHS.iter().position(|a| a.1 == ty && (sub == 0x00ff_ffff || a.2 == sub)) {
+        Some(i) => arch_info(emu, i)?,
+        None => 0,
+    };
+    emu.ret(p);
+    Ok(())
+}
+
+pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_sysctl", sysctl),
+    ("_sysctlbyname", sysctlbyname),
+    ("_sysctlnametomib", sysctlnametomib),
+    ("_NXGetLocalArchInfo", nx_local),
+    ("_NXGetArchInfoFromName", nx_from_name),
+    ("_NXGetArchInfoFromCpuType", nx_from_type),
+];
 
 #[cfg(test)]
 mod tests {

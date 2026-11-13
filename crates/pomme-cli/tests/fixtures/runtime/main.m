@@ -9,6 +9,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <mach-o/arch.h>
+#include <mach-o/ldsyms.h>
+#include <mach-o/loader.h>
+#include <mach/mach.h>
+#include <sys/syscall.h>
+#include <errno.h>
 
 // The exclusive monitor across a thread switch: a load-exclusive, then a
 // yield to a thread that writes the same word. The kernel clears the monitor
@@ -20,6 +30,15 @@ static void *writer(void *arg) {
     word = 42;
     return NULL;
 }
+
+// A thread on a stack the caller made, that spins until told to stop.
+static volatile int spinStop;
+static volatile unsigned long spins;
+static void *spinner(void *arg) {
+    while (!spinStop) spins++;
+    return arg;
+}
+
 @interface ViewController : UIViewController
 @end
 
@@ -85,6 +104,77 @@ static void *writer(void *arg) {
                               fromNS && CFEqual(fromNS, CFSTR("ns")) && CFPreferencesGetAppIntegerValue(CFSTR("pommeCF"), kCFPreferencesCurrentApplication, &valid) == 7 && valid);
     if (fromNS) CFRelease(fromNS);
 
+    // Finding and reading its own executable, as crash reporters do: the
+    // header's symbol, dladdr for its path, then the file mapped in.
+    void *header = dlsym(RTLD_MAIN_ONLY, MH_EXECUTE_SYM);
+    Dl_info info = {0};
+    int found = header ? dladdr(header, &info) : 0;
+    int fd = found ? open(info.dli_fname, O_RDONLY) : -1;
+    NSDictionary *attrs = found ? [NSFileManager.defaultManager attributesOfItemAtPath:@(info.dli_fname) error:NULL] : nil;
+    void *mapped = fd >= 0 ? mmap(NULL, [attrs fileSize], PROT_READ, MAP_FILE | MAP_SHARED, fd, 0) : MAP_FAILED;
+    const NXArchInfo *arch = NXGetLocalArchInfo();
+    check(@"selfImage", header && info.dli_fbase == header && fd >= 0 && [attrs[NSFileType] isEqual:NSFileTypeRegular] && mapped != MAP_FAILED &&
+                            ((struct mach_header_64 *)mapped)->magic == MH_MAGIC_64 && arch && arch->cputype == CPU_TYPE_ARM64);
+    if (fd >= 0) close(fd);
+
+    // NSOrderedSet: distinct objects in order.
+    NSMutableOrderedSet *os = [NSMutableOrderedSet orderedSetWithArray:@[@"b", @"a", @"b", @"c"]];
+    [os addObject:@"a"];
+    [os insertObject:@"z" atIndex:0];
+    [os removeObject:@"c"];
+    NSOrderedSet *frozen = [os copy];
+    NSMutableArray *osSeen = [NSMutableArray new];
+    for (NSString *x in frozen) [osSeen addObject:x];
+    check(@"orderedSet", [os.array isEqual:(@[@"z", @"b", @"a"])] && [os indexOfObject:@"a"] == 2 && [os containsObject:@"b"] && ![os containsObject:@"c"] &&
+                             [osSeen isEqual:os.array] && [frozen isEqualToOrderedSet:os] && ![frozen isKindOfClass:NSMutableOrderedSet.class] && [os.set count] == 3);
+
+    // Threads: a caller-made stack, suspend and resume, registers, exception ports.
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    size_t stackSize = 64 * 1024;
+    void *stack = NULL;
+    posix_memalign(&stack, 16384, stackSize);
+    pthread_attr_setstack(&attr, stack, stackSize);
+    pthread_t spin;
+    pthread_create(&spin, &attr, spinner, NULL);
+    mach_port_t port = pthread_mach_thread_np(spin);
+    sched_yield();
+    BOOL suspended = thread_suspend(port) == KERN_SUCCESS;
+    unsigned long before = spins;
+    sched_yield();
+    BOOL stayed = spins == before;
+    arm_thread_state64_t state;
+    mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+    BOOL gotState = thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&state, &count) == KERN_SUCCESS && count == ARM_THREAD_STATE64_COUNT;
+    uint64_t sp = arm_thread_state64_get_sp(state);
+    BOOL onStack = sp > (uint64_t)stack && sp <= (uint64_t)stack + stackSize;
+    thread_resume(port);
+    spinStop = 1;
+    pthread_join(spin, NULL);
+    check(@"threads", suspended && stayed && gotState && onStack && pthread_from_mach_thread_np(port) == spin && mach_thread_self() == pthread_mach_thread_np(pthread_self()));
+
+    mach_port_t excPort;
+    mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &excPort);
+    exception_mask_t masks[EXC_TYPES_COUNT];
+    mach_port_t ports[EXC_TYPES_COUNT];
+    exception_behavior_t behaviors[EXC_TYPES_COUNT];
+    thread_state_flavor_t flavors[EXC_TYPES_COUNT];
+    mach_msg_type_number_t excCount = EXC_TYPES_COUNT;
+    kern_return_t swapped = task_swap_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS | EXC_MASK_CRASH, excPort, EXCEPTION_DEFAULT, THREAD_STATE_NONE, masks, &excCount, ports, behaviors, flavors);
+    BOOL none = swapped == KERN_SUCCESS && excCount == 0;
+    excCount = EXC_TYPES_COUNT;
+    task_get_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS | EXC_MASK_CRASH, masks, &excCount, ports, behaviors, flavors);
+    check(@"exceptionPorts", none && excCount == 1 && ports[0] == excPort && masks[0] == (EXC_MASK_BAD_ACCESS | EXC_MASK_CRASH));
+
+    // Files: removing what isn't there; gettid's credentials.
+    NSError *removeError = nil;
+    BOOL removed = [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"nothing-here"] error:&removeError];
+    errno = 0;
+    uid_t uid;
+    gid_t gid;
+    long tid = syscall(SYS_gettid, &uid, &gid);
+    check(@"errors", !removed && [removeError.domain isEqual:NSCocoaErrorDomain] && removeError.code == NSFileNoSuchFileError && tid == -1 && errno == ESRCH);
+
     // How the app was launched.
     NSArray *args = NSProcessInfo.processInfo.arguments;
     check(@"arguments", args.count == 4 && [args[1] isEqual:@"-PommeFlag"] && [args[2] isEqual:@"-PommeLevel"] && [args[3] isEqual:@"3"]);
@@ -126,6 +216,21 @@ static void *writer(void *arg) {
         });
     });
     dispatch_resume(timer);
+
+    // A download task: the body as a file, with the headers in canonical form.
+    NSURL *url = [NSURL URLWithString:@"https://pomme.test/hello.txt"];
+    [[NSURLSession.sharedSession downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        NSString *body = [NSString stringWithContentsOfURL:location encoding:NSUTF8StringEncoding error:NULL];
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        BOOL ok = !error && [body isEqual:@"hello"] && http.statusCode == 200 && [http.allHeaderFields[@"Content-Type"] isEqual:@"text/plain"] &&
+                  [http.allHeaderFields[@"X-Pomme-Id"] isEqual:@"7"];
+        NSString *path = location.path;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // The file is gone once the handler returns.
+            BOOL gone = ![NSFileManager.defaultManager fileExistsAtPath:path];
+            field.text = [field.text stringByAppendingFormat:@" download=%d", ok && gone];
+        });
+    }] resume];
 }
 @end
 

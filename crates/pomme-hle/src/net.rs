@@ -227,12 +227,16 @@ struct Task {
     received: u64,
     /// Delivery progress: 0 response, 1 data, 2 completion.
     stage: u8,
+    /// A download task: the body arrives as a temporary file.
+    download: bool,
     result: Option<std::result::Result<Response, String>>,
 }
 
 #[derive(Default)]
 pub struct State {
     pub client: Option<Box<dyn Net>>,
+    /// Print each request and how it went (`--log-requests`).
+    pub log_requests: bool,
     requests: HashMap<u64, UrlRequest>,
     responses: HashMap<u64, UrlResponse>,
     /// session → (delegate, configuration)
@@ -266,6 +270,31 @@ fn url_string(emu: &mut Emu, url: u64) -> Result<String> {
     }
     let s = send(emu, url, "absoluteString", &[])?;
     foundation::nsstring(emu, s)
+}
+
+/// A response's headers as NSHTTPURLResponse has them: each name in canonical
+/// form (`content-type` → `Content-Type`, as HTTP/2 sends them lowercase), and
+/// repeated headers joined with ", ".
+fn canonical_headers(headers: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (k, v) in headers {
+        let name = k
+            .split('-')
+            .map(|w| {
+                let mut c = w.chars();
+                c.next().map_or(String::new(), |f| f.to_uppercase().chain(c.flat_map(char::to_lowercase)).collect())
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        match out.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, existing)) => {
+                existing.push_str(", ");
+                existing.push_str(&v);
+            }
+            None => out.push((name, v)),
+        }
+    }
+    out
 }
 
 fn headers_dict(emu: &mut Emu, headers: &[(String, String)]) -> Result<u64> {
@@ -460,6 +489,37 @@ fn data_task(emu: &mut Emu, completion: bool) -> Result<()> {
     ret(emu, t)
 }
 
+/// `downloadTaskWithRequest:` (and `…completionHandler:`, and the URL forms).
+fn download_task(emu: &mut Emu, with_url: bool, completion: bool) -> Result<()> {
+    let (s, r) = (emu.arg(0), emu.arg(2));
+    let block = if completion { emu.arg(3) } else { 0 };
+    let r = if with_url { new_request(emu, "NSURLRequest", default_request(r))? } else { r };
+    let t = new_task(emu, s, r, block)?;
+    if let Some(x) = emu.net.tasks.get_mut(&t) {
+        x.download = true;
+    }
+    ret(emu, t)
+}
+
+/// `uploadTaskWithRequest:fromFile:` (and `…completionHandler:`): the file is the body.
+fn upload_from_file(emu: &mut Emu, completion: bool) -> Result<()> {
+    let (r, file) = (emu.arg(2), emu.arg(3));
+    let path = url_string(emu, file)?;
+    let path = percent_decode(path.strip_prefix("file://").unwrap_or(&path));
+    let bytes = crate::fs::read_file(emu, &path).unwrap_or_default();
+    let d = foundation::new_data(emu, &bytes)?;
+    emu.net.requests.entry(r).or_default().body = d;
+    if completion {
+        emu.cpu.x[3] = emu.arg(4);
+    }
+    data_task(emu, completion)
+}
+
+/// Where a download task's body goes until its handler has seen it.
+fn download_path(id: u64) -> String {
+    format!("{}/tmp/CFNetworkDownload_{id}.tmp", foundation::DATA_CONTAINER)
+}
+
 fn data_task_with_url(emu: &mut Emu, completion: bool) -> Result<()> {
     let (s, url) = (emu.arg(0), emu.arg(2));
     let block = if completion { emu.arg(3) } else { 0 };
@@ -497,7 +557,7 @@ fn resume(emu: &mut Emu) -> Result<()> {
             None => Err("offline".to_string()),
         }
     };
-    if emu.trace {
+    if emu.trace || emu.net.log_requests {
         println!("[net] {} {} → {}", request.method, request.url, match &result {
             Ok(r) => format!("{} ({} bytes)", r.status, r.body.len()),
             Err(e) => e.clone(),
@@ -616,7 +676,7 @@ fn deliver(emu: &mut Emu) -> Result<()> {
             Ok(r) => {
                 // A file URL's response is a plain NSURLResponse (status 0 marks it).
                 let plain = r.status == 0;
-                let response = new_response(emu, UrlResponse { url, status: r.status, headers: r.headers, plain })?;
+                let response = new_response(emu, UrlResponse { url, status: r.status, headers: canonical_headers(r.headers), plain })?;
                 let data = foundation::new_data(emu, &r.body)?;
                 (response, data, 0)
             }
@@ -633,7 +693,14 @@ fn deliver(emu: &mut Emu) -> Result<()> {
             if let Some(x) = emu.net.tasks.get_mut(&t) {
                 x.state = 3;
             }
-            crate::libsystem::call_block(emu, tk.completion, &[data, response, error])?;
+            if tk.download {
+                // The body as a file, removed once the handler returns.
+                let location = if error == 0 { download_file(emu, tk.id, data)? } else { 0 };
+                crate::libsystem::call_block(emu, tk.completion, &[location, response, error])?;
+                crate::fs::remove(emu, &download_path(tk.id));
+            } else {
+                crate::libsystem::call_block(emu, tk.completion, &[data, response, error])?;
+            }
             send(emu, t, "release", &[])?;
             return Ok(());
         }
@@ -646,6 +713,13 @@ fn deliver(emu: &mut Emu) -> Result<()> {
         stage = 2; // failed before any response
     }
     match stage {
+        // A download: the file, then completion.
+        0 | 1 if tk.download => {
+            let location = download_file(emu, tk.id, tk.data)?;
+            delegate_call(emu, delegate, "URLSession:downloadTask:didFinishDownloadingToURL:", &[s, t, location])?;
+            crate::fs::remove(emu, &download_path(tk.id));
+            stage = 2;
+        }
         0 => {
             let allow = allow_block(emu)?;
             delegate_call(emu, delegate, "URLSession:dataTask:didReceiveResponse:completionHandler:", &[s, t, tk.response, allow])?;
@@ -668,6 +742,14 @@ fn deliver(emu: &mut Emu) -> Result<()> {
         x.stage = stage;
     }
     crate::uikit::after_on_main(emu, CALLBACK_GAP_S, deliver, t)
+}
+
+/// Write a download's body to its temporary file: the file URL.
+fn download_file(emu: &mut Emu, id: u64, data: u64) -> Result<u64> {
+    let bytes = if data == 0 { Vec::new() } else { foundation::data_bytes(emu, data)? };
+    let path = download_path(id);
+    crate::fs::write_data_file(emu, &path, &bytes);
+    foundation::new_file_url(emu, &path, false)
 }
 
 fn nothing(_: &mut Emu) -> Result<()> {
@@ -804,6 +886,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (S, false, "dataTaskWithRequest:completionHandler:", |e| data_task(e, true)),
     (S, false, "dataTaskWithURL:", |e| data_task_with_url(e, false)),
     (S, false, "dataTaskWithURL:completionHandler:", |e| data_task_with_url(e, true)),
+    (S, false, "downloadTaskWithRequest:", |e| download_task(e, false, false)),
+    (S, false, "downloadTaskWithRequest:completionHandler:", |e| download_task(e, false, true)),
+    (S, false, "downloadTaskWithURL:", |e| download_task(e, true, false)),
+    (S, false, "downloadTaskWithURL:completionHandler:", |e| download_task(e, true, true)),
+    (S, false, "uploadTaskWithRequest:fromFile:", |e| upload_from_file(e, false)),
+    (S, false, "uploadTaskWithRequest:fromFile:completionHandler:", |e| upload_from_file(e, true)),
     (S, false, "uploadTaskWithRequest:fromData:", |e| {
         let (r, d) = (e.arg(2), e.arg(3));
         e.net.requests.entry(r).or_default().body = d;
@@ -877,5 +965,17 @@ mod tests {
         assert_eq!(h, vec![("Accept".to_string(), "a,b".to_string())]);
         set_header(&mut h, "ACCEPT", None, false);
         assert!(h.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::canonical_headers;
+
+    #[test]
+    fn names_are_canonical_and_repeats_join() {
+        let h = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        let got = canonical_headers(h(&[("content-type", "application/json"), ("x-goog-request-id", "1"), ("set-cookie", "a=1"), ("Set-Cookie", "b=2"), ("ETAG", "x")]));
+        assert_eq!(got, h(&[("Content-Type", "application/json"), ("X-Goog-Request-Id", "1"), ("Set-Cookie", "a=1, b=2"), ("Etag", "x")]));
     }
 }

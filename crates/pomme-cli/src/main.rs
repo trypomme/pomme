@@ -153,6 +153,9 @@ struct DeviceStateArgs {
     /// `--env GRPC_VERBOSITY=debug` (repeatable).
     #[arg(long = "env", value_parser = parse_env)]
     env: Vec<(String, String)>,
+    /// Print each HTTP request the app makes, with its status and size.
+    #[arg(long)]
+    log_requests: bool,
     /// Print the app's debug-level log messages too (os_log's debug type), as
     /// Xcode's console does with "Include Debug Messages".
     #[arg(long)]
@@ -225,6 +228,7 @@ impl DeviceStateArgs {
         }
         emu.launch_args = self.args.clone();
         emu.os_log_debug = self.debug_logs;
+        emu.net.log_requests = self.log_requests;
         for &(p, at) in &self.network {
             match at {
                 None => emu.network.path = p,

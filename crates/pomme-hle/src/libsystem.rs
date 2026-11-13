@@ -34,6 +34,8 @@ pub struct State {
     signal_actions: HashMap<i32, Vec<u8>>,
     /// dlerror's pending message (a guest C string), or 0.
     dlerror: u64,
+    /// Images' paths as C strings, for dladdr and _dyld_get_image_name.
+    image_paths: HashMap<usize, u64>,
     /// The wall-clock time at boot, if not the default (see [`boot_time`]).
     boot_time: Option<u64>,
     /// `dlopen` handles for system libraries that aren't guest images (pomme
@@ -2096,8 +2098,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_host_page_size", host_page_size),
     ("_sysconf", sysconf),
     ("_pthread_equal", pthread_equal),
-    ("_pthread_attr_init", ret_zero),
-    ("_pthread_attr_setstacksize", ret_zero),
     ("_pthread_sigmask", ret_zero),
     // Signals: handlers are recorded (and reported back as the previous action)
     // but pomme never delivers signals.
@@ -2734,10 +2734,15 @@ fn dyld_get_image_slide(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Image `i`'s path as a C string (made once per image).
 fn image_path(emu: &mut Emu, i: usize) -> Result<u64> {
-    let img = &emu.p.images[i];
-    let path = img.install_name.clone().unwrap_or_else(|| format!("/private/var/containers/Bundle/Application/pomme/{}", img.name));
-    emu.alloc_cstr(&path)
+    if let Some(&p) = emu.sys.image_paths.get(&i) {
+        return Ok(p);
+    }
+    let path = crate::fs::guest_image_path(emu, i);
+    let p = emu.alloc_cstr(&path)?;
+    emu.sys.image_paths.insert(i, p);
+    Ok(p)
 }
 
 fn dyld_get_image_name(emu: &mut Emu) -> Result<()> {

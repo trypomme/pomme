@@ -463,7 +463,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let components = crate::calendar::component_methods();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::animation::METHODS, crate::spinner::METHODS, EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::orderedset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::animation::METHODS, crate::spinner::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -1666,8 +1666,25 @@ fn objc_copy_struct(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `NSSetUncaughtExceptionHandler(handler)` / `NSGetUncaughtExceptionHandler()`:
+/// the function Foundation calls with an exception nothing catches.
+fn set_uncaught_handler(emu: &mut Emu) -> Result<()> {
+    emu.uncaught_exception_handler = emu.arg(0);
+    Ok(())
+}
+
+fn get_uncaught_handler(emu: &mut Emu) -> Result<()> {
+    emu.ret(emu.uncaught_exception_handler);
+    Ok(())
+}
+
 fn objc_exception_throw(emu: &mut Emu) -> Result<()> {
     let exc = emu.cpu.x[0];
+    // Uncaught: the app's handler hears it first (crash reporters record it there).
+    let handler = std::mem::take(&mut emu.uncaught_exception_handler);
+    if handler != 0 {
+        emu.call(handler, &[exc])?;
+    }
     let mut text = |sel: &str| send(emu, exc, sel, &[]).ok().filter(|&s| s != 0).and_then(|s| crate::foundation::nsstring(emu, s).ok());
     let (name, reason) = (text("name"), text("reason"));
     Err(Stop::Unsupported(format!("uncaught Objective-C exception {}: {}", name.unwrap_or_default(), reason.unwrap_or_default())))
@@ -1752,6 +1769,8 @@ pub(crate) const EXCEPTION_METHODS: &[(&str, bool, &str, HostFn)] = &[
 ];
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_NSSetUncaughtExceptionHandler", set_uncaught_handler),
+    ("_NSGetUncaughtExceptionHandler", get_uncaught_handler),
     ("_objc_msgSend", msg_send),
     ("_objc_msgSendSuper2", msg_send_super2),
     ("_objc_opt_self", ret_self),

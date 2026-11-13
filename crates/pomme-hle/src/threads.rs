@@ -52,6 +52,8 @@ pub enum Wait {
     Lock { addr: u64, want: crate::locks::Want },
     /// A once-initializer another thread is running, until it's done.
     Once { pred: u64 },
+    /// A thread that suspended itself, until another resumes it.
+    Resumed { tid: usize },
     MachReceive { name: u32, buf: u64, size: u64, deadline: Option<u64> },
     Join { tid: usize, out: u64 },
     Sleep { deadline: u64 },
@@ -76,7 +78,7 @@ impl Wait {
             Wait::Sleep { deadline } => Some(deadline),
             Wait::Socket(ref p) => p.deadline(),
             Wait::Group { deadline, .. } => deadline,
-            Wait::Join { .. } | Wait::PipeRead { .. } | Wait::Face { .. } | Wait::Lock { .. } | Wait::Once { .. } => None,
+            Wait::Join { .. } | Wait::PipeRead { .. } | Wait::Face { .. } | Wait::Lock { .. } | Wait::Once { .. } | Wait::Resumed { .. } => None,
         }
     }
 }
@@ -105,6 +107,15 @@ pub struct Thread {
     /// Top (highest address) and size of its stack.
     stack_top: u64,
     stack_size: u64,
+    /// `thread_suspend` count: it isn't scheduled while this is above zero.
+    suspended: u32,
+}
+
+/// A pthread_attr_t's stack: the caller's own (base, size), or the size to make.
+#[derive(Clone, Copy, Default)]
+struct Attr {
+    stack: Option<(u64, u64)>,
+    size: Option<u64>,
 }
 
 #[derive(Default)]
@@ -131,6 +142,10 @@ pub struct State {
     handles: HashMap<u64, usize>,
     /// NSThread object for each thread that has one.
     nsthreads: HashMap<usize, u64>,
+    /// pthread attributes' stack settings, by the attribute's address.
+    attrs: HashMap<u64, Attr>,
+    /// The task's exception handlers, by exception type: (port, behavior, flavor).
+    exception_ports: BTreeMap<u32, (u32, u32, u32)>,
 }
 
 pub(crate) fn init(emu: &mut Emu) {
@@ -144,6 +159,7 @@ pub(crate) fn init(emu: &mut Emu) {
         host_base: 0,
         stack_top: crate::STACK_TOP,
         stack_size: crate::STACK_SIZE,
+        suspended: 0,
     });
     emu.th.handles.insert(MAIN_THREAD, 0);
     emu.th.next_port = 0x1003;
@@ -193,17 +209,28 @@ fn switch_to(emu: &mut Emu, tid: usize) {
 
 /// Create a thread that starts at `pc` with `x0 = arg` and returns to the host.
 pub fn spawn(emu: &mut Emu, pc: u64, arg: u64, name: &str) -> Result<usize> {
-    let stack = emu.alloc(STACK)?;
+    spawn_with(emu, pc, arg, name, Attr::default())
+}
+
+/// `spawn`, on the stack an attribute describes.
+fn spawn_with(emu: &mut Emu, pc: u64, arg: u64, name: &str, attr: Attr) -> Result<usize> {
+    let (stack, size) = match attr.stack {
+        Some(s) => s,
+        None => {
+            let size = attr.size.unwrap_or(STACK);
+            (emu.alloc(size)?, size)
+        }
+    };
     let tls = emu.alloc(TLS)?;
     let handle = emu.alloc(64)?;
     let mut cpu = Cpu::new();
     cpu.pc = pc;
     cpu.x[0] = arg;
     cpu.x[30] = HOST_RETURN;
-    cpu.sp = (stack + STACK) & !0xf;
+    cpu.sp = (stack + size) & !0xf;
     cpu.tpidrro_el0 = tls;
     let tid = emu.th.threads.len();
-    let stack_top = (stack + STACK) & !0xf;
+    let stack_top = (stack + size) & !0xf;
     emu.th.threads.push(Thread {
         cpu,
         run: Run::Runnable,
@@ -214,6 +241,7 @@ pub fn spawn(emu: &mut Emu, pc: u64, arg: u64, name: &str) -> Result<usize> {
         host_base: 0,
         stack_top,
         stack_size: stack_top - stack,
+        suspended: 0,
     });
     emu.th.handles.insert(handle, tid);
     if emu.trace {
@@ -296,6 +324,7 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
         }
         Wait::Lock { addr, want } => crate::locks::try_take(emu, addr, want)?.then_some(0),
         Wait::Once { pred } => (emu.read_u64(pred)? == u64::MAX).then_some(0),
+        Wait::Resumed { tid } => (emu.th.threads[tid].suspended == 0).then_some(0),
         Wait::MachReceive { name, buf, size, deadline } => match take_message(emu, name) {
             Some((port, msg)) => {
                 let n = msg.len().min(size as usize);
@@ -354,6 +383,10 @@ fn schedule_round(emu: &mut Emu) -> Result<bool> {
     let me = emu.th.current;
     for tid in 0..emu.th.threads.len() {
         if tid == me {
+            continue;
+        }
+        // Suspended (thread_suspend): not scheduled, unless it's waiting to be resumed.
+        if emu.th.threads[tid].suspended > 0 && !matches!(emu.th.threads[tid].run, Run::Blocked(Wait::Resumed { .. })) {
             continue;
         }
         match emu.th.threads[tid].run.clone() {
@@ -726,8 +759,9 @@ fn current_tsd(emu: &mut Emu) -> &mut HashMap<u64, u64> {
 
 /// `pthread_create(pthread_t *out, attr, start, arg)`
 fn pthread_create(emu: &mut Emu) -> Result<()> {
-    let (out, start, arg) = (emu.arg(0), emu.arg(2), emu.arg(3));
-    let tid = spawn(emu, start, arg, "pthread")?;
+    let (out, attr, start, arg) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    let a = emu.th.attrs.get(&attr).copied().unwrap_or_default();
+    let tid = spawn_with(emu, start, arg, "pthread", a)?;
     let handle = emu.th.threads[tid].handle;
     emu.write_u64(out, handle)?;
     ret(emu, 0)
@@ -765,7 +799,224 @@ fn pthread_threadid_np(emu: &mut Emu) -> Result<()> {
 
 fn pthread_mach_thread_np(emu: &mut Emu) -> Result<()> {
     let tid = tid_of(emu, emu.arg(0));
-    ret(emu, 0x2000 + tid as u64)
+    ret(emu, THREAD_PORT_BASE + tid as u64)
+}
+
+// ---- thread attributes: the stack ----
+
+const EINVAL: u64 = 22;
+
+/// PTHREAD_STACK_MIN on iOS.
+const STACK_MIN: u64 = 16384;
+
+fn attr_init(emu: &mut Emu) -> Result<()> {
+    emu.th.attrs.insert(emu.arg(0), Attr::default());
+    ret(emu, 0)
+}
+
+fn attr_destroy(emu: &mut Emu) -> Result<()> {
+    emu.th.attrs.remove(&emu.arg(0));
+    ret(emu, 0)
+}
+
+/// `pthread_attr_setstacksize(attr, size)`: at least PTHREAD_STACK_MIN, whole pages.
+fn attr_setstacksize(emu: &mut Emu) -> Result<()> {
+    let (a, size) = (emu.arg(0), emu.arg(1));
+    if size < STACK_MIN || size % pomme_mem::PAGE_SIZE != 0 {
+        return ret(emu, EINVAL);
+    }
+    emu.th.attrs.entry(a).or_default().size = Some(size);
+    ret(emu, 0)
+}
+
+fn attr_getstacksize(emu: &mut Emu) -> Result<()> {
+    let (a, out) = (emu.arg(0), emu.arg(1));
+    let at = emu.th.attrs.get(&a).copied().unwrap_or_default();
+    let size = at.stack.map(|s| s.1).or(at.size).unwrap_or(STACK);
+    emu.write_u64(out, size)?;
+    ret(emu, 0)
+}
+
+/// `pthread_attr_setstack(attr, stackaddr, size)`: the thread runs on the caller's memory.
+fn attr_setstack(emu: &mut Emu) -> Result<()> {
+    let (a, base, size) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    if size < STACK_MIN || base % pomme_mem::PAGE_SIZE != 0 {
+        return ret(emu, EINVAL);
+    }
+    emu.th.attrs.entry(a).or_default().stack = Some((base, size));
+    ret(emu, 0)
+}
+
+fn attr_getstack(emu: &mut Emu) -> Result<()> {
+    let (a, base_out, size_out) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let (base, size) = emu.th.attrs.get(&a).and_then(|x| x.stack).unwrap_or((0, 0));
+    emu.write_u64(base_out, base)?;
+    emu.write_u64(size_out, size)?;
+    ret(emu, 0)
+}
+
+// ---- Mach threads and the task, as crash reporters use them ----
+
+const KERN_SUCCESS: u64 = 0;
+const KERN_INVALID_ADDRESS: u64 = 1;
+const KERN_INVALID_ARGUMENT: u64 = 4;
+const THREAD_PORT_BASE: u64 = 0x2000;
+const ARM_THREAD_STATE64: u64 = 6;
+const ARM_THREAD_STATE64_COUNT: u32 = 68;
+const ARM_EXCEPTION_STATE64: u64 = 7;
+const ARM_EXCEPTION_STATE64_COUNT: u32 = 4;
+
+/// The thread a Mach thread port names (as pthread_mach_thread_np hands them out).
+fn tid_of_port(emu: &Emu, port: u64) -> Option<usize> {
+    (port & 0xffff_ffff).checked_sub(THREAD_PORT_BASE).map(|t| t as usize).filter(|&t| t < emu.th.threads.len())
+}
+
+/// `mach_thread_self()`
+fn mach_thread_self(emu: &mut Emu) -> Result<()> {
+    ret(emu, THREAD_PORT_BASE + emu.th.current as u64)
+}
+
+/// `pthread_from_mach_thread_np(port)`
+fn pthread_from_mach_thread_np(emu: &mut Emu) -> Result<()> {
+    let h = tid_of_port(emu, emu.arg(0)).map_or(0, |t| emu.th.threads[t].handle);
+    ret(emu, h)
+}
+
+/// `task_threads(task, thread_act_array_t *list, mach_msg_type_number_t *count)`: the live threads.
+fn task_threads(emu: &mut Emu) -> Result<()> {
+    let (list, count) = (emu.arg(1), emu.arg(2));
+    let live: Vec<u64> = (0..emu.th.threads.len()).filter(|&t| !matches!(emu.th.threads[t].run, Run::Done(_))).map(|t| THREAD_PORT_BASE + t as u64).collect();
+    let a = emu.alloc(live.len().max(1) as u64 * 4)?;
+    for (i, p) in live.iter().enumerate() {
+        emu.p.memory.write_u32(a + i as u64 * 4, *p as u32)?;
+    }
+    emu.write_u64(list, a)?;
+    emu.p.memory.write_u32(count, live.len() as u32)?;
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `thread_suspend(port)`: one more suspension; a thread suspending itself waits to be resumed.
+fn thread_suspend(emu: &mut Emu) -> Result<()> {
+    let Some(tid) = tid_of_port(emu, emu.arg(0)) else { return ret(emu, KERN_INVALID_ARGUMENT) };
+    emu.th.threads[tid].suspended += 1;
+    if tid == emu.th.current {
+        block(emu, Wait::Resumed { tid })?;
+    }
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `thread_resume(port)`
+fn thread_resume(emu: &mut Emu) -> Result<()> {
+    let Some(tid) = tid_of_port(emu, emu.arg(0)) else { return ret(emu, KERN_INVALID_ARGUMENT) };
+    let t = &mut emu.th.threads[tid];
+    if t.suspended == 0 {
+        return ret(emu, 6); // KERN_FAILURE: not suspended
+    }
+    t.suspended -= 1;
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `thread_get_state(port, flavor, state, count*)`: a thread's registers
+/// (ARM_THREAD_STATE64), or its exception state (none: no exception is pending).
+fn thread_get_state(emu: &mut Emu) -> Result<()> {
+    let (port, flavor, state, count) = (emu.arg(0), emu.arg(1), emu.arg(2), emu.arg(3));
+    let Some(tid) = tid_of_port(emu, port) else { return ret(emu, KERN_INVALID_ARGUMENT) };
+    let room = emu.p.memory.read_u32(count)?;
+    match flavor {
+        ARM_THREAD_STATE64 if room >= ARM_THREAD_STATE64_COUNT => {
+            let c = cpu_of(emu, tid).clone();
+            for (i, x) in c.x.iter().enumerate() {
+                emu.write_u64(state + i as u64 * 8, *x)?; // x0–x28, fp, lr
+            }
+            emu.write_u64(state + 31 * 8, c.sp)?;
+            emu.write_u64(state + 32 * 8, c.pc)?;
+            emu.p.memory.write_u32(state + 33 * 8, c.nzcv() as u32)?;
+            emu.p.memory.write_u32(state + 33 * 8 + 4, 0)?;
+            emu.p.memory.write_u32(count, ARM_THREAD_STATE64_COUNT)?;
+        }
+        ARM_EXCEPTION_STATE64 if room >= ARM_EXCEPTION_STATE64_COUNT => {
+            emu.p.memory.write(state, &[0u8; 16])?;
+            emu.p.memory.write_u32(count, ARM_EXCEPTION_STATE64_COUNT)?;
+        }
+        _ => return ret(emu, KERN_INVALID_ARGUMENT),
+    }
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `vm_read_overwrite(task, address, size, data, outsize*)`: a copy that fails
+/// cleanly on memory that isn't mapped, as crash reporters read stacks.
+fn vm_read_overwrite(emu: &mut Emu) -> Result<()> {
+    let (addr, size, data, out) = (emu.arg(1), emu.arg(2), emu.arg(3), emu.arg(4));
+    let Ok(bytes) = emu.p.memory.read(addr, size as usize).map(|b| b.to_vec()) else { return ret(emu, KERN_INVALID_ADDRESS) };
+    emu.p.memory.write(data, &bytes)?;
+    if out != 0 {
+        emu.write_u64(out, size)?;
+    }
+    ret(emu, KERN_SUCCESS)
+}
+
+/// The handlers for the exception types in `mask`, grouped as the exception
+/// port calls report them: (mask, port, behavior, flavor).
+fn exception_handlers(emu: &Emu, mask: u32) -> Vec<(u32, u32, u32, u32)> {
+    let mut out: Vec<(u32, u32, u32, u32)> = Vec::new();
+    for (&bit, &(port, behavior, flavor)) in &emu.th.exception_ports {
+        if mask & bit == 0 || port == 0 {
+            continue;
+        }
+        match out.iter_mut().find(|h| (h.1, h.2, h.3) == (port, behavior, flavor)) {
+            Some(h) => h.0 |= bit,
+            None => out.push((bit, port, behavior, flavor)),
+        }
+    }
+    out
+}
+
+/// Write handlers into the out-arrays (masks, count*, ports, behaviors, flavors).
+fn write_handlers(emu: &mut Emu, hs: &[(u32, u32, u32, u32)], masks: u64, count: u64, ports: u64, behaviors: u64, flavors: u64) -> Result<()> {
+    let room = emu.p.memory.read_u32(count)? as usize;
+    let n = hs.len().min(room);
+    for (i, &(m, p, b, f)) in hs.iter().take(n).enumerate() {
+        let o = i as u64 * 4;
+        emu.p.memory.write_u32(masks + o, m)?;
+        emu.p.memory.write_u32(ports + o, p)?;
+        emu.p.memory.write_u32(behaviors + o, b)?;
+        emu.p.memory.write_u32(flavors + o, f)?;
+    }
+    Ok(emu.p.memory.write_u32(count, n as u32)?)
+}
+
+fn set_handlers(emu: &mut Emu, mask: u32, port: u32, behavior: u32, flavor: u32) {
+    for bit in (0..32).map(|i| 1u32 << i).filter(|b| mask & b != 0) {
+        emu.th.exception_ports.insert(bit, (port, behavior, flavor));
+    }
+}
+
+/// `task_set_exception_ports(task, mask, port, behavior, flavor)`. Faults
+/// aren't raised as Mach exceptions here (pomme reports them and stops), so
+/// the handler's thread waits on its port as it does when nothing crashes.
+fn task_set_exception_ports(emu: &mut Emu) -> Result<()> {
+    let (mask, port, behavior, flavor) = (emu.arg(1) as u32, emu.arg(2) as u32, emu.arg(3) as u32, emu.arg(4) as u32);
+    set_handlers(emu, mask, port, behavior, flavor);
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `task_swap_exception_ports(task, mask, port, behavior, flavor, masks, count*, old ports, old behaviors, old flavors)`
+fn task_swap_exception_ports(emu: &mut Emu) -> Result<()> {
+    let (mask, port, behavior, flavor) = (emu.arg(1) as u32, emu.arg(2) as u32, emu.arg(3) as u32, emu.arg(4) as u32);
+    let (masks, count, ports, behaviors) = (emu.arg(5), emu.arg(6), emu.arg(7), emu.read_u64(emu.cpu.sp)?);
+    let flavors = emu.read_u64(emu.cpu.sp + 8)?;
+    let old = exception_handlers(emu, mask);
+    write_handlers(emu, &old, masks, count, ports, behaviors, flavors)?;
+    set_handlers(emu, mask, port, behavior, flavor);
+    ret(emu, KERN_SUCCESS)
+}
+
+/// `task_get_exception_ports(task, mask, masks, count*, ports, behaviors, flavors)`
+fn task_get_exception_ports(emu: &mut Emu) -> Result<()> {
+    let (mask, masks, count, ports, behaviors, flavors) = (emu.arg(1) as u32, emu.arg(2), emu.arg(3), emu.arg(4), emu.arg(5), emu.arg(6));
+    let hs = exception_handlers(emu, mask);
+    write_handlers(emu, &hs, masks, count, ports, behaviors, flavors)?;
+    ret(emu, KERN_SUCCESS)
 }
 
 /// `pthread_get_stackaddr_np(pthread_t)`: the stack's top (it grows down).
@@ -959,6 +1210,28 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_main_np", pthread_main_np),
     ("_pthread_threadid_np", pthread_threadid_np),
     ("_pthread_mach_thread_np", pthread_mach_thread_np),
+    ("_mach_thread_self", mach_thread_self),
+    ("_pthread_attr_init", attr_init),
+    ("_pthread_attr_destroy", attr_destroy),
+    ("_pthread_attr_setstacksize", attr_setstacksize),
+    ("_pthread_attr_getstacksize", attr_getstacksize),
+    ("_pthread_attr_setstack", attr_setstack),
+    ("_pthread_attr_getstack", attr_getstack),
+    ("_pthread_from_mach_thread_np", pthread_from_mach_thread_np),
+    ("_task_threads", task_threads),
+    ("_thread_suspend", thread_suspend),
+    ("_thread_resume", thread_resume),
+    ("_thread_get_state", thread_get_state),
+    ("_vm_read_overwrite", vm_read_overwrite),
+    ("_task_set_exception_ports", task_set_exception_ports),
+    ("_task_swap_exception_ports", task_swap_exception_ports),
+    ("_task_get_exception_ports", task_get_exception_ports),
+    // A task's identity token names this task.
+    ("_task_identity_token_get_task_port", |e| {
+        let out = e.arg(2);
+        e.p.memory.write_u32(out, 0x103)?; // mach_task_self_
+        ret(e, KERN_SUCCESS)
+    }),
     ("_pthread_key_create", pthread_key_create),
     ("_pthread_get_stackaddr_np", pthread_get_stackaddr_np),
     ("_pthread_get_stacksize_np", pthread_get_stacksize_np),
