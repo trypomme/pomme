@@ -10,6 +10,7 @@
 #   - Swift Foundation (swiftlang/swift-foundation) built as module `Foundation`,
 #     with pomme's Objective-C bridging overlay (scripts/sysroot/build-swift-foundation.sh)
 #   - Swift overlays (scripts/sysroot/build-overlays.sh)
+#   - SwiftUI: pomme's own, from the SDK's module interfaces (scripts/swiftui/build.sh)
 #   - Inter (rsms/inter, SIL OFL) as the system font, for text metrics and drawing,
 #     and Noto Color Emoji (SIL OFL) for emoji
 #   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
@@ -144,6 +145,9 @@ VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-sqlite.sh"
 
 # zlib (libz.1.dylib)
 VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-zlib.sh"
+
+# SwiftUI.framework: pomme's own, generated from the SDK's interfaces (scripts/swiftui)
+"$ROOT/scripts/swiftui/build.sh"
 
 # System font: Inter, open-source with metrics close to SF Pro.
 FONTS="$VENDOR/sysroot/System/Library/Fonts"

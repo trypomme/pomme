@@ -879,17 +879,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
             println!("  pc {:#x}  lr {:#x} ({})  sp {:#x}", c.pc, c.x[30], emu.symbolize(c.x[30]), c.sp);
             // Backtrace: arm64 Darwin code keeps a frame-pointer chain of (fp, lr) pairs.
             println!("  backtrace:");
-            let mut fp = c.x[29];
-            for _ in 0..16 {
-                let (Ok(next), Ok(ret)) = (emu.p.memory.read_u64(fp), emu.p.memory.read_u64(fp + 8)) else { break };
-                if ret == 0 || ret == pomme_cpu::HOST_RETURN {
-                    break;
-                }
-                println!("    {}", emu.symbolize(ret.wrapping_sub(4)));
-                if next <= fp {
-                    break;
-                }
-                fp = next;
+            for call in emu.backtrace(16) {
+                println!("    {}", emu.symbolize(call));
             }
             let shown = if trace || std::env::var_os("POMME_THREADS").is_some() { 28 } else { 8 };
             for r in (0..shown).step_by(4) {

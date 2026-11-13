@@ -1,0 +1,5 @@
+# Firebase: the app's config holds the project's API key
+GoogleService-Info.plist
+# Builds
+/build/
+xcuserdata/

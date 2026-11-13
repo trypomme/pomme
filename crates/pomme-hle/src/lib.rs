@@ -886,6 +886,25 @@ impl Emu {
     pub fn symbolize(&self, addr: u64) -> String {
         self.p.symbolize(addr)
     }
+
+    /// The current thread's call sites, innermost first (up to `max`): arm64
+    /// Darwin code keeps a frame-pointer chain of (fp, lr) pairs.
+    pub fn backtrace(&self, max: usize) -> Vec<u64> {
+        let mut calls = Vec::new();
+        let mut fp = self.cpu.x[29];
+        while calls.len() < max {
+            let (Ok(next), Ok(ret)) = (self.p.memory.read_u64(fp), self.p.memory.read_u64(fp + 8)) else { break };
+            if ret == 0 || ret == pomme_cpu::HOST_RETURN {
+                break;
+            }
+            calls.push(ret.wrapping_sub(4));
+            if next <= fp {
+                break;
+            }
+            fp = next;
+        }
+        calls
+    }
 }
 
 /// A hooked function's first instruction, when it's PC-relative (ADR, ADRP,
