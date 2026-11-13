@@ -240,13 +240,25 @@ final class TextNode: Node {
     return l
   }()
 
+  /// SF Pro's line metrics, which iOS lays text out with (pomme draws its
+  /// stand-in, Inter): a line is 1.196 × the size tall, and each further one
+  /// 1.294 × the size further down (20.33 and 22 at 17 pt, measured with the
+  /// swiftuimetrics probe on the iOS 26 simulator).
+  static func lineHeight(_ font: UIFont) -> CGFloat { font.pointSize * (20.333 / 17) }
+  static func lineSpacing(_ font: UIFont) -> CGFloat { font.pointSize * (22.0 / 17) }
+
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     let label = Self.measurer
     label.font = style.font
     label.text = shown
     let width = proposal.width ?? .greatestFiniteMagnitude
+    // Its own width: on one line if that fits, else what it's offered.
+    let natural = ceil(label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)).width)
     let size = label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-    return CGSize(width: min(ceil(size.width), width), height: ceil(size.height))
+    // As many lines as the text wraps to, at SF Pro's spacing.
+    let lines = natural <= width ? 1 : max(1, (size.height / style.font.lineHeight).rounded())
+    let height = Self.lineHeight(style.font) + (lines - 1) * Self.lineSpacing(style.font)
+    return CGSize(width: min(natural, width), height: height)
   }
 
   /// Its baselines: the first line's and the last's.
@@ -299,7 +311,6 @@ final class GeometryNode: Node {
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     child.place(in: frame, of: parent, renderer)
-    let window = parent.window
     let safe = parent.safeAreaInsets
     let proxy = GeometryProxy(
       size: frame.size,
@@ -308,8 +319,8 @@ final class GeometryNode: Node {
     ) { space in
       switch space {
       case .local: return CGRect(origin: .zero, size: frame.size)
-      // (Named spaces: the hosting view's, the nearest one pomme knows.)
-      case .global, .named: return window.map { parent.convert(frame, to: $0) } ?? frame
+      // (Named spaces: the window's, the nearest one pomme knows.)
+      case .global, .named: return parent.convert(frame, to: nil)
       }
     }
     observe(proxy)

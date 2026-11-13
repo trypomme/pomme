@@ -215,6 +215,8 @@ pub struct Emu {
     pub os_log_debug: bool,
     /// The launch arguments after the executable's path, as an Xcode scheme passes them.
     pub launch_args: Vec<String>,
+    /// What the app has written to stdout and stderr (also printed as it comes).
+    pub console: String,
     /// main's argc/argv, for `CommandLine` and `_NSGetArgv`.
     pub argc: u64,
     pub argv: u64,
@@ -350,6 +352,7 @@ impl Emu {
             argc: 0,
             argv: 0,
             launch_args: Vec::new(),
+            console: String::new(),
             os_log_debug: false,
             uncaught_exception_handler: 0,
             depth: 0,

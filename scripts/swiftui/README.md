@@ -114,6 +114,19 @@ matters:
   (`@Sendable`) or `YT`;
 - with an app, every SwiftUI symbol it imports that isn't exported.
 
+## Fidelity: held to iOS's layout
+
+`crates/pomme-cli/tests/fixtures/swiftuimetrics` is a SwiftUI app whose
+standard views (text of one to three lines, a toggle, a slider, a button, a
+stack with a spacer, sections with and without headers) report their frames.
+`scripts/swiftui/metrics-simulator.sh` runs it on the iOS Simulator (iPhone
+16e) and records what it reports in `ios26.txt`. `tests/swiftui_metrics.rs`
+runs it in pomme and fails on any difference over half a point. A text's
+width is exempt, since pomme draws Inter in place of SF Pro. The metrics
+pomme lays out with (SF Pro's line spacing, list paddings, header and
+section spacing) come from these measurements. Add a view to the probe, record
+iOS again, and match it.
+
 ## Combine
 
 pomme's Combine.framework comes from the same generator

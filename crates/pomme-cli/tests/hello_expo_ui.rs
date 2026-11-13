@@ -47,7 +47,7 @@ fn run_for(emu: &mut Emu, secs: f64) -> String {
 /// with a Spacer between two texts, a slider at its value, and a button.
 /// Laid out as on the iOS 26 simulator (iPhone 16e): content 16 pt in from
 /// the groups' edges, headers as written, the iOS 26 switch (63 × 28) and
-/// slider (39 tall).
+/// slider (34 tall).
 #[test]
 fn shows_the_form() {
     let Some(mut emu) = boot() else { return };
@@ -58,7 +58,7 @@ fn shows_the_form() {
     let switch = views.lines().find(|l| l.contains("PommeSwitch")).expect("no switch");
     assert!(switch.contains("63.0×28.0") && switch.ends_with(" on"), "{switch}");
     let slider = views.lines().find(|l| l.contains("PommeSlider")).expect("no slider");
-    assert!(slider.contains("(16.0, 167.0, 326.0×39.0)") && slider.ends_with(" value 0.50"), "{slider}");
+    assert!(slider.contains(", 326.0×34.0)") && slider.ends_with(" value 0.50"), "{slider}");
     let header = views.lines().find(|l| l.contains("\"Expo UI\"")).unwrap();
     assert!(header.contains("(32.0, "), "{header}");
     // The Spacer pushes the value to the row's trailing edge.

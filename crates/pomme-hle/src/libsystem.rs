@@ -36,6 +36,8 @@ pub struct State {
     dlerror: u64,
     /// Images' paths as C strings, for dladdr and _dyld_get_image_name.
     image_paths: HashMap<usize, u64>,
+    /// The FILEs for standard input, output and error, by fd.
+    std_files: HashMap<u32, u64>,
     /// The wall-clock time at boot, if not the default (see [`boot_time`]).
     boot_time: Option<u64>,
     /// `dlopen` handles for system libraries that aren't guest images (pomme
@@ -188,14 +190,12 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
                 emu.write_u64(addr + 8, utc)?;
             }
             "___stderrp" | "___stdoutp" | "___stdinp" => {
-                // A FILE: we only need a distinct non-null pointer; store the fd.
-                let file = emu.alloc(256)?;
                 let fd = match name {
                     "___stdinp" => 0,
                     "___stdoutp" => 1,
                     _ => 2,
                 };
-                emu.p.memory.write_u32(file + 18, fd)?;
+                let file = std_file(emu, fd)?;
                 emu.write_u64(addr, file)?;
             }
             _ => {}
@@ -206,6 +206,18 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
         emu.sys.data.insert(name, addr);
     }
     Ok(())
+}
+
+/// The `FILE` for standard input, output or error (`fd` 0, 1, 2): one each,
+/// made the first time. pomme only needs a distinct pointer that knows its fd.
+fn std_file(emu: &mut Emu, fd: u32) -> Result<u64> {
+    if let Some(&f) = emu.sys.std_files.get(&fd) {
+        return Ok(f);
+    }
+    let file = emu.alloc(256)?;
+    emu.p.memory.write_u32(file + 18, fd)?;
+    emu.sys.std_files.insert(fd, file);
+    Ok(file)
 }
 
 /// The address of a libSystem data symbol pomme made (if the app imports it).
@@ -1982,6 +1994,10 @@ fn write_fd(emu: &mut Emu) -> Result<()> {
 
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    // Swift's Darwin overlay: `stdin`, `stdout` and `stderr`, C's FILEs.
+    ("_$s6Darwin5stdinSpySo7__sFILEVGvg", |e| std_file(e, 0).map(|f| e.ret(f))),
+    ("_$s6Darwin6stdoutSpySo7__sFILEVGvg", |e| std_file(e, 1).map(|f| e.ret(f))),
+    ("_$s6Darwin6stderrSpySo7__sFILEVGvg", |e| std_file(e, 2).map(|f| e.ret(f))),
     ("_memcmp", memcmp),
     ("_memchr", memchr),
     ("_memset_pattern4", |e| memset_pattern(e, 4)),

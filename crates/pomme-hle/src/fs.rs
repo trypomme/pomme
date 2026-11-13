@@ -757,7 +757,7 @@ fn write(emu: &mut Emu) -> Result<()> {
     }
     let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
     if fd == 1 || fd == 2 {
-        print!("{}", String::from_utf8_lossy(&bytes));
+        crate::printf::guest_print(emu, &bytes);
         emu.ret(n);
         return Ok(());
     }

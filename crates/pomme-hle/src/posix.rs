@@ -549,7 +549,7 @@ fn writev(emu: &mut Emu) -> Result<()> {
         let len = emu.read_u64(iov + i * 16 + 8)?;
         if fd == 1 || fd == 2 {
             let b = emu.p.memory.read(base, len as usize)?.to_vec();
-            crate::printf::guest_print(&b);
+            crate::printf::guest_print(emu, &b);
         }
         total += len;
     }

@@ -162,13 +162,14 @@ const IOS18: Design = Design {
 };
 
 /// Measured on the iOS 26 simulator: a capsule switch with a capsule thumb,
-/// and a slider with a capsule thumb on a 6-pt track, in the new system blue.
+/// and a slider (34 tall) with a capsule thumb on a 6-pt track, in the new
+/// system blue.
 const IOS26: Design = Design {
     switch_size: [63.0, 28.0],
     switch_thumb: [37.0, 24.0],
     switch_inset: 2.0,
     switch_off: [0.471, 0.471, 0.502, 0.43],
-    slider_height: 39.0,
+    slider_height: 34.0,
     slider_thumb: [37.0, 24.0],
     slider_track: 6.0,
     slider_max: [0.471, 0.471, 0.502, 0.19],
@@ -700,9 +701,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         crate::uikit::ret_rect(e, thumb_rect(design(e), b, t, f));
         Ok(())
     }),
+    // iOS 18: its own width; iOS 26: what's offered, at least the thumb
+    // (`{37, 34}` for zero, measured on its simulator).
     (SL, false, "sizeThatFits:", |e| {
-        let w = view(e, e.arg(0)).bounds[2];
-        ret_size(e, w, design(e).slider_height)
+        let d = design(e);
+        let w = if d.slider_shadow.is_some() { f64::from_bits(e.cpu.q[0] as u64).max(d.slider_thumb[0]) } else { view(e, e.arg(0)).bounds[2] };
+        ret_size(e, w, d.slider_height)
     }),
     (SL, false, "intrinsicContentSize", |e| ret_size(e, -1.0, design(e).slider_height)),
     (SL, false, "layoutSubviews", |e| {

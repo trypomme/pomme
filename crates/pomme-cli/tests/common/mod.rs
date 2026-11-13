@@ -1,5 +1,5 @@
 //! Native fixture apps: one Objective-C file each (tests/fixtures/NAME/main.m),
-//! built with the iOS SDK into a minimal .app.
+//! or Swift (main.swift), built with the iOS SDK into a minimal .app.
 
 #![allow(dead_code)]
 
@@ -28,8 +28,21 @@ fn build_now(name: &str) -> Option<PathBuf> {
     let exe = name[..1].to_uppercase() + &name[1..];
     let app = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{exe}.app"));
     std::fs::create_dir_all(&app).unwrap();
-    // main.m, or main.mm for Objective-C++ (linked with libc++).
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"));
+    if dir.join("main.swift").exists() {
+        // A SwiftUI (or other Swift) app: `@main`, so parsed as a library.
+        let status = Command::new("xcrun")
+            .args(["--sdk", "iphoneos", "swiftc", "-target", "arm64-apple-ios17.0", "-parse-as-library", "-O"])
+            .arg(dir.join("main.swift"))
+            .arg("-o")
+            .arg(app.join(&exe))
+            .status()
+            .expect("run swiftc");
+        assert!(status.success(), "building the {name} fixture app failed");
+        write_info_plist(&dir, &app, &exe, name);
+        return Some(app);
+    }
+    // main.m, or main.mm for Objective-C++ (linked with libc++).
     let cxx = dir.join("main.mm").exists();
     let src = dir.join(if cxx { "main.mm" } else { "main.m" });
     // Other Objective-C files beside main (a library the fixture uses), built in.
@@ -55,7 +68,12 @@ fn build_now(name: &str) -> Option<PathBuf> {
             std::fs::copy(&p, app.join(p.file_name().unwrap())).unwrap();
         }
     }
-    // More Info.plist keys (scenes, orientations, …), if the fixture has them.
+    write_info_plist(&dir, &app, &exe, name);
+    Some(app)
+}
+
+/// The app's Info.plist, with the fixture's extra keys (scenes, orientations, …).
+fn write_info_plist(dir: &Path, app: &Path, exe: &str, name: &str) {
     let extra = std::fs::read_to_string(dir.join("Info.extra.plist")).unwrap_or_default();
     std::fs::write(
         app.join("Info.plist"),
@@ -73,7 +91,6 @@ fn build_now(name: &str) -> Option<PathBuf> {
         ),
     )
     .unwrap();
-    Some(app)
 }
 
 /// The fixture app, loaded and ready to run; None without Xcode or the sysroot.

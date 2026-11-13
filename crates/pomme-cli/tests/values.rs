@@ -48,12 +48,13 @@ fn sizes_and_segments() {
     assert!(v.contains("UISwitch (40.0, 100.0, 51.0×31.0)"), "{v}");
 }
 
-/// iOS 26 (Liquid Glass): a 63×28 capsule switch, and sliders 39 tall with a
-/// 37×24 capsule thumb (measured on the iOS 26 simulator).
+/// iOS 26 (Liquid Glass): a 63×28 capsule switch, and sliders 34 tall that
+/// fit in their thumb's width (this fixture on the iOS 26 simulator says
+/// `switch {63, 28} on 1 slider {37, 34}`).
 #[test]
 fn ios26_sizes() {
     let Some(v) = run_on("26.0", |_| {}) else { return };
-    assert!(field(&v, 205).starts_with("switch {63, 28} on 1 slider {300, 39} "), "{v}");
+    assert!(field(&v, 205).starts_with("switch {63, 28} on 1 slider {37, 34} "), "{v}");
     assert!(v.contains("UISwitch (40.0, 100.0, 63.0×28.0)"), "{v}");
 }
 

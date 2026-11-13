@@ -11,6 +11,17 @@ extension Text {
   }
 }
 
+// pomme: in extension SwiftUICore.Text
+extension Text {
+  // pomme: replaces extension SwiftUICore.Text :: public init(_ key: SwiftUICore.LocalizedStringKey, tableName: Swift.String? = nil, bundle: Foundation.Bundle? = nil, comment: Swift.StaticString? = nil)
+  /// The key's string in the app's (or the bundle's) localizations: the key
+  /// itself without one.
+  @_semantics("swiftui.init_with_localization")
+  public init(_ key: LocalizedStringKey, tableName: String? = nil, bundle: Bundle? = nil, comment: StaticString? = nil) {
+    self.init(verbatim: key.pommeLocalized(in: bundle, table: tableName))
+  }
+}
+
 extension Text {
   /// The text to show.
   package var pommeString: String {
@@ -34,8 +45,8 @@ extension LocalizedStringKey {
 
 extension LocalizedStringKey {
   /// The string for the key in the app's localizations (the key itself when it has none).
-  package func pommeLocalized(in bundle: Bundle? = nil) -> String {
+  package func pommeLocalized(in bundle: Bundle? = nil, table: String? = nil) -> String {
     if hasFormatting { _pommeUnimplemented("LocalizedStringKey with interpolated arguments") }
-    return (bundle ?? .main).localizedString(forKey: key, value: key, table: nil)
+    return (bundle ?? .main).localizedString(forKey: key, value: key, table: table)
   }
 }

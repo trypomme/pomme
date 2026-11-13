@@ -373,59 +373,62 @@ fn vasprintf(emu: &mut Emu) -> Result<()> {
 }
 
 /// Guest stdout/stderr go to the host's, prefixed so they stand out.
-pub fn guest_print(s: &[u8]) {
-    print!("{}", String::from_utf8_lossy(s));
+/// The app's console output (stdout and stderr): printed, and kept in `emu.console`.
+pub fn guest_print(emu: &mut Emu, s: &[u8]) {
+    let text = String::from_utf8_lossy(s);
+    print!("{text}");
+    emu.console.push_str(&text);
 }
 
 fn printf(emu: &mut Emu) -> Result<()> {
     let s = fmt_at(emu, 0, emu.cpu.sp)?;
-    guest_print(&s);
+    guest_print(emu, &s);
     emu.ret(s.len() as u64);
     Ok(())
 }
 
 fn vprintf(emu: &mut Emu) -> Result<()> {
     let s = fmt_at(emu, 0, emu.arg(1))?;
-    guest_print(&s);
+    guest_print(emu, &s);
     emu.ret(s.len() as u64);
     Ok(())
 }
 
 fn fprintf(emu: &mut Emu) -> Result<()> {
     let s = fmt_at(emu, 1, emu.cpu.sp)?;
-    guest_print(&s);
+    guest_print(emu, &s);
     emu.ret(s.len() as u64);
     Ok(())
 }
 
 fn vfprintf(emu: &mut Emu) -> Result<()> {
     let s = fmt_at(emu, 1, emu.arg(2))?;
-    guest_print(&s);
+    guest_print(emu, &s);
     emu.ret(s.len() as u64);
     Ok(())
 }
 
 fn puts(emu: &mut Emu) -> Result<()> {
     let s = emu.cstr(emu.arg(0))?;
-    guest_print(format!("{s}\n").as_bytes());
+    guest_print(emu, format!("{s}\n").as_bytes());
     emu.ret(1);
     Ok(())
 }
 
 fn fputs(emu: &mut Emu) -> Result<()> {
     let s = emu.cstr(emu.arg(0))?;
-    guest_print(s.as_bytes());
+    guest_print(emu, s.as_bytes());
     emu.ret(1);
     Ok(())
 }
 
 fn putchar(emu: &mut Emu) -> Result<()> {
-    guest_print(&[emu.arg(0) as u8]);
+    guest_print(emu, &[emu.arg(0) as u8]);
     Ok(())
 }
 
 fn fputc(emu: &mut Emu) -> Result<()> {
-    guest_print(&[emu.arg(0) as u8]);
+    guest_print(emu, &[emu.arg(0) as u8]);
     Ok(())
 }
 
@@ -435,7 +438,7 @@ fn fwrite(emu: &mut Emu) -> Result<()> {
     }
     let (p, size, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
     let b = emu.p.memory.read(p, (size * n) as usize)?.to_vec();
-    guest_print(&b);
+    guest_print(emu, &b);
     emu.ret(n);
     Ok(())
 }

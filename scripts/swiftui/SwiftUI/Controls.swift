@@ -82,11 +82,12 @@ final class ToggleNode: Node {
     ProposedViewSize(width: proposal.width.map { max($0 - Self.switchSize.width - Self.spacing, 0) }, height: proposal.height)
   }
 
-  /// As wide as offered (the switch goes to the trailing edge).
+  /// As wide as offered (the switch goes to the trailing edge), and as tall
+  /// as its label: the switch reaches past it (iOS 26, measured).
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
     let labelSize = label.first?.sizeThatFits(labelProposal(proposal)) ?? .zero
     let width = proposal.width ?? labelSize.width + Self.spacing + Self.switchSize.width
-    return CGSize(width: width, height: max(labelSize.height, Self.switchSize.height))
+    return CGSize(width: width, height: labelSize.height)
   }
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
@@ -173,13 +174,14 @@ final class PommeSlider: UISlider {
   @objc private func ended() { editingChanged?(false) }
 }
 
-/// A slider: as wide as offered, the height of its thumb.
+/// A slider: as wide as offered, 22 tall (iOS 26, measured); UIKit's slider
+/// in it reaches past that.
 final class SliderNode: Node {
   let fraction: Double
   let setFraction: (Double) -> Void
   let editingChanged: (Bool) -> Void
-  /// The slider's height, as UIKit has it (it depends on the design).
-  static var height: CGFloat { measuringSlider.intrinsicContentSize.height }
+  static let height: CGFloat = 22
+  private static var controlHeight: CGFloat { measuringSlider.intrinsicContentSize.height }
   private static let measuringSlider = UISlider()
 
   init(path: ViewPath, fraction: Double, setFraction: @escaping (Double) -> Void, editingChanged: @escaping (Bool) -> Void) {
@@ -195,7 +197,7 @@ final class SliderNode: Node {
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     let control: PommeSlider = renderer.view(for: path) { PommeSlider(frame: .zero) }
-    control.frame = frame
+    control.frame = CGRect(x: frame.minX, y: frame.midY - Self.controlHeight / 2, width: frame.width, height: Self.controlHeight)
     if Double(control.value) != fraction {
       control.value = Float(fraction)
     }

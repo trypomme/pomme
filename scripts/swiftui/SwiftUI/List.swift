@@ -30,20 +30,22 @@ extension List: PrimitiveView {
 final class ListNode: Node {
   let sections: [SectionNode]
 
-  // iOS 26's inset grouped metrics (measured on its simulator, iPhone 16e).
+  // iOS 26's inset grouped metrics (the swiftuimetrics probe on its
+  // simulator, iPhone 16e; tests/swiftui_metrics.rs holds pomme to them).
   static let sectionMargin: CGFloat = 16
-  static let sectionTop: CGFloat = 20
-  static let sectionSpacing: CGFloat = 20
   static let cornerRadius: CGFloat = 26
   /// The rows' content, headers and separators, from the group's edges.
   static let rowInset: CGFloat = 16
-  static let rowPadding: CGFloat = 11
+  /// Above and below a row's content; a row is never shorter than 52.
+  static let rowPadding: CGFloat = 15
   static let minRowHeight: CGFloat = 52
-  /// A header's baseline: below the safe area's top (the first one) or the
-  /// previous group, and above its own group.
-  static let firstHeaderBaseline: CGFloat = 26
-  static let headerBaselineAfterGroup: CGFloat = 43.67
-  static let headerBaselineAboveGroup: CGFloat = 14.33
+  /// A header: below the safe area's top (the first one) or the previous
+  /// group, and above its own group.
+  static let firstHeaderTop: CGFloat = 10
+  static let headerAfterGroup: CGFloat = 27.33
+  static let headerAboveGroup: CGFloat = 10
+  /// A section without a header: below the previous group (or the safe area's top).
+  static let sectionWithoutHeader: CGFloat = 35
   static let headerGap: CGFloat = 7
   static let separatorColor = UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.12)
 
@@ -101,15 +103,13 @@ final class ListNode: Node {
       // The header, in the system's style, lined up with the rows' content,
       // placed by its baseline.
       if let header = section.header.first {
-        let text = header as? TextNode
-        text?.style = .sectionHeader
-        let baseline = previousBottom.map { $0 + Self.headerBaselineAfterGroup } ?? safe.top + Self.firstHeaderBaseline
-        let ascender = text?.style.font.ascender ?? 0
+        (header as? TextNode)?.style = .sectionHeader
+        let top = previousBottom.map { $0 + Self.headerAfterGroup } ?? safe.top + Self.firstHeaderTop
         let size = header.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
-        header.place(in: CGRect(x: x + Self.rowInset, y: baseline - ascender, width: contentWidth, height: size.height), of: scroll, renderer)
-        y = baseline + Self.headerBaselineAboveGroup
+        header.place(in: CGRect(x: x + Self.rowInset, y: top, width: contentWidth, height: size.height), of: scroll, renderer)
+        y = top + size.height + Self.headerAboveGroup
       } else {
-        y = previousBottom.map { $0 + Self.sectionSpacing } ?? safe.top + Self.sectionTop
+        y = (previousBottom ?? safe.top) + Self.sectionWithoutHeader
       }
 
       let group = renderer.view(for: section.path.appending("group")) {
@@ -150,6 +150,6 @@ final class ListNode: Node {
         y += size.height
       }
     }
-    scroll.contentSize = CGSize(width: extended.width, height: y + Self.sectionTop + safe.bottom)
+    scroll.contentSize = CGSize(width: extended.width, height: y + Self.sectionWithoutHeader + safe.bottom)
   }
 }
