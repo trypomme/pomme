@@ -226,6 +226,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     let release = emu.read_u64(callbacks + 16)?;
     emu.hook(retain, hook_collection_retain)?;
     emu.hook(release, hook_collection_release)?;
+    crate::userdefaults::hook_cf_preferences(emu)?;
     Ok(())
 }
 
@@ -953,9 +954,21 @@ fn get_cstring(emu: &mut Emu) -> Result<()> {
     ret_bool(emu, true)
 }
 
+/// `-lengthOfBytesUsingEncoding:`: the bytes the string takes in that encoding
+/// (no byte-order mark), or 0 if it can't be converted.
 fn length_of_bytes(emu: &mut Emu) -> Result<()> {
-    let s = nsstring(emu, emu.arg(0))?;
-    emu.ret(s.len() as u64);
+    let (s, enc) = (emu.arg(0), emu.arg(2));
+    let s = as_cf_string(emu, s)?;
+    let len = cf(emu, "_CFStringGetLength", &[s])?;
+    let used = emu.alloc(8)?;
+    emu.write_u64(used, 0)?;
+    let f = cf_sym(emu, "_CFStringGetBytes")?;
+    let cf_enc = cf_encoding(emu, enc)?;
+    emu.call_abi(f, &[s, 0, len, cf_enc, 0, 0, 0, 0], &[], &[used], None)?;
+    let converted = emu.last_x01[0];
+    let n = emu.read_u64(used)?;
+    emu.heap.free(&emu.p.memory, used)?;
+    emu.ret(if converted == len { n } else { 0 });
     Ok(())
 }
 
@@ -963,15 +976,16 @@ fn length_of_bytes(emu: &mut Emu) -> Result<()> {
 
 const CF_ASCII: u64 = 0x0600;
 
-/// NSStringEncoding → CFStringEncoding for the encodings the stdlib asks for.
-fn cf_encoding(ns: u64) -> u64 {
-    match ns {
-        1 => CF_ASCII,     // NSASCIIStringEncoding
-        4 => UTF8,         // NSUTF8StringEncoding
-        5 => 0x0201,       // NSISOLatin1StringEncoding → kCFStringEncodingISOLatin1
-        10 => 0x0100,      // NSUnicodeStringEncoding → kCFStringEncodingUnicode
-        other => other,
-    }
+/// NSStringEncoding → CFStringEncoding, as CoreFoundation maps them (UTF-16
+/// and UTF-32 in either byte order, the 8-bit sets, the CJK encodings…).
+fn cf_encoding(emu: &mut Emu, ns: u64) -> Result<u64> {
+    Ok(cf(emu, "_CFStringConvertNSStringEncodingToEncoding", &[ns])? & 0xffff_ffff)
+}
+
+/// Whether Foundation writes a byte-order mark for this encoding: the
+/// native-order Unicode forms (NSUnicodeStringEncoding, NSUTF32StringEncoding).
+fn writes_bom(ns: u64) -> bool {
+    ns == 10 || ns == 0x8c00_0100
 }
 
 /// `-_fastCStringContents:(BOOL)nulTerminated` → ASCII bytes, or NULL.
@@ -1009,7 +1023,8 @@ fn get_bytes(emu: &mut Emu) -> Result<()> {
     let used_tmp = emu.alloc(8)?;
     emu.write_u64(used_tmp, 0)?;
     let f = cf_sym(emu, "_CFStringGetBytes")?;
-    emu.call_abi(f, &[s, loc, len, cf_encoding(enc), 0, 0, buf, max], &[], &[used_tmp], None)?;
+    let cf_enc = cf_encoding(emu, enc)?;
+    emu.call_abi(f, &[s, loc, len, cf_enc, 0, 0, buf, max], &[], &[used_tmp], None)?;
     let converted = emu.last_x01[0];
     if used != 0 {
         let n = emu.read_u64(used_tmp)?;
@@ -2530,6 +2545,26 @@ fn file_url_with_path(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `+[NSURL fileURLWithPathComponents:]`: the components joined as a path (nil
+/// for none); a last component ending in "/" makes a directory URL.
+fn file_url_with_path_components(emu: &mut Emu) -> Result<()> {
+    let a = emu.arg(2);
+    let mut parts = Vec::new();
+    if a != 0 {
+        for c in array_values(emu, a)? {
+            parts.push(nsstring(emu, c)?);
+        }
+    }
+    if parts.is_empty() {
+        emu.ret(0);
+        return Ok(());
+    }
+    let dir = parts.last().is_some_and(|p| p.ends_with('/'));
+    let u = new_file_url(emu, &join_path_components(&parts), dir)?;
+    emu.ret(u);
+    Ok(())
+}
+
 fn file_url_with_path_is_dir(emu: &mut Emu) -> Result<()> {
     let path = nsstring(emu, emu.arg(2))?;
     let u = new_file_url(emu, &path, emu.arg(3) & 0xff != 0)?;
@@ -2738,7 +2773,7 @@ fn ret_double(emu: &mut Emu, v: f64) {
 
 /// Now, as CFAbsoluteTime.
 fn absolute_now(emu: &Emu) -> f64 {
-    crate::threads::now_ns(emu) as f64 / 1e9 + crate::libsystem::EPOCH_BASE_SECS as f64 - SECONDS_1970_TO_2001
+    crate::threads::now_ns(emu) as f64 / 1e9 + crate::libsystem::boot_time(emu) as f64 - SECONDS_1970_TO_2001
 }
 
 pub fn new_date(emu: &mut Emu, abs: f64) -> Result<u64> {
@@ -3477,11 +3512,10 @@ fn data_set_length(emu: &mut Emu) -> Result<()> {
 
 // ---- strings ↔ data ----
 
-/// `-dataUsingEncoding:` (UTF-8 for every 8-bit encoding; UTF-16LE for NSUnicodeStringEncoding)
 /// The string's bytes in an NSStringEncoding, through CoreFoundation's
 /// converters: None if a character has no equivalent and `loss` is 0
-/// (otherwise it stands in for them). NSUnicodeStringEncoding gets a BOM,
-/// as Foundation writes it.
+/// (otherwise it stands in for them). NSUnicodeStringEncoding and
+/// NSUTF32StringEncoding get a byte-order mark, as Foundation writes them.
 fn encode(emu: &mut Emu, s: u64, enc: u64, loss: u8) -> Result<Option<Vec<u8>>> {
     // A CFString for CF to read directly (other NSStrings would come back to pomme's getBytes:).
     let s = as_cf_string(emu, s)?;
@@ -3490,8 +3524,9 @@ fn encode(emu: &mut Emu, s: u64, enc: u64, loss: u8) -> Result<Option<Vec<u8>>> 
     let used = emu.alloc(8)?;
     emu.write_u64(used, 0)?;
     // CFStringGetBytes(str, range, encoding, lossByte, isExternalRepresentation, buffer, maxBufLen, usedBufLen)
-    let external = (enc == 10) as u64;
-    emu.call_abi(f, &[s, 0, len, cf_encoding(enc), loss as u64, external, 0, 0], &[], &[used], None)?;
+    let external = writes_bom(enc) as u64;
+    let cf_enc = cf_encoding(emu, enc)?;
+    emu.call_abi(f, &[s, 0, len, cf_enc, loss as u64, external, 0, 0], &[], &[used], None)?;
     let converted = emu.last_x01[0];
     let n = emu.read_u64(used)?;
     if converted < len {
@@ -3499,7 +3534,7 @@ fn encode(emu: &mut Emu, s: u64, enc: u64, loss: u8) -> Result<Option<Vec<u8>>> 
         return Ok(None);
     }
     let buf = emu.alloc(n.max(1))?;
-    emu.call_abi(f, &[s, 0, len, cf_encoding(enc), loss as u64, external, buf, n], &[], &[used], None)?;
+    emu.call_abi(f, &[s, 0, len, cf_enc, loss as u64, external, buf, n], &[], &[used], None)?;
     let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
     emu.heap.free(&emu.p.memory, buf)?;
     emu.heap.free(&emu.p.memory, used)?;
@@ -3811,16 +3846,25 @@ fn os_at_least(emu: &mut Emu) -> Result<()> {
     ret_bool(emu, os_version_triple(emu) >= want)
 }
 
+/// `NSProcessInfo.arguments`: the executable's path, then the launch arguments.
 fn process_arguments(emu: &mut Emu) -> Result<()> {
     let exe = format!("{}/{}", crate::fs::guest_bundle_path(emu), emu.p.main().name);
-    let s = new_nsstring(emu, &exe)?;
-    let a = array_from(emu, &[s])?;
+    let mut items = vec![new_nsstring(emu, &exe)?];
+    for a in emu.launch_args.clone() {
+        items.push(new_nsstring(emu, &a)?);
+    }
+    let a = array_from(emu, &items)?;
     emu.ret(a);
     Ok(())
 }
 
+/// `NSProcessInfo.environment`: the process's environment variables.
 fn process_environment(emu: &mut Emu) -> Result<()> {
     let d = new_dict(emu)?;
+    for (k, v) in crate::libsystem::environment(emu) {
+        let (k, v) = (new_nsstring(emu, &k)?, new_nsstring(emu, &v)?);
+        cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
+    }
     emu.ret(d);
     Ok(())
 }
@@ -4029,9 +4073,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let ok = crate::fs::make_dirs(e, &path, inter) || crate::fs::exists(e, &path) == Some(true);
         ret_bool(e, ok)
     }),
-    // Resource values (excluded-from-backup and the like) don't change anything pomme models.
-    ("NSURL", false, "setResourceValue:forKey:error:", ret_yes),
-    ("NSURL", false, "setResourceValues:error:", ret_yes),
     ("NSFileManager", false, "contentsOfDirectoryAtPath:error:", |e| {
         let path = nsstring(e, e.arg(2))?;
         let Some(entries) = crate::fs::list_dir(e, &path) else {
@@ -4231,6 +4272,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSURL", true, "URLWithString:relativeToURL:", url_with_string_relative),
     ("NSURL", false, "initWithString:relativeToURL:", url_with_string_relative),
     ("NSURL", true, "fileURLWithPath:", file_url_with_path),
+    ("NSURL", true, "fileURLWithPathComponents:", file_url_with_path_components),
     ("NSURL", false, "initFileURLWithPath:", file_url_with_path),
     ("NSURL", true, "fileURLWithPath:isDirectory:", file_url_with_path_is_dir),
     ("NSURL", false, "initFileURLWithPath:isDirectory:", file_url_with_path_is_dir),

@@ -66,7 +66,7 @@ fn value(emu: &Emu, name: &str) -> Option<Vec<u8>> {
         "kern.hostname" => cstr("pomme"),
         "kern.boottime" => {
             // struct timeval: seconds and microseconds.
-            let mut v = (crate::libsystem::EPOCH_BASE_SECS as i64).to_le_bytes().to_vec();
+            let mut v = (crate::libsystem::boot_time(emu) as i64).to_le_bytes().to_vec();
             v.extend_from_slice(&0i64.to_le_bytes());
             v
         }

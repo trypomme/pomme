@@ -42,6 +42,14 @@ mod userdefaults;
 mod numberformatter;
 mod archiver;
 mod dateformatter;
+mod cfnetwork;
+mod dnssd;
+mod dsource;
+mod fortify;
+mod locks;
+mod scanf;
+mod time;
+mod sockets;
 mod plist;
 mod regex;
 pub mod navigation;
@@ -153,6 +161,7 @@ impl From<MemError> for Stop {
         let addr = match e {
             MemError::Unmapped(a) => a,
             MemError::Overlap { base, .. } => base,
+            MemError::TooLarge(_) => return Stop::Unsupported(e.to_string()),
         };
         Stop::Cpu { exit: Exit::Fault { addr }, pc: 0 }
     }
@@ -196,6 +205,10 @@ pub struct Emu {
     pub profiler: Option<profile::Profiler>,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
+    /// Whether debug-level os_log messages print (as Xcode's "Include Debug Messages").
+    pub os_log_debug: bool,
+    /// The launch arguments after the executable's path, as an Xcode scheme passes them.
+    pub launch_args: Vec<String>,
     /// main's argc/argv, for `CommandLine` and `_NSGetArgv`.
     pub argc: u64,
     pub argv: u64,
@@ -277,6 +290,13 @@ pub struct Emu {
     pub(crate) numberformatters: numberformatter::State,
     pub(crate) archiver: archiver::State,
     pub(crate) dateformatters: dateformatter::State,
+    pub(crate) sockets: sockets::State,
+    pub(crate) fs_flags: filemanager::Flags,
+    pub(crate) dnssd: dnssd::State,
+    pub(crate) cfnetwork: cfnetwork::State,
+    pub(crate) time: time::State,
+    pub(crate) locks: locks::State,
+    pub(crate) dsource: dsource::State,
     /// NSInvocations whose methods are running, per thread (see invocation.rs).
     pub(crate) invocations: std::collections::HashMap<usize, Vec<invocation::Pending>>,
     pub(crate) coretext: coretext::State,
@@ -290,7 +310,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -317,6 +337,8 @@ impl Emu {
             calls: HashMap::new(),
             argc: 0,
             argv: 0,
+            launch_args: Vec::new(),
+            os_log_debug: false,
             depth: 0,
             last_q0: 0,
             last_x01: [0; 2],
@@ -371,6 +393,13 @@ impl Emu {
             numberformatters: Default::default(),
             archiver: Default::default(),
             dateformatters: Default::default(),
+            sockets: Default::default(),
+            fs_flags: Default::default(),
+            dnssd: Default::default(),
+            cfnetwork: Default::default(),
+            time: Default::default(),
+            locks: Default::default(),
+            dsource: Default::default(),
             invocations: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),
@@ -483,7 +512,7 @@ impl Emu {
                 if self.trace {
                     println!("{:>10} initializer {}", self.cpu.steps, self.symbolize(f));
                 }
-                self.call(f, &[argc, argv, argv + 16, argv + 24])?;
+                self.call(f, &[argc, argv, argv + (argc + 1) * 8, argv + (argc + 2) * 8])?;
             }
         }
         Ok(())
@@ -494,15 +523,21 @@ impl Emu {
         let entry = self.p.entry().ok_or(Stop::Unsupported("no LC_MAIN entry point".into()))?;
         let exe = self.p.main().name.clone();
         let mut sp = STACK_TOP;
-        let arg0 = self.push_cstr(&mut sp, &exe)?;
+        let mut args = vec![self.push_cstr(&mut sp, &exe)?];
+        for a in self.launch_args.clone() {
+            args.push(self.push_cstr(&mut sp, &a)?);
+        }
         let apple0 = self.push_cstr(&mut sp, &format!("executable_path={exe}"))?;
-        let vectors = [arg0, 0, /* envp */ 0, /* apple */ apple0, 0];
+        let argc = args.len() as u64;
+        // argv, NULL, envp (empty), NULL, apple, NULL
+        let mut vectors = args;
+        vectors.extend([0, 0, apple0, 0]);
         sp = (sp - vectors.len() as u64 * 8) & !0xf;
         for (i, v) in vectors.iter().enumerate() {
             self.p.memory.write_u64(sp + i as u64 * 8, *v)?;
         }
         self.cpu.sp = sp;
-        self.argc = 1;
+        self.argc = argc;
         self.argv = sp;
         match self.run_initializers() {
             Ok(()) => {}
@@ -510,7 +545,8 @@ impl Emu {
             Err(e) => return Err(e),
         }
         self.cpu.sp = sp;
-        match self.call(entry, &[1, sp, sp + 16, sp + 24]) {
+        let (envp, apple) = (sp + (argc + 1) * 8, sp + (argc + 2) * 8);
+        match self.call(entry, &[argc, sp, envp, apple]) {
             Ok(code) => Ok(code as i32),
             Err(Stop::Exit(code)) => Ok(code),
             Err(e) => Err(e),
@@ -797,8 +833,14 @@ impl Emu {
         self.cpu.x[i]
     }
 
+    /// A C string, as text (invalid UTF-8 replaced): for names and messages.
     pub fn cstr(&self, addr: u64) -> Result<String> {
-        Ok(self.p.memory.read_cstr(addr, 1 << 16)?)
+        Ok(self.p.memory.read_cstr(addr, usize::MAX)?)
+    }
+
+    /// A C string's bytes, exactly: for the C library's string functions.
+    pub fn cstr_bytes(&self, addr: u64) -> Result<Vec<u8>> {
+        Ok(self.p.memory.read_cstr_bytes(addr, usize::MAX)?)
     }
 
     pub fn alloc(&mut self, size: u64) -> Result<u64> {

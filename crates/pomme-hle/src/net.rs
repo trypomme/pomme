@@ -34,9 +34,138 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
+/// A connection the host holds for the app's socket (see [`crate::sockets`]).
+pub type SocketId = u64;
+
+/// What a connection can do now, for poll and select.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Readiness {
+    /// Data is waiting (or the peer closed: a read returns at once).
+    pub readable: bool,
+    pub writable: bool,
+    /// The peer closed or the connection failed.
+    pub closed: bool,
+}
+
 pub trait Net {
     /// Perform a request. Err: the request failed before any response (no network, bad host, …).
     fn fetch(&mut self, req: &Request) -> std::result::Result<Response, String>;
+
+    // Sockets (BSD sockets for apps that speak to servers themselves: gRPC,
+    // WebSockets, ...). By default there's no network for them: names don't
+    // resolve and connections don't open, as on a phone offline.
+
+    /// A host name's addresses.
+    fn resolve(&mut self, _host: &str) -> std::result::Result<Vec<std::net::IpAddr>, String> {
+        Err("offline".into())
+    }
+    /// Open a TCP connection (it then doesn't block: reads and writes may say WouldBlock).
+    fn connect(&mut self, _addr: std::net::SocketAddr) -> std::io::Result<SocketId> {
+        Err(std::io::ErrorKind::NetworkUnreachable.into())
+    }
+    fn send(&mut self, _s: SocketId, _data: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::NotConnected.into())
+    }
+    /// Up to `max` bytes: WouldBlock when none have come yet, empty when the peer closed.
+    fn recv(&mut self, _s: SocketId, _max: usize) -> std::io::Result<Vec<u8>> {
+        Err(std::io::ErrorKind::NotConnected.into())
+    }
+    fn readiness(&mut self, _s: SocketId) -> Readiness {
+        Readiness { closed: true, ..Default::default() }
+    }
+    /// Wait (real time) until one of `sockets` is readable or `timeout` passes.
+    fn wait(&mut self, _sockets: &[SocketId], _timeout: std::time::Duration) {}
+    fn shutdown(&mut self, _s: SocketId, _how: std::net::Shutdown) {}
+    fn close(&mut self, _s: SocketId) {}
+    fn local_addr(&mut self, _s: SocketId) -> Option<std::net::SocketAddr> {
+        None
+    }
+    fn peer_addr(&mut self, _s: SocketId) -> Option<std::net::SocketAddr> {
+        None
+    }
+}
+
+/// The host's own TCP, for a [`Net`] that gives apps real sockets: DNS
+/// through the host's resolver, connections that don't block once open.
+#[derive(Default)]
+pub struct HostSockets {
+    streams: HashMap<SocketId, std::net::TcpStream>,
+    next: SocketId,
+}
+
+/// How long opening a connection may take before it's ETIMEDOUT.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+impl HostSockets {
+    pub fn resolve(&mut self, host: &str) -> std::result::Result<Vec<std::net::IpAddr>, String> {
+        use std::net::ToSocketAddrs;
+        let addrs = (host, 0).to_socket_addrs().map_err(|e| e.to_string())?;
+        Ok(addrs.map(|a| a.ip()).collect())
+    }
+
+    pub fn connect(&mut self, addr: std::net::SocketAddr) -> std::io::Result<SocketId> {
+        let s = std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
+        s.set_nonblocking(true)?;
+        self.next += 1;
+        self.streams.insert(self.next, s);
+        Ok(self.next)
+    }
+
+    fn stream(&mut self, s: SocketId) -> std::io::Result<&mut std::net::TcpStream> {
+        self.streams.get_mut(&s).ok_or_else(|| std::io::ErrorKind::NotConnected.into())
+    }
+
+    pub fn send(&mut self, s: SocketId, data: &[u8]) -> std::io::Result<usize> {
+        use std::io::Write;
+        self.stream(s)?.write(data)
+    }
+
+    pub fn recv(&mut self, s: SocketId, max: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut buf = vec![0u8; max.max(1)];
+        let n = self.stream(s)?.read(&mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    pub fn readiness(&mut self, s: SocketId) -> Readiness {
+        let Ok(stream) = self.stream(s) else { return Readiness { closed: true, ..Default::default() } };
+        let mut one = [0u8; 1];
+        match stream.peek(&mut one) {
+            Ok(0) => Readiness { readable: true, writable: false, closed: true },
+            Ok(_) => Readiness { readable: true, writable: true, closed: false },
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Readiness { readable: false, writable: true, closed: false },
+            Err(_) => Readiness { readable: true, writable: false, closed: true },
+        }
+    }
+
+    pub fn wait(&mut self, sockets: &[SocketId], timeout: std::time::Duration) {
+        let start = std::time::Instant::now();
+        loop {
+            if sockets.iter().any(|&s| self.readiness(s).readable) || start.elapsed() >= timeout {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1).min(timeout));
+        }
+    }
+
+    pub fn shutdown(&mut self, s: SocketId, how: std::net::Shutdown) {
+        if let Ok(stream) = self.stream(s) {
+            let _ = stream.shutdown(how);
+        }
+    }
+
+    pub fn close(&mut self, s: SocketId) {
+        self.streams.remove(&s);
+    }
+
+    pub fn local_addr(&mut self, s: SocketId) -> Option<std::net::SocketAddr> {
+        self.stream(s).ok()?.local_addr().ok()
+    }
+
+    pub fn peer_addr(&mut self, s: SocketId) -> Option<std::net::SocketAddr> {
+        self.stream(s).ok()?.peer_addr().ok()
+    }
 }
 
 /// Canned responses by URL (exact match, or prefix ending in `*`). Unknown URLs get a 404.

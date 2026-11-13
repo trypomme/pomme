@@ -16,6 +16,11 @@ impl Args {
         Args { next: at }
     }
 
+    /// The next argument as a pointer (scanf's outputs).
+    pub(crate) fn ptr(&mut self, emu: &Emu) -> Result<u64> {
+        self.u64(emu)
+    }
+
     fn u64(&mut self, emu: &Emu) -> Result<u64> {
         let v = emu.read_u64(self.next)?;
         self.next += 8;

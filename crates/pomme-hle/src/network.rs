@@ -67,6 +67,16 @@ fn interfaces(p: Path) -> (Vec<Interface>, Option<[u8; 4]>) {
     }
 }
 
+/// The index of interface `name` if it's up on the current path.
+pub(crate) fn interface_index(emu: &Emu, name: &str) -> Option<u64> {
+    interfaces(emu.network.path).0.into_iter().find(|i| i.name == name).map(|i| i.index)
+}
+
+/// The index of the current path's primary interface (0 offline).
+pub(crate) fn primary_index(emu: &Emu) -> u64 {
+    interfaces(emu.network.path).0.first().map_or(0, |i| i.index)
+}
+
 /// A path as a monitor saw it.
 #[derive(Clone, Debug)]
 struct PathInfo {

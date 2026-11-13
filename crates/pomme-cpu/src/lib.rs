@@ -44,6 +44,8 @@ impl From<MemError> for Exit {
         match e {
             MemError::Unmapped(addr) => Exit::Fault { addr },
             MemError::Overlap { base, .. } => Exit::Fault { addr: base },
+            // Instructions don't allocate.
+            MemError::TooLarge(_) => Exit::Fault { addr: 0 },
         }
     }
 }

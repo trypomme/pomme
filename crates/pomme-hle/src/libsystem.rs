@@ -9,8 +9,18 @@
 use crate::{Emu, HostFn, Result, Stop};
 use std::collections::{HashMap, VecDeque};
 
-/// Wall-clock time at boot: 2026-01-01T00:00:00Z. Guest time = this + steps / 24 MHz.
+/// The default wall-clock time at boot: 2026-01-01T00:00:00Z. Guest time = boot + steps / 24 MHz.
 pub const EPOCH_BASE_SECS: u64 = 1_767_225_600;
+
+/// The wall-clock time the phone booted at, in seconds since 1970.
+pub fn boot_time(emu: &Emu) -> u64 {
+    emu.sys.boot_time.unwrap_or(EPOCH_BASE_SECS)
+}
+
+/// Set the wall-clock time at boot (before the app runs): `--clock`.
+pub fn set_boot_time(emu: &mut Emu, secs: u64) {
+    emu.sys.boot_time = Some(secs);
+}
 pub const TICKS_PER_SEC: u64 = pomme_cpu::TICKS_PER_SEC;
 
 #[derive(Default)]
@@ -24,6 +34,11 @@ pub struct State {
     signal_actions: HashMap<i32, Vec<u8>>,
     /// dlerror's pending message (a guest C string), or 0.
     dlerror: u64,
+    /// The wall-clock time at boot, if not the default (see [`boot_time`]).
+    boot_time: Option<u64>,
+    /// `dlopen` handles for system libraries that aren't guest images (pomme
+    /// implements their functions; on a phone they're in the shared cache): path → handle.
+    system_libraries: HashMap<String, u64>,
     /// The environment (made on first use: see `default_env`).
     env: Option<Vec<(String, String)>>,
     /// Guest copies of values handed out by getenv.
@@ -49,6 +64,10 @@ pub struct State {
     global_queue: u64,
     /// Dispatch groups: outstanding work and the notify blocks waiting on it.
     groups: HashMap<u64, Group>,
+    /// Queues the app made (serial or concurrent), by address.
+    dqueues: HashMap<u64, DQueue>,
+    /// Threads running a queue's work → (the queue, whether it's a barrier).
+    queue_threads: HashMap<usize, (u64, bool)>,
     /// Threads running a group's work → the group.
     group_threads: HashMap<usize, u64>,
     /// Work waiting for its time (`dispatch_after`): (queue, function, context).
@@ -64,6 +83,29 @@ pub struct State {
     pub next_port: u64,
     /// Seeded random state (arc4random, UUIDs): the same every run.
     rng: u64,
+}
+
+/// A dispatch queue the app made: work waits in order and runs on threads,
+/// `width` at a time (1: serial); a barrier runs alone.
+#[derive(Default)]
+struct DQueue {
+    width: usize,
+    /// Its work runs on the main queue (its target is the main queue).
+    on_main: bool,
+    pending: VecDeque<Work>,
+    running: usize,
+    barrier_running: bool,
+}
+
+/// One piece of a queue's work.
+#[derive(Clone, Copy)]
+struct Work {
+    f: u64,
+    ctx: u64,
+    group: Option<u64>,
+    barrier: bool,
+    /// A dispatch_sync caller waiting its turn: this flag becomes 1 when it may run (0: async work).
+    turn: u64,
 }
 
 #[derive(Default)]
@@ -101,6 +143,17 @@ const DATA: &[(&str, u64)] = &[
     ("__dispatch_data_destructor_munmap", 8),
     ("__dispatch_queue_attr_concurrent", 64),
     ("__dispatch_source_type_timer", 64),
+    ("__dispatch_source_type_data_add", 64),
+    ("__dispatch_source_type_data_or", 64),
+    ("__dispatch_source_type_data_replace", 64),
+    ("__dispatch_source_type_read", 64),
+    ("__dispatch_source_type_write", 64),
+    ("__dispatch_source_type_signal", 64),
+    ("__dispatch_source_type_proc", 64),
+    ("__dispatch_source_type_vnode", 64),
+    ("__dispatch_source_type_mach_send", 64),
+    ("__dispatch_source_type_mach_recv", 64),
+    ("__dispatch_source_type_memorypressure", 64),
     ("_vm_page_size", 8),
     ("_vm_kernel_page_size", 8),
     ("__os_log_default", 64),
@@ -153,6 +206,44 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The address of a libSystem data symbol pomme made (if the app imports it).
+pub(crate) fn data_addr(emu: &Emu, name: &str) -> Option<u64> {
+    emu.sys.data.get(name).copied()
+}
+
+/// The name of the libSystem data symbol at `addr`, if it's one.
+pub(crate) fn data_name(emu: &Emu, addr: u64) -> Option<&'static str> {
+    emu.sys.data.iter().find(|&(_, &a)| a == addr).map(|(&n, _)| n)
+}
+
+/// `dispatch_resume`, `dispatch_suspend`, `dispatch_activate` (sources; queues
+/// aren't suspended here) and `dispatch_set_context`/`dispatch_get_context`.
+fn dispatch_resume(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    if crate::dsource::is_source(emu, o) { crate::dsource::resume(emu, o) } else { Ok(()) }
+}
+
+fn dispatch_suspend(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    if crate::dsource::is_source(emu, o) { crate::dsource::suspend(emu, o) } else { Ok(()) }
+}
+
+fn dispatch_activate(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    if crate::dsource::is_source(emu, o) { crate::dsource::activate(emu, o) } else { Ok(()) }
+}
+
+fn dispatch_set_context(emu: &mut Emu) -> Result<()> {
+    crate::dsource::set_context(emu, emu.arg(0), emu.arg(1));
+    Ok(())
+}
+
+fn dispatch_get_context(emu: &mut Emu) -> Result<()> {
+    let c = crate::dsource::context(emu, emu.arg(0));
+    emu.ret(c);
+    Ok(())
+}
+
 // ---- helpers ----
 
 fn f64_arg(emu: &Emu, i: usize) -> f64 {
@@ -177,16 +268,7 @@ fn bytes(emu: &Emu, addr: u64, n: u64) -> Result<Vec<u8>> {
 
 /// Read bytes up to (not including) the NUL.
 fn cbytes(emu: &Emu, addr: u64) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut a = addr;
-    loop {
-        let b = emu.p.memory.read_u8(a)?;
-        if b == 0 {
-            return Ok(out);
-        }
-        out.push(b);
-        a += 1;
-    }
+    emu.cstr_bytes(addr)
 }
 
 /// Call a block with arguments after the block pointer itself.
@@ -843,7 +925,7 @@ fn mach_timebase_info(emu: &mut Emu) -> Result<()> {
 }
 
 fn realtime_ns(emu: &Emu) -> u64 {
-    EPOCH_BASE_SECS * 1_000_000_000 + now_ns(emu)
+    boot_time(emu) * 1_000_000_000 + now_ns(emu)
 }
 
 /// CLOCK_REALTIME = 0, everything else counts from boot.
@@ -910,6 +992,18 @@ fn default_env() -> Vec<(String, String)> {
         ("LOGNAME".into(), "mobile".into()),
         ("SHELL".into(), "/bin/sh".into()),
     ]
+}
+
+/// The environment variables, in order.
+pub fn environment(emu: &mut Emu) -> Vec<(String, String)> {
+    env(emu).clone()
+}
+
+/// Set an environment variable for the app (as an Xcode scheme's do), before it runs.
+pub fn set_env(emu: &mut Emu, name: &str, value: &str) {
+    let e = env(emu);
+    e.retain(|(k, _)| k != name);
+    e.push((name.into(), value.into()));
 }
 
 fn env(emu: &mut Emu) -> &mut Vec<(String, String)> {
@@ -1080,31 +1174,83 @@ fn tlv_get_addr(emu: &mut Emu) -> Result<()> {
 
 // ---- dispatch ----
 
-/// `dispatch_once(predicate*, block)`
-fn dispatch_once(emu: &mut Emu) -> Result<()> {
-    let (pred, block) = (emu.arg(0), emu.arg(1));
-    if emu.read_u64(pred)? != u64::MAX {
-        emu.write_u64(pred, u64::MAX)?;
-        call_block(emu, block, &[])?;
+/// `dispatch_sync(queue, block)` (and the barrier and `_f` forms): the block
+/// runs as work for `queue`, in its turn. On the main queue, a concurrent
+/// queue (not as a barrier) or an idle queue, it runs here and now. On a busy
+/// queue it waits its turn: in place, then here, when this thread can wait in
+/// place (the main thread, or inside a call); otherwise the queue runs it on
+/// one of its own threads while this one waits for it to finish.
+fn sync_on(emu: &mut Emu, queue: u64, f: u64, ctx: u64, barrier: bool) -> Result<()> {
+    let run = |emu: &mut Emu| emu.call(f, &[ctx]).map(|_| ());
+    let Some(q) = emu.sys.dqueues.get_mut(&queue).filter(|q| !q.on_main) else {
+        return on_queue(emu, queue, run);
+    };
+    if q.width > 1 && !barrier && !q.barrier_running && !q.pending.iter().any(|w| w.barrier) {
+        return on_queue(emu, queue, run);
     }
+    let idle = q.running == 0 && q.pending.is_empty();
+    if idle {
+        q.running += 1;
+        q.barrier_running |= barrier;
+        let r = on_queue(emu, queue, run);
+        finished(emu, queue, barrier)?;
+        return r;
+    }
+    let flag = emu.alloc(8)?;
+    emu.write_u64(flag, 0)?;
+    if crate::threads::can_wait_in_place(emu) {
+        submit_work(emu, queue, Work { f, ctx, group: None, barrier, turn: flag })?;
+        crate::threads::block(emu, crate::threads::Wait::Flag { addr: flag, deadline: None })?;
+        let r = on_queue(emu, queue, run);
+        finished(emu, queue, barrier)?;
+        return r;
+    }
+    // The queue runs it; this thread waits for the done flag (a block that sets it).
+    let done = done_flag_block(emu, f, ctx, flag)?;
+    let invoke = emu.read_u64(done + 16)?;
+    submit_work(emu, queue, Work { f: invoke, ctx: done, group: None, barrier, turn: 0 })?;
+    let r = crate::threads::block(emu, crate::threads::Wait::Flag { addr: flag, deadline: None })?;
+    let _ = r;
     Ok(())
 }
 
-/// `dispatch_once_f(predicate*, context, function)`
-fn dispatch_once_f(emu: &mut Emu) -> Result<()> {
-    let (pred, ctx, f) = (emu.arg(0), emu.arg(1), emu.arg(2));
-    if emu.read_u64(pred)? != u64::MAX {
-        emu.write_u64(pred, u64::MAX)?;
-        emu.call(f, &[ctx])?;
-    }
-    Ok(())
+/// A block that runs `f(ctx)` and then sets `flag`.
+fn done_flag_block(emu: &mut Emu, f: u64, ctx: u64, flag: u64) -> Result<u64> {
+    let b = host_block(emu, |e| {
+        let b = e.arg(0);
+        let (f, ctx, flag) = (e.read_u64(b + 48)?, e.read_u64(b + 56)?, e.read_u64(b + 64)?);
+        e.call(f, &[ctx])?;
+        e.write_u64(flag, 1)?;
+        Ok(())
+    })?;
+    // host_block's layout is 48 bytes: put the arguments after it.
+    let big = emu.alloc(72)?;
+    let bytes = emu.p.memory.read(b, 48)?.to_vec();
+    emu.p.memory.write(big, &bytes)?;
+    emu.write_u64(big + 24, big + 32)?; // its descriptor, inside it
+    emu.write_u64(big + 40, 72)?;
+    emu.write_u64(big + 48, f)?;
+    emu.write_u64(big + 56, ctx)?;
+    emu.write_u64(big + 64, flag)?;
+    Ok(big)
 }
 
-/// `dispatch_sync(queue, block)`: run now, on the one thread.
-/// `dispatch_sync(queue, block)`: the block runs here, as work for `queue`.
 fn dispatch_sync(emu: &mut Emu) -> Result<()> {
     let (queue, block) = (emu.arg(0), emu.arg(1));
-    on_queue(emu, queue, |emu| call_block(emu, block, &[]).map(|_| ()))
+    let invoke = emu.read_u64(block + 16)?;
+    sync_on(emu, queue, invoke, block, false)
+}
+
+fn dispatch_barrier_sync(emu: &mut Emu) -> Result<()> {
+    let (queue, block) = (emu.arg(0), emu.arg(1));
+    let invoke = emu.read_u64(block + 16)?;
+    sync_on(emu, queue, invoke, block, true)
+}
+
+fn dispatch_barrier_async(emu: &mut Emu) -> Result<()> {
+    let queue = emu.arg(0);
+    let (invoke, block) = copied_block(emu, emu.arg(1))?;
+    submit_work(emu, queue, Work { f: invoke, ctx: block, group: None, barrier: true, turn: 0 })
 }
 
 /// Copy a block to the heap: (invoke, block).
@@ -1115,12 +1261,26 @@ fn copied_block(emu: &mut Emu, block: u64) -> Result<(u64, u64)> {
     Ok((emu.read_u64(block + 16)?, block))
 }
 
-/// Run `f(ctx)` on `queue`: the global queue starts a thread for it (so it
-/// may block, as Flutter's wait for its first frame does); every other queue
-/// is serviced in order by the main thread. Work for `group` counts toward it.
+/// Run `f(ctx)` on `queue`, as libdispatch does: the global queue starts a
+/// thread for each piece of work; a queue the app made runs its work on
+/// threads in order (one at a time when serial; barriers alone); the main
+/// queue (and queues targeting it) is serviced by the main thread. Work for
+/// `group` counts toward it.
 fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Result<()> {
+    submit_work(emu, queue, Work { f, ctx, group, barrier: false, turn: 0 })
+}
+
+fn submit_work(emu: &mut Emu, queue: u64, work: Work) -> Result<()> {
+    let Work { f, ctx, group, .. } = work;
     if emu.sys.cancelled.contains(&ctx) {
         return Ok(());
+    }
+    if emu.sys.dqueues.get(&queue).is_some_and(|q| !q.on_main) {
+        if let Some(g) = group {
+            emu.sys.groups.entry(g).or_default().count += 1;
+        }
+        emu.sys.dqueues.get_mut(&queue).unwrap().pending.push_back(work);
+        return pump(emu, queue);
     }
     if queue != 0 && queue == emu.sys.global_queue {
         let tid = crate::threads::spawn(emu, f, ctx, "dispatch")?;
@@ -1135,6 +1295,43 @@ fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Re
         crate::threads::wake_main_queue(emu);
     }
     Ok(())
+}
+
+/// Start what `queue` can run now: its next work, in order, while it has room.
+fn pump(emu: &mut Emu, queue: u64) -> Result<()> {
+    loop {
+        let Some(q) = emu.sys.dqueues.get_mut(&queue) else { return Ok(()) };
+        let Some(next) = q.pending.front().copied() else { return Ok(()) };
+        let room = if next.barrier { q.running == 0 } else { !q.barrier_running && q.running < q.width };
+        if !room {
+            return Ok(());
+        }
+        q.pending.pop_front();
+        q.running += 1;
+        q.barrier_running |= next.barrier;
+        if next.turn != 0 {
+            // A dispatch_sync caller's turn: it runs the block itself, then calls `finished`.
+            emu.p.memory.write_u32(next.turn, 1)?;
+            continue;
+        }
+        let tid = crate::threads::spawn(emu, next.f, next.ctx, "dispatch")?;
+        emu.sys.current_queues.insert(tid, vec![queue]);
+        emu.sys.queue_threads.insert(tid, (queue, next.barrier));
+        if let Some(g) = next.group {
+            emu.sys.group_threads.insert(tid, g);
+        }
+    }
+}
+
+/// A piece of `queue`'s work is done: let the next run.
+fn finished(emu: &mut Emu, queue: u64, barrier: bool) -> Result<()> {
+    if let Some(q) = emu.sys.dqueues.get_mut(&queue) {
+        q.running = q.running.saturating_sub(1);
+        if barrier {
+            q.barrier_running = false;
+        }
+    }
+    pump(emu, queue)
 }
 
 /// Run `f(ctx)` on dispatch queue `queue`, as `dispatch_async_f` does (no queue: the main one).
@@ -1162,8 +1359,12 @@ fn dispatch_async_f(emu: &mut Emu) -> Result<()> {
 
 /// A thread finished: if it was a group's work, the group has one less.
 pub(crate) fn thread_finished(emu: &mut Emu, tid: usize) -> Result<()> {
+    emu.sys.current_queues.remove(&tid);
     if let Some(g) = emu.sys.group_threads.remove(&tid) {
         group_leave(emu, g)?;
+    }
+    if let Some((queue, barrier)) = emu.sys.queue_threads.remove(&tid) {
+        finished(emu, queue, barrier)?;
     }
     Ok(())
 }
@@ -1219,15 +1420,54 @@ fn current_queue(emu: &Emu) -> u64 {
     }
 }
 
+/// `dispatch_queue_create(label, attr)` (and `…_with_target`, whose target
+/// may be the main queue): serial, or concurrent with DISPATCH_QUEUE_CONCURRENT.
 fn dispatch_queue_create(emu: &mut Emu) -> Result<()> {
+    let (label, attr) = (emu.arg(0), emu.arg(1));
+    make_queue(emu, label, attr, 0)
+}
+
+fn dispatch_queue_create_with_target(emu: &mut Emu) -> Result<()> {
+    let (label, attr, target) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    make_queue(emu, label, attr, target)
+}
+
+fn make_queue(emu: &mut Emu, label: u64, attr: u64, target: u64) -> Result<()> {
     let cls = crate::objc::host_class(emu, "OS_dispatch_queue")?;
     let q = emu.alloc(64)?;
     emu.write_u64(q, cls)?;
-    let label = emu.arg(0);
     let label = if label == 0 { 0 } else { emu.alloc_cstr(&emu.cstr(label)?)? };
     emu.write_u64(q + 8, label)?;
+    let concurrent = attr != 0 && emu.sys.data.get("__dispatch_queue_attr_concurrent").is_some_and(|&c| c == attr);
+    let on_main = target != 0 && target == main_queue(emu);
+    emu.sys.dqueues.insert(q, DQueue { width: if concurrent { usize::MAX } else { 1 }, on_main, ..Default::default() });
     emu.ret(q);
     Ok(())
+}
+
+/// The dispatch queues with work waiting or running, for a stop's report:
+/// one line each with the label, what's waiting and what's running.
+pub fn queue_report(emu: &Emu) -> String {
+    let label = |q: u64| -> String {
+        let l = emu.read_u64(q + 8).unwrap_or(0);
+        if l == 0 { format!("{q:#x}") } else { emu.cstr(l).unwrap_or_default() }
+    };
+    let mut s = String::new();
+    if !emu.sys.queue.is_empty() {
+        s += &format!("  main queue: {} waiting\n", emu.sys.queue.len());
+    }
+    let mut queues: Vec<_> = emu.sys.dqueues.iter().filter(|(_, d)| !d.pending.is_empty() || d.running > 0).collect();
+    queues.sort_by_key(|(q, _)| **q);
+    for (&q, d) in queues {
+        let kind = if d.width == 1 { "serial" } else { "concurrent" };
+        let barrier = if d.barrier_running { ", a barrier" } else { "" };
+        s += &format!("  {} ({kind}): {} waiting, {} running{barrier}\n", label(q), d.pending.len(), d.running);
+    }
+    let after = emu.sys.after.iter().flatten().count();
+    if after > 0 {
+        s += &format!("  {after} dispatch_after items waiting for their time\n");
+    }
+    s
 }
 
 /// The one global queue (every quality of service is the same here); its work runs on threads.
@@ -1323,10 +1563,18 @@ fn dispatch_group_notify(emu: &mut Emu) -> Result<()> {
     }
 }
 
+/// `dispatch_group_wait(group, timeout)`: until the group's work is done (0) or the timeout (non-zero).
 fn dispatch_group_wait(emu: &mut Emu) -> Result<()> {
-    drain_queue(emu)?;
-    emu.ret(0);
+    let (g, timeout) = (emu.arg(0), emu.arg(1));
+    let deadline = (timeout != u64::MAX).then_some(timeout);
+    let r = crate::threads::block(emu, crate::threads::Wait::Group { group: g, deadline })?;
+    emu.ret(r);
     Ok(())
+}
+
+/// Whether `group` has no work outstanding.
+pub(crate) fn group_done(emu: &Emu, group: u64) -> bool {
+    emu.sys.groups.get(&group).is_none_or(|g| g.count == 0)
 }
 
 
@@ -1564,13 +1812,44 @@ fn arc4random_buf(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `posix_memalign(&p, alignment, size)`: EINVAL unless the alignment is a power of two (a pointer's size or more).
 fn posix_memalign(emu: &mut Emu) -> Result<()> {
     let (out, align, size) = (emu.arg(0), emu.arg(1), emu.arg(2));
-    if align > 16 {
-        return Err(Stop::Unsupported(format!("posix_memalign alignment {align}")));
+    if !align.is_power_of_two() || align < 8 {
+        emu.ret(22);
+        return Ok(());
     }
-    let p = emu.alloc(size)?;
+    let p = emu.heap.alloc_aligned(&mut emu.p.memory, size, align)?;
     emu.write_u64(out, p)?;
+    emu.ret(0);
+    Ok(())
+}
+
+/// Bytes from pomme's seeded generator (so a run repeats): /dev/random, getentropy.
+pub(crate) fn random_bytes(emu: &mut Emu, n: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(n);
+    let mut x = emu.sys.rng_state();
+    while out.len() < n {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        out.extend_from_slice(&x.wrapping_mul(0x2545_f491_4f6c_dd1d).to_le_bytes());
+    }
+    emu.sys.set_rng_state(x);
+    out.truncate(n);
+    out
+}
+
+/// `getentropy(buf, len)`: up to 256 bytes (EIO for more, as Darwin's).
+fn getentropy(emu: &mut Emu) -> Result<()> {
+    let (p, n) = (emu.arg(0), emu.arg(1));
+    if n > 256 {
+        set_errno(emu, 5)?;
+        emu.ret(u64::MAX);
+        return Ok(());
+    }
+    let bytes = random_bytes(emu, n as usize);
+    emu.p.memory.write(p, &bytes)?;
     emu.ret(0);
     Ok(())
 }
@@ -1614,7 +1893,19 @@ fn dlopen(emu: &mut Emu) -> Result<()> {
             || i.install_name.as_deref() == Some(path.as_str())
             || (path.contains(".framework/") && file.as_deref() == i.path.file_name().and_then(|f| f.to_str()) && i.path.to_string_lossy().ends_with(path.trim_start_matches("@rpath/").trim_start_matches("@executable_path/")))
     });
-    match found.map(|i| i.header) {
+    let found = match found.map(|i| i.header) {
+        Some(h) => Some(h),
+        None if is_system_library(&path) => Some(match emu.sys.system_libraries.get(&path) {
+            Some(&h) => h,
+            None => {
+                let h = emu.alloc(16)?;
+                emu.sys.system_libraries.insert(path.clone(), h);
+                h
+            }
+        }),
+        None => None,
+    };
+    match found {
         Some(h) => {
             set_dlerror(emu, None)?;
             emu.ret(h);
@@ -1625,6 +1916,15 @@ fn dlopen(emu: &mut Emu) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A path in the system's libraries (the shared cache, on a phone): a
+/// framework's binary or a dylib under /usr/lib.
+fn is_system_library(path: &str) -> bool {
+    let framework = |root: &str| {
+        path.strip_prefix(root).and_then(|rest| rest.split_once(".framework/")).is_some_and(|(name, bin)| !name.contains('/') && bin == name)
+    };
+    framework("/System/Library/Frameworks/") || framework("/System/Library/PrivateFrameworks/") || (path.starts_with("/usr/lib/") && path.ends_with(".dylib"))
 }
 
 /// `dlsym(handle, name)`: in that image, or (RTLD_DEFAULT and friends) in every image.
@@ -1684,7 +1984,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_memchr", memchr),
     ("_memset_pattern4", |e| memset_pattern(e, 4)),
     ("_memset_pattern16", |e| memset_pattern(e, 16)),
-    ("___memcpy_chk", crate::libc::memmove),
     ("_strchr", strchr),
     ("_strrchr", strrchr),
     ("_strncmp", strncmp),
@@ -1797,18 +2096,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_host_page_size", host_page_size),
     ("_sysconf", sysconf),
     ("_pthread_equal", pthread_equal),
-    ("_pthread_mutex_init", ret_zero),
-    ("_pthread_mutex_destroy", ret_zero),
-    ("_pthread_mutex_lock", ret_zero),
-    ("_pthread_mutex_unlock", ret_zero),
-    ("_pthread_mutexattr_init", ret_zero),
-    ("_pthread_mutexattr_destroy", ret_zero),
-    ("_pthread_mutexattr_settype", ret_zero),
-    ("_pthread_rwlock_init", ret_zero),
-    ("_pthread_rwlock_destroy", ret_zero),
-    ("_pthread_rwlock_rdlock", ret_zero),
-    ("_pthread_rwlock_wrlock", ret_zero),
-    ("_pthread_rwlock_unlock", ret_zero),
     ("_pthread_attr_init", ret_zero),
     ("_pthread_attr_setstacksize", ret_zero),
     ("_pthread_sigmask", ret_zero),
@@ -1865,18 +2152,24 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     }),
     ("_sigprocmask", ret_zero),
     ("_sigaltstack", ret_zero),
-    ("_os_unfair_lock_lock", noop),
-    ("_os_unfair_lock_unlock", noop),
-    ("_os_unfair_recursive_lock_lock_with_options", noop),
-    ("_os_unfair_recursive_lock_unlock", noop),
     ("__tlv_bootstrap", tlv_get_addr),
     ("__tlv_atexit", noop),
-    ("_dispatch_once", dispatch_once),
-    ("_dispatch_once_f", dispatch_once_f),
     ("_dispatch_sync", dispatch_sync),
-    ("_dispatch_barrier_sync", dispatch_sync),
+    ("_dispatch_barrier_sync", dispatch_barrier_sync),
+    ("_dispatch_sync_f", |e| {
+        let (queue, ctx, f) = (e.arg(0), e.arg(1), e.arg(2));
+        sync_on(e, queue, f, ctx, false)
+    }),
+    ("_dispatch_barrier_sync_f", |e| {
+        let (queue, ctx, f) = (e.arg(0), e.arg(1), e.arg(2));
+        sync_on(e, queue, f, ctx, true)
+    }),
+    ("_dispatch_barrier_async_f", |e| {
+        let (queue, ctx, f) = (e.arg(0), e.arg(1), e.arg(2));
+        submit_work(e, queue, Work { f, ctx, group: None, barrier: true, turn: 0 })
+    }),
     ("_dispatch_async", dispatch_async),
-    ("_dispatch_barrier_async", dispatch_async),
+    ("_dispatch_barrier_async", dispatch_barrier_async),
     ("_dispatch_async_f", dispatch_async_f),
     ("_dispatch_after", dispatch_after),
     ("_dispatch_after_f", dispatch_after_f),
@@ -1910,7 +2203,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     }),
     ("_dispatch_queue_create", dispatch_queue_create),
     // The target queue doesn't matter: all queues are serviced, in order, by the main loop.
-    ("_dispatch_queue_create_with_target$V2", dispatch_queue_create),
+    ("_dispatch_queue_create_with_target$V2", dispatch_queue_create_with_target),
     ("_dispatch_get_global_queue", dispatch_get_global_queue),
     ("_dispatch_queue_get_label", dispatch_queue_get_label),
     ("_dispatch_queue_set_specific", dispatch_queue_set_specific),
@@ -1919,7 +2212,15 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_queue_attr_make_with_qos_class", ret_self),
     // Autorelease pools around work items: pomme's queues keep the attribute's concurrency only.
     ("_dispatch_queue_attr_make_with_autorelease_frequency", ret_self),
-    ("_dispatch_set_target_queue", noop),
+    // Retargeting at the main queue moves the queue's work there; other targets don't change it here.
+    ("_dispatch_set_target_queue", |e| {
+        let (q, target) = (e.arg(0), e.arg(1));
+        let main = main_queue(e);
+        if let Some(dq) = e.sys.dqueues.get_mut(&q) {
+            dq.on_main = target != 0 && target == main;
+        }
+        Ok(())
+    }),
     ("_dispatch_semaphore_create", dispatch_semaphore_create),
     ("_dispatch_semaphore_signal", dispatch_semaphore_signal),
     ("_dispatch_group_create", dispatch_group_create),
@@ -1936,6 +2237,11 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_group_async", dispatch_group_async),
     ("_dispatch_group_notify", dispatch_group_notify),
     ("_dispatch_release", noop),
+    ("_dispatch_resume", dispatch_resume),
+    ("_dispatch_suspend", dispatch_suspend),
+    ("_dispatch_activate", dispatch_activate),
+    ("_dispatch_set_context", dispatch_set_context),
+    ("_dispatch_get_context", dispatch_get_context),
     ("_dispatch_data_create", dispatch_data_create),
     ("_dispatch_data_create_map", dispatch_data_create_map),
     ("_dispatch_data_create_subrange", dispatch_data_create_subrange),
@@ -1947,8 +2253,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         e.ret(n);
         Ok(())
     }),
-    ("_dispatch_activate", noop),
-    ("_dispatch_set_context", noop),
     ("_dispatch_assert_queue$V2", noop),
     // Thread QoS and priorities: pomme's scheduler doesn't weigh them, so setting succeeds.
     ("_pthread_set_qos_class_self_np", |e| {
@@ -2030,6 +2334,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("__NSGetMachExecuteHeader", nsget_mach_header),
     ("_arc4random_uniform", arc4random_uniform),
     ("_arc4random_buf", arc4random_buf),
+    ("_getentropy", getentropy),
     // SecRandomCopyBytes(rnd, count, bytes) / CCRandomGenerateBytes(bytes, count): the same
     // deterministic stream as arc4random_buf; both report success (0).
     ("_SecRandomCopyBytes", |e| {
@@ -2158,12 +2463,15 @@ fn qsort(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `aligned_alloc(alignment, size)`: NULL (EINVAL) unless the alignment is a power of two.
 fn aligned_alloc(emu: &mut Emu) -> Result<()> {
     let (align, size) = (emu.arg(0), emu.arg(1));
-    if align > 16 {
-        return Err(Stop::Unsupported(format!("aligned_alloc alignment {align}")));
+    if !align.is_power_of_two() {
+        set_errno(emu, 22)?;
+        emu.ret(0);
+        return Ok(());
     }
-    let p = emu.alloc(size)?;
+    let p = emu.heap.alloc_aligned(&mut emu.p.memory, size, align)?;
     emu.ret(p);
     Ok(())
 }
@@ -2215,7 +2523,6 @@ pub(crate) const MORE_FUNCS: &[(&str, HostFn)] = &[
     ("___ulock_wait", ulock_wait),
     ("___ulock_wake", ret_zero),
     ("_mach_host_self", mach_port),
-    ("_pthread_mutex_trylock", ret_zero),
     ("_pthread_cond_init", ret_zero),
     ("_pthread_cond_destroy", ret_zero),
     ("_pthread_detach", ret_zero),

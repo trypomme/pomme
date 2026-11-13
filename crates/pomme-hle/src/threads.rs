@@ -45,7 +45,13 @@ const ETIMEDOUT: u64 = 60;
 #[derive(Debug, Clone)]
 pub enum Wait {
     Semaphore { sem: u64, deadline: Option<u64> },
-    Cond { cond: u64, generation: u64, deadline: Option<u64> },
+    /// A condition variable until it's signalled (or the deadline), and then
+    /// its mutex, retaken at the depth it was held (0: none).
+    Cond { cond: u64, generation: u64, deadline: Option<u64>, mutex: u64, depth: u32 },
+    /// A lock until this thread can take it (see locks.rs).
+    Lock { addr: u64, want: crate::locks::Want },
+    /// A once-initializer another thread is running, until it's done.
+    Once { pred: u64 },
     MachReceive { name: u32, buf: u64, size: u64, deadline: Option<u64> },
     Join { tid: usize, out: u64 },
     Sleep { deadline: u64 },
@@ -57,6 +63,10 @@ pub enum Wait {
     Kevent { kq: u64, list: u64, n: u64, deadline: Option<u64> },
     /// A biometry prompt until the person presents a face (keychain prompt index).
     Face { prompt: usize },
+    /// A socket call until the network lets it finish (see sockets.rs).
+    Socket(crate::sockets::Pending),
+    /// dispatch_group_wait: until the group's work is done (or the deadline).
+    Group { group: u64, deadline: Option<u64> },
 }
 
 impl Wait {
@@ -64,7 +74,9 @@ impl Wait {
         match *self {
             Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } | Wait::Kevent { deadline, .. } | Wait::Flag { deadline, .. } => deadline,
             Wait::Sleep { deadline } => Some(deadline),
-            Wait::Join { .. } | Wait::PipeRead { .. } | Wait::Face { .. } => None,
+            Wait::Socket(ref p) => p.deadline(),
+            Wait::Group { deadline, .. } => deadline,
+            Wait::Join { .. } | Wait::PipeRead { .. } | Wait::Face { .. } | Wait::Lock { .. } | Wait::Once { .. } => None,
         }
     }
 }
@@ -172,6 +184,7 @@ fn switch_to(emu: &mut Emu, tid: usize) {
     emu.cpu.clock_offset = offset;
     emu.cpu.sample_at = sample_at;
     emu.cpu.blocks = blocks;
+    emu.cpu.clear_exclusive();
     emu.th.current = tid;
     if emu.trace {
         println!("{:>10} --- thread {tid} ---", steps);
@@ -267,15 +280,22 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
                 None
             }
         }
-        Wait::Cond { cond, generation, deadline } => {
-            if emu.th.conds.get(&cond).copied().unwrap_or(0) != generation {
+        Wait::Cond { cond, generation, deadline, mutex, depth } => {
+            // Signalled or timed out, it still returns only holding the mutex.
+            let r = if emu.th.conds.get(&cond).copied().unwrap_or(0) != generation {
                 Some(0)
             } else if timed_out(deadline) {
                 Some(ETIMEDOUT)
             } else {
                 None
+            };
+            match r {
+                Some(r) if crate::locks::retake_after_wait(emu, mutex, depth)? => Some(r),
+                _ => None,
             }
         }
+        Wait::Lock { addr, want } => crate::locks::try_take(emu, addr, want)?.then_some(0),
+        Wait::Once { pred } => (emu.read_u64(pred)? == u64::MAX).then_some(0),
         Wait::MachReceive { name, buf, size, deadline } => match take_message(emu, name) {
             Some((port, msg)) => {
                 let n = msg.len().min(size as usize);
@@ -309,6 +329,16 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
         }
         Wait::PipeRead { fd, buf, n } => crate::fs::pipe_try_read(emu, fd, buf, n)?,
         Wait::Face { prompt } => crate::keychain::answer(emu, prompt),
+        Wait::Socket(ref p) => crate::sockets::try_complete(emu, p)?,
+        Wait::Group { group, deadline } => {
+            if crate::libsystem::group_done(emu, group) {
+                Some(0)
+            } else if timed_out(deadline) {
+                Some(1)
+            } else {
+                None
+            }
+        }
         Wait::Kevent { kq, list, n, deadline } => match crate::fs::kevent_try(emu, kq, list, n)? {
             Some(k) => Some(k),
             None if timed_out(deadline) => Some(0),
@@ -376,7 +406,7 @@ fn advance_time(emu: &mut Emu, own: Option<u64>) -> Result<bool> {
 }
 
 /// Skip virtual time to `target` (a deadline): [`Stop::TimeLimit`] if it's past the run's limit.
-fn skip_to(emu: &mut Emu, target: u64) -> Result<()> {
+pub(crate) fn skip_to(emu: &mut Emu, target: u64) -> Result<()> {
     if let Some(limit) = emu.time_limit_ns
         && target > limit
     {
@@ -397,6 +427,25 @@ pub fn advance_to(emu: &mut Emu, target_ns: u64) {
         emu.cpu.clock_offset += ns_to_ticks(target_ns - now);
     }
     fire_timers(emu);
+}
+
+/// Whether the current thread waits in place (the main thread, or inside a
+/// nested call) rather than unwinding to the scheduler.
+pub(crate) fn can_wait_in_place(emu: &Emu) -> bool {
+    let me = emu.th.current;
+    me == 0 || emu.depth != emu.th.threads[me].base_depth
+}
+
+/// The socket calls other threads are waiting in.
+pub(crate) fn socket_waits(emu: &Emu) -> Vec<crate::sockets::Pending> {
+    emu.th
+        .threads
+        .iter()
+        .filter_map(|t| match &t.run {
+            Run::Blocked(Wait::Socket(p)) => Some(p.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The earliest deadline of any waiting thread or armed timer.
@@ -445,6 +494,12 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
                 let committed = matches!(wait, Wait::MachReceive { .. });
                 crate::host::keep_pace(emu, committed)?;
             }
+            continue;
+        }
+        // Waiting on the network: wait for it in real time.
+        let own = if let Wait::Socket(p) = &wait { Some(p.clone()) } else { None };
+        let next = next_deadline(emu, wait.deadline());
+        if crate::sockets::network_idle(emu, own.as_ref(), next)? {
             continue;
         }
         // A live host paces time on the wall clock and may deliver input.
@@ -769,9 +824,15 @@ fn pthread_getname_np(emu: &mut Emu) -> Result<()> {
 
 /// `pthread_cond_wait(cond, mutex)` — mutexes are no-ops (only blocking points switch threads).
 fn pthread_cond_wait(emu: &mut Emu) -> Result<()> {
-    let cond = emu.arg(0);
+    let (cond, mutex) = (emu.arg(0), emu.arg(1));
+    cond_wait(emu, cond, mutex, None)
+}
+
+/// Wait on `cond`, releasing `mutex` meanwhile and holding it again on return.
+fn cond_wait(emu: &mut Emu, cond: u64, mutex: u64, deadline: Option<u64>) -> Result<()> {
     let generation = emu.th.conds.get(&cond).copied().unwrap_or(0);
-    let r = block(emu, Wait::Cond { cond, generation, deadline: None })?;
+    let depth = if mutex == 0 { 0 } else { crate::locks::release_for_wait(emu, mutex)? };
+    let r = block(emu, Wait::Cond { cond, generation, deadline, mutex, depth })?;
     ret(emu, r)
 }
 
@@ -781,10 +842,8 @@ fn pthread_cond_timedwait(emu: &mut Emu) -> Result<()> {
     let secs = emu.read_u64(ts)?;
     let nsec = emu.read_u64(ts + 8)?;
     let wall_ns = secs * 1_000_000_000 + nsec;
-    let deadline = wall_ns.saturating_sub(crate::libsystem::EPOCH_BASE_SECS * 1_000_000_000);
-    let generation = emu.th.conds.get(&cond).copied().unwrap_or(0);
-    let r = block(emu, Wait::Cond { cond, generation, deadline: Some(deadline) })?;
-    ret(emu, r)
+    let deadline = wall_ns.saturating_sub(crate::libsystem::boot_time(emu) * 1_000_000_000);
+    cond_wait(emu, cond, emu.arg(1), Some(deadline))
 }
 
 /// `pthread_cond_timedwait_relative_np(cond, mutex, const struct timespec *rel)`.
@@ -792,20 +851,7 @@ fn pthread_cond_timedwait_relative(emu: &mut Emu) -> Result<()> {
     let (cond, ts) = (emu.arg(0), emu.arg(2));
     let rel = emu.read_u64(ts)? * 1_000_000_000 + emu.read_u64(ts + 8)?;
     let deadline = now_ns(emu) + rel;
-    let generation = emu.th.conds.get(&cond).copied().unwrap_or(0);
-    let r = block(emu, Wait::Cond { cond, generation, deadline: Some(deadline) })?;
-    ret(emu, r)
-}
-
-/// `pthread_once(once, init)`: pthread_once_t is {long sig; char opaque[8]};
-/// the first opaque byte marks it done.
-fn pthread_once(emu: &mut Emu) -> Result<()> {
-    let (once, init) = (emu.arg(0), emu.arg(1));
-    if emu.p.memory.read_u8(once + 8)? == 0 {
-        emu.p.memory.write_u8(once + 8, 1)?;
-        emu.call(init, &[])?;
-    }
-    ret(emu, 0)
+    cond_wait(emu, cond, emu.arg(1), Some(deadline))
 }
 
 /// Spurious wakeups are allowed, so signal wakes every waiter, like broadcast.
@@ -923,7 +969,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_pthread_cond_wait", pthread_cond_wait),
     ("_pthread_cond_timedwait", pthread_cond_timedwait),
     ("_pthread_cond_timedwait_relative_np", pthread_cond_timedwait_relative),
-    ("_pthread_once", pthread_once),
     ("_pthread_condattr_init", |e| ret(e, 0)),
     ("_pthread_condattr_destroy", |e| ret(e, 0)),
     ("_pthread_condattr_setclock", |e| ret(e, 0)),

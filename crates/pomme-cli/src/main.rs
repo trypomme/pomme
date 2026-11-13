@@ -143,6 +143,66 @@ struct DeviceStateArgs {
     /// `--face toggle-enrolled@2` (repeatable). A face answers the prompts waiting then.
     #[arg(long, value_parser = parse_face)]
     face: Vec<(pomme_hle::keychain::Face, f64)>,
+    /// The phone's clock at launch: `now`, a date (`2026-03-14` or
+    /// `2026-03-14T09:30:00Z`, UTC) or seconds since 1970. By default it's `now` when
+    /// the network is live (TLS certificates and sign-in tokens are checked against
+    /// it), and 2026-01-01T00:00:00Z with `--offline`, the same every run.
+    #[arg(long, value_parser = parse_clock)]
+    clock: Option<Clock>,
+    /// An environment variable for the app, as an Xcode scheme sets them:
+    /// `--env GRPC_VERBOSITY=debug` (repeatable).
+    #[arg(long = "env", value_parser = parse_env)]
+    env: Vec<(String, String)>,
+    /// Print the app's debug-level log messages too (os_log's debug type), as
+    /// Xcode's console does with "Include Debug Messages".
+    #[arg(long)]
+    debug_logs: bool,
+    /// Launch arguments, after `--`: `pomme run App.app -- -FIRDebugEnabled -AppleLanguages '(fr)'`.
+    /// The app sees them in `argv` and `ProcessInfo.arguments`, and `-key value` pairs
+    /// set user defaults (NSArgumentDomain), as an Xcode scheme's arguments do.
+    #[arg(last = true)]
+    args: Vec<String>,
+}
+
+fn parse_env(s: &str) -> std::result::Result<(String, String), String> {
+    let (k, v) = s.split_once('=').ok_or_else(|| format!("{s}: expected NAME=VALUE"))?;
+    Ok((k.into(), v.into()))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Clock {
+    Now,
+    At(u64),
+}
+
+/// `now`, seconds since 1970, or a UTC date: `YYYY-MM-DD` with an optional `THH:MM[:SS]` and `Z`.
+fn parse_clock(s: &str) -> std::result::Result<Clock, String> {
+    if s == "now" {
+        return Ok(Clock::Now);
+    }
+    if let Ok(secs) = s.parse::<u64>() {
+        return Ok(Clock::At(secs));
+    }
+    let bad = || format!("{s}: expected now, seconds since 1970, or YYYY-MM-DD[THH:MM[:SS]][Z]");
+    let s2 = s.strip_suffix('Z').unwrap_or(s);
+    let (date, time) = s2.split_once('T').unwrap_or((s2, "00:00"));
+    let d: Vec<i64> = date.split('-').map(|x| x.parse().map_err(|_| bad())).collect::<std::result::Result<_, _>>()?;
+    let t: Vec<i64> = time.split(':').map(|x| x.parse().map_err(|_| bad())).collect::<std::result::Result<_, _>>()?;
+    let [y, m, day] = d[..] else { return Err(bad()) };
+    let [h, min, sec] = match t[..] {
+        [h, m] => [h, m, 0],
+        [h, m, s] => [h, m, s],
+        _ => return Err(bad()),
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || !(0..24).contains(&h) || !(0..60).contains(&min) || !(0..61).contains(&sec) || y < 1970 {
+        return Err(bad());
+    }
+    // Days since 1970 (Howard Hinnant's days_from_civil).
+    let yy = if m <= 2 { y - 1 } else { y };
+    let (era, yoe) = (yy.div_euclid(400), yy.rem_euclid(400));
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Ok(Clock::At((days * 86_400 + h * 3600 + min * 60 + sec) as u64))
 }
 
 impl DeviceStateArgs {
@@ -152,6 +212,19 @@ impl DeviceStateArgs {
         emu.keychain.biometry = self.biometry;
         emu.keychain.faces = self.face.iter().map(|&(f, t)| ((t * 1e9) as u64, f)).collect();
         emu.keychain.faces.sort_by_key(|f| f.0);
+        match self.clock {
+            Some(Clock::Now) => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                pomme_hle::libsystem::set_boot_time(emu, now);
+            }
+            Some(Clock::At(secs)) => pomme_hle::libsystem::set_boot_time(emu, secs),
+            None => {}
+        }
+        for (k, v) in &self.env {
+            pomme_hle::libsystem::set_env(emu, k, v);
+        }
+        emu.launch_args = self.args.clone();
+        emu.os_log_debug = self.debug_logs;
         for &(p, at) in &self.network {
             match at {
                 None => emu.network.path = p,
@@ -269,7 +342,11 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, state, profile, window, frame_stats } => {
+        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } => {
+            // A live network talks to servers that check the date: use the real one.
+            if state.clock.is_none() && !offline {
+                state.clock = Some(Clock::Now);
+            }
             let (path, sysroot) = match bundle {
                 Some(b) => {
                     let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
@@ -570,10 +647,11 @@ fn parse_fixture(s: &str) -> std::result::Result<(String, PathBuf), String> {
     Ok((url.to_string(), PathBuf::from(file)))
 }
 
-/// Real HTTP for whatever the fixtures don't answer.
+/// Real HTTP for whatever the fixtures don't answer, and the host's TCP for sockets.
 struct LiveNet {
     fixtures: pomme_hle::net::Fixtures,
     agent: ureq::Agent,
+    sockets: pomme_hle::net::HostSockets,
 }
 
 impl pomme_hle::net::Net for LiveNet {
@@ -593,6 +671,37 @@ impl pomme_hle::net::Net for LiveNet {
         let body = response.body_mut().read_to_vec().map_err(|e| e.to_string())?;
         Ok(pomme_hle::net::Response { status, headers, body })
     }
+
+    fn resolve(&mut self, host: &str) -> std::result::Result<Vec<std::net::IpAddr>, String> {
+        self.sockets.resolve(host)
+    }
+    fn connect(&mut self, addr: std::net::SocketAddr) -> std::io::Result<pomme_hle::net::SocketId> {
+        self.sockets.connect(addr)
+    }
+    fn send(&mut self, s: pomme_hle::net::SocketId, data: &[u8]) -> std::io::Result<usize> {
+        self.sockets.send(s, data)
+    }
+    fn recv(&mut self, s: pomme_hle::net::SocketId, max: usize) -> std::io::Result<Vec<u8>> {
+        self.sockets.recv(s, max)
+    }
+    fn readiness(&mut self, s: pomme_hle::net::SocketId) -> pomme_hle::net::Readiness {
+        self.sockets.readiness(s)
+    }
+    fn wait(&mut self, sockets: &[pomme_hle::net::SocketId], timeout: std::time::Duration) {
+        self.sockets.wait(sockets, timeout)
+    }
+    fn shutdown(&mut self, s: pomme_hle::net::SocketId, how: std::net::Shutdown) {
+        self.sockets.shutdown(s, how)
+    }
+    fn close(&mut self, s: pomme_hle::net::SocketId) {
+        self.sockets.close(s)
+    }
+    fn local_addr(&mut self, s: pomme_hle::net::SocketId) -> Option<std::net::SocketAddr> {
+        self.sockets.local_addr(s)
+    }
+    fn peer_addr(&mut self, s: pomme_hle::net::SocketId) -> Option<std::net::SocketAddr> {
+        self.sockets.peer_addr(s)
+    }
 }
 
 fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<dyn pomme_hle::net::Net>>> {
@@ -605,7 +714,7 @@ fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<
     Ok(if offline {
         (!fixtures.is_empty()).then(|| Box::new(f) as Box<dyn pomme_hle::net::Net>)
     } else {
-        Some(Box::new(LiveNet { fixtures: f, agent: ureq::Agent::new_with_defaults() }))
+        Some(Box::new(LiveNet { fixtures: f, agent: ureq::Agent::new_with_defaults(), sockets: Default::default() }))
     })
 }
 
@@ -778,6 +887,10 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
             }
             if trace || std::env::var_os("POMME_THREADS").is_some() {
                 print!("other threads:\n{}", pomme_hle::threads::report(&emu));
+                let queues = pomme_hle::libsystem::queue_report(&emu);
+                if !queues.is_empty() {
+                    print!("dispatch queues:\n{queues}");
+                }
             }
         }
     }

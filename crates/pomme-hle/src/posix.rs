@@ -5,7 +5,7 @@
 //! (-1 / NULL), which apps and CoreFoundation handle as "not there".
 
 use crate::libsystem::call_block;
-use crate::{Emu, HostFn, Result, Stop};
+use crate::{Emu, HostFn, Result};
 
 const UID: u64 = 501; // "mobile"
 const GID: u64 = 501;
@@ -235,12 +235,12 @@ fn zone_valloc(emu: &mut Emu) -> Result<()> {
 }
 
 fn zone_malloc(emu: &mut Emu) -> Result<()> {
-    let p = emu.alloc(emu.arg(1))?;
+    let p = crate::libc::guest_alloc(emu, emu.arg(1))?;
     ret(emu, p)
 }
 
 fn zone_calloc(emu: &mut Emu) -> Result<()> {
-    let p = emu.alloc(emu.arg(1).saturating_mul(emu.arg(2)))?;
+    let p = crate::libc::guest_alloc(emu, emu.arg(1).saturating_mul(emu.arg(2)))?;
     ret(emu, p)
 }
 
@@ -251,6 +251,9 @@ fn zone_free(emu: &mut Emu) -> Result<()> {
 
 fn zone_realloc(emu: &mut Emu) -> Result<()> {
     shift_args(emu, 1);
+    if emu.cpu.x[1] > crate::heap::MAX_ALLOC {
+        return ret(emu, 0);
+    }
     let p = emu.heap.realloc(&mut emu.p.memory, emu.cpu.x[0], emu.cpu.x[1])?;
     ret(emu, p)
 }
@@ -261,13 +264,11 @@ fn zone_memalign(emu: &mut Emu) -> Result<()> {
 }
 
 fn alloc_aligned(emu: &mut Emu, align: u64, size: u64) -> Result<()> {
-    if align <= 16 {
-        let p = emu.alloc(size)?;
-        return ret(emu, p);
+    if size > crate::heap::MAX_ALLOC {
+        return ret(emu, 0);
     }
-    // Over-allocate and round up; the block is never freed by address.
-    let p = emu.alloc(size + align)?;
-    ret(emu, (p + align - 1) & !(align - 1))
+    let p = emu.heap.alloc_aligned(&mut emu.p.memory, size, align.max(16).next_power_of_two())?;
+    ret(emu, p)
 }
 
 
@@ -322,65 +323,10 @@ fn longjmp(emu: &mut Emu) -> Result<()> {
     ret(emu, if val == 0 { 1 } else { val as u64 })
 }
 
-// ---- time ----
-
-/// Days since 1970-01-01 → (year, month 1-12, day 1-31). (Howard Hinnant's civil_from_days.)
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// (year, month, day) → days since 1970-01-01. (Howard Hinnant's days_from_civil.)
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// `localtime_r(const time_t *, struct tm *)` — the device is in UTC.
-fn localtime_r(emu: &mut Emu) -> Result<()> {
-    let (tp, tm) = (emu.arg(0), emu.arg(1));
-    let t = emu.read_u64(tp)? as i64;
-    let days = t.div_euclid(86_400);
-    let secs = t.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    let yday = days - days_from_civil(y, 1, 1);
-    let fields: [i32; 9] = [
-        (secs % 60) as i32,
-        (secs / 60 % 60) as i32,
-        (secs / 3600) as i32,
-        d as i32,
-        m as i32 - 1,
-        (y - 1900) as i32,
-        (days + 4).rem_euclid(7) as i32, // 1970-01-01 was a Thursday
-        yday as i32,
-        0,
-    ];
-    for (i, f) in fields.iter().enumerate() {
-        emu.p.memory.write_u32(tm + i as u64 * 4, *f as u32)?;
-    }
-    emu.write_u64(tm + 40, 0)?; // tm_gmtoff
-    let utc = emu.alloc_cstr("UTC")?;
-    emu.write_u64(tm + 48, utc)?; // tm_zone
-    ret(emu, tm)
-}
-
 // ---- strings ----
 
 fn cbytes(emu: &Emu, addr: u64) -> Result<Vec<u8>> {
-    Ok(emu.cstr(addr)?.into_bytes())
+    emu.cstr_bytes(addr)
 }
 
 /// `strlcpy(dst, src, size)` → strlen(src)
@@ -542,11 +488,6 @@ fn dispatch_apply(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_source_create(emu: &mut Emu) -> Result<()> {
-    let s = emu.alloc(64)?;
-    ret(emu, s)
-}
-
 // ---- loader queries that read real load commands from guest memory ----
 
 const LC_SEGMENT_64: u32 = 0x19;
@@ -599,6 +540,9 @@ fn dyld_image_path_containing_address(emu: &mut Emu) -> Result<()> {
 
 fn writev(emu: &mut Emu) -> Result<()> {
     let (fd, iov, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
+    if crate::sockets::owns(emu, fd) {
+        return crate::sockets::writev(emu, fd, iov, n);
+    }
     let mut total = 0;
     for i in 0..n {
         let base = emu.read_u64(iov + i * 16)?;
@@ -612,9 +556,6 @@ fn writev(emu: &mut Emu) -> Result<()> {
     ret(emu, total)
 }
 
-fn sscanf(_: &mut Emu) -> Result<()> {
-    Err(Stop::Unsupported("sscanf isn't implemented yet".into()))
-}
 
 /// `uname(struct utsname *)`: five 256-byte fields, as an iPhone on the
 /// presented iOS (iOS 26 runs Darwin 25).
@@ -731,8 +672,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_OSAtomicCompareAndSwapPtrBarrier", os_atomic_cas_ptr),
     ("_OSAtomicCompareAndSwapLongBarrier", os_atomic_cas_ptr),
     ("_OSMemoryBarrier", noop),
-    ("_OSSpinLockLock", noop),
-    ("_OSSpinLockUnlock", noop),
     ("_malloc_default_zone", ret_default_zone),
     ("_malloc_create_zone", ret_default_zone),
     ("_malloc_default_purgeable_zone", ret_default_zone),
@@ -765,13 +704,10 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_vm_deallocate", ret_zero),
     ("_mach_vm_region", ret_one), // KERN_INVALID_ADDRESS
     ("_vm_purgable_control", ret_zero),
-    ("_localtime_r", localtime_r),
-    ("_gmtime_r", localtime_r),
     ("_strlcpy", strlcpy),
     ("_strlcat", strlcat),
     ("___strlcpy_chk", strlcpy_chk),
     ("___strlcat_chk", strlcat_chk),
-    ("___memmove_chk", crate::libc::memmove),
     ("___sprintf_chk", sprintf_chk),
     ("_strcat", strcat),
     ("_strnlen", strnlen),
@@ -797,14 +733,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_voucher_mach_msg_revert", noop),
     ("_dispatch_apply", dispatch_apply),
     ("_dispatch_retain", noop),
-    ("_dispatch_resume", noop),
-    ("_dispatch_suspend", noop),
-    ("_dispatch_source_create", dispatch_source_create),
-    ("_dispatch_source_set_event_handler", noop),
-    ("_dispatch_source_set_event_handler_f", noop),
-    ("_dispatch_source_set_cancel_handler", noop),
-    ("_dispatch_source_set_timer", noop),
-    ("_dispatch_source_cancel", noop),
     ("_pthread_atfork", ret_zero),
     ("_pthread_is_threaded_np", ret_zero),
     ("_pthread_main_thread_np", |e| ret(e, 0x3_2000_0000)),
@@ -833,32 +761,17 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("__os_log_fault_impl", os_log),
     ("__os_log_impl", os_log),
     ("_os_log_type_enabled", |e| {
-        // Debug messages (type 2) stay off; info, default, error and fault print.
-        e.ret((e.arg(1) != 2) as u64);
+        // Debug messages (type 2) print only when asked for (`--debug-logs`);
+        // info, default, error and fault always do.
+        e.ret((e.arg(1) != 2 || e.os_log_debug) as u64);
         Ok(())
     }),
     ("_writev", writev),
     ("_fsync", ret_zero),
-    ("_select", ret_zero),
-    ("_sscanf", sscanf),
-    // No filesystem or network yet: fail cleanly.
+    // Not modelled: fail cleanly.
     ("_ioctl", fail),
     ("_readlink", fail),
     ("_chown", fail),
-    ("_socket", fail),
-    ("_socketpair", fail),
-    ("_bind", fail),
-    ("_listen", fail),
-    ("_accept", fail),
-    ("_connect", fail),
-    ("_send", fail),
-    ("_sendto", fail),
-    ("_recv", fail),
-    ("_recvfrom", fail),
-    ("_getsockopt", fail),
-    ("_setsockopt", fail),
-    ("_getsockname", fail),
-    ("_getpeername", fail),
 ];
 
 /// `_os_log_impl(dso, log, type, format, buf, size)`: the arguments come packed
@@ -875,9 +788,15 @@ fn os_log(emu: &mut Emu) -> Result<()> {
     for (k, v) in args.iter().enumerate() {
         emu.write_u64(slots + k as u64 * 8, *v)?;
     }
-    let text = crate::printf::format(emu, clean.as_bytes(), &mut crate::printf::Args::new(slots))?;
+    let text = crate::printf::format(emu, clean.as_bytes(), &mut crate::printf::Args::new(slots));
+    emu.heap.free(&emu.p.memory, slots)?;
+    let text = text?;
+    if kind == 0x02 && !emu.os_log_debug {
+        return Ok(());
+    }
     let level = match kind {
         0x01 => "info",
+        0x02 => "debug",
         0x10 => "error",
         0x11 => "fault",
         _ => "log",

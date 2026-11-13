@@ -206,9 +206,129 @@ fn file_system(emu: &mut Emu) -> Result<()> {
     ret(emu, d)
 }
 
+/// One of a file URL's resource values (NSURL…Key), from the file's metadata;
+/// 0 (nil) when the item doesn't exist or the key isn't one pomme knows.
+fn resource_value(emu: &mut Emu, path: &str, key: &str) -> Result<u64> {
+    if key == "NSURLIsExcludedFromBackupKey" {
+        let excluded = emu.fs_flags.excluded_from_backup.contains(path);
+        return Ok(foundation::boolean(emu, excluded));
+    }
+    let Some(a) = fs::attributes(emu, path) else { return Ok(0) };
+    let name = path.rsplit('/').next().unwrap_or(path).to_string();
+    let blocks = a.size.div_ceil(4096) * 4096;
+    Ok(match key {
+        "NSURLIsDirectoryKey" => foundation::boolean(emu, a.is_dir),
+        "NSURLIsRegularFileKey" => foundation::boolean(emu, !a.is_dir),
+        "NSURLIsSymbolicLinkKey" | "NSURLIsPackageKey" | "NSURLIsAliasFileKey" => foundation::boolean(emu, false),
+        "NSURLIsHiddenKey" => foundation::boolean(emu, name.starts_with('.')),
+        "NSURLIsReadableKey" => foundation::boolean(emu, true),
+        "NSURLIsWritableKey" => foundation::boolean(emu, !a.read_only),
+        "NSURLFileSizeKey" if !a.is_dir => foundation::new_number_i64(emu, a.size as i64)?,
+        "NSURLFileAllocatedSizeKey" | "NSURLTotalFileAllocatedSizeKey" | "NSURLTotalFileSizeKey" if !a.is_dir => foundation::new_number_i64(emu, blocks as i64)?,
+        "NSURLCreationDateKey" => date(emu, a.meta.created)?,
+        "NSURLContentModificationDateKey" | "NSURLAttributeModificationDateKey" | "NSURLContentAccessDateKey" => date(emu, a.meta.modified)?,
+        "NSURLNameKey" | "NSURLLocalizedNameKey" => foundation::new_nsstring(emu, &name)?,
+        "NSURLPathKey" => foundation::new_nsstring(emu, path)?,
+        "NSURLFileResourceTypeKey" => foundation::new_nsstring(emu, if a.is_dir { "NSFileTypeDirectory" } else { "NSFileTypeRegular" })?,
+        "NSURLFileProtectionKey" => {
+            let p = a.meta.protection.clone().unwrap_or_else(|| DEFAULT_PROTECTION.into());
+            foundation::new_nsstring(emu, &p)?
+        }
+        _ => 0,
+    })
+}
+
+/// `getResourceValue:forKey:error:`: YES, with the value (nil for unknown keys); NO if the file isn't there.
+fn get_resource_value(emu: &mut Emu) -> Result<()> {
+    let (url, out, key, error) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
+    let path = url_path(emu, url)?;
+    if fs::exists(emu, &path).is_none() {
+        set_error(emu, error, 260, &path)?;
+        if out != 0 {
+            emu.write_u64(out, 0)?;
+        }
+        return ret(emu, 0);
+    }
+    let key = nsstring(emu, key)?;
+    let v = resource_value(emu, &path, &key)?;
+    if out != 0 {
+        emu.write_u64(out, v)?;
+    }
+    ret(emu, 1)
+}
+
+/// `resourceValuesForKeys:error:`: the values pomme knows, by key.
+fn resource_values(emu: &mut Emu) -> Result<()> {
+    let (url, keys, error) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let path = url_path(emu, url)?;
+    if fs::exists(emu, &path).is_none() {
+        set_error(emu, error, 260, &path)?;
+        return ret(emu, 0);
+    }
+    let mut pairs = Vec::new();
+    for k in foundation::array_values(emu, keys)? {
+        let name = nsstring(emu, k)?;
+        let v = resource_value(emu, &path, &name)?;
+        if v != 0 {
+            pairs.push((k, v));
+        }
+    }
+    let d = foundation::new_dict_of(emu, &pairs)?;
+    ret(emu, d)
+}
+
+/// `setResourceValue:forKey:error:`: excluded-from-backup is kept (read back
+/// as set); the modification date and protection change the file's; other
+/// keys change nothing pomme models.
+fn set_resource(emu: &mut Emu, url: u64, key: u64, value: u64) -> Result<()> {
+    let path = url_path(emu, url)?;
+    let key = nsstring(emu, key)?;
+    match key.as_str() {
+        "NSURLIsExcludedFromBackupKey" => {
+            let on = value != 0 && send(emu, value, "boolValue", &[])? & 0xff != 0;
+            if on {
+                emu.fs_flags.excluded_from_backup.insert(path);
+            } else {
+                emu.fs_flags.excluded_from_backup.remove(&path);
+            }
+        }
+        "NSURLContentModificationDateKey" if value != 0 => {
+            let t = foundation::date_value(emu, value)? + REFERENCE_1970;
+            fs::set_attributes(emu, &path, |m| m.modified = t);
+        }
+        "NSURLFileProtectionKey" if value != 0 => {
+            let p = nsstring(emu, value)?;
+            fs::set_attributes(emu, &path, |m| m.protection = Some(p));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Flags pomme keeps about files that aren't in their metadata.
+#[derive(Default)]
+pub struct Flags {
+    excluded_from_backup: std::collections::HashSet<String>,
+}
+
 const FM: &str = "NSFileManager";
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSURL", false, "getResourceValue:forKey:error:", get_resource_value),
+    ("NSURL", false, "resourceValuesForKeys:error:", resource_values),
+    ("NSURL", false, "setResourceValue:forKey:error:", |e| {
+        let (url, value, key) = (e.arg(0), e.arg(2), e.arg(3));
+        set_resource(e, url, key, value)?;
+        ret(e, 1)
+    }),
+    ("NSURL", false, "setResourceValues:error:", |e| {
+        let (url, d) = (e.arg(0), e.arg(2));
+        let cf_dict = foundation::as_cf_dict(e, d)?;
+        for (k, v) in foundation::dict_pairs(e, cf_dict)? {
+            set_resource(e, url, k, v)?;
+        }
+        ret(e, 1)
+    }),
     (FM, false, "attributesOfItemAtPath:error:", attributes_of),
     (FM, false, "setAttributes:ofItemAtPath:error:", set_attributes),
     (FM, false, "attributesOfFileSystemForPath:error:", file_system),
@@ -237,6 +357,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         subpaths_of(e, err)
     }),
     (FM, false, "subpathsAtPath:", |e| subpaths_of(e, 0)),
+    // A deep enumerator over the paths under a directory, relative to it (nil if it isn't one).
+    (FM, false, "enumeratorAtPath:", |e| {
+        subpaths_of(e, 0)?;
+        let all = e.cpu.x[0];
+        let en = if all == 0 { 0 } else { send(e, all, "objectEnumerator", &[])? };
+        ret(e, en)
+    }),
     (FM, false, "isReadableFileAtPath:", |e| can(e, false)),
     (FM, false, "isWritableFileAtPath:", |e| can(e, true)),
     (FM, false, "isDeletableFileAtPath:", |e| can(e, true)),

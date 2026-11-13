@@ -60,6 +60,8 @@ pub enum MemError {
     Unmapped(u64),
     #[error("region {name} at {base:#x}+{size:#x} overlaps {other}")]
     Overlap { name: String, base: u64, size: u64, other: String },
+    #[error("an allocation of {0:#x} bytes is more than the device has")]
+    TooLarge(u64),
 }
 
 /// TLB slots (direct-mapped by page number).
@@ -265,10 +267,22 @@ impl Memory {
     }
 
     pub fn read_cstr(&self, addr: u64, max: usize) -> Result<String, MemError> {
+        Ok(String::from_utf8_lossy(&self.read_cstr_bytes(addr, max)?).into_owned())
+    }
+
+    /// The length of the NUL-terminated string at `addr` (to its region's end if unterminated).
+    pub fn cstr_len(&self, addr: u64) -> Result<usize, MemError> {
+        let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
+        let bytes = &r.data[(addr - r.base) as usize..];
+        Ok(bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len()))
+    }
+
+    /// A NUL-terminated string's bytes (without the NUL), as they are.
+    pub fn read_cstr_bytes(&self, addr: u64, max: usize) -> Result<Vec<u8>, MemError> {
         let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
         let off = (addr - r.base) as usize;
-        let bytes = &r.data[off..r.data.len().min(off + max)];
+        let bytes = &r.data[off..r.data.len().min(off.saturating_add(max))];
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
+        Ok(bytes[..end].to_vec())
     }
 }

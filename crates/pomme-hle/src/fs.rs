@@ -44,6 +44,8 @@ pub struct State {
     status_flags: HashMap<u64, u64>,
     /// Directory fds → their guest path (for openat).
     dir_fds: HashMap<u64, String>,
+    /// Descriptors open on character devices.
+    devices: HashMap<u64, Device>,
     /// Directory streams (DIR *) → their entries and position.
     dirs: HashMap<u64, DirStream>,
     /// kqueue fd → its registered events.
@@ -86,6 +88,26 @@ const EV_CLEAR: u16 = 0x20;
 const EV_EOF: u16 = 0x8000;
 const NOTE_TRIGGER: u32 = 0x0100_0000;
 
+/// The character devices apps open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Device {
+    /// /dev/random and /dev/urandom: pomme's seeded generator.
+    Random,
+    /// /dev/null: reads end at once; writes vanish.
+    Null,
+    /// /dev/zero: zeros.
+    Zero,
+}
+
+fn device(path: &str) -> Option<Device> {
+    Some(match path {
+        "/dev/random" | "/dev/urandom" => Device::Random,
+        "/dev/null" => Device::Null,
+        "/dev/zero" => Device::Zero,
+        _ => return None,
+    })
+}
+
 #[derive(Default)]
 pub struct Container {
     files: HashMap<String, Vec<u8>>,
@@ -124,12 +146,12 @@ pub struct Attributes {
 
 /// Now, in seconds since 1970 (the guest's clock).
 fn now_1970(emu: &Emu) -> f64 {
-    crate::libsystem::EPOCH_BASE_SECS as f64 + crate::threads::now_ns(emu) as f64 / 1e9
+    crate::libsystem::boot_time(emu) as f64 + crate::threads::now_ns(emu) as f64 / 1e9
 }
 
 /// When the app was installed: its boot.
-fn install_time() -> f64 {
-    crate::libsystem::EPOCH_BASE_SECS as f64
+fn install_time(emu: &Emu) -> f64 {
+    crate::libsystem::boot_time(emu) as f64
 }
 
 impl Container {
@@ -139,8 +161,9 @@ impl Container {
         self.meta.entry(p.to_string()).or_insert_with(|| Meta::new(at, dir)).modified = at;
     }
 
-    fn meta_of(&self, p: &str) -> Meta {
-        self.meta.get(p).cloned().unwrap_or_else(|| Meta::new(install_time(), self.dirs.contains(p)))
+    /// `p`'s metadata; `installed` dates what the app shipped with.
+    fn meta_of(&self, p: &str, installed: f64) -> Meta {
+        self.meta.get(p).cloned().unwrap_or_else(|| Meta::new(installed, self.dirs.contains(p)))
     }
 
     /// Forget `p` and everything under it.
@@ -206,29 +229,31 @@ pub fn write_data_file(emu: &mut Emu, path: &str, bytes: &[u8]) -> bool {
 /// A file's or directory's size, kind and metadata.
 pub fn attributes(emu: &mut Emu, path: &str) -> Option<Attributes> {
     if let Some(p) = data_path(path) {
+        let installed = install_time(emu);
         let c = container(emu);
         let (size, is_dir) = match (c.dirs.contains(&p), c.files.get(&p)) {
             (true, _) => (0, true),
             (_, Some(d)) => (d.len() as u64, false),
             _ => return None,
         };
-        return Some(Attributes { size, is_dir, meta: c.meta_of(&p), read_only: false });
+        return Some(Attributes { size, is_dir, meta: c.meta_of(&p, installed), read_only: false });
     }
     let h = host_path(emu, path)?;
     let size = vfs::len(&h)?;
     let is_dir = vfs::is_dir(&h);
-    Some(Attributes { size, is_dir, meta: Meta::new(install_time(), is_dir), read_only: true })
+    Some(Attributes { size, is_dir, meta: Meta::new(install_time(emu), is_dir), read_only: true })
 }
 
 /// Change a data-container item's dates, permissions or protection class.
 /// False when it doesn't exist or is in the read-only bundle.
 pub fn set_attributes(emu: &mut Emu, path: &str, change: impl FnOnce(&mut Meta)) -> bool {
     let Some(p) = data_path(path) else { return false };
+    let installed = install_time(emu);
     let c = container(emu);
     if !c.dirs.contains(&p) && !c.files.contains_key(&p) {
         return false;
     }
-    let mut m = c.meta_of(&p);
+    let mut m = c.meta_of(&p, installed);
     change(&mut m);
     c.meta.insert(p, m);
     true
@@ -397,6 +422,52 @@ fn fail(emu: &mut Emu, errno: u64) -> Result<()> {
     Ok(())
 }
 
+/// A descriptor's status flags (O_NONBLOCK and the like, as fcntl set them).
+pub(crate) fn status_flags(emu: &Emu, fd: u64) -> u64 {
+    emu.fs.status_flags.get(&fd).copied().unwrap_or(0)
+}
+
+/// A new descriptor number for something that isn't a file here (a socket).
+/// A descriptor another module closed: forget its flags.
+pub(crate) fn release_fd(emu: &mut Emu, fd: u64) {
+    emu.fs.status_flags.remove(&fd);
+}
+
+pub(crate) fn reserve_fd(emu: &mut Emu) -> u64 {
+    if emu.fs.next_fd < 3 {
+        emu.fs.next_fd = 3;
+    }
+    let fd = emu.fs.next_fd;
+    emu.fs.next_fd += 1;
+    fd
+}
+
+/// What poll would say of a file, directory, pipe or kqueue descriptor:
+/// (readable, writable, hung up); None when it isn't one.
+pub(crate) fn poll_state(emu: &mut Emu, fd: u64) -> Option<(bool, bool, bool)> {
+    if let Some(&(pipe, read_end)) = emu.fs.pipe_ends.get(&fd) {
+        let p = emu.fs.pipes.get(&pipe)?;
+        return Some(if read_end {
+            (!p.data.is_empty() || p.writers == 0, false, p.writers == 0)
+        } else {
+            (false, p.readers > 0, p.readers == 0)
+        });
+    }
+    if let Some(saved) = emu.fs.kqueues.get(&fd).cloned() {
+        // Look without taking: kqueue_ready consumes one-shot and cleared events.
+        let ready = !kqueue_ready(emu, fd, 1).is_empty();
+        emu.fs.kqueues.insert(fd, saved);
+        return Some((ready, false, false));
+    }
+    if emu.fs.dir_fds.contains_key(&fd) {
+        return Some((true, false, false));
+    }
+    if fd <= 2 || emu.fs.files.contains_key(&fd) {
+        return Some((true, true, false));
+    }
+    None
+}
+
 fn open_fd(emu: &mut Emu, data: Vec<u8>) -> u64 {
     open_file(emu, OpenFile { data, pos: 0, path: None, append: false })
 }
@@ -477,6 +548,12 @@ fn open_path(emu: &mut Emu, path: String, flags: u64) -> Result<()> {
     if emu.trace {
         println!("[fs] open {path} flags {flags:#x}");
     }
+    if let Some(d) = device(&path) {
+        let fd = open_fd(emu, Vec::new());
+        emu.fs.devices.insert(fd, d);
+        emu.ret(fd);
+        return Ok(());
+    }
     // A directory opens read-only, remembering where it is.
     if exists(emu, &path) == Some(true) {
         if flags & O_ACCMODE != 0 {
@@ -511,6 +588,13 @@ fn open_path(emu: &mut Emu, path: String, flags: u64) -> Result<()> {
 
 fn close(emu: &mut Emu) -> Result<()> {
     let fd = emu.arg(0) & 0xffff_ffff;
+    if crate::sockets::owns(emu, fd) {
+        crate::sockets::close(emu, fd);
+        emu.fs.status_flags.remove(&fd);
+        emu.ret(0);
+        return Ok(());
+    }
+    emu.fs.devices.remove(&fd);
     if let Some((id, read_end)) = emu.fs.pipe_ends.remove(&fd)
         && let Some(p) = emu.fs.pipes.get_mut(&id)
     {
@@ -540,8 +624,49 @@ fn read_at(emu: &mut Emu, fd: u64, buf: u64, n: u64, at: Option<u64>) -> Result<
     Ok(Some(chunk.len() as u64))
 }
 
+/// `readv(fd, iov, n)`: a socket's or file's bytes into each buffer in turn
+/// (a pipe's into the first, as one read).
+fn readv(emu: &mut Emu) -> Result<()> {
+    let (fd, iov, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
+    if crate::sockets::owns(emu, fd) {
+        return crate::sockets::readv(emu, fd, iov, n);
+    }
+    if emu.fs.pipe_ends.contains_key(&fd) {
+        let (base, len) = (emu.read_u64(iov)?, emu.read_u64(iov + 8)?);
+        return pipe_read(emu, fd, base, len);
+    }
+    let mut total = 0;
+    for i in 0..n {
+        let (base, len) = (emu.read_u64(iov + i * 16)?, emu.read_u64(iov + i * 16 + 8)?);
+        match read_at(emu, fd, base, len, None)? {
+            Some(got) => {
+                total += got;
+                if got < len {
+                    break;
+                }
+            }
+            None => return fail(emu, EBADF),
+        }
+    }
+    emu.ret(total);
+    Ok(())
+}
+
 fn read(emu: &mut Emu) -> Result<()> {
     let (fd, buf, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
+    if crate::sockets::owns(emu, fd) {
+        return crate::sockets::read(emu, fd, buf, n);
+    }
+    if let Some(d) = emu.fs.devices.get(&fd).copied() {
+        let bytes = match d {
+            Device::Random => crate::libsystem::random_bytes(emu, n as usize),
+            Device::Zero => vec![0u8; n as usize],
+            Device::Null => Vec::new(),
+        };
+        emu.p.memory.write(buf, &bytes)?;
+        emu.ret(bytes.len() as u64);
+        return Ok(());
+    }
     if emu.fs.pipe_ends.contains_key(&fd) {
         return pipe_read(emu, fd, buf, n);
     }
@@ -593,6 +718,13 @@ fn write_at(emu: &mut Emu, fd: u64, bytes: &[u8], at: Option<u64>) -> Option<u64
 /// `write(fd, buf, n)`: stdout/stderr print; data-container files are written.
 fn write(emu: &mut Emu) -> Result<()> {
     let (fd, buf, n) = (emu.arg(0) & 0xffff_ffff, emu.arg(1), emu.arg(2));
+    if crate::sockets::owns(emu, fd) {
+        return crate::sockets::write(emu, fd, buf, n);
+    }
+    if emu.fs.devices.contains_key(&fd) {
+        emu.ret(n); // devices take what's written
+        return Ok(());
+    }
     let bytes = emu.p.memory.read(buf, n as usize)?.to_vec();
     if fd == 1 || fd == 2 {
         print!("{}", String::from_utf8_lossy(&bytes));
@@ -1011,7 +1143,7 @@ fn lseek(emu: &mut Emu) -> Result<()> {
 
 /// Fill a Darwin arm64 `struct stat` (144 bytes).
 fn write_stat(emu: &mut Emu, buf: u64, size: u64, is_dir: bool) -> Result<()> {
-    let meta = Meta::new(install_time(), is_dir);
+    let meta = Meta::new(install_time(emu), is_dir);
     write_stat_meta(emu, buf, size, is_dir, &meta)
 }
 
@@ -1037,6 +1169,20 @@ fn write_stat_meta(emu: &mut Emu, buf: u64, size: u64, is_dir: bool, meta: &Meta
 
 fn fstat(emu: &mut Emu) -> Result<()> {
     let (fd, buf) = (emu.arg(0) & 0xffff_ffff, emu.arg(1));
+    if emu.fs.devices.contains_key(&fd) {
+        // A character device (S_IFCHR, rw for everyone).
+        emu.p.memory.write(buf, &[0u8; 144])?;
+        emu.p.memory.write_u16(buf + 4, 0o020666)?;
+        emu.ret(0);
+        return Ok(());
+    }
+    if crate::sockets::owns(emu, fd) {
+        // A socket: S_IFSOCK, nothing else.
+        emu.p.memory.write(buf, &[0u8; 144])?;
+        emu.p.memory.write_u16(buf + 4, 0o140777)?;
+        emu.ret(0);
+        return Ok(());
+    }
     if emu.fs.dir_fds.contains_key(&fd) {
         write_stat(emu, buf, 0, true)?;
         emu.ret(0);
@@ -1051,6 +1197,12 @@ fn fstat(emu: &mut Emu) -> Result<()> {
 /// `stat(path, buf)` / `lstat`
 fn stat(emu: &mut Emu) -> Result<()> {
     let (path, buf) = (emu.cstr(emu.arg(0))?, emu.arg(1));
+    if device(&path).is_some() {
+        emu.p.memory.write(buf, &[0u8; 144])?;
+        emu.p.memory.write_u16(buf + 4, 0o020666)?;
+        emu.ret(0);
+        return Ok(());
+    }
     if data_path(&path).is_some() {
         let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
         write_stat_meta(emu, buf, a.size, a.is_dir, &a.meta)?;
@@ -1067,6 +1219,10 @@ fn stat(emu: &mut Emu) -> Result<()> {
 /// `access(path, mode)`: the bundle is read-only; the data container isn't.
 fn access(emu: &mut Emu) -> Result<()> {
     let (path, mode) = (emu.cstr(emu.arg(0))?, emu.arg(1));
+    if device(&path).is_some() {
+        emu.ret(0);
+        return Ok(());
+    }
     if data_path(&path).is_some() {
         return if exists(emu, &path).is_some() {
             emu.ret(0);
@@ -1559,6 +1715,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         }
     }),
     ("_fdopen", fdopen),
+    ("_readv", readv),
     ("_futimes", futimes),
     ("_utimensat", utimensat),
     ("_statfs", statfs),

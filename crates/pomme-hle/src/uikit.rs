@@ -15,6 +15,8 @@ use crate::{Emu, HostFn, Result, Stop, foundation, swift};
 #[derive(Default)]
 pub struct State {
     pub app: u64,
+    /// Background tasks begun so far (each the next identifier).
+    pub background_tasks: u64,
     pub delegate: u64,
     /// Set once `application:didFinishLaunchingWithOptions:` returns.
     pub launched: bool,
@@ -661,6 +663,14 @@ fn display_link_target_timestamp(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// A new background task's identifier.
+fn begin_background_task(emu: &mut Emu) -> Result<()> {
+    emu.ui.background_tasks += 1;
+    let id = emu.ui.background_tasks;
+    emu.ret(id);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSObject", false, "performSelector:withObject:afterDelay:", perform_after_delay),
     ("NSObject", false, "performSelector:withObject:afterDelay:inModes:", perform_after_delay),
@@ -715,6 +725,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "windows", windows),
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
+    // Background tasks: the app is in the foreground, so a task never expires;
+    // each gets its own identifier (UIBackgroundTaskInvalid is 0).
+    ("UIApplication", false, "beginBackgroundTaskWithName:expirationHandler:", begin_background_task),
+    ("UIApplication", false, "beginBackgroundTaskWithExpirationHandler:", begin_background_task),
+    ("UIApplication", false, "endBackgroundTask:", |_| Ok(())),
+    ("UIApplication", false, "backgroundTimeRemaining", |e| {
+        e.cpu.q[0] = f64::MAX.to_bits() as u128; // as in the foreground
+        Ok(())
+    }),
     // Background App Refresh is on, as on a fresh device: UIBackgroundRefreshStatusAvailable.
     ("UIApplication", false, "backgroundRefreshStatus", |e| {
         e.ret(2);

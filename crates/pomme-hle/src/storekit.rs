@@ -2,6 +2,10 @@
 //! hasn't bought anything in the app: observers can watch the queue, there
 //! are no transactions, and restoring purchases finishes with none. Making a
 //! purchase (`addPayment:`) isn't modelled yet, and says so.
+//!
+//! SKAdNetwork (ad attribution, as analytics SDKs report it): registering and
+//! updating conversion values succeed, as they do for an app on a phone, and
+//! completion handlers hear no error.
 
 use crate::foundation;
 use crate::objc::{self, host_class, send};
@@ -40,9 +44,24 @@ fn tell_observers(emu: &mut Emu, sel: &str) -> Result<()> {
 }
 
 const Q: &str = "SKPaymentQueue";
+const AD: &str = "SKAdNetwork";
+
+/// A postback update's completion handler (its last argument), told there was no error.
+fn ad_network_done(emu: &mut Emu, handler_arg: usize) -> Result<()> {
+    let block = emu.arg(handler_arg);
+    if block != 0 {
+        crate::libsystem::call_block(emu, block, &[0])?;
+    }
+    Ok(())
+}
 const F: &str = "SKStorefront";
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    (AD, true, "registerAppForAdNetworkAttribution", |_| Ok(())),
+    (AD, true, "updateConversionValue:", |_| Ok(())),
+    (AD, true, "updatePostbackConversionValue:completionHandler:", |e| ad_network_done(e, 3)),
+    (AD, true, "updatePostbackConversionValue:coarseValue:completionHandler:", |e| ad_network_done(e, 4)),
+    (AD, true, "updatePostbackConversionValue:coarseValue:lockWindow:completionHandler:", |e| ad_network_done(e, 5)),
     (Q, true, "defaultQueue", |e| {
         let q = default_queue(e)?;
         ret(e, q)

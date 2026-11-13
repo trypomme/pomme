@@ -180,14 +180,9 @@ impl Cpu {
                     // SHA256SU1
                     let t0 = (m << 96) | (n >> 32);
                     let s1 = |x: u32| x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10);
-                    let mut w = [0u32; 4];
-                    for e in 0..2 {
-                        w[e] = s1(word(m, 2 + e as u32)).wrapping_add(word(d, e as u32)).wrapping_add(word(t0, e as u32));
-                    }
-                    for e in 2..4 {
-                        w[e] = s1(w[e - 2]).wrapping_add(word(d, e as u32)).wrapping_add(word(t0, e as u32));
-                    }
-                    words(w)
+                    let low = [0, 1].map(|e| s1(word(m, 2 + e)).wrapping_add(word(d, e)).wrapping_add(word(t0, e)));
+                    let high = [2, 3].map(|e| s1(low[e as usize - 2]).wrapping_add(word(d, e)).wrapping_add(word(t0, e)));
+                    words([low[0], low[1], high[0], high[1]])
                 }
                 _ => return unimpl,
             }

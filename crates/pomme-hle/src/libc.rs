@@ -2,14 +2,24 @@
 
 use crate::{Emu, HostFn, Result, Stop};
 
+/// malloc's answer for `size` bytes: a block, or NULL with ENOMEM when it's
+/// more than the device could give (an overflowed size, usually).
+pub(crate) fn guest_alloc(emu: &mut Emu, size: u64) -> Result<u64> {
+    if size > crate::heap::MAX_ALLOC {
+        crate::libsystem::set_errno(emu, 12)?; // ENOMEM
+        return Ok(0);
+    }
+    emu.alloc(size)
+}
+
 fn malloc(emu: &mut Emu) -> Result<()> {
-    let p = emu.alloc(emu.arg(0))?;
+    let p = guest_alloc(emu, emu.arg(0))?;
     emu.ret(p);
     Ok(())
 }
 
 fn calloc(emu: &mut Emu) -> Result<()> {
-    let p = emu.alloc(emu.arg(0).saturating_mul(emu.arg(1)))?;
+    let p = guest_alloc(emu, emu.arg(0).saturating_mul(emu.arg(1)))?;
     emu.ret(p);
     Ok(())
 }
@@ -36,6 +46,11 @@ fn free(emu: &mut Emu) -> Result<()> {
 }
 
 fn realloc(emu: &mut Emu) -> Result<()> {
+    if emu.cpu.x[1] > crate::heap::MAX_ALLOC {
+        crate::libsystem::set_errno(emu, 12)?; // ENOMEM; the block stays
+        emu.ret(0);
+        return Ok(());
+    }
     let p = emu.heap.realloc(&mut emu.p.memory, emu.cpu.x[0], emu.cpu.x[1])?;
     emu.ret(p);
     Ok(())
@@ -74,15 +89,16 @@ fn bzero(emu: &mut Emu) -> Result<()> {
 }
 
 fn strlen(emu: &mut Emu) -> Result<()> {
-    let s = emu.cstr(emu.arg(0))?;
-    emu.ret(s.len() as u64);
+    let n = emu.p.memory.cstr_len(emu.arg(0))?;
+    emu.ret(n as u64);
     Ok(())
 }
 
+/// `strcmp(a, b)`: by unsigned bytes, as C compares them.
 fn strcmp(emu: &mut Emu) -> Result<()> {
-    let a = emu.cstr(emu.arg(0))?;
-    let b = emu.cstr(emu.arg(1))?;
-    emu.ret(a.as_bytes().cmp(b.as_bytes()) as i8 as i64 as u64);
+    let a = emu.cstr_bytes(emu.arg(0))?;
+    let b = emu.cstr_bytes(emu.arg(1))?;
+    emu.ret(a.cmp(&b) as i8 as i64 as u64);
     Ok(())
 }
 
