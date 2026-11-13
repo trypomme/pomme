@@ -401,6 +401,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UIHoverGestureRecognizer", "UIGestureRecognizer"),
     ("UIScene", "UIResponder"),
     ("UIWindowScene", "UIScene"),
+    ("UISceneConfiguration", "NSObject"),
     ("UIPresentationController", "NSObject"),
     ("UIMutableApplicationShortcutItem", "UIApplicationShortcutItem"),
     ("UIGraphicsImageRenderer", "UIGraphicsRenderer"),

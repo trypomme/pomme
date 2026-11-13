@@ -1260,6 +1260,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", false, "initWithWhite:alpha:", color_white),
     ("UIColor", true, "colorNamed:", ret_zero),
     ("UIColor", true, "secondarySystemBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
+    // Grouped content (lists, settings): a light gray page under white sections.
+    ("UIColor", true, "systemGroupedBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
+    ("UIColor", true, "secondarySystemGroupedBackgroundColor", |e| ret_color(e, [1.0, 1.0, 1.0, 1.0])),
     ("UIColor", true, "secondaryLabelColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.6])),
     ("UIColor", true, "placeholderTextColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.3])),
     ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),

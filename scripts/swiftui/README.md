@@ -31,8 +31,9 @@ their symbols mangle as `SwiftUI`. They're then linked into one dylib, because
 apps import everything "from SwiftUI" (Apple's `SwiftUI` re-exports
 `SwiftUICore`).
 
-`SwiftUICore+pomme.swift` and `SwiftUI+pomme.swift` add what the interfaces
-don't show but the binaries have:
+pomme's own code for each module is in `SwiftUICore/` and `SwiftUI/`.
+`Additions.swift` in each adds what the interfaces don't show but the
+binaries have:
 - default `body` getters for primitive content (`Body == Never`);
 - the stack layouts' `Layout` methods;
 - `Spring()`;
@@ -66,20 +67,61 @@ that affects them, such as `@_originallyDefinedIn`. Beyond that:
   link time. They're directives for a static linker, never used at load
   time, and there are a million of them (136 MB → 15 MB).
 
-## Checking the exports
+## Implementing an API: taking declarations over
 
-Compare against the SDK's `SwiftUI.tbd` and `SwiftUICore.tbd`. Most of
-Apple's symbols that we don't export are SPI that isn't in the public
-interface (for example `_ViewList_View`), so apps can't reference them. Two
-checks are meaningful:
+pomme's code replaces stubs through markers that name the interface's
+declarations exactly. The generator checks every marker matches one, so an
+SDK change that renames something fails the build rather than going unnoticed.
+`stubgen.py --markers <interface> <regex>` prints ready-made markers.
 
-- **An app's imports:** every `_$s7SwiftUI…` symbol in `nm -u <app binary>`
-  is exported.
-- **Concurrency annotations:** no symbol differs from Apple's only by `YA`
-  (`@isolated(any)`), `Yb` (`@Sendable`) or `YT`.
+- `// pomme: replaces <type or extension> :: <member>`: the generator leaves
+  the member out, and pomme's code declares it (usually in an extension).
+- `// pomme: in <type>`, on an `extension` block: the block's contents go into
+  the type's own declaration, in place of the stubbed members it replaces.
+  This is for what has to be there: stored properties, a property wrapper's
+  `wrappedValue`, and members of SwiftUICore's types. Those types are
+  `@_originallyDefinedIn(module: "SwiftUI")`, and Swift mangles their members
+  differently in an extension than in the declaration.
+- `// pomme: owns <type>`: pomme declares the type itself (its storage and
+  conformances), and the interface's members become an extension of it. This
+  is for SwiftUI's own types (`WindowGroup`, `List`), which aren't moved, so
+  their members mangle the same either way.
 
-## Next
+After a change, `scripts/swiftui/check-exports.sh [App.app]` compares the
+exports with Apple's (`SwiftUI.tbd`, `SwiftUICore.tbd`). Most of Apple's
+symbols we don't export are SPI outside the public interface (for example
+`_ViewList_View`), so apps can't reference them. The check reports what
+matters:
+- Apple symbols that the stubs alone export but a takeover lost;
+- symbols that differ from Apple's only by `YA` (`@isolated(any)`), `Yb`
+  (`@Sendable`) or `YT`;
+- with an app, every SwiftUI symbol it imports that isn't exported.
 
-pomme's implementations replace the stubs one API at a time, starting with
-what an app hits first: `App.main()`, the scene lifecycle, `@State`, views
-mapped to UIKit, `.task`.
+## The runtime
+
+The SwiftUI module's code runs apps the way SwiftUI does on iOS, with pomme's
+UIKit underneath.
+
+- **Launch** (`App.swift`): `App.main()` makes the app and calls
+  `UIApplicationMain` with SwiftUI's `AppDelegate`. That delegate forwards
+  every message the app's own delegate (`@UIApplicationDelegateAdaptor`)
+  implements, and when UIKit asks for a scene configuration, it gives
+  `AppSceneDelegate`. The scene delegate shows the app's window group in a
+  window, through a `HostingController`.
+- **The view graph** (`ViewGraph.swift`): views resolve through their bodies
+  into nodes. A primitive view (`Text`, `List`, `ForEach`, `ModifiedContent` …)
+  resolves itself, and primitive modifiers apply to their content's nodes.
+  Before a view's body is read, its dynamic properties get their storage:
+  each `@State` gets a location kept at the view's place in the tree (its
+  path), found through the runtime's field reflection. A write to a state
+  updates the tree, after the current work is done.
+- **Nodes** (`Nodes.swift`, `List.swift`, `Navigation.swift`) lay out the way
+  SwiftUI does (the parent proposes a size, the child chooses its own) and
+  are shown with UIKit views kept per path: a `UILabel` for text, an inset
+  grouped section in a scroll view for a list, and a navigation controller
+  for a navigation stack.
+- **Lifecycle** (`Hosting.swift`): after each update, the tasks of views that
+  have appeared start (`.task`) and those of views that have gone are
+  cancelled. `.onAppear` and `.onDisappear` work the same way.
+
+A view or modifier pomme doesn't implement yet stops with its name.

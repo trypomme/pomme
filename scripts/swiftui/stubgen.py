@@ -12,7 +12,11 @@ Kept as written: protocol requirements, inlinable bodies, stored properties,
 enum cases, typealiases, and attributes such as @_originallyDefinedIn, which
 decide how symbols are mangled.
 
-Usage: stubgen.py <interface> <output.swift>
+Usage: stubgen.py <interface> <output.swift> <processed dir> [pomme's sources…]
+       stubgen.py --markers <interface> <regex>   (print matching markers)
+
+pomme's sources take declarations over with markers (see read_markers); they're
+compiled from <processed dir>.
 """
 import re
 import sys
@@ -157,9 +161,88 @@ def nonisolated_if_concurrent(line, sig, kind):
     return re.sub(r'^(\s*(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?\s+)*)', r'\1nonisolated ', line, count=1)
 
 
-def generate(src):
+ATTRIBUTES = re.compile(r'^(@[\w.]+(\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))?\s*)*')
+
+
+def key(decl):
+    """A declaration as pomme's markers name it: its first line without
+    attributes, body or brace, whitespace collapsed."""
+    sig, _ = split_at_body(decl.strip())
+    return re.sub(r'\s+', ' ', ATTRIBUTES.sub('', sig.strip())).rstrip(' {').strip()
+
+
+def read_markers(paths, processed_dir=None):
+    """pomme's takeovers, from its sources:
+      // pomme: owns <type declaration>
+      // pomme: replaces <type or extension declaration> :: <member declaration>
+      // pomme: in <type declaration>        (on an `extension … {` block)
+    each written as `key` gives it (copy it from the generated source).
+
+    An `in` block's contents go into the type's own declaration, in place of
+    the interface's body, for what has to be there: stored properties, a
+    property wrapper's `wrappedValue`, and members of SwiftUICore's types,
+    which Swift mangles differently in an extension (the types were
+    originally defined in SwiftUI). The sources are written to
+    `processed_dir` without those blocks, to be compiled from there."""
+    owns, replaces, inside = {}, {}, {}
+    for path in paths:
+        lines = open(path).read().split('\n')
+        kept = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            m = re.match(r'\s*// pomme: (owns|replaces|in) (.+)$', line)
+            where = f'{path}:{i + 1}'
+            if m and m.group(1) == 'in':
+                # The block: from the `extension … {` line to its closing brace.
+                assert re.match(r'\s*extension\b.*\{\s*$', lines[i + 1]), f'{where}: `in` goes on an extension'
+                depth, j, body = braces(lines[i + 1]), i + 2, []
+                while depth > 0:
+                    depth += braces(lines[j])
+                    if depth > 0:
+                        body.append(lines[j])
+                    j += 1
+                inside[key(m.group(2))] = (body, where)
+                for k, b in enumerate(body):
+                    r = re.match(r'\s*// pomme: replaces (.+)$', b)
+                    if r:
+                        ctx, _, member = r.group(1).partition(' :: ')
+                        replaces[(key(ctx), key(member))] = f'{path}:{i + 3 + k}'
+                kept.extend([f'// (moved into the declaration: {m.group(2)})'] + [''] * (j - i - 1))
+                i = j
+                continue
+            if m and m.group(1) == 'owns':
+                owns[key(m.group(2))] = where
+            elif m:
+                ctx, _, member = m.group(2).partition(' :: ')
+                replaces[(key(ctx), key(member))] = where
+            kept.append(line)
+            i += 1
+        if processed_dir:
+            # Same line numbers as the source, for compiler messages.
+            open(f'{processed_dir}/{path.rsplit("/", 1)[-1]}', 'w').write('\n'.join(kept))
+    return owns, replaces, inside
+
+
+SEEN = []  # every marker the interface allows, for --markers
+
+
+def m_storage_needed(head, frozen_pending):
+    """A resilient struct has storage the interface doesn't show. Without any,
+    Swift would synthesize an init() that clashes with the struct's own."""
+    m = re.search(r'\b(struct|class|enum|actor)\s+(\w+)', head)
+    return bool(m and m.group(1) == 'struct' and not re.search(r'@frozen\b', head) and not frozen_pending)
+
+
+def generate(src, owns=None, replaces=None, inside=None):
+    """`owns`: types pomme declares itself (the interface's members become an
+    extension); `replaces`: (context, member) pairs pomme implements (left out);
+    `inside`: pomme's members of a type's own declaration. As `read_markers`
+    returns them; each must match, or it's an error."""
+    owns, replaces, inside = owns or {}, replaces or {}, inside or {}
+    used = set()
     out = []
-    # Context stack entries: ('protocol',), ('type',), ('var', result type),
+    # Context stack entries: ('protocol',), ('type', key), ('var', result type),
     # ('pvar',) for a protocol's property requirements, ('body',) for code.
     stack = []
     projected = set()  # wrapped properties' projections, declared by their wrappers
@@ -247,6 +330,18 @@ def generate(src):
                 stack.extend([('skip',)] * d)
             continue
 
+        # A member pomme implements, or an owned type's deinit: left out.
+        if kind == 'type' and stripped and not stripped.startswith('}'):
+            k = (top[1], key(stripped))
+            SEEN.append(f'// pomme: replaces {k[0]} :: {k[1]}')
+            if k in replaces or (top[2] and decl_keyword(line) == 'deinit'):
+                used.add(k)
+                for i in reversed(attr_lines):
+                    del out[i]
+                if d > 0:
+                    stack.extend([('skip',)] * d)
+                continue
+
         # A property wrapper's property (`@Binding @_projectedValueProperty($x)
         # public var x: T { … }`): declared with the wrapper, which makes `x`,
         # `$x` and the storage, as Apple's source does.
@@ -285,8 +380,31 @@ def generate(src):
         if d > 0 and code.endswith('{'):
             head = code[:-1]
             if TYPE_OPEN.search(head) and not re.search(r'\b(var|let)\b', head):
-                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type',))
+                hk = key(stripped)
+                owned = hk in owns
+                if kind == 'file' and not re.search(r'^extension\b', hk):
+                    SEEN.append(f'// pomme: owns {hk}')
+                stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned))
                 stack.extend([('body',)] * (d - 1))
+                if hk in inside and not owned:
+                    # pomme's members of the declaration itself, first.
+                    used.add(hk)
+                    out.append(line)
+                    out.append(f'  // pomme ({inside[hk][1]}):')
+                    out.extend(inside[hk][0])
+                    if m_storage_needed(head, frozen_pending):
+                        out.append('  internal let _pommeStorage: ()')
+                    continue
+                if owned:
+                    # pomme declares the type (its storage, conformances and
+                    # attributes); the interface's members extend it.
+                    used.add(hk)
+                    m = re.search(r'\b(?:struct|class|enum|actor)\s+(\w+)', head)
+                    assert m and kind == 'file', f'only top-level types can be owned: {hk}'
+                    for i in reversed(attr_lines):
+                        del out[i]
+                    out.append(f'extension {m.group(1)} {{')
+                    continue
                 m = re.search(r'\b(struct|class|enum|actor)\s+(\w+)', head)
                 if m and m.group(2) in STORAGE:
                     out.append(line)
@@ -327,6 +445,10 @@ def generate(src):
             continue
 
         out.append(line)
+    unused = [w for k, w in list(owns.items()) + list(replaces.items()) if k not in used]
+    unused += [w for k, (_, w) in inside.items() if k not in used]
+    if unused:
+        sys.exit('stubgen: markers that match no declaration (has the SDK changed?):\n  ' + '\n  '.join(unused))
     return '\n'.join(out)
 
 
@@ -343,9 +465,15 @@ package func _pommeUnimplementedValue<T>(_ what: Swift.StaticString) -> T {
 }
 '''
 
-if __name__ == '__main__':
+if __name__ == '__main__' and sys.argv[1] == '--markers':
+    # stubgen.py --markers <interface> <regex>: the markers for matching declarations.
+    generate(open(sys.argv[2]).read())
+    print('\n'.join(m for m in SEEN if re.search(sys.argv[3], m)))
+elif __name__ == '__main__':
+    # stubgen.py <interface> <output.swift> <processed dir> [pomme's sources…]
     text = open(sys.argv[1]).read()
-    body = generate(text)
+    owns, replaces, inside = read_markers(sys.argv[4:], sys.argv[3])
+    body = generate(text, owns, replaces, inside)
     body = '\n'.join(l for l in body.split('\n') if not l.startswith('// swift-'))
     core = '-module-name SwiftUICore' in text.split('\n', 5)[2]
     open(sys.argv[2], 'w').write(body + '\n' + (SUPPORT if core else ''))

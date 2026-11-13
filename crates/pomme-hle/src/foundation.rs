@@ -3847,9 +3847,12 @@ fn error_field(emu: &mut Emu, off: u64) -> Result<()> {
     Ok(())
 }
 
+/// The description from the user info, else one made from the domain and code.
+/// Read through `userInfo`, `domain` and `code`, which subclasses override
+/// (the Swift runtime's `__SwiftNativeNSError` keeps a Swift error instead of these fields).
 fn error_localized_description(emu: &mut Emu) -> Result<()> {
     let e = emu.arg(0);
-    let info = emu.read_u64(e + 24)?;
+    let info = send(emu, e, "userInfo", &[])?;
     if info != 0 {
         let key = new_nsstring(emu, "NSLocalizedDescription")?;
         let v = dict_get_any(emu, info, key)?;
@@ -3858,8 +3861,9 @@ fn error_localized_description(emu: &mut Emu) -> Result<()> {
             return Ok(());
         }
     }
-    let domain = nsstring(emu, emu.read_u64(e + 8)?)?;
-    let code = emu.read_u64(e + 16)? as i64;
+    let d = send(emu, e, "domain", &[])?;
+    let domain = if d == 0 { String::new() } else { nsstring(emu, d)? };
+    let code = send(emu, e, "code", &[])? as i64;
     ret_string(emu, &format!("The operation couldn’t be completed. ({domain} error {code}.)"))
 }
 

@@ -228,14 +228,30 @@ extension CFError: @retroactive Error {}
 
 /// What `error as NSError` does (the runtime finds this by name).
 public func _convertErrorToNSError(_ error: Error) -> NSError {
-    if let ns = error as AnyObject as? NSError {
-        return ns
-    }
     if let custom = error as? any _BridgedStoredNSError {
         return custom._nsError
     }
-    let info = ["NSLocalizedDescription" as NSString: "\(error)"._bridgeToObjectiveC()] as [NSString: NSString]
-    return NSError(domain: String(reflecting: type(of: error))._bridgeToObjectiveC(), code: 1, userInfo: info._bridgeToObjectiveC())
+    // The NSError itself, or a Swift error's box: the runtime gives the box
+    // its domain (the type's name), code and user info (see
+    // `_getErrorDefaultUserInfo`) the first time it's bridged.
+    return unsafeDowncast(_bridgeErrorToNSError(error), to: NSError.self)
+}
+
+/// A Swift error's default user info, as the runtime asks Foundation for it
+/// when it bridges the error: what a `LocalizedError` says about itself.
+public func _getErrorDefaultUserInfo<T: Error>(_ error: T) -> AnyObject? {
+    guard let localized = error as? LocalizedError else { return nil }
+    var info: [NSString: NSString] = [:]
+    let entries: [(String, String?)] = [
+        ("NSLocalizedDescription", localized.errorDescription),
+        ("NSLocalizedFailureReason", localized.failureReason),
+        ("NSLocalizedRecoverySuggestion", localized.recoverySuggestion),
+        ("NSHelpAnchor", localized.helpAnchor),
+    ]
+    for case let (key, value?) in entries {
+        info[key._bridgeToObjectiveC()] = value._bridgeToObjectiveC()
+    }
+    return info.isEmpty ? nil : info._bridgeToObjectiveC()
 }
 
 extension Error {

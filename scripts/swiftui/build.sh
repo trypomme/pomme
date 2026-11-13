@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Build pomme's SwiftUI.framework into the sysroot: SwiftUICore and SwiftUI,
 # generated from the installed SDK's module interfaces (stubgen.py) plus
-# pomme's own code (scripts/swiftui/*+pomme.swift), linked into one dylib as
+# pomme's own code (scripts/swiftui/<module>/), linked into one dylib as
 # Apple's SwiftUI re-exports SwiftUICore. Both mangle as module SwiftUI, so
 # apps bind to it as to Apple's.
-#   scripts/swiftui/build.sh [check]   (check: type-check only)
+#   scripts/swiftui/build.sh [check|baseline]
+#     check: type-check only
+#     baseline: the stubs alone, without pomme's implementations, into
+#       vendor/swiftui-gen/baseline (what check-exports.sh compares with)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=vendor/swiftui-gen
+[ "${1:-}" = baseline ] && GEN=vendor/swiftui-gen/baseline
 OUT=vendor/sysroot/System/Library/Frameworks/SwiftUI.framework
 mkdir -p "$GEN" "$OUT"
 TARGET=arm64-apple-ios26.5
@@ -19,9 +23,12 @@ FLAGS=(-target "$TARGET" -sdk "$SDK" -enable-library-evolution -swift-version 5 
 
 for M in SwiftUICore SwiftUI; do
   IFACE="$SDK/System/Library/Frameworks/$M.framework/Modules/$M.swiftmodule/arm64e-apple-ios.swiftinterface"
-  python3 scripts/swiftui/stubgen.py "$IFACE" "$GEN/$M.swift"
-  SOURCES=("$GEN/$M.swift")
-  [ -f "scripts/swiftui/$M+pomme.swift" ] && SOURCES+=("scripts/swiftui/$M+pomme.swift")
+  # pomme's own code for the module: what it implements, and what the interface doesn't show.
+  OWN=(scripts/swiftui/$M/*.swift)
+  [ "${1:-}" = baseline ] && OWN=(scripts/swiftui/$M/Additions.swift)
+  rm -rf "$GEN/$M-pomme" && mkdir -p "$GEN/$M-pomme"
+  python3 scripts/swiftui/stubgen.py "$IFACE" "$GEN/$M.swift" "$GEN/$M-pomme" "${OWN[@]}"
+  SOURCES=("$GEN/$M.swift" "$GEN/$M-pomme"/*.swift)
   if [ "${1:-}" = check ]; then
     xcrun swiftc -typecheck "${FLAGS[@]}" -module-name "$M" "${SOURCES[@]}"
     # The next module needs this one's interface.
@@ -31,7 +38,7 @@ for M in SwiftUICore SwiftUI; do
   xcrun swiftc -c "${FLAGS[@]}" -module-name "$M" -emit-module -emit-module-path "$GEN/$M.swiftmodule" \
     -wmo -o "$GEN/$M.o" "${SOURCES[@]}"
 done
-[ "${1:-}" = check ] && exit 0
+[ "${1:-}" = check ] || [ "${1:-}" = baseline ] && exit 0
 
 # @_originallyDefinedIn gives each moved declaration a `$ld$hide$os<version>$`
 # symbol per OS version (a million in all): directives for a linker building

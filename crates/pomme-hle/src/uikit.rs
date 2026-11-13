@@ -112,7 +112,8 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     for sel in ["application:willFinishLaunchingWithOptions:", "application:didFinishLaunchingWithOptions:"] {
         call_if_implemented(emu, d, sel, &[app, launch_options])?;
     }
-    if url != 0 && scene_delegate_class(emu).is_none() {
+    let scene_class = scene_delegate_for_launch(emu)?;
+    if url != 0 && scene_class.is_none() {
         let empty = foundation::new_dict_of(emu, &[])?;
         call_if_implemented(emu, d, "application:openURL:options:", &[app, url, empty])?;
     }
@@ -121,7 +122,7 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
 
     // A window the app delegate made visible itself (no scenes) appears now.
     let mut roots = Vec::new();
-    if scene_delegate_class(emu).is_none() {
+    if scene_class.is_none() {
         roots.extend(window_roots(emu));
         // The root view controllers have their say on the orientation before the first frame.
         crate::orientation::settle(emu, false)?;
@@ -129,8 +130,8 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
             crate::navigation::appearance(emu, vc, "viewWillAppear:", false)?;
         }
     }
-    if let Some(delegate_class) = scene_delegate_class(emu) {
-        roots.extend(connect_scene(emu, &delegate_class)?);
+    if let Some(delegate_class) = scene_class {
+        roots.extend(connect_scene(emu, delegate_class)?);
     }
     call_if_implemented(emu, d, "applicationDidBecomeActive:", &[app])?;
     foundation::post_named(emu, "UIApplicationDidBecomeActiveNotification", app)?;
@@ -142,12 +143,47 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     run_loop(emu)
 }
 
+/// Send an optional delegate method, if the delegate says it responds (as
+/// UIKit asks it: `respondsToSelector:`, which a delegate can override to
+/// forward messages, as SwiftUI's app delegate does).
 fn call_if_implemented(emu: &mut Emu, obj: u64, sel: &str, args: &[u64]) -> Result<Option<u64>> {
     if obj == 0 {
         return Ok(None);
     }
     let s = objc::intern(emu, sel)?;
-    if objc::responds(emu, obj, s)? { send(emu, obj, sel, args).map(Some) } else { Ok(None) }
+    if send(emu, obj, "respondsToSelector:", &[s])? & 0xff != 0 { send(emu, obj, sel, args).map(Some) } else { Ok(None) }
+}
+
+/// The class of the app's scene delegate, when it has scenes: the one its
+/// Info.plist names, or else (a scene manifest without configurations, as
+/// SwiftUI apps have) the one in the configuration the app delegate gives
+/// for the scene, as UIKit asks with
+/// `application:configurationForConnectingSceneSession:options:`.
+fn scene_delegate_for_launch(emu: &mut Emu) -> Result<Option<u64>> {
+    if let Some(name) = scene_delegate_class(emu) {
+        return class_named(emu, &name).map(Some);
+    }
+    let has_manifest = crate::bundle::host_info_plist(emu)
+        .and_then(|i| i.as_dictionary()?.get("UIApplicationSceneManifest").cloned())
+        .is_some();
+    if !has_manifest {
+        return Ok(None);
+    }
+    let session = scene_session_obj(emu)?;
+    let options = new_object(emu, "UISceneConnectionOptions")?;
+    let (app, d) = (emu.ui.app, emu.ui.delegate);
+    let Some(config) = call_if_implemented(emu, d, "application:configurationForConnectingSceneSession:options:", &[app, session, options])? else {
+        return Ok(None);
+    };
+    Ok(objc::bag_get(emu, config, "delegateClass").filter(|&c| c != 0))
+}
+
+/// The app's one scene session (made when UIKit first needs it).
+fn scene_session_obj(emu: &mut Emu) -> Result<u64> {
+    if emu.ui.session == 0 {
+        emu.ui.session = new_object(emu, "UISceneSession")?;
+    }
+    Ok(emu.ui.session)
 }
 
 /// `UIApplicationSceneManifest` → the application-role scene's delegate class name.
@@ -176,14 +212,12 @@ pub(crate) fn window_roots(emu: &mut Emu) -> Vec<u64> {
 
 /// Connect the app's one window scene: what UIKit does after launch. Returns
 /// the root view controllers that will appear.
-fn connect_scene(emu: &mut Emu, delegate_class: &str) -> Result<Vec<u64>> {
-    let session = new_object(emu, "UISceneSession")?;
+fn connect_scene(emu: &mut Emu, cls: u64) -> Result<Vec<u64>> {
+    let session = scene_session_obj(emu)?;
     let scene = new_object(emu, "UIWindowScene")?;
     let options = new_object(emu, "UISceneConnectionOptions")?;
-    emu.ui.session = session;
     emu.ui.scene = scene;
 
-    let cls = class_named(emu, delegate_class)?;
     let d = send(emu, cls, "alloc", &[])?;
     let d = send(emu, d, "init", &[])?;
     emu.ui.scene_delegate = d;
@@ -429,6 +463,28 @@ fn scene_screen(emu: &mut Emu) -> Result<()> {
 
 fn scene_windows(emu: &mut Emu) -> Result<()> {
     windows(emu)
+}
+
+fn scene_configuration_init(emu: &mut Emu, c: u64, name: u64, role: u64) -> Result<()> {
+    for (k, v) in [("name", name), ("role", role)] {
+        let v = if v == 0 { 0 } else { send(emu, v, "copy", &[])? };
+        objc::bag_set(emu, c, k, v);
+    }
+    emu.ret(c);
+    Ok(())
+}
+
+/// A property kept in the object's bag: its value (nil when unset).
+fn bag_ret(emu: &mut Emu, key: &str) -> Result<()> {
+    let v = objc::bag_get(emu, emu.arg(0), key).unwrap_or(0);
+    emu.ret(v);
+    Ok(())
+}
+
+fn bag_store(emu: &mut Emu, key: &str) -> Result<()> {
+    let (obj, v) = (emu.arg(0), emu.arg(2));
+    objc::bag_set(emu, obj, key, v);
+    Ok(())
 }
 
 fn session_role(emu: &mut Emu) -> Result<()> {
@@ -784,6 +840,32 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIWindowScene", false, "interfaceOrientation", interface_orientation),
     ("UIWindowScene", false, "keyWindow", key_window),
     ("UISceneSession", false, "role", session_role),
+    ("UISceneSession", false, "configuration", |e| {
+        let c = new_object(e, "UISceneConfiguration")?;
+        let role = foundation::new_nsstring(e, "UIWindowSceneSessionRoleApplication")?;
+        objc::bag_set(e, c, "role", role);
+        e.ret(c);
+        Ok(())
+    }),
+    // A scene's configuration: its name and role, and the classes UIKit makes
+    // for it (what an app delegate answers when asked for one).
+    ("UISceneConfiguration", true, "configurationWithName:sessionRole:", |e| {
+        let (name, role) = (e.arg(2), e.arg(3));
+        let c = new_object(e, "UISceneConfiguration")?;
+        scene_configuration_init(e, c, name, role)
+    }),
+    ("UISceneConfiguration", false, "initWithName:sessionRole:", |e| {
+        let (c, name, role) = (e.arg(0), e.arg(2), e.arg(3));
+        scene_configuration_init(e, c, name, role)
+    }),
+    ("UISceneConfiguration", false, "name", |e| bag_ret(e, "name")),
+    ("UISceneConfiguration", false, "role", |e| bag_ret(e, "role")),
+    ("UISceneConfiguration", false, "delegateClass", |e| bag_ret(e, "delegateClass")),
+    ("UISceneConfiguration", false, "setDelegateClass:", |e| bag_store(e, "delegateClass")),
+    ("UISceneConfiguration", false, "sceneClass", |e| bag_ret(e, "sceneClass")),
+    ("UISceneConfiguration", false, "setSceneClass:", |e| bag_store(e, "sceneClass")),
+    ("UISceneConfiguration", false, "storyboard", |e| bag_ret(e, "storyboard")),
+    ("UISceneConfiguration", false, "setStoryboard:", |e| bag_store(e, "storyboard")),
     ("UISceneSession", false, "scene", |e| {
         e.ret(e.ui.scene);
         Ok(())
