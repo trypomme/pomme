@@ -2112,6 +2112,7 @@ dependencies = [
  "js-sys",
  "pomme-hle",
  "pomme-loader",
+ "serde_json",
  "wasm-bindgen",
  "web-sys",
 ]

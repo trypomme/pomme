@@ -10,9 +10,10 @@ self.pommeFrame = (rgba, width, height) => {
   self.postMessage({ type: 'frame', rgba: copy.buffer, width, height }, [copy.buffer]);
 };
 self.pommeLog = (text) => self.postMessage({ type: 'log', text });
+self.pommeWebView = (json) => self.postMessage({ type: 'webview', json });
 
 self.onmessage = async (e) => {
-  const { bundle, input, scale, ios } = e.data;
+  const { bundle, input, scale, ios, webViews } = e.data;
   try {
     self.pommeLog('Downloading the app…');
     await wasm_bindgen('pkg/pomme_web_bg.wasm');
@@ -20,7 +21,7 @@ self.onmessage = async (e) => {
     if (!res.ok) throw new Error(`${bundle}: ${res.status} ${res.statusText}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     self.pommeLog(`Booting (${(bytes.length / 1e6).toFixed(0)} MB)…`);
-    const why = wasm_bindgen.run(bytes, input, scale, ios || '');
+    const why = wasm_bindgen.run(bytes, input, scale, ios || '', webViews);
     self.postMessage({ type: 'stopped', text: why });
   } catch (err) {
     self.postMessage({ type: 'stopped', text: String(err && err.stack || err) });

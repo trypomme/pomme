@@ -102,13 +102,18 @@ Debugging:
   (views above cover it; screenshots and recordings have it, video included). Virtual time
   keeps to the wall clock while pages run. Pages see the Mac's WebKit, not an iPhone's (as an
   iPad's web views present themselves): pages built for iPhones can rely on what only iPhones
-  have (YouTube's mobile player won't play). Elsewhere pages don't
+  have (YouTube's mobile player won't play). In the browser (`scripts/build-web.sh`) pages
+  are the browser's own frames, under the screen's canvas where pomme leaves a hole
+  (`web/webview.js`): a page the app builds is the frame's document, its navigations put to
+  the delegate through the Navigation API, scriptable, with message handlers; input over an
+  uncovered page is the page's. There a page belongs to pomme's site, not its base URL, so
+  frames in it that answer only the base URL's origin (YouTube's player, given an `origin`)
+  never answer; another site's page shows but can't be scripted. Elsewhere pages don't
   load yet (each load fails, as WebKit's would). Tests script a page with `webkit::Scripted`;
   `tests/webkit.rs` runs Google's YouTube player helper against one, and a web view app in
   the Mac's WebKit (`POMME_ONLINE=1` also plays a real YouTube video). `--trace` shows the
   traffic as `[webkit]`, and the pages' console. Touches on a page reach it as on iOS: a tap
-  is a click there, a drag scrolls. Not yet: file URLs, popups, Windows, Linux and the browser
-  version.
+  is a click there, a drag scrolls. Not yet: file URLs, popups, Windows and Linux.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`
   dumps memory at a register. Breakpoints can sit mid-function (`Image:0xaddr`).

@@ -371,7 +371,8 @@ fn command(mtm: MainThreadMarker, p: PageId, cmd: Command) {
                 pg.window.close();
             }
         }
-        Command::Create(_) | Command::Decide { .. } => {}
+        // Pages are drawn into the screen from their pixels: where they are doesn't matter here.
+        Command::Place { .. } | Command::Create(_) | Command::Decide { .. } => {}
     }
 }
 

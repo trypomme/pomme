@@ -124,6 +124,10 @@ pub enum Command {
     UserAgent(Option<String>),
     /// The web view's size changed (points, pixels per point).
     Resize { width: f64, height: f64, scale: f64 },
+    /// Where the page is on the screen (points, in the window), for engines that show
+    /// pages themselves over pomme's screen: whether it's visible at all, and whether
+    /// something the app drew above it overlaps it (input there is the app's, not the page's).
+    Place { x: f64, y: f64, width: f64, height: f64, visible: bool, covered: bool },
     /// A finger on the page (points, in the web view): began 0, moved 1, ended 2, cancelled 3.
     /// The engine makes a tap a click, and a drag scrolling, as a finger does on iOS.
     Touch { phase: u8, x: f64, y: f64 },
@@ -143,7 +147,11 @@ pub enum Event {
     Finished { nav: u64 },
     Failed { nav: u64, provisional: bool, error: WebError },
     /// A script's result (None: undefined), or the exception's message.
-    Evaluated { id: u64, result: std::result::Result<Option<Value>, String> },
+    Evaluated {
+        id: u64,
+        #[serde(with = "script_result")]
+        result: std::result::Result<Option<Value>, String>,
+    },
     /// `window.webkit.messageHandlers.NAME.postMessage(body)`.
     Message { name: String, body: Value, main_frame: bool },
     Title(Option<String>),
@@ -163,6 +171,37 @@ pub enum Event {
     Console(String),
 }
 
+/// A script's result on the wire: `undefined` and `null` are different results
+/// (nil and NSNull), which `Option<Value>` alone would write the same.
+mod script_result {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    #[derive(Serialize, Deserialize)]
+    enum Wire {
+        Undefined,
+        Value(Value),
+        Exception(String),
+    }
+
+    pub fn serialize<S: Serializer>(r: &Result<Option<Value>, String>, s: S) -> Result<S::Ok, S::Error> {
+        match r {
+            Ok(None) => Wire::Undefined,
+            Ok(Some(v)) => Wire::Value(v.clone()),
+            Err(e) => Wire::Exception(e.clone()),
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Result<Option<Value>, String>, D::Error> {
+        Ok(match Wire::deserialize(d)? {
+            Wire::Undefined => Ok(None),
+            Wire::Value(v) => Ok(Some(v)),
+            Wire::Exception(e) => Err(e),
+        })
+    }
+}
+
 /// A web engine the front end provides.
 pub trait WebEngine {
     /// A command for `page`. Events it causes may be ready at once (see [`poll`](Self::poll)).
@@ -177,6 +216,12 @@ pub trait WebEngine {
     }
     /// Wait up to `timeout` (wall time) for an event; events that arrive are kept for [`poll`](Self::poll).
     fn wait(&mut self, _timeout: std::time::Duration) {}
+    /// Whether the engine shows pages itself, over pomme's screen (a browser's frames),
+    /// rather than handing over their pixels: pomme then leaves a hole where each page
+    /// is (views above it still cover it) and says where that is ([`Command::Place`]).
+    fn overlays(&self) -> bool {
+        false
+    }
 }
 
 /// WKNavigationActionPolicy / WKNavigationResponsePolicy.
@@ -202,6 +247,9 @@ struct Page {
     /// The view showing the page's pixels (WKContentView, in the scroll view), and its image.
     content_view: u64,
     image: u64,
+    /// Where the engine was last told the page is.
+    placed: Option<[f64; 4]>,
+    placed_flags: (bool, bool),
 }
 
 #[derive(Default)]
@@ -514,6 +562,70 @@ fn show_frame(emu: &mut Emu, v: u64, width: u32, height: u32, mut rgba: Vec<u8>)
     ly.contents = image;
     ly.contents_scale = scale;
     crate::host::changed(emu);
+    Ok(())
+}
+
+// ---- pages shown by the engine, over the screen ----
+
+fn overlay(emu: &Emu) -> bool {
+    emu.webkit.engine.as_ref().is_some_and(|e| e.overlays())
+}
+
+/// Whether `v` is where an engine shows a page itself: drawn as a hole in the screen.
+pub(crate) fn is_hole(emu: &Emu, v: u64) -> bool {
+    overlay(emu) && emu.webkit.pages.values().any(|p| p.content_view == v)
+}
+
+/// Whether a view draws anything of its own (a colour, an image, text, drawing):
+/// a clear container over a page doesn't cover it.
+fn draws(emu: &mut Emu, v: u64, vw: &crate::uiview::View) -> bool {
+    let bg = emu.ui.views.colors.get(&vw.background).is_some_and(|c| c[3] > 0.0);
+    let contents = vw.layer != 0 && crate::calayer::layer(emu, vw.layer).contents != 0;
+    bg || contents || emu.render.content.contains_key(&v) || crate::label::is_label(emu, v) || crate::textinput::is_text_field(emu, v) || crate::textinput::is_text_view(emu, v)
+}
+
+/// Tell an overlaying engine where each page is, after layout (each frame): its rect in
+/// the window, whether it's visible, and whether anything drawn after it (above it) overlaps.
+pub(crate) fn place(emu: &mut Emu) -> Result<()> {
+    if !overlay(emu) || emu.webkit.pages.is_empty() {
+        return Ok(());
+    }
+    // Every view in drawing order: (view, rect in the window, visible, draws, end of its subtree).
+    let mut order: Vec<(u64, [f64; 4], bool, bool, usize)> = Vec::new();
+    fn walk(emu: &mut Emu, v: u64, shown: bool, order: &mut Vec<(u64, [f64; 4], bool, bool, usize)>) {
+        let vw = crate::uiview::view(emu, v);
+        let shown = shown && !vw.hidden && vw.alpha > 0.01;
+        let o = crate::uiview::window_origin(emu, v);
+        let draws = shown && draws(emu, v, &vw);
+        let i = order.len();
+        order.push((v, [o[0], o[1], vw.bounds[2], vw.bounds[3]], shown, draws, 0));
+        for s in vw.subviews {
+            walk(emu, s, shown, order);
+        }
+        order[i].4 = order.len();
+    }
+    for w in emu.ui.windows.clone() {
+        walk(emu, w, true, &mut order);
+    }
+    let overlaps = |a: &[f64; 4], b: &[f64; 4]| a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+    let pages: Vec<(u64, u64)> = emu.webkit.pages.iter().map(|(&v, p)| (v, p.content_view)).collect();
+    for (v, cv) in pages {
+        let (rect, visible, covered) = match order.iter().position(|e| e.0 == cv) {
+            Some(i) => {
+                let (_, r, shown, _, end) = order[i];
+                let covered = order[end..].iter().any(|e| e.3 && overlaps(&e.1, &r));
+                (r, shown && r[2] > 0.0 && r[3] > 0.0, covered)
+            }
+            None => ([0.0; 4], false, false), // not in a window
+        };
+        let p = page(emu, v);
+        if p.placed != Some(rect) || p.placed_flags != (visible, covered) {
+            let pm = page_mut(emu, v);
+            pm.placed = Some(rect);
+            pm.placed_flags = (visible, covered);
+            command(emu, v, Command::Place { x: rect[0], y: rect[1], width: rect[2], height: rect[3], visible, covered })?;
+        }
+    }
     Ok(())
 }
 
@@ -1352,6 +1464,15 @@ impl WebEngine for Scripted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_results_keep_null_and_undefined_apart() {
+        for result in [Ok(None), Ok(Some(Value::Null)), Ok(Some(serde_json::json!([1]))), Err("boom".to_string())] {
+            let ev = Event::Evaluated { id: 1, result };
+            let back: Event = serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
+            assert_eq!(back, ev);
+        }
+    }
 
     #[test]
     fn scripted_loads_after_the_delegate_allows() {

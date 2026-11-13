@@ -8,6 +8,11 @@
 //!   is idle, sleeping in `Atomics.wait` until the next deadline otherwise.
 //! - **frames**: the worker calls the global `pommeFrame(rgba, width, height)`
 //!   (defined by the worker script), which posts the pixels to the page.
+//! - **web views**: pages run in the browser itself, in frames the page puts
+//!   under the screen (web/webview.js) where pomme leaves a hole. The worker's
+//!   commands go out through the global `pommeWebView(json)`; the page's events
+//!   come back through a second SharedArrayBuffer, a byte ring of messages (see
+//!   [`BrowserEngine`]).
 //!
 //! Virtual time follows the wall clock while the app is idle; when the guest
 //! is busy it simply falls behind and catches up, as a slow phone would.
@@ -29,6 +34,63 @@ extern "C" {
     fn pomme_log(s: &str);
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
     fn now_ms() -> f64;
+    #[wasm_bindgen(js_name = pommeWebView)]
+    fn pomme_web_view(json: &str);
+}
+
+/// Bytes of the web view event ring (after its two-int header: bytes written, bytes read).
+pub const WEB_RING: u32 = 1 << 20;
+
+/// Web views' pages in the browser's own frames (web/webview.js shows them).
+/// Commands are JSON `[page, command]` handed to `pommeWebView`; events come
+/// back as JSON `[page, event]` messages in the ring, each a little-endian
+/// u32 length and the bytes, the page writing and the worker reading.
+struct BrowserEngine {
+    header: js_sys::Int32Array,
+    ring: js_sys::Uint8Array,
+}
+
+impl BrowserEngine {
+    fn new(sab: &js_sys::SharedArrayBuffer) -> Self {
+        BrowserEngine { header: js_sys::Int32Array::new_with_byte_offset_and_length(sab, 0, 2), ring: js_sys::Uint8Array::new_with_byte_offset_and_length(sab, 8, WEB_RING) }
+    }
+
+    fn byte(&self, at: u32) -> u8 {
+        self.ring.get_index(at % WEB_RING)
+    }
+}
+
+impl pomme_hle::webkit::WebEngine for BrowserEngine {
+    fn send(&mut self, page: pomme_hle::webkit::PageId, cmd: pomme_hle::webkit::Command) {
+        if let Ok(json) = serde_json::to_string(&(page, cmd)) {
+            pomme_web_view(&json);
+        }
+    }
+
+    fn poll(&mut self) -> Vec<(pomme_hle::webkit::PageId, pomme_hle::webkit::Event)> {
+        let written = js_sys::Atomics::load(&self.header, 0).unwrap_or(0) as u32;
+        let mut read = js_sys::Atomics::load(&self.header, 1).unwrap_or(0) as u32;
+        let mut out = Vec::new();
+        while written.wrapping_sub(read) >= 4 {
+            let len = u32::from_le_bytes([self.byte(read), self.byte(read + 1), self.byte(read + 2), self.byte(read + 3)]);
+            let bytes: Vec<u8> = (0..len).map(|i| self.byte(read + 4 + i)).collect();
+            read = read.wrapping_add(4 + len);
+            match serde_json::from_slice(&bytes) {
+                Ok(ev) => out.push(ev),
+                Err(e) => pomme_log(&format!("web view: bad event ({e}): {}", String::from_utf8_lossy(&bytes))),
+            }
+        }
+        let _ = js_sys::Atomics::store(&self.header, 1, read as i32);
+        out
+    }
+
+    fn live(&self) -> bool {
+        true
+    }
+
+    fn overlays(&self) -> bool {
+        true
+    }
 }
 
 struct WebHost {
@@ -139,13 +201,13 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 /// presenting iOS `ios` ("18.6", "26"; empty for the default).
 /// Never returns while the app runs; returns a description of why it stopped.
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String) -> String {
-    match run_inner(bundle, input, scale, &ios) {
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer) -> String {
+    match run_inner(bundle, input, scale, &ios, &web_views) {
         Ok(s) | Err(s) => s,
     }
 }
 
-fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str) -> Result<String, String> {
+fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, web_views: &js_sys::SharedArrayBuffer) -> Result<String, String> {
     let app = app_path(&bundle).ok_or("the bundle has no .app")?;
     pomme_loader::vfs::mount(&bundle)?;
     drop(bundle);
@@ -159,6 +221,7 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str) 
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
     emu.net.client = Some(Box::new(XhrNet));
+    emu.webkit.engine = Some(Box::new(BrowserEngine::new(web_views)));
     emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
     pomme_log("running");
     let r = emu.run_main();

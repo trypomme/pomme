@@ -157,7 +157,7 @@ pub struct State {
     bitmaps: HashMap<u64, Bitmap>,
     glyph_dumps: usize,
     /// What each view drew in its last `drawRect:`, and at what size.
-    content: HashMap<u64, (Vec<Op>, [f64; 2])>,
+    pub(crate) content: HashMap<u64, (Vec<Op>, [f64; 2])>,
     /// Blurred shadows of `shadowPath`s, which only move from frame to frame
     /// (a push's cards): keyed by everything that shapes them, with where the
     /// blur sits relative to the layer's origin.
@@ -800,6 +800,14 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
+    /// Make a `w` × `h` rectangle transparent (whatever was drawn there goes).
+    fn clear(&mut self, w: f32, h: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w, h) else { return };
+        let mut paint = tiny_skia::Paint { blend_mode: tiny_skia::BlendMode::Clear, ..Default::default() };
+        paint.anti_alias = false;
+        self.pix.fill_rect(rect, &paint, ts(t), mask);
+    }
+
     fn fill(&mut self, els: &[El], color: [f32; 4], alpha: f32, even_odd: bool, t: &[f32; 6], mask: Option<&Mask>) {
         if let (Some(path), Some(p)) = (build(els), paint(color, alpha)) {
             let rule = if even_odd { FillRule::EvenOdd } else { FillRule::Winding };
@@ -1310,6 +1318,10 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
         shadow(emu, p, &ly, w, h, &vt, alpha, mask, |emu, off, t2| draw_view_cast(emu, off, v, 1.0, t2, None, false), t);
     }
     draw_layer_box(p, &ly, bg, w, h, a, &vt, mask);
+    // A web page its engine shows itself, under the screen: a hole, through what's below.
+    if crate::webkit::is_hole(emu, v) {
+        p.clear(w, h, &vt, mask);
+    }
     let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
     // A text view is a scroll view, which clips to its bounds.
     let text_view = crate::textinput::is_text_view(emu, v);
@@ -1560,6 +1572,7 @@ fn draw_contents(p: &mut Painter, img: &Image, center: [f64; 4], w: f32, h: f32,
 /// redraw), so drawing first would cache text laid out for a stale frame.
 pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     crate::uiview::layout_windows(emu)?;
+    crate::webkit::place(emu)?;
     for w in emu.ui.windows.clone() {
         display(emu, w)?;
     }

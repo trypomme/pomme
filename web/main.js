@@ -1,4 +1,4 @@
-// The page: shows the worker's frames and sends it touches.
+// The page: shows the worker's frames, sends it touches, and hosts its web views (webview.js).
 // Touches go into a SharedArrayBuffer ring (see crates/pomme-web/src/lib.rs).
 'use strict';
 
@@ -19,6 +19,7 @@ if (!self.crossOriginIsolated) {
 
 const input = new Int32Array(new SharedArrayBuffer((HEADER + RING * 4) * 4));
 const worker = new Worker('worker.js');
+WebViews.attach(document.getElementById('layer'), canvas, 390, () => Atomics.notify(input, 0));
 const started = performance.now();
 let frames = 0;
 
@@ -31,6 +32,8 @@ worker.onmessage = (e) => {
     }
     ctx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
     if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.`;
+  } else if (m.type === 'webview') {
+    WebViews.command(JSON.parse(m.json));
   } else if (m.type === 'log') {
     if (!frames) status.textContent = m.text;
     console.log('[pomme]', m.text);
@@ -39,7 +42,7 @@ worker.onmessage = (e) => {
     console.warn('[pomme]', m.text);
   }
 };
-worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios });
+worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios, webViews: WebViews.sab });
 
 // Pointer → touch phases (UITouchPhase: began 0, moved 1, ended 3, cancelled 4), in points.
 function send(phase, ev) {
@@ -54,8 +57,10 @@ function send(phase, ev) {
   Atomics.store(input, 0, n + 1);
   Atomics.notify(input, 0);
 }
+// The canvas lets input through: what isn't over a web view's page reaches the layer behind it.
+const layer = document.getElementById('layer');
 let down = false;
-canvas.addEventListener('pointerdown', (e) => { down = true; canvas.setPointerCapture(e.pointerId); send(0, e); });
-canvas.addEventListener('pointermove', (e) => { if (down) send(1, e); });
-canvas.addEventListener('pointerup', (e) => { if (down) { down = false; send(3, e); } });
-canvas.addEventListener('pointercancel', (e) => { if (down) { down = false; send(4, e); } });
+layer.addEventListener('pointerdown', (e) => { down = true; layer.setPointerCapture(e.pointerId); send(0, e); });
+layer.addEventListener('pointermove', (e) => { if (down) send(1, e); });
+layer.addEventListener('pointerup', (e) => { if (down) { down = false; send(3, e); } });
+layer.addEventListener('pointercancel', (e) => { if (down) { down = false; send(4, e); } });

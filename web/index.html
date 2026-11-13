@@ -13,15 +13,19 @@
          display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 16px; }
   h1 { font-size: 17px; font-weight: 600; margin: 0; }
   #device { background: var(--bezel); padding: 12px; border-radius: 56px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
-  #screen { display: block; width: min(390px, calc(100vw - 56px)); aspect-ratio: 390 / 844;
-            border-radius: 44px; background: #000; touch-action: none; cursor: pointer; }
+  /* The screen: web views' frames (webview.js) under the canvas, which leaves holes for them. */
+  /* The canvas only shows: input goes to the frames under it, or to #layer (the app's touches). */
+  #layer { position: relative; border-radius: 44px; overflow: hidden; background: #000; touch-action: none; cursor: pointer; }
+  #screen { position: relative; display: block; width: min(390px, calc(100vw - 56px)); aspect-ratio: 390 / 844;
+            background: transparent; pointer-events: none; }
   #status { color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; max-width: 520px; min-height: 2.8em; }
 </style>
 </head>
 <body>
   <h1>pomme</h1>
-  <div id="device"><canvas id="screen" width="780" height="1688"></canvas></div>
+  <div id="device"><div id="layer"><canvas id="screen" width="780" height="1688"></canvas></div></div>
   <div id="status">Loading…</div>
+  <script src="webview.js"></script>
   <script src="main.js"></script>
 </body>
 </html>
