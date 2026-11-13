@@ -386,10 +386,59 @@ fn invoke_with(emu: &mut Emu, inv: u64, target: u64) -> Result<()> {
     }
     let send = emu.p.stubs.find("_objc_msgSend").first().copied().ok_or(Stop::Unsupported("no objc_msgSend stub".into()))?;
     let indirect = (ret.size > 16 && ret.hfa.is_none()).then_some(rbuf);
-    emu.call_abi(send, &x, &v, &stack, indirect)?;
-    // Store the return value.
+    // Call the method without nesting a host call: jump to objc_msgSend with
+    // the arguments in place and the return address at a thunk that stores
+    // the result and resumes the caller. So a method that blocks (waits for
+    // another thread) blocks like any guest code, not on the host's stack.
+    let (caller, sp) = (emu.cpu.pc, emu.cpu.sp);
+    let new_sp = (sp - (stack.len() as u64 * 8).div_ceil(16) * 16) & !0xf;
+    for (i, w) in stack.iter().enumerate() {
+        emu.write_u64(new_sp + i as u64 * 8, *w)?;
+    }
+    for i in 0..8 {
+        emu.cpu.x[i] = x.get(i).copied().unwrap_or(0);
+        emu.cpu.q[i] = v.get(i).copied().unwrap_or(0);
+    }
+    if let Some(p) = indirect {
+        emu.cpu.x[8] = p;
+    }
+    let tid = emu.th.current;
+    emu.invocations.entry(tid).or_default().push(Pending { ret_size: ret.size, ret_hfa: ret.hfa, rbuf, indirect: indirect.is_some(), caller, sp });
+    emu.cpu.sp = new_sp;
+    emu.cpu.x[30] = emu.host_thunk(invoke_returned)?;
+    emu.cpu.pc = send;
+    Ok(())
+}
+
+/// An invocation whose method is running: where its result goes, and where to resume.
+#[derive(Clone, Copy)]
+pub struct Pending {
+    ret_size: u64,
+    ret_hfa: Option<(u64, u64)>,
+    rbuf: u64,
+    indirect: bool,
+    caller: u64,
+    sp: u64,
+}
+
+/// The invoked method returned (to this thunk): keep its result, resume the caller.
+fn invoke_returned(emu: &mut Emu) -> Result<()> {
+    let tid = emu.th.current;
+    let Some(p) = emu.invocations.get_mut(&tid).and_then(Vec::pop) else {
+        return Err(Stop::Unsupported("an NSInvocation returned that wasn't invoked on this thread".into()));
+    };
+    emu.last_x01 = [emu.cpu.x[0], emu.cpu.x[1]];
+    emu.last_v03 = [emu.cpu.q[0], emu.cpu.q[1], emu.cpu.q[2], emu.cpu.q[3]];
+    store_return(emu, p.ret_size, p.ret_hfa, p.rbuf, p.indirect)?;
+    emu.cpu.sp = p.sp;
+    emu.cpu.pc = p.caller;
+    Ok(())
+}
+
+/// Write the method's return value (from x0/x1 or v0–v3) into the invocation's buffer.
+fn store_return(emu: &mut Emu, size: u64, hfa: Option<(u64, u64)>, rbuf: u64, indirect: bool) -> Result<()> {
     let (rx, rv) = (emu.last_x01, emu.last_v03);
-    if let Some((esize, count)) = ret.hfa {
+    if let Some((esize, count)) = hfa {
         for e in 0..count {
             if esize == 4 {
                 emu.p.memory.write_u32(rbuf + e * 4, rv[e as usize] as u32)?;
@@ -397,8 +446,8 @@ fn invoke_with(emu: &mut Emu, inv: u64, target: u64) -> Result<()> {
                 emu.write_u64(rbuf + e * 8, rv[e as usize] as u64)?;
             }
         }
-    } else if indirect.is_none() && ret.size > 0 {
-        let bytes: Vec<u8> = rx.iter().flat_map(|w| w.to_le_bytes()).take(ret.size as usize).collect();
+    } else if !indirect && size > 0 {
+        let bytes: Vec<u8> = rx.iter().flat_map(|w| w.to_le_bytes()).take(size as usize).collect();
         emu.p.memory.write(rbuf, &bytes)?;
     }
     Ok(())

@@ -44,6 +44,8 @@ pub struct State {
     status_flags: HashMap<u64, u64>,
     /// Directory fds → their guest path (for openat).
     dir_fds: HashMap<u64, String>,
+    /// Directory streams (DIR *) → their entries and position.
+    dirs: HashMap<u64, DirStream>,
     /// kqueue fd → its registered events.
     kqueues: HashMap<u64, Vec<KEvent>>,
 }
@@ -1146,6 +1148,21 @@ fn fopen(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `fdopen(fd, mode)`: a stdio stream over an open file descriptor (it
+/// keeps the descriptor's own access; fclose closes it).
+fn fdopen(emu: &mut Emu) -> Result<()> {
+    let fd = emu.arg(0) & 0xffff_ffff;
+    if !emu.fs.files.contains_key(&fd) && !emu.fs.pipe_ends.contains_key(&fd) {
+        crate::libsystem::set_errno(emu, EBADF)?;
+        emu.ret(0);
+        return Ok(());
+    }
+    let file = emu.alloc(256)?;
+    emu.fs.streams.insert(file, fd);
+    emu.ret(file);
+    Ok(())
+}
+
 fn stream_fd(emu: &Emu, file: u64) -> Option<u64> {
     emu.fs.streams.get(&file).copied()
 }
@@ -1221,6 +1238,141 @@ fn fileno(emu: &mut Emu) -> Result<()> {
     let fd = stream_fd(emu, file).unwrap_or(u64::MAX);
     emu.ret(fd);
     Ok(())
+}
+
+/// An open directory stream: its entries (`.` and `..` first), where
+/// readdir is, its descriptor, and the `struct dirent` readdir fills.
+pub struct DirStream {
+    entries: Vec<(String, bool)>,
+    pos: usize,
+    fd: u64,
+    dirent: u64,
+}
+
+/// Darwin's `struct dirent` (64-bit inodes): d_ino, d_seekoff, d_reclen,
+/// d_namlen, d_type, then the name (1024 bytes).
+const DIRENT_SIZE: u64 = 1048;
+const DT_DIR: u8 = 4;
+const DT_REG: u8 = 8;
+
+fn write_dirent(emu: &mut Emu, at: u64, index: usize, name: &str, is_dir: bool) -> Result<()> {
+    emu.p.memory.write(at, &[0u8; DIRENT_SIZE as usize])?;
+    let ino = name.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211)) | 1;
+    emu.write_u64(at, ino)?;
+    emu.write_u64(at + 8, index as u64 + 1)?;
+    emu.p.memory.write_u16(at + 16, DIRENT_SIZE as u16)?;
+    emu.p.memory.write_u16(at + 18, name.len().min(1023) as u16)?;
+    emu.p.memory.write_u8(at + 20, if is_dir { DT_DIR } else { DT_REG })?;
+    emu.p.memory.write(at + 21, &name.as_bytes()[..name.len().min(1023)])?;
+    Ok(())
+}
+
+/// A DIR * for the directory at `path` (with `fd` as its descriptor), or ENOENT/ENOTDIR.
+fn open_dir_stream(emu: &mut Emu, path: &str, fd: Option<u64>) -> std::result::Result<u64, u64> {
+    match exists(emu, path) {
+        None => return Err(ENOENT),
+        Some(false) => return Err(ENOTDIR),
+        Some(true) => {}
+    }
+    let mut entries = vec![(".".to_string(), true), ("..".to_string(), true)];
+    entries.extend(list_dir(emu, path).unwrap_or_default());
+    let fd = match fd {
+        Some(fd) => fd,
+        None => {
+            let fd = open_fd(emu, Vec::new());
+            emu.fs.dir_fds.insert(fd, path.to_string());
+            fd
+        }
+    };
+    let handle = emu.alloc(64).map_err(|_| ENOENT)?;
+    let dirent = emu.alloc(DIRENT_SIZE).map_err(|_| ENOENT)?;
+    emu.fs.dirs.insert(handle, DirStream { entries, pos: 0, fd, dirent });
+    Ok(handle)
+}
+
+fn ret_dir(emu: &mut Emu, r: std::result::Result<u64, u64>) -> Result<()> {
+    match r {
+        Ok(d) => {
+            emu.ret(d);
+            Ok(())
+        }
+        Err(e) => {
+            crate::libsystem::set_errno(emu, e)?;
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
+/// `opendir(path)`
+fn opendir(emu: &mut Emu) -> Result<()> {
+    let path = emu.cstr(emu.arg(0))?;
+    let r = open_dir_stream(emu, &path, None);
+    ret_dir(emu, r)
+}
+
+/// `fdopendir(fd)`: a stream over a directory descriptor (from open or openat).
+fn fdopendir(emu: &mut Emu) -> Result<()> {
+    let fd = emu.arg(0) & 0xffff_ffff;
+    let Some(path) = emu.fs.dir_fds.get(&fd).cloned() else {
+        crate::libsystem::set_errno(emu, ENOTDIR)?;
+        emu.ret(0);
+        return Ok(());
+    };
+    let r = open_dir_stream(emu, &path, Some(fd));
+    ret_dir(emu, r)
+}
+
+/// The next entry, written into the stream's dirent: its address, or None at the end.
+fn next_entry(emu: &mut Emu, dir: u64, into: Option<u64>) -> Result<Option<u64>> {
+    let Some(d) = emu.fs.dirs.get_mut(&dir) else { return Ok(None) };
+    let Some((name, is_dir)) = d.entries.get(d.pos).cloned() else { return Ok(None) };
+    let (index, at) = (d.pos, into.unwrap_or(d.dirent));
+    d.pos += 1;
+    write_dirent(emu, at, index, &name, is_dir)?;
+    Ok(Some(at))
+}
+
+/// `readdir(dir)`: the next entry, or NULL at the end (errno untouched).
+fn readdir(emu: &mut Emu) -> Result<()> {
+    let dir = emu.arg(0);
+    let e = next_entry(emu, dir, None)?.unwrap_or(0);
+    emu.ret(e);
+    Ok(())
+}
+
+/// `readdir_r(dir, entry, &result)`: 0, with *result the entry or NULL at the end.
+fn readdir_r(emu: &mut Emu) -> Result<()> {
+    let (dir, entry, result) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let e = next_entry(emu, dir, Some(entry))?.unwrap_or(0);
+    emu.write_u64(result, e)?;
+    emu.ret(0);
+    Ok(())
+}
+
+/// `closedir(dir)`: closes its descriptor too.
+fn closedir(emu: &mut Emu) -> Result<()> {
+    let dir = emu.arg(0);
+    match emu.fs.dirs.remove(&dir) {
+        Some(d) => {
+            emu.fs.dir_fds.remove(&d.fd);
+            emu.fs.files.remove(&d.fd);
+            emu.ret(0);
+            Ok(())
+        }
+        None => fail(emu, EBADF),
+    }
+}
+
+/// `chmod(path, mode)` / `fchmod(fd, mode)`: a data-container item's permissions.
+fn chmod_path(emu: &mut Emu, path: &str, mode: u64) -> Result<()> {
+    if set_attributes(emu, path, |m| m.permissions = (mode & 0o7777) as u16) {
+        emu.ret(0);
+        Ok(())
+    } else {
+        let errno = if exists(emu, path).is_some() { EACCES } else { ENOENT };
+        fail(emu, errno)
+    }
 }
 
 /// A random letter or digit for a temporary name, from pomme's seeded generator.
@@ -1363,6 +1515,50 @@ fn fstatfs(emu: &mut Emu) -> Result<()> {
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_utimes", utimes),
+    ("_opendir", opendir),
+    ("_fdopendir", fdopendir),
+    ("_readdir", readdir),
+    ("_readdir_r", readdir_r),
+    ("_closedir", closedir),
+    ("_rewinddir", |e| {
+        let dir = e.arg(0);
+        if let Some(d) = e.fs.dirs.get_mut(&dir) {
+            d.pos = 0;
+        }
+        Ok(())
+    }),
+    ("_telldir", |e| {
+        let dir = e.arg(0);
+        let p = e.fs.dirs.get(&dir).map_or(0, |d| d.pos as u64);
+        e.ret(p);
+        Ok(())
+    }),
+    ("_seekdir", |e| {
+        let (dir, at) = (e.arg(0), e.arg(1) as usize);
+        if let Some(d) = e.fs.dirs.get_mut(&dir) {
+            d.pos = at.min(d.entries.len());
+        }
+        Ok(())
+    }),
+    ("_dirfd", |e| {
+        let dir = e.arg(0);
+        let fd = e.fs.dirs.get(&dir).map_or(u64::MAX, |d| d.fd);
+        e.ret(fd);
+        Ok(())
+    }),
+    ("_chmod", |e| {
+        let (path, mode) = (e.cstr(e.arg(0))?, e.arg(1));
+        chmod_path(e, &path, mode)
+    }),
+    ("_fchmod", |e| {
+        let (fd, mode) = (e.arg(0) & 0xffff_ffff, e.arg(1));
+        let path = e.fs.files.get(&fd).and_then(|f| f.path.clone()).or_else(|| e.fs.dir_fds.get(&fd).cloned());
+        match path {
+            Some(p) => chmod_path(e, &p, mode),
+            None => fail(e, EBADF),
+        }
+    }),
+    ("_fdopen", fdopen),
     ("_futimes", futimes),
     ("_utimensat", utimensat),
     ("_statfs", statfs),

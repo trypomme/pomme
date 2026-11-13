@@ -554,6 +554,35 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The protocols Foundation's classes adopt (subclasses inherit them), so
+/// conformance checks (`conformsToProtocol:`, Swift's `as? NSCopying`) answer
+/// as on iOS.
+const HOST_PROTOCOLS: &[(&str, &[&str])] = &[
+    ("NSObject", &["NSObject"]),
+    ("NSString", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSArray", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding", "NSFastEnumeration"]),
+    ("NSDictionary", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding", "NSFastEnumeration"]),
+    ("NSSet", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding", "NSFastEnumeration"]),
+    ("NSOrderedSet", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding", "NSFastEnumeration"]),
+    ("NSData", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSValue", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSDate", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSURL", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSUUID", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSNull", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSError", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSLocale", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSTimeZone", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSCalendar", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSDateComponents", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSCharacterSet", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSIndexSet", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSAttributedString", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSURLRequest", &["NSCopying", "NSMutableCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSException", &["NSCopying", "NSSecureCoding", "NSCoding"]),
+    ("NSEnumerator", &["NSFastEnumeration"]),
+];
+
 /// Find or synthesize the system class `name` (and its superclasses).
 pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
     if let Some(&c) = emu.objc.by_name.get(name) {
@@ -567,6 +596,11 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
     // Host classes that keep state in the object itself declare their size.
     let own_size = HOST_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s);
     let cls = new_class(emu, name, superclass, own_size)?;
+    if let Some((_, protocols)) = HOST_PROTOCOLS.iter().find(|(c, _)| *c == name) {
+        if let Some(c) = emu.objc.classes.get_mut(&cls) {
+            c.protocols = protocols.iter().map(|p| p.to_string()).collect();
+        }
+    }
     emu.objc.by_name.insert(name.to_string(), cls);
     Ok(cls)
 }

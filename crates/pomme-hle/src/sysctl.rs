@@ -32,8 +32,8 @@ const HW_MEMSIZE: u32 = 24;
 const HW_AVAILCPU: u32 = 25;
 
 /// The phone's CPU cores and memory (an A18's six cores, 8 GB).
-const CPUS: u32 = 6;
-const MEMORY: u64 = 8 << 30;
+pub(crate) const CPUS: u32 = 6;
+pub(crate) const MEMORY: u64 = 8 << 30;
 const PAGE_SIZE: u32 = 16384;
 
 /// `sizeof(struct kinfo_proc)` on arm64, and `kp_proc.p_flag`'s offset in it.

@@ -247,6 +247,14 @@ public func _pommeNSDictionaryLiteral(_ elements: [(Any, Any)]) -> NSDictionary 
     }
 }
 
+// `NSDictionary(dictionary:)`, the overlay's convenience initializer taking an
+// NSDictionary: a copy of its entries (pomme's dictionaries are all mutable
+// underneath, so NSMutableDictionary's use of it gets a mutable one too).
+@_silgen_name("$sSo12NSDictionaryC10FoundationE10dictionaryA2Bh_tcfC")
+public func _pommeNSDictionaryWithDictionary(_ other: NSDictionary) -> NSDictionary {
+    NSDictionary(dictionary: other)
+}
+
 @_silgen_name("$sSo8NSStringC10FoundationE13stringLiteralABs12StaticStringV_tcfC")
 public func _pommeNSStringLiteral(_ literal: StaticString) -> NSString {
     unsafeBitCast(_pommeObjC(literal.description), to: NSString.self)

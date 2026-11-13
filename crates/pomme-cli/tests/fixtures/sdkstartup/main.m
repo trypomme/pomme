@@ -7,6 +7,8 @@
 #include <sys/mount.h>
 #include <malloc/malloc.h>
 #include <sqlite3.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 @protocol PommeProbe <NSObject>
 @end
@@ -17,6 +19,24 @@
 }
 @end
 @implementation PommeSized
+@end
+
+// An NSDictionary subclass over its primitives, as React Native's
+// _RCTTypedModuleConstants wraps a TurboModule's constants.
+@interface PommeWrappedDictionary : NSDictionary
++ (instancetype)wrapping:(NSDictionary *)d;
+@end
+@implementation PommeWrappedDictionary {
+    NSDictionary *_inner;
+}
++ (instancetype)wrapping:(NSDictionary *)d {
+    PommeWrappedDictionary *w = [self new];
+    w->_inner = d;
+    return w;
+}
+- (NSUInteger)count { return _inner.count; }
+- (id)objectForKey:(id)key { return [_inner objectForKey:key]; }
+- (NSEnumerator *)keyEnumerator { return [_inner keyEnumerator]; }
 @end
 
 // A class that archives itself (NSSecureCoding), for keyed archives.
@@ -110,7 +130,7 @@
     check(@"sysctlMachine", machineOK && strncmp(machine, "iPhone", 6) == 0);
     int cpus = 0;
     size = sizeof(cpus);
-    check(@"sysctlCPUs", sysctlbyname("hw.ncpu", &cpus, &size, NULL, 0) == 0 && cpus > 0);
+    check(@"sysctlCPUs", sysctlbyname("hw.ncpu", &cpus, &size, NULL, 0) == 0 && cpus > 1 && cpus == sysconf(_SC_NPROCESSORS_ONLN));
     struct kinfo_proc info = {0};
     size = sizeof(info);
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
@@ -271,6 +291,51 @@
     sqlite3_finalize(st);
     sqlite3_close(db);
     check(@"sqlite", sqlOK && [fm fileExistsAtPath:dbPath]);
+
+    // A dictionary subclass works through its primitives: for-in, allKeys, valueForKey:.
+    PommeWrappedDictionary *wrapped = [PommeWrappedDictionary wrapping:@{@"apps": @[@"[DEFAULT]"], @"json": @"{}"}];
+    NSMutableArray *wrappedKeys = [NSMutableArray array];
+    for (NSString *k in wrapped) [wrappedKeys addObject:k];
+    check(@"dictionarySubclass", wrapped.count == 2 && wrappedKeys.count == 2 && wrapped.allKeys.count == 2 && [wrapped[@"apps"] isEqual:@[@"[DEFAULT]"]] && [[NSDictionary dictionaryWithDictionary:wrapped] count] == 2);
+
+    // Foundation's classes adopt their standard protocols (Swift's `as! NSCopying` asks the runtime).
+    check(@"protocols", [@"s" conformsToProtocol:@protocol(NSCopying)] && [@[] conformsToProtocol:@protocol(NSFastEnumeration)] && [NSDictionary conformsToProtocol:@protocol(NSSecureCoding)] && class_conformsToProtocol(NSString.class, @protocol(NSMutableCopying)) && ![NSObject conformsToProtocol:@protocol(NSCopying)]);
+
+    // Mutable collections' bulk edits.
+    NSMutableArray *ma = [@[@0, @1, @2, @3, @4, @5] mutableCopy];
+    [ma removeObjectsInRange:NSMakeRange(1, 2)];            // 0 3 4 5
+    [ma exchangeObjectAtIndex:0 withObjectAtIndex:3];       // 5 3 4 0
+    [ma removeObjectsAtIndexes:[NSIndexSet indexSetWithIndex:1]]; // 5 4 0
+    [ma replaceObjectsInRange:NSMakeRange(0, 1) withObjectsFromArray:@[@7, @8]]; // 7 8 4 0
+    [ma removeObjectsInArray:@[@4]];                         // 7 8 0
+    NSMutableDictionary *md = [@{@"a": @1, @"b": @2, @"c": @3} mutableCopy];
+    [md removeObjectsForKeys:@[@"a", @"c"]];
+    check(@"bulkEdits", [ma isEqual:@[@7, @8, @0]] && [md isEqual:@{@"b": @2}]);
+
+    // The current queue: its label and specific values (Firestore checks it runs on its own queue).
+    static char key;
+    dispatch_queue_t fsq = dispatch_queue_create("com.google.firebase.firestore", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(fsq, &key, (void *)0x1234, NULL);
+    __block BOOL onQueue = NO;
+    dispatch_sync(fsq, ^{
+        onQueue = strcmp(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), "com.google.firebase.firestore") == 0 && dispatch_get_specific(&key) == (void *)0x1234;
+    });
+    BOOL onMain = strcmp(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), "com.apple.main-thread") == 0 && dispatch_get_specific(&key) == NULL && dispatch_queue_get_specific(fsq, &key) == (void *)0x1234;
+    check(@"currentQueue", onQueue && onMain);
+
+    // Directory streams (LevelDB lists its database directory), and chmod.
+    NSMutableSet *listed = [NSMutableSet set];
+    DIR *dirp = opendir(copied.fileSystemRepresentation);
+    struct dirent *ent;
+    BOOL sawDir = NO;
+    while (dirp && (ent = readdir(dirp))) {
+        [listed addObject:@(ent->d_name)];
+        if (strcmp(ent->d_name, ".") == 0) sawDir = ent->d_type == DT_DIR;
+    }
+    if (dirp) closedir(dirp);
+    struct stat sb;
+    BOOL chmodOK = chmod([copied stringByAppendingPathComponent:@"b.txt"].fileSystemRepresentation, 0600) == 0 && stat([copied stringByAppendingPathComponent:@"b.txt"].fileSystemRepresentation, &sb) == 0 && (sb.st_mode & 0777) == 0600;
+    check(@"readdir", [listed isEqualToSet:[NSSet setWithArray:@[@".", @"..", @"b.txt"]]] && sawDir && opendir("/no/such/dir") == NULL && chmodOK);
 
     // An operation queue running its operations on a dispatch queue of its own.
     NSOperationQueue *queue = [NSOperationQueue new];

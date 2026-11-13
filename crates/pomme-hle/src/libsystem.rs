@@ -37,7 +37,13 @@ pub struct State {
     /// Per-image thread-local storage blocks.
     tlv_blocks: HashMap<(usize, usize), u64>,
     /// Queued async work: (function, context). Blocks are queued as (invoke, block).
-    pub queue: VecDeque<(u64, u64)>,
+    /// Work for serial queues (the main one included), run in order by the
+    /// main thread: (function, context, the queue it was submitted to).
+    pub queue: VecDeque<(u64, u64, u64)>,
+    /// The queues each thread is running work for, innermost last
+    /// (dispatch_sync nests): what "the current queue" means to
+    /// dispatch_get_specific and DISPATCH_CURRENT_QUEUE_LABEL.
+    current_queues: HashMap<usize, Vec<u64>>,
     queue_specific: HashMap<(u64, u64), u64>,
     /// The global (concurrent) queue: its work runs on threads of its own.
     global_queue: u64,
@@ -1015,10 +1021,16 @@ fn host_page_size(emu: &mut Emu) -> Result<()> {
 
 /// sysconf: the few names apps ask about.
 fn sysconf(emu: &mut Emu) -> Result<()> {
+    // The same phone sysctl describes (CPUs, memory), and Darwin's limits.
     let v = match emu.arg(0) {
-        29 => pomme_mem::PAGE_SIZE, // _SC_PAGESIZE
-        57 | 58 => 1,               // _SC_NPROCESSORS_CONF / _ONLN
-        _ => u64::MAX,              // -1: unknown
+        1 => 1 << 20,                                                        // _SC_ARG_MAX
+        2 => 266,                                                            // _SC_CHILD_MAX
+        3 => 100,                                                            // _SC_CLK_TCK
+        5 => 256,                                                            // _SC_OPEN_MAX (the default soft limit)
+        29 => pomme_mem::PAGE_SIZE,                                          // _SC_PAGESIZE
+        57 | 58 => crate::sysctl::CPUS as u64,                               // _SC_NPROCESSORS_CONF / _ONLN
+        200 => crate::sysctl::MEMORY / pomme_mem::PAGE_SIZE,                 // _SC_PHYS_PAGES
+        _ => u64::MAX,                                                       // -1: unknown
     };
     emu.ret(v);
     Ok(())
@@ -1089,9 +1101,10 @@ fn dispatch_once_f(emu: &mut Emu) -> Result<()> {
 }
 
 /// `dispatch_sync(queue, block)`: run now, on the one thread.
+/// `dispatch_sync(queue, block)`: the block runs here, as work for `queue`.
 fn dispatch_sync(emu: &mut Emu) -> Result<()> {
-    call_block(emu, emu.arg(1), &[])?;
-    Ok(())
+    let (queue, block) = (emu.arg(0), emu.arg(1));
+    on_queue(emu, queue, |emu| call_block(emu, block, &[]).map(|_| ()))
 }
 
 /// Copy a block to the heap: (invoke, block).
@@ -1111,12 +1124,14 @@ fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Re
     }
     if queue != 0 && queue == emu.sys.global_queue {
         let tid = crate::threads::spawn(emu, f, ctx, "dispatch")?;
+        emu.sys.current_queues.insert(tid, vec![queue]);
         if let Some(g) = group {
             emu.sys.groups.entry(g).or_default().count += 1;
             emu.sys.group_threads.insert(tid, g);
         }
     } else {
-        emu.sys.queue.push_back((f, ctx));
+        let queue = if queue == 0 { main_queue(emu) } else { queue };
+        emu.sys.queue.push_back((f, ctx, queue));
         crate::threads::wake_main_queue(emu);
     }
     Ok(())
@@ -1129,7 +1144,8 @@ pub(crate) fn dispatch_on(emu: &mut Emu, queue: u64, f: u64, ctx: u64) -> Result
 
 /// Run `f(ctx)` on the main thread, in turn with the main queue's other work.
 pub(crate) fn run_on_main(emu: &mut Emu, f: u64, ctx: u64) {
-    emu.sys.queue.push_back((f, ctx));
+    let main = emu.sys.data.get("__dispatch_main_q").copied().unwrap_or(0);
+    emu.sys.queue.push_back((f, ctx, main));
     crate::threads::wake_main_queue(emu);
 }
 
@@ -1166,14 +1182,41 @@ fn group_leave(emu: &mut Emu, g: u64) -> Result<()> {
 /// Run queued async work until the queue is empty.
 pub fn drain_queue(emu: &mut Emu) -> Result<usize> {
     let mut n = 0;
-    while let Some((f, arg)) = emu.sys.queue.pop_front() {
+    while let Some((f, arg, queue)) = emu.sys.queue.pop_front() {
         if emu.sys.cancelled.contains(&arg) {
             continue;
         }
-        emu.call(f, &[arg])?;
+        on_queue(emu, queue, |emu| emu.call(f, &[arg]).map(|_| ()))?;
         n += 1;
     }
     Ok(n)
+}
+
+/// The main queue (`_dispatch_main_q`).
+fn main_queue(emu: &Emu) -> u64 {
+    emu.sys.data.get("__dispatch_main_q").copied().unwrap_or(0)
+}
+
+/// Run `work` as work for `queue` on this thread.
+fn on_queue(emu: &mut Emu, queue: u64, work: impl FnOnce(&mut Emu) -> Result<()>) -> Result<()> {
+    let tid = emu.th.current;
+    emu.sys.current_queues.entry(tid).or_default().push(queue);
+    let r = work(emu);
+    if let Some(stack) = emu.sys.current_queues.get_mut(&tid) {
+        stack.pop();
+    }
+    r
+}
+
+/// The queue this thread is running work for: the innermost one, the main
+/// queue on the main thread outside any, or none (a thread of the app's own).
+fn current_queue(emu: &Emu) -> u64 {
+    let tid = emu.th.current;
+    match emu.sys.current_queues.get(&tid).and_then(|s| s.last()) {
+        Some(&q) => q,
+        None if tid == 0 => main_queue(emu),
+        None => 0,
+    }
 }
 
 fn dispatch_queue_create(emu: &mut Emu) -> Result<()> {
@@ -1206,8 +1249,10 @@ fn dispatch_get_global_queue(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `dispatch_queue_get_label(queue)`; DISPATCH_CURRENT_QUEUE_LABEL (NULL) is the current queue.
 fn dispatch_queue_get_label(emu: &mut Emu) -> Result<()> {
     let q = emu.arg(0);
+    let q = if q == 0 { current_queue(emu) } else { q };
     let l = if q == 0 { 0 } else { emu.read_u64(q + 8)? };
     let l = if l == 0 { emu.alloc_cstr("com.apple.main-thread")? } else { l };
     emu.ret(l);
@@ -1219,10 +1264,19 @@ fn dispatch_queue_set_specific(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `dispatch_get_specific(key)`: the value the current queue has for it.
 fn dispatch_get_specific(emu: &mut Emu) -> Result<()> {
-    // We're always "on" every queue's single thread; look the key up anywhere.
     let key = emu.arg(0);
-    let v = emu.sys.queue_specific.iter().find(|((_, k), _)| *k == key).map_or(0, |(_, v)| *v);
+    let q = current_queue(emu);
+    let v = emu.sys.queue_specific.get(&(q, key)).copied().unwrap_or(0);
+    emu.ret(v);
+    Ok(())
+}
+
+/// `dispatch_queue_get_specific(queue, key)`
+fn dispatch_queue_get_specific(emu: &mut Emu) -> Result<()> {
+    let (q, key) = (emu.arg(0), emu.arg(1));
+    let v = emu.sys.queue_specific.get(&(q, key)).copied().unwrap_or(0);
     emu.ret(v);
     Ok(())
 }
@@ -1861,6 +1915,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_dispatch_queue_get_label", dispatch_queue_get_label),
     ("_dispatch_queue_set_specific", dispatch_queue_set_specific),
     ("_dispatch_get_specific", dispatch_get_specific),
+    ("_dispatch_queue_get_specific", dispatch_queue_get_specific),
     ("_dispatch_queue_attr_make_with_qos_class", ret_self),
     // Autorelease pools around work items: pomme's queues keep the attribute's concurrency only.
     ("_dispatch_queue_attr_make_with_autorelease_frequency", ret_self),

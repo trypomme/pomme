@@ -246,3 +246,18 @@ uint64_t dot_products(uint64_t seed) {
     uint32x2_t h = vdot_u32(vdup_n_u32(1), vget_low_u8(ua), vget_high_u8(ub));
     return (uint64_t)vaddvq_u32(u) * 3 + (uint64_t)(uint32_t)vaddvq_s32(s) * 5 + (uint64_t)(uint32_t)vaddvq_s32(l) * 7 + (uint64_t)vaddv_u32(h);
 }
+
+// CRC32 / CRC32C (zlib's crc32 uses them): every width, both polynomials.
+#include <arm_acle.h>
+__attribute__((target("crc")))
+uint64_t crc_mix(uint64_t x) {
+    uint32_t a = __crc32b(0xffffffff, (uint8_t)x);
+    a = __crc32h(a, (uint16_t)(x >> 8));
+    a = __crc32w(a, (uint32_t)(x >> 16));
+    a = __crc32d(a, x);
+    uint32_t c = __crc32cb(0, (uint8_t)x);
+    c = __crc32ch(c, (uint16_t)x);
+    c = __crc32cw(c, (uint32_t)x);
+    c = __crc32cd(c, ~x);
+    return ((uint64_t)a << 32) | c;
+}

@@ -454,3 +454,26 @@ fn dot_product_extension() {
         check_int("dot_products", &[I(seed)], reference(seed));
     }
 }
+
+#[test]
+fn crc32_extension() {
+    // The bit-at-a-time definition, independent of the interpreter's.
+    let step = |mut crc: u32, data: u64, bytes: u32, poly: u32| {
+        for i in 0..bytes {
+            crc ^= (data >> (8 * i)) as u8 as u32;
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 != 0 { poly } else { 0 };
+            }
+        }
+        crc
+    };
+    let reference = |x: u64| {
+        let (p, pc) = (0xEDB8_8320, 0x82F6_3B78);
+        let a = step(step(step(step(0xffff_ffff, x & 0xff, 1, p), (x >> 8) & 0xffff, 2, p), (x >> 16) & 0xffff_ffff, 4, p), x, 8, p);
+        let c = step(step(step(step(0, x & 0xff, 1, pc), x & 0xffff, 2, pc), x & 0xffff_ffff, 4, pc), !x, 8, pc);
+        (a as u64) << 32 | c as u64
+    };
+    for x in [0u64, 1, 0x0123_4567_89ab_cdef, u64::MAX] {
+        check_int("crc_mix", &[I(x)], reference(x));
+    }
+}

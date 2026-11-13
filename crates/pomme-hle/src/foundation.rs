@@ -422,6 +422,31 @@ pub(crate) fn cluster_alloc(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `new` and `init` of a class cluster (NSArray, NSDictionary, NSSet, NSString,
+/// NSData) sent to a subclass the app defined: such a class keeps its own
+/// storage and answers the primitives itself, so `new` is `alloc` + `init`
+/// and `init` returns the instance, as Foundation's abstract classes do.
+/// None when the receiver is one of the cluster's own classes.
+fn subclass_new_or_init(emu: &mut Emu) -> Result<Option<()>> {
+    let recv = emu.arg(0);
+    if recv == 0 {
+        return Ok(None);
+    }
+    let is_class = emu.objc.class(recv).is_some_and(|c| !c.meta) && emu.objc.classes.get(&emu.read_u64(recv)?).is_some_and(|m| m.meta);
+    let cls = if is_class { recv } else { emu.read_u64(recv)? };
+    if emu.objc.class(cls).is_none_or(|c| c.host) || emu.read_u64(recv + 8).ok() == Some(PLACEHOLDER) {
+        return Ok(None);
+    }
+    let obj = if is_class {
+        let o = send(emu, recv, "alloc", &[])?;
+        send(emu, o, "init", &[])?
+    } else {
+        recv
+    };
+    emu.ret(obj);
+    Ok(Some(()))
+}
+
 /// Whether the receiver (placeholder or class) is the mutable variant.
 pub(crate) fn wants_mutable(emu: &mut Emu, obj: u64, mutable_class: &str) -> Result<bool> {
     let cls = if emu.objc.class(obj).is_some() { obj } else { emu.read_u64(obj)? };
@@ -617,6 +642,9 @@ fn string_with_string(emu: &mut Emu) -> Result<()> {
 }
 
 fn empty_string(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     if have_cf(emu) && wants_mutable(emu, emu.arg(0), "NSMutableString")? {
         let m = new_mutable_string(emu, "")?;
         emu.ret(m);
@@ -1095,6 +1123,9 @@ pub(crate) fn array_values(emu: &mut Emu, arr: u64) -> Result<Vec<u64>> {
 }
 
 fn array_empty(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     let a = new_array(emu, true)?;
     emu.ret(a);
     Ok(())
@@ -1206,6 +1237,9 @@ fn array_is_equal(emu: &mut Emu) -> Result<()> {
 }
 
 fn array_init(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     array_empty(emu)
 }
 
@@ -1376,6 +1410,43 @@ fn array_enumerate(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Call `block(obj, idx, &stop)` for each element in `order` until it returns
+/// true or stops: the indexes it returned true for.
+fn array_passing(emu: &mut Emu, a: u64, block: u64, reverse: bool, first_only: bool) -> Result<Vec<u64>> {
+    let stop = emu.alloc(8)?;
+    let items = array_values(emu, a)?;
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    if reverse {
+        order.reverse();
+    }
+    let mut out = Vec::new();
+    for i in order {
+        if crate::libsystem::call_block(emu, block, &[items[i], i as u64, stop])? & 0xff != 0 {
+            out.push(i as u64);
+            if first_only {
+                break;
+            }
+        }
+        if emu.p.memory.read_u8(stop)? != 0 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// An NSIndexSet of `indexes`.
+fn new_index_set(emu: &mut Emu, indexes: &[u64]) -> Result<u64> {
+    let cls = host_class(emu, "NSMutableIndexSet")?;
+    let set = send(emu, cls, "indexSet", &[])?;
+    for &i in indexes {
+        send(emu, set, "addIndex:", &[i])?;
+    }
+    Ok(set)
+}
+
+// NSEnumerationOptions
+const ENUMERATION_REVERSE: u64 = 2;
+
 fn array_components_joined(emu: &mut Emu) -> Result<()> {
     let (a, sep) = (emu.arg(0), emu.arg(2));
     let sep = nsstring(emu, sep)?;
@@ -1472,6 +1543,9 @@ fn subclass_dict_pairs(emu: &mut Emu, d: u64) -> Result<Vec<(u64, u64)>> {
 }
 
 fn dict_empty(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     let d = new_dict(emu)?;
     emu.ret(d);
     Ok(())
@@ -1482,6 +1556,21 @@ fn dict_with_objects_keys_count(emu: &mut Emu) -> Result<()> {
     let n = emu.arg(4);
     let vals = read_ptrs(emu, emu.arg(2), n)?;
     let keys = read_ptrs(emu, emu.arg(3), n)?;
+    let d = new_dict(emu)?;
+    for (k, v) in keys.into_iter().zip(vals) {
+        cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
+    }
+    emu.ret(d);
+    Ok(())
+}
+
+/// `dictionaryWithObjects:forKeys:` (and `initWithObjects:forKeys:`): two arrays, paired.
+fn dict_with_object_and_key_arrays(emu: &mut Emu) -> Result<()> {
+    let (vals, keys) = (emu.arg(2), emu.arg(3));
+    let (vals, keys) = (array_values(emu, vals)?, array_values(emu, keys)?);
+    if vals.len() != keys.len() {
+        return Err(Stop::Unsupported(format!("NSInvalidArgumentException: {} objects for {} keys", vals.len(), keys.len())));
+    }
     let d = new_dict(emu)?;
     for (k, v) in keys.into_iter().zip(vals) {
         cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
@@ -1520,6 +1609,18 @@ fn dict_object_for_key(emu: &mut Emu) -> Result<()> {
     let v = if k == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[d, k])? };
     emu.ret(v);
     Ok(())
+}
+
+/// `objectForKeyedSubscript:` and `valueForKey:`: `objectForKey:`, which an
+/// app's NSDictionary subclass answers itself.
+fn dict_lookup(emu: &mut Emu) -> Result<()> {
+    let (d, k) = (emu.arg(0), emu.arg(2));
+    if !is_cf(emu, d) && constant_kind(emu, d).is_none() {
+        let v = if k == 0 { 0 } else { send(emu, d, "objectForKey:", &[k])? };
+        emu.ret(v);
+        return Ok(());
+    }
+    dict_object_for_key(emu)
 }
 
 fn dict_set_object(emu: &mut Emu) -> Result<()> {
@@ -1625,6 +1726,9 @@ fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
 }
 
 fn set_empty(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     let s = new_set(emu)?;
     emu.ret(s);
     Ok(())
@@ -3253,6 +3357,9 @@ fn data_with_bytes(emu: &mut Emu) -> Result<()> {
 }
 
 fn data_empty(emu: &mut Emu) -> Result<()> {
+    if subclass_new_or_init(emu)?.is_some() {
+        return Ok(());
+    }
     ret_data(emu, &[])
 }
 
@@ -4393,8 +4500,101 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableArray", false, "removeObjectAtIndex:", array_remove_at),
     ("NSMutableArray", false, "removeLastObject", array_remove_last),
     ("NSMutableArray", false, "removeAllObjects", array_remove_all),
+    // NSRange {location, length} in x2/x3.
+    ("NSMutableArray", false, "removeObjectsInRange:", |e| {
+        let (a, loc, len) = (e.arg(0), e.arg(2), e.arg(3));
+        cf(e, "_CFArrayReplaceValues", &[a, loc, len, 0, 0])?;
+        Ok(())
+    }),
+    ("NSMutableArray", false, "removeObjectsInArray:", |e| {
+        let (a, other) = (e.arg(0), e.arg(2));
+        for o in array_values(e, other)? {
+            send(e, a, "removeObject:", &[o])?;
+        }
+        Ok(())
+    }),
+    ("NSMutableArray", false, "removeObjectsAtIndexes:", |e| {
+        let (a, ix) = (e.arg(0), e.arg(2));
+        for i in crate::indexset::index_list(e, ix).into_iter().rev() {
+            cf(e, "_CFArrayRemoveValueAtIndex", &[a, i])?;
+        }
+        Ok(())
+    }),
+    ("NSMutableArray", false, "exchangeObjectAtIndex:withObjectAtIndex:", |e| {
+        let (a, i, j) = (e.arg(0), e.arg(2), e.arg(3));
+        cf(e, "_CFArrayExchangeValuesAtIndices", &[a, i, j])?;
+        Ok(())
+    }),
+    ("NSMutableArray", false, "setArray:", |e| {
+        let (a, other) = (e.arg(0), e.arg(2));
+        let items = if other == 0 { vec![] } else { array_values(e, other)? };
+        cf(e, "_CFArrayRemoveAllValues", &[a])?;
+        for o in items {
+            cf(e, "_CFArrayAppendValue", &[a, o])?;
+        }
+        Ok(())
+    }),
+    ("NSMutableArray", false, "replaceObjectsInRange:withObjectsFromArray:", |e| {
+        let (a, loc, len, other) = (e.arg(0), e.arg(2), e.arg(3), e.arg(4));
+        let items = if other == 0 { vec![] } else { array_values(e, other)? };
+        let buf = e.alloc(items.len() as u64 * 8 + 8)?;
+        for (i, o) in items.iter().enumerate() {
+            e.write_u64(buf + i as u64 * 8, *o)?;
+        }
+        cf(e, "_CFArrayReplaceValues", &[a, loc, len, buf, items.len() as u64])?;
+        Ok(())
+    }),
     ("NSMutableArray", false, "removeObject:", array_remove_object),
     ("NSMutableArray", false, "removeObjectIdenticalTo:", array_remove_identical),
+    // NSRange {location, length} in x2/x3.
+    ("NSArray", false, "subarrayWithRange:", |e| {
+        let (a, loc, len) = (e.arg(0), e.arg(2) as usize, e.arg(3) as usize);
+        let items = array_values(e, a)?;
+        let Some(part) = items.get(loc..loc + len) else {
+            return Err(Stop::Unsupported(format!("NSRangeException: range {loc}+{len} beyond bounds of {}", items.len())));
+        };
+        let r = array_from(e, part)?;
+        e.ret(r);
+        Ok(())
+    }),
+    ("NSArray", false, "objectsAtIndexes:", |e| {
+        let (a, ix) = (e.arg(0), e.arg(2));
+        let items = array_values(e, a)?;
+        let picked: Vec<u64> = crate::indexset::index_list(e, ix).into_iter().filter_map(|i| items.get(i as usize).copied()).collect();
+        let r = array_from(e, &picked)?;
+        e.ret(r);
+        Ok(())
+    }),
+    ("NSArray", false, "indexOfObjectPassingTest:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let found = array_passing(e, a, b, false, true)?;
+        e.ret(found.first().copied().unwrap_or(i64::MAX as u64)); // NSNotFound
+        Ok(())
+    }),
+    ("NSArray", false, "indexesOfObjectsPassingTest:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let found = array_passing(e, a, b, false, false)?;
+        let set = new_index_set(e, &found)?;
+        e.ret(set);
+        Ok(())
+    }),
+    ("NSArray", false, "enumerateObjectsWithOptions:usingBlock:", |e| {
+        let (a, options, b) = (e.arg(0), e.arg(2), e.arg(3));
+        array_passing(e, a, b, options & ENUMERATION_REVERSE != 0, false)?;
+        Ok(())
+    }),
+    ("NSArray", false, "firstObjectCommonWithArray:", |e| {
+        let (a, other) = (e.arg(0), e.arg(2));
+        let mut found = 0;
+        for o in array_values(e, a)? {
+            if send(e, other, "containsObject:", &[o])? & 0xff != 0 {
+                found = o;
+                break;
+            }
+        }
+        e.ret(found);
+        Ok(())
+    }),
     ("NSArray", false, "indexOfObjectIdenticalTo:", array_index_identical),
     ("NSMutableArray", false, "replaceObjectAtIndex:withObject:", array_replace),
     ("NSMutableArray", false, "setObject:atIndexedSubscript:", array_set_subscript),
@@ -4411,9 +4611,58 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableDictionary", false, "initWithCapacity:", dict_empty),
     ("NSDictionary", false, "count", dict_count),
     ("NSDictionary", false, "objectForKey:", dict_object_for_key),
-    ("NSDictionary", false, "objectForKeyedSubscript:", dict_object_for_key),
-    ("NSDictionary", false, "valueForKey:", dict_object_for_key),
+    ("NSDictionary", false, "objectForKeyedSubscript:", dict_lookup),
+    // Swift's NSDictionary subscript getter.
+    ("NSDictionary", false, "__swift_objectForKeyedSubscript:", dict_lookup),
+    ("NSDictionary", false, "valueForKey:", dict_lookup),
     ("NSDictionary", false, "allKeys", dict_all_keys),
+    // The values for `keys`, `marker` where one is missing.
+    ("NSDictionary", false, "objectsForKeys:notFoundMarker:", |e| {
+        let (d, keys, marker) = (e.arg(0), e.arg(2), e.arg(3));
+        let mut out = Vec::new();
+        for k in array_values(e, keys)? {
+            let v = send(e, d, "objectForKey:", &[k])?;
+            out.push(if v == 0 { marker } else { v });
+        }
+        let r = array_from(e, &out)?;
+        e.ret(r);
+        Ok(())
+    }),
+    ("NSDictionary", false, "allKeysForObject:", |e| {
+        let (d, o) = (e.arg(0), e.arg(2));
+        let mut out = Vec::new();
+        for (k, v) in dict_pairs(e, d)? {
+            if send(e, v, "isEqual:", &[o])? & 0xff != 0 {
+                out.push(k);
+            }
+        }
+        let r = array_from(e, &out)?;
+        e.ret(r);
+        Ok(())
+    }),
+    // block(key, obj, &stop) → BOOL: the keys it accepts, as an NSSet.
+    ("NSDictionary", false, "keysOfEntriesPassingTest:", |e| {
+        let (d, b) = (e.arg(0), e.arg(2));
+        let stop = e.alloc(8)?;
+        let mut out = Vec::new();
+        for (k, v) in dict_pairs(e, d)? {
+            if crate::libsystem::call_block(e, b, &[k, v, stop])? & 0xff != 0 {
+                out.push(k);
+            }
+            if e.p.memory.read_u8(stop)? != 0 {
+                break;
+            }
+        }
+        let a = array_from(e, &out)?;
+        let cls = host_class(e, "NSSet")?;
+        let set = send(e, cls, "setWithArray:", &[a])?;
+        e.ret(set);
+        Ok(())
+    }),
+    ("NSDictionary", false, "enumerateKeysAndObjectsWithOptions:usingBlock:", |e| {
+        e.cpu.x[2] = e.cpu.x[3];
+        dict_enumerate(e)
+    }),
     ("NSDictionary", false, "allValues", dict_all_values),
     ("NSDictionary", false, "copy", dict_copy),
     ("NSDictionary", false, "copyWithZone:", dict_copy),
@@ -4423,8 +4672,26 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSDictionary", false, "description", dict_description),
     ("NSMutableDictionary", false, "setObject:forKey:", dict_set_object),
     ("NSMutableDictionary", false, "setObject:forKeyedSubscript:", dict_set_object),
+    // Swift's NSMutableDictionary subscript setter (nil removes the key).
+    ("NSMutableDictionary", false, "__swift_setObject:forKeyedSubscript:", dict_set_object),
     ("NSMutableDictionary", false, "setValue:forKey:", dict_set_object),
     ("NSMutableDictionary", false, "removeObjectForKey:", dict_remove),
+    ("NSMutableDictionary", false, "removeObjectsForKeys:", |e| {
+        let (d, keys) = (e.arg(0), e.arg(2));
+        for k in if keys == 0 { vec![] } else { array_values(e, keys)? } {
+            cf(e, "_CFDictionaryRemoveValue", &[d, k])?;
+        }
+        Ok(())
+    }),
+    ("NSMutableDictionary", false, "setDictionary:", |e| {
+        let (d, other) = (e.arg(0), e.arg(2));
+        let pairs = if other == 0 { vec![] } else { dict_pairs(e, other)? };
+        cf(e, "_CFDictionaryRemoveAllValues", &[d])?;
+        for (k, v) in pairs {
+            cf(e, "_CFDictionarySetValue", &[d, k, v])?;
+        }
+        Ok(())
+    }),
     ("NSMutableDictionary", false, "removeAllObjects", dict_remove_all),
     ("NSMutableDictionary", false, "addEntriesFromDictionary:", dict_add_entries),
     // NSSet
@@ -4432,6 +4699,20 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSSet", true, "new", set_empty),
     ("NSSet", false, "init", set_empty),
     ("NSSet", true, "setWithArray:", set_with_array),
+    ("NSSet", true, "setWithSet:", |e| {
+        let other = e.arg(2);
+        let all = if other == 0 { 0 } else { send(e, other, "allObjects", &[])? };
+        e.cpu.x[2] = all;
+        set_with_array(e)
+    }),
+    ("NSSet", false, "initWithSet:", |e| {
+        let other = e.arg(2);
+        let all = if other == 0 { 0 } else { send(e, other, "allObjects", &[])? };
+        e.cpu.x[2] = all;
+        set_with_array(e)
+    }),
+    ("NSDictionary", true, "dictionaryWithObjects:forKeys:", dict_with_object_and_key_arrays),
+    ("NSDictionary", false, "initWithObjects:forKeys:", dict_with_object_and_key_arrays),
     ("NSSet", false, "isSubsetOfSet:", set_is_subset),
     ("NSSet", false, "intersectsSet:", set_intersects),
     ("NSSet", false, "setByAddingObject:", |e| {

@@ -137,6 +137,11 @@ fn ret(emu: &mut Emu, v: u64) -> Result<()> {
     Ok(())
 }
 
+/// An NSIndexSet's indexes, ascending.
+pub(crate) fn index_list(emu: &Emu, o: u64) -> Vec<u64> {
+    set(emu, o).indexes().collect()
+}
+
 fn set(emu: &Emu, o: u64) -> Indexes {
     emu.indexsets.sets.get(&o).cloned().unwrap_or_default()
 }

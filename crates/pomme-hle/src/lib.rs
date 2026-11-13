@@ -277,6 +277,8 @@ pub struct Emu {
     pub(crate) numberformatters: numberformatter::State,
     pub(crate) archiver: archiver::State,
     pub(crate) dateformatters: dateformatter::State,
+    /// NSInvocations whose methods are running, per thread (see invocation.rs).
+    pub(crate) invocations: std::collections::HashMap<usize, Vec<invocation::Pending>>,
     pub(crate) coretext: coretext::State,
     bundle: bundle::State,
 }
@@ -369,6 +371,7 @@ impl Emu {
             numberformatters: Default::default(),
             archiver: Default::default(),
             dateformatters: Default::default(),
+            invocations: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),
         };

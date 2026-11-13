@@ -292,6 +292,18 @@ impl Cpu {
                     }
                 }
                 op @ 0b001000..=0b001011 => self.shift_reg(a, op & 3, (b % width as u64) as u32, sf),
+                // CRC32B/H/W/X and CRC32CB/CH/CW/CX: Wd = CRC of Wn updated with the
+                // low 1/2/4/8 bytes of Rm (X only with sf); C picks Castagnoli's polynomial.
+                op @ 0b010000..=0b010111 => {
+                    let size = op & 3;
+                    if (size == 3) != sf {
+                        return unimpl;
+                    }
+                    let castagnoli = op & 4 != 0;
+                    let r = crc32(a as u32, b, 1 << size, castagnoli) as u64;
+                    self.wr(rd, false, r);
+                    return Ok(());
+                }
                 _ => return unimpl,
             };
             self.wr(rd, sf, r);
@@ -368,5 +380,38 @@ impl Cpu {
         }
 
         unimpl
+    }
+}
+
+/// The ARMv8 CRC32 instructions' step: `crc` (no pre- or post-inversion)
+/// updated with the low `bytes` bytes of `data`, least significant first, in
+/// reflected form: CRC-32 (0x04C11DB7) or CRC-32C (0x1EDC6F41).
+pub(crate) fn crc32(mut crc: u32, data: u64, bytes: u32, castagnoli: bool) -> u32 {
+    let poly = if castagnoli { 0x82F6_3B78 } else { 0xEDB8_8320 };
+    for i in 0..bytes {
+        crc ^= (data >> (8 * i)) as u8 as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ poly } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
+#[cfg(test)]
+mod crc_tests {
+    use super::crc32;
+
+    /// zlib's crc32("123456789") is 0xCBF43926 and CRC-32C's is 0xE3069283,
+    /// with the inversions the instructions leave to software.
+    #[test]
+    fn check_values() {
+        for (castagnoli, expect) in [(false, 0xCBF4_3926u32), (true, 0xE306_9283)] {
+            let crc = b"123456789".iter().fold(!0u32, |c, &b| crc32(c, b as u64, 1, castagnoli));
+            assert_eq!(!crc, expect);
+            // Eight bytes at once agree with one at a time.
+            let word = u64::from_le_bytes(*b"12345678");
+            let one = b"12345678".iter().fold(!0u32, |c, &b| crc32(c, b as u64, 1, castagnoli));
+            assert_eq!(crc32(!0, word, 8, castagnoli), one);
+        }
     }
 }

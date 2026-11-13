@@ -50,6 +50,7 @@ typedef NS_OPTIONS(unsigned long, NSStringCompareOptions) {
 @property (readonly) NSArray *allKeys;
 - (id)objectForKey:(id)key;
 - (instancetype)initWithObjects:(const id _Nonnull [_Nullable])objects forKeys:(const id _Nonnull [_Nullable])keys count:(unsigned long)count;
+- (instancetype)initWithDictionary:(NSDictionary *)otherDictionary;
 @end
 
 @interface NSSet : NSObject <NSFastEnumeration>

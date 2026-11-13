@@ -844,13 +844,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     // No filesystem or network yet: fail cleanly.
     ("_ioctl", fail),
     ("_readlink", fail),
-    ("_chmod", fail),
     ("_chown", fail),
-    ("_mkstemp", fail),
-    ("_opendir", ret_zero),
-    ("_readdir", ret_zero),
-    ("_readdir_r", ret_one),
-    ("_closedir", ret_zero),
     ("_socket", fail),
     ("_socketpair", fail),
     ("_bind", fail),

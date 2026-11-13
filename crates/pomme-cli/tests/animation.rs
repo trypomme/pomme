@@ -83,7 +83,16 @@ fn views_and_layers_animate() {
     let k0 = darkest(f0, *w0);
     for step in 1..=4 {
         let (t, w, f) = at(1.0 + 0.1 * step as f64);
-        let turns = ((*t as f64 - *t0 as f64) / 1e9 / 0.1).round() as usize;
-        assert_eq!(darkest(f, *w), (k0 + turns) % 8, "the head {turns} spokes on");
+        // Frames fall anywhere within a spoke's 0.1 s, so dt seconds apart the
+        // head has moved ⌊dt / 0.1⌋ or ⌈dt / 0.1⌉ spokes, clockwise; a frame
+        // landing exactly on a spoke change may show either side of it.
+        let spokes = (*t as f64 - *t0 as f64) / 1e9 / 0.1;
+        let allowed: Vec<usize> = ((spokes - 1.0 - 1e-3).ceil() as usize..=(spokes + 1.0 + 1e-3).floor() as usize)
+            .filter(|&n| (n as f64 - spokes).abs() < 1.0 + 1e-3)
+            .map(|n| (k0 + n) % 8)
+            .collect();
+        let k = darkest(f, *w);
+        assert!(allowed.contains(&k), "{spokes:.2} spokes on, the head is at {k}, expected one of {allowed:?}");
     }
 }
+
