@@ -23,7 +23,7 @@ if [ ! -d "$VENDOR/swift-5.2" ]; then
   git clone --depth 1 --branch swift-5.2.5-RELEASE --filter=blob:none --sparse \
     https://github.com/swiftlang/swift.git "$VENDOR/swift-5.2"
   git -C "$VENDOR/swift-5.2" sparse-checkout set stdlib/public/Darwin/ObjectiveC stdlib/public/Darwin/Dispatch \
-    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os
+    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os stdlib/public/Platform
 fi
 
 # Shim modules Apple's overlays import (ours, plus the old Dispatch one).
@@ -55,6 +55,15 @@ overlay() {
 
 overlay ObjectiveC swiftObjectiveC -import-underlying-module -- "$OLD/ObjectiveC/ObjectiveC.swift"
 overlay Darwin swiftDarwin -import-underlying-module -- "$HERE/overlays/Darwin/Darwin.swift"
+
+# _errno: Darwin's POSIXErrorCode and errno, which Apple's SDKs moved into
+# libswift_errno keeping their Darwin names (Foundation's POSIXError uses
+# them). Swift's own POSIXError.swift, marked as originally from Darwin.
+sed '/^public enum POSIXErrorCode/i\
+@_originallyDefinedIn(module: "Darwin", macOS 15.0)\
+@available(macOS 10.0, *)
+' "$VENDOR/swift-5.2/stdlib/public/Platform/POSIXError.swift" > "$OUT/POSIXError.swift"
+overlay _errno swift_errno -- "$OUT/POSIXError.swift" "$HERE/overlays/errno/errno.swift"
 
 # Dispatch: Apple's old overlay (minus the Combine scheduler).
 xcrun --sdk macosx clang -target "$TARGET" -isysroot "$SDK" -Os -c "$HERE/overlays/Dispatch/DispatchShims.c" -o "$OUT/DispatchShims.o"

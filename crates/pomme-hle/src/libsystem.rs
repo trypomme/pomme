@@ -28,6 +28,8 @@ pub struct State {
     env: Option<Vec<(String, String)>>,
     /// Guest copies of values handed out by getenv.
     env_strings: HashMap<(String, String), u64>,
+    /// `_NSGetEnviron()`'s cell (a `char **` to the environ array), or 0.
+    environ_cell: u64,
     /// `uselocale`'s current locale handle (0: the global one).
     thread_locale: u64,
     /// Per-image thread-local storage blocks.
@@ -936,6 +938,26 @@ fn setenv(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `_NSGetEnviron()`: where `environ` lives, a `char ***`. The array it
+/// points to is made afresh from the environment on each call, so it shows
+/// what setenv and unsetenv did.
+fn ns_get_environ(emu: &mut Emu) -> Result<()> {
+    let vars: Vec<String> = env(emu).iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let array = emu.alloc((vars.len() as u64 + 1) * 8)?;
+    for (i, kv) in vars.iter().enumerate() {
+        let s = emu.alloc_cstr(kv)?;
+        emu.write_u64(array + i as u64 * 8, s)?;
+    }
+    emu.write_u64(array + vars.len() as u64 * 8, 0)?;
+    if emu.sys.environ_cell == 0 {
+        emu.sys.environ_cell = emu.alloc(8)?;
+    }
+    let cell = emu.sys.environ_cell;
+    emu.write_u64(cell, array)?;
+    emu.ret(cell);
+    Ok(())
+}
+
 fn unsetenv(emu: &mut Emu) -> Result<()> {
     let name = emu.cstr(emu.arg(0))?;
     env(emu).retain(|(k, _)| *k != name);
@@ -1650,6 +1672,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_unsetenv", unsetenv),
     ("___error", errno_location),
     ("_getpid", getpid),
+    ("__NSGetEnviron", ns_get_environ),
     ("_getpagesize", pagesize),
     ("_host_page_size", host_page_size),
     ("_sysconf", sysconf),

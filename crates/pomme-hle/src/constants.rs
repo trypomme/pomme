@@ -247,7 +247,20 @@ const RECTS: &[(&str, [f64; 4])] = &[
 
 fn is_string_constant(name: &str) -> bool {
     let constant_shape = (name.starts_with(|c: char| c.is_ascii_uppercase()) || name.starts_with('k')) && !name.starts_with("OBJC_") && !name.contains('$');
-    constant_shape && (STRING_SUFFIXES.iter().any(|s| name.ends_with(s)) || STRING_PREFIXES.iter().any(|p| name.starts_with(p)))
+    constant_shape && (STRING_PREFIXES.iter().any(|p| name.starts_with(p)) || (STRING_SUFFIXES.iter().any(|s| name.ends_with(s)) && !names_a_function(name)))
+}
+
+/// A CoreFoundation-style function name: one with a verb word in it
+/// (`SCNetworkReachabilityCreateWithName`, `CFBundleGetIdentifier`), which a
+/// constant's name never has.
+fn names_a_function(name: &str) -> bool {
+    const VERBS: &[&str] = &["Create", "Copy", "Get", "Set", "Add", "Remove", "Schedule", "Unschedule"];
+    VERBS.iter().any(|v| {
+        name.match_indices(v).any(|(i, _)| {
+            let next = name[i + v.len()..].chars().next();
+            i > 0 && next.is_none_or(|c| c.is_ascii_uppercase())
+        })
+    })
 }
 
 fn rebind_all(emu: &mut Emu, stubs: Vec<u64>, target: u64) -> Result<()> {
@@ -335,6 +348,22 @@ pub(crate) fn bind(emu: &mut Emu) -> Result<()> {
         emu.p.rebind(stub, cell).map_err(|e| Stop::Unsupported(e.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn functions_are_not_string_constants() {
+        assert!(is_string_constant("UIApplicationDidBecomeActiveNotification"));
+        assert!(is_string_constant("NSFileProtectionKey"));
+        assert!(is_string_constant("kCFStreamPropertySSLSettingsKey"));
+        assert!(!is_string_constant("SCNetworkReachabilityCreateWithName"));
+        assert!(!is_string_constant("CFBundleGetIdentifierKey"));
+        // Prefixed families are constants whatever their words.
+        assert!(is_string_constant("kCGImageSourceCreateThumbnailFromImageAlways"));
+    }
 }
 
 // Accessibility queries: a sighted user with default settings.

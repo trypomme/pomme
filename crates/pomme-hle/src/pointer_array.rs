@@ -148,6 +148,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         set_entries(e, a, v);
         Ok(())
     }),
+    // for-in visits every entry, NULLs included, as Foundation's does.
+    (P, false, "countByEnumeratingWithState:objects:count:", |e| {
+        let a = e.arg(0);
+        crate::foundation::fast_enumerate(e, |e| Ok(entries(e, a).0))
+    }),
     (P, false, "allObjects", |e| {
         let v: Vec<u64> = entries(e, e.arg(0)).0.into_iter().filter(|&p| p != 0).collect();
         let arr = crate::foundation::new_array_of(e, &v)?;

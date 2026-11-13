@@ -88,6 +88,64 @@ const NOTE_TRIGGER: u32 = 0x0100_0000;
 pub struct Container {
     files: HashMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
+    /// Dates, permissions and protection of what's been made or changed;
+    /// anything else dates from the install (boot).
+    meta: HashMap<String, Meta>,
+}
+
+/// A file's or directory's metadata. Times are seconds since 1970.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Meta {
+    pub created: f64,
+    pub modified: f64,
+    /// The permission bits (0o644 for files, 0o755 for directories).
+    pub permissions: u16,
+    /// The data protection class (NSFileProtection…), if one was set.
+    pub protection: Option<String>,
+}
+
+impl Meta {
+    fn new(at: f64, dir: bool) -> Self {
+        Meta { created: at, modified: at, permissions: if dir { 0o755 } else { 0o644 }, protection: None }
+    }
+}
+
+/// What `stat` and NSFileManager report about a file or directory.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attributes {
+    pub size: u64,
+    pub is_dir: bool,
+    pub meta: Meta,
+    /// In the read-only app bundle.
+    pub read_only: bool,
+}
+
+/// Now, in seconds since 1970 (the guest's clock).
+fn now_1970(emu: &Emu) -> f64 {
+    crate::libsystem::EPOCH_BASE_SECS as f64 + crate::threads::now_ns(emu) as f64 / 1e9
+}
+
+/// When the app was installed: its boot.
+fn install_time() -> f64 {
+    crate::libsystem::EPOCH_BASE_SECS as f64
+}
+
+impl Container {
+    /// `p` was written (or made) at `at`.
+    fn touch(&mut self, p: &str, at: f64) {
+        let dir = self.dirs.contains(p);
+        self.meta.entry(p.to_string()).or_insert_with(|| Meta::new(at, dir)).modified = at;
+    }
+
+    fn meta_of(&self, p: &str) -> Meta {
+        self.meta.get(p).cloned().unwrap_or_else(|| Meta::new(install_time(), self.dirs.contains(p)))
+    }
+
+    /// Forget `p` and everything under it.
+    fn forget(&mut self, p: &str) {
+        let prefix = format!("{p}/");
+        self.meta.retain(|k, _| k != p && !k.starts_with(&prefix));
+    }
 }
 
 /// A fresh install's data container.
@@ -98,13 +156,18 @@ fn container(emu: &mut Emu) -> &mut Container {
         for d in ["", "/Documents", "/Library", "/Library/Caches", "/Library/Application Support", "/Library/Preferences", "/SystemData", "/tmp"] {
             dirs.insert(format!("{home}{d}"));
         }
-        Container { files: HashMap::new(), dirs }
+        Container { files: HashMap::new(), dirs, meta: HashMap::new() }
     })
 }
 
 /// A normalized guest path in the data container (or /tmp), if it is in one.
 pub fn data_path(path: &str) -> Option<String> {
-    let mut p = if path.starts_with("/var/") || path.starts_with("/tmp") { format!("/private{path}") } else { path.to_string() };
+    // Repeated slashes are one ("tmp//a" is "tmp/a"), as in any POSIX path.
+    let mut path = path.to_string();
+    while path.contains("//") {
+        path = path.replace("//", "/");
+    }
+    let mut p = if path.starts_with("/var/") || path.starts_with("/tmp") { format!("/private{path}") } else { path.clone() };
     while p.len() > 1 && p.ends_with('/') {
         p.pop();
     }
@@ -128,12 +191,104 @@ pub fn data_file(emu: &mut Emu, path: &str) -> Option<Vec<u8>> {
 /// Create or replace a data-container file. False when its directory is missing.
 pub fn write_data_file(emu: &mut Emu, path: &str, bytes: &[u8]) -> bool {
     let Some(p) = data_path(path) else { return false };
+    let now = now_1970(emu);
     let c = container(emu);
     if !c.dirs.contains(parent(&p)) && !p.starts_with("/private/tmp") {
         return false;
     }
-    c.files.insert(p, bytes.to_vec());
+    c.files.insert(p.clone(), bytes.to_vec());
+    c.touch(&p, now);
     true
+}
+
+/// A file's or directory's size, kind and metadata.
+pub fn attributes(emu: &mut Emu, path: &str) -> Option<Attributes> {
+    if let Some(p) = data_path(path) {
+        let c = container(emu);
+        let (size, is_dir) = match (c.dirs.contains(&p), c.files.get(&p)) {
+            (true, _) => (0, true),
+            (_, Some(d)) => (d.len() as u64, false),
+            _ => return None,
+        };
+        return Some(Attributes { size, is_dir, meta: c.meta_of(&p), read_only: false });
+    }
+    let h = host_path(emu, path)?;
+    let size = vfs::len(&h)?;
+    let is_dir = vfs::is_dir(&h);
+    Some(Attributes { size, is_dir, meta: Meta::new(install_time(), is_dir), read_only: true })
+}
+
+/// Change a data-container item's dates, permissions or protection class.
+/// False when it doesn't exist or is in the read-only bundle.
+pub fn set_attributes(emu: &mut Emu, path: &str, change: impl FnOnce(&mut Meta)) -> bool {
+    let Some(p) = data_path(path) else { return false };
+    let c = container(emu);
+    if !c.dirs.contains(&p) && !c.files.contains_key(&p) {
+        return false;
+    }
+    let mut m = c.meta_of(&p);
+    change(&mut m);
+    c.meta.insert(p, m);
+    true
+}
+
+/// Move a data-container file or directory (and what's in it) to `to`,
+/// whose directory must exist and which mustn't. Err(errno).
+pub fn move_item(emu: &mut Emu, from: &str, to: &str) -> std::result::Result<(), u64> {
+    let (Some(f), Some(t)) = (data_path(from), data_path(to)) else { return Err(EACCES) };
+    let c = container(emu);
+    if !c.dirs.contains(&f) && !c.files.contains_key(&f) {
+        return Err(ENOENT);
+    }
+    if c.dirs.contains(&t) || c.files.contains_key(&t) {
+        return Err(EEXIST);
+    }
+    if !c.dirs.contains(parent(&t)) || t.starts_with(&format!("{f}/")) {
+        return Err(ENOENT);
+    }
+    let moved = |k: &str| -> Option<String> { if k == f { Some(t.clone()) } else { k.strip_prefix(&format!("{f}/")).map(|r| format!("{t}/{r}")) } };
+    let files: Vec<String> = c.files.keys().filter(|k| moved(k).is_some()).cloned().collect();
+    for k in files {
+        let v = c.files.remove(&k).expect("listed");
+        c.files.insert(moved(&k).expect("moves"), v);
+    }
+    let dirs: Vec<String> = c.dirs.iter().filter(|k| moved(k).is_some()).cloned().collect();
+    for k in dirs {
+        c.dirs.remove(&k);
+        c.dirs.insert(moved(&k).expect("moves"));
+    }
+    let metas: Vec<String> = c.meta.keys().filter(|k| moved(k).is_some()).cloned().collect();
+    for k in metas {
+        let m = c.meta.remove(&k).expect("listed");
+        c.meta.insert(moved(&k).expect("moves"), m);
+    }
+    Ok(())
+}
+
+/// Copy a file or directory (from the bundle or the data container) to `to`
+/// in the data container, which mustn't exist. Err(errno).
+pub fn copy_item(emu: &mut Emu, from: &str, to: &str) -> std::result::Result<(), u64> {
+    let t = data_path(to).ok_or(EACCES)?;
+    if exists(emu, &t).is_some() {
+        return Err(EEXIST);
+    }
+    match exists(emu, from) {
+        None => Err(ENOENT),
+        Some(false) => {
+            let bytes = read_file(emu, from).ok_or(ENOENT)?;
+            if write_data_file(emu, &t, &bytes) { Ok(()) } else { Err(ENOENT) }
+        }
+        Some(true) => {
+            if exists(emu, parent(&t)) != Some(true) || !make_dirs(emu, &t, false) {
+                return Err(ENOENT);
+            }
+            let from = from.trim_end_matches('/').to_string();
+            for (name, _) in list_dir(emu, &from).unwrap_or_default() {
+                copy_item(emu, &format!("{from}/{name}"), &format!("{t}/{name}"))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Whether a guest path exists, and is a directory (bundle or data container).
@@ -169,6 +324,7 @@ pub fn list_dir(emu: &mut Emu, path: &str) -> Option<Vec<(String, bool)>> {
 /// `mkdir -p` in the data container.
 pub fn make_dirs(emu: &mut Emu, path: &str, intermediate: bool) -> bool {
     let Some(p) = data_path(path) else { return false };
+    let now = now_1970(emu);
     let c = container(emu);
     if c.files.contains_key(&p) {
         return false;
@@ -179,6 +335,7 @@ pub fn make_dirs(emu: &mut Emu, path: &str, intermediate: bool) -> bool {
     let mut cur = p.as_str();
     while data_path(cur).is_some() && !c.dirs.contains(cur) {
         c.dirs.insert(cur.to_string());
+        c.touch(cur, now);
         cur = parent(cur);
     }
     true
@@ -192,6 +349,7 @@ pub fn remove(emu: &mut Emu, path: &str) -> bool {
     let had = c.files.remove(&p).is_some() | c.dirs.remove(&p);
     c.files.retain(|k, _| !k.starts_with(&prefix));
     c.dirs.retain(|k| !k.starts_with(&prefix));
+    c.forget(&p);
     had
 }
 
@@ -260,6 +418,7 @@ const O_EXCL: u64 = 0x800;
 /// Open a data-container file with open(2) flags; Err(errno).
 fn open_data(emu: &mut Emu, path: &str, flags: u64) -> std::result::Result<u64, u64> {
     let p = data_path(path).ok_or(EACCES)?;
+    let now = now_1970(emu);
     let c = container(emu);
     if c.dirs.contains(&p) {
         // Directories open read-only (for fsync and friends).
@@ -280,7 +439,11 @@ fn open_data(emu: &mut Emu, path: &str, flags: u64) -> std::result::Result<u64, 
     };
     let writable = flags & O_ACCMODE != 0;
     if writable {
+        let changed = !c.files.contains_key(&p) || flags & O_TRUNC != 0;
         c.files.insert(p.clone(), data.clone());
+        if changed {
+            c.touch(&p, now);
+        }
     }
     Ok(open_file(emu, OpenFile { data, pos: 0, path: writable.then_some(p), append: flags & O_APPEND != 0 }))
 }
@@ -418,7 +581,10 @@ fn write_at(emu: &mut Emu, fd: u64, bytes: &[u8], at: Option<u64>) -> Option<u64
         f.pos = start + bytes.len();
     }
     let data = f.data.clone();
-    container(emu).files.insert(path, data);
+    let now = now_1970(emu);
+    let c = container(emu);
+    c.files.insert(path.clone(), data);
+    c.touch(&path, now);
     Some(bytes.len() as u64)
 }
 
@@ -666,7 +832,10 @@ fn ftruncate(emu: &mut Emu) -> Result<()> {
     let Some(path) = f.path.clone() else { return fail(emu, EACCES) };
     f.data.resize(len, 0);
     let data = f.data.clone();
-    container(emu).files.insert(path, data);
+    let now = now_1970(emu);
+    let c = container(emu);
+    c.files.insert(path.clone(), data);
+    c.touch(&path, now);
     emu.ret(0);
     Ok(())
 }
@@ -708,14 +877,19 @@ fn rmdir(emu: &mut Emu) -> Result<()> {
     }
 }
 
+/// `rename(from, to)`: a file replaces a file at `to`; a directory moves with what's in it.
 fn rename(emu: &mut Emu) -> Result<()> {
     let (from, to) = (emu.cstr(emu.arg(0))?, emu.cstr(emu.arg(1))?);
-    let (Some(f), Some(t)) = (data_path(&from), data_path(&to)) else { return fail(emu, EACCES) };
-    let c = container(emu);
-    let Some(bytes) = c.files.remove(&f) else { return fail(emu, ENOENT) };
-    c.files.insert(t, bytes);
-    emu.ret(0);
-    Ok(())
+    if exists(emu, &from) == Some(false) && exists(emu, &to) == Some(false) {
+        remove(emu, &to);
+    }
+    match move_item(emu, &from, &to) {
+        Ok(()) => {
+            emu.ret(0);
+            Ok(())
+        }
+        Err(e) => fail(emu, e),
+    }
 }
 
 /// `lseek(fd, offset, whence)`
@@ -735,9 +909,21 @@ fn lseek(emu: &mut Emu) -> Result<()> {
 
 /// Fill a Darwin arm64 `struct stat` (144 bytes).
 fn write_stat(emu: &mut Emu, buf: u64, size: u64, is_dir: bool) -> Result<()> {
+    let meta = Meta::new(install_time(), is_dir);
+    write_stat_meta(emu, buf, size, is_dir, &meta)
+}
+
+/// `struct stat` with the item's dates and permissions.
+fn write_stat_meta(emu: &mut Emu, buf: u64, size: u64, is_dir: bool, meta: &Meta) -> Result<()> {
     emu.p.memory.write(buf, &[0u8; 144])?;
-    let mode: u16 = if is_dir { 0o040755 } else { 0o100644 };
+    let mode: u16 = if is_dir { 0o040000 } else { 0o100000 } | (meta.permissions & 0o7777);
     emu.p.memory.write_u16(buf + 4, mode)?;
+    // st_atimespec, st_mtimespec, st_ctimespec, st_birthtimespec.
+    for (at, t) in [(32, meta.modified), (48, meta.modified), (64, meta.modified), (80, meta.created)] {
+        let secs = t.floor();
+        emu.write_u64(buf + at, secs as i64 as u64)?;
+        emu.write_u64(buf + at + 8, ((t - secs) * 1e9) as u64)?;
+    }
     emu.p.memory.write_u16(buf + 6, 1)?; // nlink
     emu.p.memory.write_u32(buf + 16, 501)?; // uid
     emu.p.memory.write_u32(buf + 20, 501)?; // gid
@@ -763,14 +949,9 @@ fn fstat(emu: &mut Emu) -> Result<()> {
 /// `stat(path, buf)` / `lstat`
 fn stat(emu: &mut Emu) -> Result<()> {
     let (path, buf) = (emu.cstr(emu.arg(0))?, emu.arg(1));
-    if let Some(p) = data_path(&path) {
-        let c = container(emu);
-        let (len, dir) = match (c.dirs.contains(&p), c.files.get(&p)) {
-            (true, _) => (0, true),
-            (_, Some(d)) => (d.len() as u64, false),
-            _ => return fail(emu, ENOENT),
-        };
-        write_stat(emu, buf, len, dir)?;
+    if data_path(&path).is_some() {
+        let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
+        write_stat_meta(emu, buf, a.size, a.is_dir, &a.meta)?;
         emu.ret(0);
         return Ok(());
     }
@@ -942,7 +1123,102 @@ fn fileno(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// A random letter or digit for a temporary name, from pomme's seeded generator.
+fn temp_char(emu: &mut Emu) -> u8 {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut x = emu.sys.rng_state();
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    emu.sys.set_rng_state(x);
+    CHARS[(x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as usize % CHARS.len()]
+}
+
+/// Fill the template's trailing X's (before `suffix` bytes) in place with a
+/// name nothing has yet. Err(errno): EINVAL without X's, EEXIST if every try is taken.
+fn fill_template(emu: &mut Emu, template: u64, suffix: usize) -> std::result::Result<String, u64> {
+    let t = emu.cstr(template).map_err(|_| EINVAL)?;
+    let end = t.len().checked_sub(suffix).ok_or(EINVAL)?;
+    let xs = t[..end].bytes().rev().take_while(|&b| b == b'X').count();
+    if xs == 0 {
+        return Err(EINVAL);
+    }
+    for _ in 0..100 {
+        let mut name = t.clone().into_bytes();
+        for b in &mut name[end - xs..end] {
+            *b = temp_char(emu);
+        }
+        let name = String::from_utf8(name).map_err(|_| EINVAL)?;
+        if exists(emu, &name).is_none() {
+            emu.p.memory.write(template, name.as_bytes()).map_err(|_| EINVAL)?;
+            return Ok(name);
+        }
+    }
+    Err(EEXIST)
+}
+
+/// `mktemp(template)`: the template, its X's made into a free name.
+fn mktemp(emu: &mut Emu) -> Result<()> {
+    let t = emu.arg(0);
+    match fill_template(emu, t, 0) {
+        Ok(_) => {
+            emu.ret(t);
+            Ok(())
+        }
+        Err(e) => {
+            crate::libsystem::set_errno(emu, e)?;
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
+/// `mkstemp`/`mkostemp`/`mkstemps`: make and open (read-write) a new file.
+fn mkstemp_with(emu: &mut Emu, suffix: usize, extra_flags: u64) -> Result<()> {
+    let t = emu.arg(0);
+    let opened = fill_template(emu, t, suffix).and_then(|name| open_data(emu, &name, 2 | O_CREAT | O_EXCL | (extra_flags & O_APPEND)));
+    match opened {
+        Ok(fd) => {
+            emu.ret(fd);
+            Ok(())
+        }
+        Err(e) => fail(emu, e),
+    }
+}
+
+/// `mkdtemp(template)`: make a new directory; the template, or NULL.
+fn mkdtemp(emu: &mut Emu) -> Result<()> {
+    let t = emu.arg(0);
+    match fill_template(emu, t, 0) {
+        Ok(name) if make_dirs(emu, &name, false) => {
+            emu.ret(t);
+            Ok(())
+        }
+        Ok(_) => {
+            crate::libsystem::set_errno(emu, ENOENT)?;
+            emu.ret(0);
+            Ok(())
+        }
+        Err(e) => {
+            crate::libsystem::set_errno(emu, e)?;
+            emu.ret(0);
+            Ok(())
+        }
+    }
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_mktemp", mktemp),
+    ("_mkstemp", |e| mkstemp_with(e, 0, 0)),
+    ("_mkostemp", |e| {
+        let flags = e.arg(1);
+        mkstemp_with(e, 0, flags)
+    }),
+    ("_mkstemps", |e| {
+        let suffix = e.arg(1) as usize;
+        mkstemp_with(e, suffix, 0)
+    }),
+    ("_mkdtemp", mkdtemp),
     ("_open", open),
     ("_close", close),
     ("_read", read),

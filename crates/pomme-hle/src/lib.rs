@@ -34,6 +34,11 @@ mod json;
 mod calendar;
 mod scanner;
 mod sysctl;
+mod filemanager;
+mod uuid;
+mod reachability;
+mod storekit;
+mod userdefaults;
 mod plist;
 mod regex;
 pub mod navigation;
@@ -263,6 +268,9 @@ pub struct Emu {
     pub(crate) locales: locale::State,
     pub(crate) calendars: calendar::State,
     pub(crate) scanners: scanner::State,
+    pub(crate) reachability: reachability::State,
+    pub(crate) storekit: storekit::State,
+    pub(crate) defaults: userdefaults::State,
     pub(crate) coretext: coretext::State,
     bundle: bundle::State,
 }
@@ -274,7 +282,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, fs::FUNCS, printf::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -349,6 +357,9 @@ impl Emu {
             locales: Default::default(),
             calendars: Default::default(),
             scanners: Default::default(),
+            reachability: Default::default(),
+            storekit: Default::default(),
+            defaults: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),
         };

@@ -607,6 +607,13 @@ fn asl_log(emu: &mut Emu) -> Result<()> {
 /// so runs stay reproducible.
 fn uuid_generate_random(emu: &mut Emu) -> Result<()> {
     let out = emu.arg(0);
+    let bytes = random_uuid(emu);
+    emu.p.memory.write(out, &bytes)?;
+    Ok(())
+}
+
+/// A random (version 4) UUID's bytes, from pomme's seeded generator.
+pub(crate) fn random_uuid(emu: &mut Emu) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     for b in bytes.iter_mut() {
         // xorshift64*
@@ -619,8 +626,7 @@ fn uuid_generate_random(emu: &mut Emu) -> Result<()> {
     }
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
     bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-    emu.p.memory.write(out, &bytes)?;
-    Ok(())
+    bytes
 }
 
 /// `uuid_unparse_upper(const uuid_t uu, char *out)` (and lower): 36 chars + NUL.

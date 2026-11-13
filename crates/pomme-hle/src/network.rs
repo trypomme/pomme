@@ -160,7 +160,7 @@ pub fn set_path(emu: &mut Emu, p: Path) -> Result<()> {
     for m in monitors {
         update(emu, m)?;
     }
-    Ok(())
+    crate::reachability::path_changed(emu)
 }
 
 /// Put the scripted changes (`--network offline@3`) on the main run loop.

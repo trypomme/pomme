@@ -301,6 +301,49 @@ fn vsprintf(emu: &mut Emu) -> Result<()> {
     store(emu, emu.arg(0), u64::MAX, &s)
 }
 
+/// The fortified (`_FORTIFY_SOURCE`) forms the compiler emits for buffers of
+/// known size `slen`: as their plain versions, but a write that could pass
+/// the buffer's end aborts, as libc's `__chk_fail` does.
+fn chk_fail() -> Result<()> {
+    Err(crate::Stop::Unsupported("buffer overflow detected (__chk_fail): a fortified printf was given more room than its buffer has".into()))
+}
+
+/// `__snprintf_chk(s, maxlen, flag, slen, fmt, ...)`
+fn snprintf_chk(emu: &mut Emu) -> Result<()> {
+    if emu.arg(1) > emu.arg(3) {
+        return chk_fail();
+    }
+    let s = fmt_at(emu, 4, emu.cpu.sp)?;
+    store(emu, emu.arg(0), emu.arg(1), &s)
+}
+
+/// `__vsnprintf_chk(s, maxlen, flag, slen, fmt, va_list)`
+fn vsnprintf_chk(emu: &mut Emu) -> Result<()> {
+    if emu.arg(1) > emu.arg(3) {
+        return chk_fail();
+    }
+    let s = fmt_at(emu, 4, emu.arg(5))?;
+    store(emu, emu.arg(0), emu.arg(1), &s)
+}
+
+/// `__sprintf_chk(s, flag, slen, fmt, ...)`
+fn sprintf_chk(emu: &mut Emu) -> Result<()> {
+    let s = fmt_at(emu, 3, emu.cpu.sp)?;
+    if s.len() as u64 >= emu.arg(2) {
+        return chk_fail();
+    }
+    store(emu, emu.arg(0), u64::MAX, &s)
+}
+
+/// `__vsprintf_chk(s, flag, slen, fmt, va_list)`
+fn vsprintf_chk(emu: &mut Emu) -> Result<()> {
+    let s = fmt_at(emu, 3, emu.arg(4))?;
+    if s.len() as u64 >= emu.arg(2) {
+        return chk_fail();
+    }
+    store(emu, emu.arg(0), u64::MAX, &s)
+}
+
 fn alloc_result(emu: &mut Emu, out: u64, s: &[u8]) -> Result<()> {
     let p = emu.alloc(s.len() as u64 + 1)?;
     emu.p.memory.write(p, s)?;
@@ -399,6 +442,10 @@ fn fflush(emu: &mut Emu) -> Result<()> {
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_snprintf", snprintf),
+    ("___snprintf_chk", snprintf_chk),
+    ("___vsnprintf_chk", vsnprintf_chk),
+    ("___sprintf_chk", sprintf_chk),
+    ("___vsprintf_chk", vsprintf_chk),
     ("_snprintf_l", snprintf_l),
     ("_vsnprintf", vsnprintf),
     ("_sprintf", sprintf),

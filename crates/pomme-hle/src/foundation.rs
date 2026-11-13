@@ -47,7 +47,6 @@ pub struct State {
     center: u64,
     observers: Vec<Observer>,
     file_manager: u64,
-    defaults: u64,
     process_info: u64,
     /// CF type ID → bridged class.
     type_classes: HashMap<u64, u64>,
@@ -740,6 +739,38 @@ fn string_compare(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+// NSStringCompareOptions (CFStringCompareFlags has the same values).
+const COMPARE_CASE_INSENSITIVE: u64 = 1;
+const COMPARE_LOCALIZED: u64 = 32;
+const COMPARE_NUMERIC: u64 = 64;
+const COMPARE_WIDTH_INSENSITIVE: u64 = 256;
+
+/// Compare the receiver (in `range`, or all of it) with x2 the way
+/// `compare:options:range:locale:` does: CoreFoundation's comparison, with a
+/// locale when it's localized (the current one, en_US, unless given).
+fn compare_with(emu: &mut Emu, options: u64, range: Option<(u64, u64)>, locale: u64) -> Result<()> {
+    let (a, b) = (emu.arg(0), emu.arg(2));
+    if b == 0 {
+        emu.ret(1); // NSOrderedDescending: nil sorts first
+        return Ok(());
+    }
+    let (a, b) = (as_cf_string(emu, a)?, as_cf_string(emu, b)?);
+    let (loc, len) = match range {
+        Some(r) => r,
+        None => (0, cf(emu, "_CFStringGetLength", &[a])?),
+    };
+    let locale = if locale != 0 {
+        locale
+    } else if options & COMPARE_LOCALIZED != 0 {
+        cf(emu, "_CFLocaleCopyCurrent", &[])?
+    } else {
+        0
+    };
+    let r = cf(emu, "_CFStringCompareWithOptionsAndLocale", &[a, b, loc, len, options & !COMPARE_LOCALIZED, locale])?;
+    emu.ret(r as i64 as u64);
+    Ok(())
+}
+
 fn integer_value(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(0))?;
     let t = s.trim_start();
@@ -794,6 +825,15 @@ fn substring_to(emu: &mut Emu) -> Result<()> {
     ret_string(emu, &r)
 }
 
+/// `+[NSString pathWithComponents:]`: the components joined with "/", a
+/// leading "/" component making the path absolute; empty ones are skipped.
+fn join_path_components(parts: &[String]) -> String {
+    let absolute = parts.first().is_some_and(|p| p.starts_with('/'));
+    let names: Vec<&str> = parts.iter().map(|p| p.trim_matches('/')).filter(|p| !p.is_empty()).collect();
+    let joined = names.join("/");
+    if absolute { format!("/{joined}") } else { joined }
+}
+
 /// `-rangeOfString:` → NSRange {location, length} in x0/x1 (NSNotFound = i64::MAX).
 fn range_of_string(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(0))?;
@@ -808,6 +848,56 @@ fn range_of_string(emu: &mut Emu) -> Result<()> {
             emu.cpu.x[1] = 0;
         }
     }
+    Ok(())
+}
+
+// NSStringCompareOptions for searching.
+const SEARCH_REGULAR_EXPRESSION: u64 = 1024;
+
+/// `rangeOfString:options:range:locale:` (and its shorter forms): the first
+/// (or, backwards, last) match of x2 in the receiver's `range`, as
+/// CoreFoundation's search finds it; regular-expression searches use the
+/// regex engine. NSRange {location, length} in x0/x1, NSNotFound when none.
+fn range_of_string_with(emu: &mut Emu, options: u64, range: Option<(u64, u64)>, locale: u64) -> Result<()> {
+    let (s, needle) = (emu.arg(0), emu.arg(2));
+    let not_found = |emu: &mut Emu| {
+        emu.cpu.x[0] = i64::MAX as u64;
+        emu.cpu.x[1] = 0;
+        Ok(())
+    };
+    if needle == 0 {
+        return not_found(emu);
+    }
+    if options & SEARCH_REGULAR_EXPRESSION != 0 {
+        let units: Vec<u16> = nsstring(emu, s)?.encode_utf16().collect();
+        let (loc, len) = range.map_or((0, units.len()), |(l, n)| (l as usize, n as usize));
+        let Some(slice) = units.get(loc..loc + len) else { return not_found(emu) };
+        let hay = String::from_utf16_lossy(slice);
+        let pattern = nsstring(emu, needle)?;
+        let pattern = if options & COMPARE_CASE_INSENSITIVE != 0 { format!("(?i){pattern}") } else { pattern };
+        let pattern = if options & 8 != 0 { format!("^(?:{pattern})") } else { pattern }; // NSAnchoredSearch
+        let Ok(re) = regex::Regex::new(&pattern) else { return not_found(emu) };
+        return match re.find(&hay) {
+            Some(m) => {
+                emu.cpu.x[0] = (loc + hay[..m.start()].encode_utf16().count()) as u64;
+                emu.cpu.x[1] = m.as_str().encode_utf16().count() as u64;
+                Ok(())
+            }
+            None => not_found(emu),
+        };
+    }
+    let (s, needle) = (as_cf_string(emu, s)?, as_cf_string(emu, needle)?);
+    let (loc, len) = match range {
+        Some(r) => r,
+        None => (0, cf(emu, "_CFStringGetLength", &[s])?),
+    };
+    let out = emu.alloc(16)?;
+    let found = cf(emu, "_CFStringFindWithOptionsAndLocale", &[s, needle, loc, len, options, locale, out])? & 0xff != 0;
+    if !found {
+        return not_found(emu);
+    }
+    emu.cpu.x[0] = emu.read_u64(out)?;
+    emu.cpu.x[1] = emu.read_u64(out + 8)?;
     Ok(())
 }
 
@@ -1293,7 +1383,7 @@ fn array_components_joined(emu: &mut Emu) -> Result<()> {
 
 /// `-countByEnumeratingWithState:objects:count:` (for-in loops), over a snapshot.
 /// state: {unsigned long state; id *itemsPtr; unsigned long *mutationsPtr; unsigned long extra[5]}
-fn fast_enumerate(emu: &mut Emu, values: impl FnOnce(&mut Emu) -> Result<Vec<u64>>) -> Result<()> {
+pub(crate) fn fast_enumerate(emu: &mut Emu, values: impl FnOnce(&mut Emu) -> Result<Vec<u64>>) -> Result<()> {
     let state = emu.arg(2);
     if emu.read_u64(state)? == 0 {
         let v = values(emu)?;
@@ -3387,9 +3477,20 @@ fn ns_temporary_directory(emu: &mut Emu) -> Result<()> {
 
 // ---- NSCache: a dictionary that never evicts (deterministic) ----
 
+/// The cache's dictionary, in its second word (made on first use).
+fn cache_store(emu: &mut Emu, c: u64) -> Result<u64> {
+    let s = emu.read_u64(c + 8)?;
+    if s != 0 {
+        return Ok(s);
+    }
+    let s = new_dict(emu)?;
+    emu.write_u64(c + 8, s)?;
+    Ok(s)
+}
+
 fn cache_get(emu: &mut Emu) -> Result<()> {
     let (c, key) = (emu.arg(0), emu.arg(2));
-    let store = defaults_store(emu, c)?;
+    let store = cache_store(emu, c)?;
     let v = if key == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[store, key])? };
     emu.ret(v);
     Ok(())
@@ -3397,7 +3498,7 @@ fn cache_get(emu: &mut Emu) -> Result<()> {
 
 fn cache_set(emu: &mut Emu) -> Result<()> {
     let (c, v, key) = (emu.arg(0), emu.arg(2), emu.arg(3));
-    let store = defaults_store(emu, c)?;
+    let store = cache_store(emu, c)?;
     if key != 0 {
         if v == 0 {
             cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
@@ -3410,148 +3511,15 @@ fn cache_set(emu: &mut Emu) -> Result<()> {
 
 fn cache_remove(emu: &mut Emu) -> Result<()> {
     let (c, key) = (emu.arg(0), emu.arg(2));
-    let store = defaults_store(emu, c)?;
+    let store = cache_store(emu, c)?;
     cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
     Ok(())
 }
 
 fn cache_remove_all(emu: &mut Emu) -> Result<()> {
     let c = emu.arg(0);
-    let store = defaults_store(emu, c)?;
+    let store = cache_store(emu, c)?;
     cf(emu, "_CFDictionaryRemoveAllValues", &[store])?;
-    Ok(())
-}
-
-// ---- NSUserDefaults: in memory, per run (nothing persists yet) ----
-
-fn user_defaults(emu: &mut Emu) -> Result<()> {
-    if emu.fnd.defaults == 0 {
-        let cls = host_class(emu, "NSUserDefaults")?;
-        let ud = objc::create_instance(emu, cls, 0)?;
-        let store = new_dict(emu)?;
-        emu.write_u64(ud + 8, store)?;
-        // What a fresh English-language device reports.
-        let en = new_nsstring(emu, "en")?;
-        let langs = array_from(emu, &[en])?;
-        let k = new_nsstring(emu, "AppleLanguages")?;
-        cf(emu, "_CFDictionarySetValue", &[store, k, langs])?;
-        let k = new_nsstring(emu, "AppleLocale")?;
-        let v = new_nsstring(emu, "en_US")?;
-        cf(emu, "_CFDictionarySetValue", &[store, k, v])?;
-        emu.fnd.defaults = ud;
-    }
-    emu.ret(emu.fnd.defaults);
-    Ok(())
-}
-
-fn defaults_store(emu: &mut Emu, ud: u64) -> Result<u64> {
-    let s = emu.read_u64(ud + 8)?;
-    if s != 0 {
-        return Ok(s);
-    }
-    let s = new_dict(emu)?;
-    emu.write_u64(ud + 8, s)?;
-    Ok(s)
-}
-
-fn defaults_get(emu: &mut Emu) -> Result<u64> {
-    let (ud, key) = (emu.arg(0), emu.arg(2));
-    let store = defaults_store(emu, ud)?;
-    if key == 0 { Ok(0) } else { cf(emu, "_CFDictionaryGetValue", &[store, key]) }
-}
-
-fn defaults_set(emu: &mut Emu, value: u64) -> Result<()> {
-    let (ud, key) = (emu.arg(0), emu.arg(3));
-    let store = defaults_store(emu, ud)?;
-    if value == 0 {
-        cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
-    } else {
-        cf(emu, "_CFDictionarySetValue", &[store, key, value])?;
-    }
-    Ok(())
-}
-
-fn defaults_object(emu: &mut Emu) -> Result<()> {
-    let v = defaults_get(emu)?;
-    emu.ret(v);
-    Ok(())
-}
-
-fn defaults_set_object(emu: &mut Emu) -> Result<()> {
-    defaults_set(emu, emu.arg(2))
-}
-
-fn defaults_remove(emu: &mut Emu) -> Result<()> {
-    let (ud, key) = (emu.arg(0), emu.arg(2));
-    let store = defaults_store(emu, ud)?;
-    cf(emu, "_CFDictionaryRemoveValue", &[store, key])?;
-    Ok(())
-}
-
-fn defaults_bool(emu: &mut Emu) -> Result<()> {
-    let v = defaults_get(emu)?;
-    let b = v != 0 && send(emu, v, "boolValue", &[])? & 0xff != 0;
-    ret_bool(emu, b)
-}
-
-fn defaults_integer(emu: &mut Emu) -> Result<()> {
-    let v = defaults_get(emu)?;
-    let i = if v == 0 { 0 } else { send(emu, v, "integerValue", &[])? };
-    emu.ret(i);
-    Ok(())
-}
-
-fn defaults_double(emu: &mut Emu) -> Result<()> {
-    let v = defaults_get(emu)?;
-    let d = if v == 0 {
-        0.0
-    } else {
-        send(emu, v, "doubleValue", &[])?;
-        f64::from_bits(emu.last_q0 as u64)
-    };
-    emu.cpu.q[0] = d.to_bits() as u128;
-    Ok(())
-}
-
-fn defaults_set_bool(emu: &mut Emu) -> Result<()> {
-    let v = boolean(emu, emu.arg(2) & 0xff != 0);
-    defaults_set(emu, v)
-}
-
-fn defaults_set_integer(emu: &mut Emu) -> Result<()> {
-    let v = new_number_i64(emu, emu.arg(2) as i64)?;
-    defaults_set(emu, v)
-}
-
-fn defaults_set_double(emu: &mut Emu) -> Result<()> {
-    let d = f64::from_bits(emu.cpu.q[0] as u64);
-    // setDouble:forKey: has the key in x2 (the double is in d0).
-    let (ud, key) = (emu.arg(0), emu.arg(2));
-    let v = new_number_f64(emu, d)?;
-    let store = defaults_store(emu, ud)?;
-    cf(emu, "_CFDictionarySetValue", &[store, key, v])?;
-    Ok(())
-}
-
-/// `-registerDefaults:` — only fills keys that aren't set.
-fn defaults_register(emu: &mut Emu) -> Result<()> {
-    let (ud, d) = (emu.arg(0), emu.arg(2));
-    let store = defaults_store(emu, ud)?;
-    for (k, v) in dict_pairs(emu, d)? {
-        cf(emu, "_CFDictionaryAddValue", &[store, k, v])?;
-    }
-    Ok(())
-}
-
-fn defaults_dictionary(emu: &mut Emu) -> Result<()> {
-    let store = defaults_store(emu, emu.arg(0))?;
-    dict_with_dict_of(emu, store)
-}
-
-fn defaults_init_suite(emu: &mut Emu) -> Result<()> {
-    let ud = emu.arg(0);
-    defaults_store(emu, ud)?;
-    emu.ret(ud);
     Ok(())
 }
 
@@ -3739,33 +3707,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSCache", false, "setObject:forKey:cost:", cache_set),
     ("NSCache", false, "removeObjectForKey:", cache_remove),
     ("NSCache", false, "removeAllObjects", cache_remove_all),
-    ("NSUserDefaults", true, "standardUserDefaults", user_defaults),
-    ("NSUserDefaults", false, "initWithSuiteName:", defaults_init_suite),
-    ("NSUserDefaults", false, "objectForKey:", defaults_object),
-    ("NSUserDefaults", false, "stringForKey:", defaults_object),
-    ("NSUserDefaults", false, "arrayForKey:", defaults_object),
-    ("NSUserDefaults", false, "dictionaryForKey:", defaults_object),
-    ("NSUserDefaults", false, "dataForKey:", defaults_object),
-    ("NSUserDefaults", false, "stringArrayForKey:", defaults_object),
-    ("NSUserDefaults", false, "URLForKey:", defaults_object),
-    ("NSUserDefaults", false, "boolForKey:", defaults_bool),
-    ("NSUserDefaults", false, "integerForKey:", defaults_integer),
-    ("NSUserDefaults", false, "doubleForKey:", defaults_double),
-    ("NSUserDefaults", false, "floatForKey:", |e| {
-        defaults_double(e)?;
-        let d = f64::from_bits(e.cpu.q[0] as u64);
-        e.cpu.q[0] = (d as f32).to_bits() as u128;
-        Ok(())
-    }),
-    ("NSUserDefaults", false, "setObject:forKey:", defaults_set_object),
-    ("NSUserDefaults", false, "setValue:forKey:", defaults_set_object),
-    ("NSUserDefaults", false, "setBool:forKey:", defaults_set_bool),
-    ("NSUserDefaults", false, "setInteger:forKey:", defaults_set_integer),
-    ("NSUserDefaults", false, "setDouble:forKey:", defaults_set_double),
-    ("NSUserDefaults", false, "removeObjectForKey:", defaults_remove),
-    ("NSUserDefaults", false, "registerDefaults:", defaults_register),
-    ("NSUserDefaults", false, "dictionaryRepresentation", defaults_dictionary),
-    ("NSUserDefaults", false, "synchronize", ret_yes),
     ("NSData", true, "alloc", cluster_alloc),
     ("NSData", true, "data", data_empty),
     ("NSData", true, "new", data_empty),
@@ -3954,6 +3895,20 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "stringByAppendingPathComponent:", appending_component),
     ("NSString", false, "stringByAppendingPathExtension:", appending_extension),
     ("NSString", false, "pathComponents", path_components),
+    ("NSString", true, "pathWithComponents:", |e| {
+        let a = e.arg(2);
+        let mut parts = Vec::new();
+        for c in array_values(e, a)? {
+            parts.push(nsstring(e, c)?);
+        }
+        ret_string(e, &join_path_components(&parts))
+    }),
+    ("NSString", false, "stringByAbbreviatingWithTildeInPath", |e| {
+        let s = nsstring(e, e.arg(0))?;
+        let home = DATA_CONTAINER;
+        let r = if s == home { "~".to_string() } else { s.strip_prefix(&format!("{home}/")).map_or(s.clone(), |rest| format!("~/{rest}")) };
+        ret_string(e, &r)
+    }),
     ("NSString", false, "isAbsolutePath", |e| {
         let s = nsstring(e, e.arg(0))?;
         ret_bool(e, s.starts_with('/'))
@@ -4175,6 +4130,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "initWithFormat:arguments:", string_with_format_va),
     ("NSString", false, "length", string_length),
     ("NSString", false, "UTF8String", utf8_string),
+    // A path's bytes for the file system: UTF-8 (pomme's file system keeps names as given).
+    ("NSString", false, "fileSystemRepresentation", utf8_string),
+    ("NSString", false, "getFileSystemRepresentation:maxLength:", |e| {
+        let (s, buf, max) = (e.arg(0), e.arg(2), e.arg(3));
+        let text = nsstring(e, s)?;
+        if text.len() as u64 + 1 > max {
+            return ret_bool(e, false);
+        }
+        e.p.memory.write(buf, text.as_bytes())?;
+        e.p.memory.write_u8(buf + text.len() as u64, 0)?;
+        ret_bool(e, true)
+    }),
     ("NSString", false, "characterAtIndex:", character_at_index),
     ("NSString", false, "isEqualToString:", is_equal_to_string),
     ("NSString", false, "isEqual:", string_is_equal),
@@ -4190,6 +4157,25 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "lowercaseString", lowercase),
     ("NSString", false, "uppercaseString", uppercase),
     ("NSString", false, "compare:", string_compare),
+    ("NSString", false, "compare:options:", |e| {
+        let o = e.arg(3);
+        compare_with(e, o, None, 0)
+    }),
+    ("NSString", false, "compare:options:range:", |e| {
+        let (o, loc, len) = (e.arg(3), e.arg(4), e.arg(5));
+        compare_with(e, o, Some((loc, len)), 0)
+    }),
+    ("NSString", false, "compare:options:range:locale:", |e| {
+        let (o, loc, len, l) = (e.arg(3), e.arg(4), e.arg(5), e.arg(6));
+        compare_with(e, o | if l != 0 { COMPARE_LOCALIZED } else { 0 }, Some((loc, len)), l)
+    }),
+    ("NSString", false, "caseInsensitiveCompare:", |e| compare_with(e, COMPARE_CASE_INSENSITIVE, None, 0)),
+    ("NSString", false, "localizedCompare:", |e| compare_with(e, COMPARE_LOCALIZED, None, 0)),
+    ("NSString", false, "localizedCaseInsensitiveCompare:", |e| compare_with(e, COMPARE_LOCALIZED | COMPARE_CASE_INSENSITIVE, None, 0)),
+    // Finder's order: case- and width-insensitive, numbers by value.
+    ("NSString", false, "localizedStandardCompare:", |e| {
+        compare_with(e, COMPARE_LOCALIZED | COMPARE_CASE_INSENSITIVE | COMPARE_NUMERIC | COMPARE_WIDTH_INSENSITIVE, None, 0)
+    }),
     ("NSString", false, "intValue", integer_value),
     ("NSString", false, "integerValue", integer_value),
     ("NSString", false, "longLongValue", integer_value),
@@ -4199,6 +4185,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "substringFromIndex:", substring_from),
     ("NSString", false, "substringToIndex:", substring_to),
     ("NSString", false, "rangeOfString:", range_of_string),
+    ("NSString", false, "rangeOfString:options:", |e| {
+        let o = e.arg(3);
+        range_of_string_with(e, o, None, 0)
+    }),
+    ("NSString", false, "rangeOfString:options:range:", |e| {
+        let (o, loc, len) = (e.arg(3), e.arg(4), e.arg(5));
+        range_of_string_with(e, o, Some((loc, len)), 0)
+    }),
+    ("NSString", false, "rangeOfString:options:range:locale:", |e| {
+        let (o, loc, len, l) = (e.arg(3), e.arg(4), e.arg(5), e.arg(6));
+        range_of_string_with(e, o, Some((loc, len)), l)
+    }),
     ("NSString", false, "containsString:", contains_string),
     ("NSString", false, "getCString:maxLength:encoding:", get_cstring),
     ("NSString", false, "lengthOfBytesUsingEncoding:", length_of_bytes),
@@ -4223,6 +4221,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (m, with) = (e.arg(0), e.arg(2));
         let with = as_cf_string(e, with)?;
         cf(e, "_CFStringReplaceAll", &[m, with])?;
+        Ok(())
+    }),
+    // CFStringFindAndReplace takes NSStringCompareOptions' values (case-insensitive, literal, backwards, anchored).
+    ("NSMutableString", false, "replaceOccurrencesOfString:withString:options:range:", |e| {
+        let (m, find, with, options, loc, len) = (e.arg(0), e.arg(2), e.arg(3), e.arg(4), e.arg(5), e.arg(6));
+        let (find, with) = (as_cf_string(e, find)?, as_cf_string(e, with)?);
+        let n = cf(e, "_CFStringFindAndReplace", &[m, find, with, loc, len, options])?;
+        e.ret(n);
         Ok(())
     }),
     ("NSString", false, "_fastCStringContents:", fast_cstring_contents),

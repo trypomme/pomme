@@ -463,7 +463,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let components = crate::calendar::component_methods();
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::animation::METHODS, crate::spinner::METHODS, EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::indexset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::animation::METHODS, crate::spinner::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -581,6 +581,9 @@ fn new_class(emu: &mut Emu, name: &str, superclass: u64, own_size: Option<u64>) 
         (sm, emu.objc.classes[&sm].isa)
     };
 
+    // A subclass's instances start as big as its superclass's (read from the
+    // superclass's own class data, which a Swift class sizes itself).
+    let size = own_size.unwrap_or_else(|| if superclass == 0 { 8 } else { instance_size(emu, superclass) });
     let (cls, swift_bits) = alloc_class_for_subclass(emu, superclass)?;
     let meta = emu.alloc(CLASS_SIZE)?;
     let name_ptr = emu.alloc_cstr(name)?;
@@ -592,12 +595,13 @@ fn new_class(emu: &mut Emu, name: &str, superclass: u64, own_size: Option<u64>) 
         emu.write_u64(c + 8, sup)?;
         // A Swift superclass's subclass is a Swift class too (the data word's low bits say so).
         emu.write_u64(c + 32, ro | if c == cls { swift_bits } else { 0 })?;
+        // class_ro_t's flags, instanceStart and instanceSize.
+        let ro_size = if c == cls { size as u32 } else { 8 };
         emu.p.memory.write_u32(ro, meta_flag)?;
-        emu.p.memory.write_u32(ro + 4, 8)?;
-        emu.p.memory.write_u32(ro + 8, 8)?;
+        emu.p.memory.write_u32(ro + 4, ro_size)?;
+        emu.p.memory.write_u32(ro + 8, ro_size)?;
         emu.write_u64(ro + 24, name_ptr)?;
     }
-    let size = own_size.unwrap_or_else(|| emu.objc.classes.get(&superclass).map_or(8, |k| k.instance_size));
     for (c, isa, sup, is_meta) in [(cls, meta, superclass, false), (meta, root_meta, super_meta, true)] {
         emu.objc.classes.insert(
             c,
@@ -1664,7 +1668,42 @@ fn objc_enumeration_mutation(_: &mut Emu) -> Result<()> {
     Err(Stop::Unsupported("collection mutated while being enumerated".into()))
 }
 
+/// NSAssert's failure, as Foundation reports it: "*** Assertion failure in
+/// -[Class selector], file:line", then NSInternalInconsistencyException with
+/// the formatted description. (`context` names the method or function; the
+/// description's format is at `fmt_arg`, its arguments on the stack.)
+fn assertion_failure(emu: &mut Emu, context: String, file: u64, line: u64, fmt_arg: usize) -> Result<()> {
+    let file = if file == 0 { String::new() } else { crate::foundation::nsstring(emu, file)? };
+    let fmt = emu.arg(fmt_arg);
+    let reason = if fmt == 0 {
+        String::new()
+    } else {
+        let f = crate::foundation::nsstring(emu, fmt)?;
+        String::from_utf8_lossy(&crate::printf::format(emu, f.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?).into_owned()
+    };
+    println!("*** Assertion failure in {context}, {file}:{}", line as i64);
+    Err(Stop::Unsupported(format!("uncaught Objective-C exception NSInternalInconsistencyException: {reason}")))
+}
+
 pub(crate) const EXCEPTION_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSAssertionHandler", true, "currentHandler", |e| {
+        let cls = e.arg(0);
+        let h = send(e, cls, "new", &[])?;
+        e.ret(h);
+        Ok(())
+    }),
+    ("NSAssertionHandler", false, "handleFailureInMethod:object:file:lineNumber:description:", |e| {
+        let (sel, obj, file, line) = (e.arg(2), e.arg(3), e.arg(4), e.arg(5));
+        let meta = obj != 0 && e.objc.classes.contains_key(&obj);
+        let cls = if obj == 0 { 0 } else if meta { obj } else { class_of(e, obj)? };
+        let context = format!("{}[{} {}]", if meta { '+' } else { '-' }, e.objc.class_name(cls), sel_name(e, sel));
+        assertion_failure(e, context, file, line, 6)
+    }),
+    ("NSAssertionHandler", false, "handleFailureInFunction:file:lineNumber:description:", |e| {
+        let (func, file, line) = (e.arg(2), e.arg(3), e.arg(4));
+        let context = if func == 0 { String::new() } else { crate::foundation::nsstring(e, func)? };
+        assertion_failure(e, context, file, line, 5)
+    }),
     ("NSException", true, "exceptionWithName:reason:userInfo:", |e| exception_init(e, true)),
     ("NSException", false, "initWithName:reason:userInfo:", |e| exception_init(e, false)),
     ("NSException", false, "name", |e| exception_field(e, 8)),
@@ -1954,6 +1993,30 @@ pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSObject", false, "methodForSelector:", nsobject_method_for_selector),
     ("NSObject", false, "valueForKey:", nsobject_value_for_key),
     ("NSObject", false, "setValue:forKey:", nsobject_set_value_for_key),
+    // KVC in bulk: each pair through setValue:forKey: (NSNull stands for nil).
+    ("NSObject", false, "setValuesForKeysWithDictionary:", |e| {
+        let (o, d) = (e.arg(0), e.arg(2));
+        if d == 0 {
+            return Ok(());
+        }
+        let cf_dict = crate::foundation::as_cf_dict(e, d)?;
+        for (k, v) in crate::foundation::dict_pairs(e, cf_dict)? {
+            let v = if v == e.fnd.null_obj { 0 } else { v };
+            send(e, o, "setValue:forKey:", &[v, k])?;
+        }
+        Ok(())
+    }),
+    ("NSObject", false, "dictionaryWithValuesForKeys:", |e| {
+        let (o, keys) = (e.arg(0), e.arg(2));
+        let mut pairs = Vec::new();
+        for k in crate::foundation::array_values(e, keys)? {
+            let v = send(e, o, "valueForKey:", &[k])?;
+            pairs.push((k, if v == 0 { e.fnd.null_obj } else { v }));
+        }
+        let d = crate::foundation::new_dict_of(e, &pairs)?;
+        e.ret(d);
+        Ok(())
+    }),
     ("NSObject", true, "alloc", nsobject_alloc),
     ("NSObject", true, "allocWithZone:", nsobject_alloc),
     ("NSObject", true, "new", nsobject_new),

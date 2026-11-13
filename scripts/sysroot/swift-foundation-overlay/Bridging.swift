@@ -258,6 +258,13 @@ public func _pommeNSArrayLiteral(_ elements: [Any]) -> NSArray {
     return objects.withUnsafeBufferPointer { NSArray(objects: $0.baseAddress, count: UInt(elements.count)) }
 }
 
+// The same initializer as newer compilers mangle its `Any...` (Swift 5's
+// spelled the variadic element as a one-element tuple, `(Any)...`).
+@_silgen_name("$sSo7NSArrayC10FoundationE12arrayLiteralABypd_tcfC")
+public func _pommeNSArrayLiteralVariadic(_ elements: [Any]) -> NSArray {
+    _pommeNSArrayLiteral(elements)
+}
+
 // MARK: AnyHashable
 
 // An NSString in an AnyHashable is its String, so `[AnyHashable: Any]`

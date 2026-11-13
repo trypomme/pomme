@@ -229,6 +229,16 @@ fn bundle_url(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `appStoreReceiptURL`: where StoreKit keeps the receipt, beside the app in
+/// its bundle container. pomme installs apps as development builds, whose
+/// receipt is the sandbox one (and isn't there until StoreKit fetches it).
+fn app_store_receipt_url(emu: &mut Emu) -> Result<()> {
+    let p = format!("{}/StoreKit/sandboxReceipt", crate::fs::CONTAINER);
+    let u = foundation::new_file_url(emu, &p, false)?;
+    emu.ret(u);
+    Ok(())
+}
+
 /// `+bundleForClass:`: the bundle of the framework the class is in (the
 /// main bundle for the executable's classes, and any it can't place).
 fn bundle_for_class(emu: &mut Emu) -> Result<()> {
@@ -345,6 +355,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSBundle", false, "URLForResource:withExtension:", url_for_resource),
     ("NSBundle", false, "URLForResource:withExtension:subdirectory:", url_for_resource),
     ("NSBundle", false, "bundleURL", bundle_url),
+    ("NSBundle", false, "appStoreReceiptURL", app_store_receipt_url),
     ("NSBundle", false, "privateFrameworksPath", |e| {
         let p = format!("{}/Frameworks", guest_bundle_path(e));
         ret_string(e, &p)
