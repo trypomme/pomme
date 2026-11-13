@@ -15,7 +15,8 @@ const HEADER_HEIGHT = 44;
 
 async function app(): Promise<string> {
   const a = getApp();
-  return `${a.name} · ${a.options.projectId} · ${a.options.bundleId}`;
+  // An app ID is 1:<project number>:<platform>:<hash>.
+  return `${a.name} · ${a.options.projectId} · ${a.options.appId.split(':')[2]}`;
 }
 
 async function analytics(): Promise<string> {
