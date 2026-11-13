@@ -182,6 +182,58 @@ fn shift_args(emu: &mut Emu, by: usize) {
     }
 }
 
+/// The default malloc zone: a real `malloc_zone_t` (version 13, as
+/// <malloc/malloc.h> lays it out) whose functions are pomme's heap, so code
+/// that calls through the zone (`zone->size(zone, p)`, as SQLite does) works.
+/// Every zone is this one: pomme has one heap.
+fn default_zone(emu: &mut Emu) -> Result<u64> {
+    if emu.sys.malloc_zone != 0 {
+        return Ok(emu.sys.malloc_zone);
+    }
+    let z = emu.alloc(152)?;
+    let fns: [(u64, HostFn); 12] = [
+        (16, zone_size),
+        (24, zone_malloc),
+        (32, zone_calloc),
+        (40, zone_valloc),
+        (48, zone_free),
+        (56, zone_realloc),
+        (64, noop),
+        (112, zone_memalign),
+        (120, zone_free), // free_definite_size(zone, p, size)
+        (128, ret_zero),  // pressure_relief: nothing to give back
+        (136, ret_one),   // claimed_address: everything's from the one heap
+        (144, zone_free), // try_free_default
+    ];
+    for (off, f) in fns {
+        let t = emu.host_thunk(f)?;
+        emu.write_u64(z + off, t)?;
+    }
+    let name = emu.alloc_cstr("DefaultMallocZone")?;
+    emu.write_u64(z + 72, name)?;
+    emu.p.memory.write_u32(z + 104, 13)?; // version
+    emu.sys.malloc_zone = z;
+    Ok(z)
+}
+
+fn ret_default_zone(emu: &mut Emu) -> Result<()> {
+    let z = default_zone(emu)?;
+    ret(emu, z)
+}
+
+/// `zone->size(zone, p)`: the block's usable size (0 if it isn't one).
+fn zone_size(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(1);
+    let s = if p == 0 { 0 } else { emu.heap.size(&emu.p.memory, p)? };
+    ret(emu, s)
+}
+
+/// `zone->valloc(zone, size)`: page-aligned.
+fn zone_valloc(emu: &mut Emu) -> Result<()> {
+    let size = emu.arg(1);
+    alloc_aligned(emu, 16384, size)
+}
+
 fn zone_malloc(emu: &mut Emu) -> Result<()> {
     let p = emu.alloc(emu.arg(1))?;
     ret(emu, p)
@@ -681,13 +733,21 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_OSMemoryBarrier", noop),
     ("_OSSpinLockLock", noop),
     ("_OSSpinLockUnlock", noop),
-    ("_malloc_default_zone", ret_one),
+    ("_malloc_default_zone", ret_default_zone),
+    ("_malloc_create_zone", ret_default_zone),
+    ("_malloc_default_purgeable_zone", ret_default_zone),
+    ("_malloc_set_zone_name", noop),
+    ("_malloc_destroy_zone", noop),
     ("_malloc_zone_malloc", zone_malloc),
     ("_malloc_zone_calloc", zone_calloc),
     ("_malloc_zone_free", zone_free),
     ("_malloc_zone_realloc", zone_realloc),
     ("_malloc_zone_memalign", zone_memalign),
-    ("_malloc_zone_from_ptr", ret_one),
+    ("_malloc_zone_from_ptr", |e| {
+        let p = e.arg(0);
+        let z = if p == 0 { 0 } else { default_zone(e)? };
+        ret(e, z)
+    }),
     ("_munmap", ret_zero),
     ("_madvise", ret_zero),
     ("_mprotect", ret_zero),

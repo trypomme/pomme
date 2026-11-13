@@ -431,3 +431,26 @@ fn rounding_conversions() {
     // floor(3.7) = 3, floor(-0.5) = -1, ceil(3.7) = 4, nearest-even(-0.5) = -0.
     check_int("round_lanes", &[F(3.7), F(-0.5)], (3i64 * 1_000_000 - 10_000 + 4 * 100) as u64);
 }
+
+#[test]
+fn dot_product_extension() {
+    let reference = |mut seed: u64| {
+        let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
+        for i in 0..16 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            a[i] = (seed >> 56) as u8;
+            b[i] = (seed >> 48) as u8;
+        }
+        let lane = |acc: u32, k: usize, x: &dyn Fn(usize) -> u32| (0..4).fold(acc, |s, j| s.wrapping_add(x(4 * k + j)));
+        let u: u32 = (0..4).map(|k| lane(7, k, &|i| a[i] as u32 * b[i] as u32)).fold(0, u32::wrapping_add);
+        let s: u32 = (0..4).map(|k| lane(-3i32 as u32, k, &|i| (a[i] as i8 as i32 * b[i] as i8 as i32) as u32)).fold(0, u32::wrapping_add);
+        // By element: every lane of a against b's third 32-bit group.
+        let l: u32 = (0..4).map(|k| (0..4).fold(0u32, |acc, j| acc.wrapping_add((a[4 * k + j] as i8 as i32 * b[8 + j] as i8 as i32) as u32))).fold(0, u32::wrapping_add);
+        // 64-bit form: a's low half against b's high half.
+        let h: u32 = (0..2).map(|k| (0..4).fold(1u32, |acc, j| acc.wrapping_add(a[4 * k + j] as u32 * b[8 + 4 * k + j] as u32))).fold(0, u32::wrapping_add);
+        (u as u64).wrapping_mul(3).wrapping_add((s as u64).wrapping_mul(5)).wrapping_add((l as u64).wrapping_mul(7)).wrapping_add(h as u64)
+    };
+    for seed in [0u64, 1, 0xdead_beef, u64::MAX] {
+        check_int("dot_products", &[I(seed)], reference(seed));
+    }
+}

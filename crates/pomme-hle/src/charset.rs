@@ -96,6 +96,45 @@ fn range_of_character(emu: &mut Emu, options: u64) -> Result<()> {
     Ok(())
 }
 
+/// `stringByAddingPercentEncodingWithAllowedCharacters:`: characters outside
+/// the set become %XX escapes of their UTF-8 bytes (uppercase hex).
+fn adding_percent_encoding(emu: &mut Emu) -> Result<()> {
+    let (s, set) = (emu.arg(0), emu.arg(2));
+    let text = nsstring(emu, s)?;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_member(emu, set, c)? {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    let r = foundation::new_nsstring(emu, &out)?;
+    ret(emu, r)
+}
+
+/// `stringByRemovingPercentEncoding`: %XX escapes decoded as UTF-8; nil when
+/// an escape is malformed or the bytes aren't UTF-8.
+pub fn remove_percent_encoding(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 fn components(emu: &mut Emu) -> Result<()> {
     let (s, set) = (emu.arg(0), emu.arg(2));
     let text = nsstring(emu, s)?;
@@ -128,8 +167,23 @@ const LOWERCASE: u64 = 6;
 const UPPERCASE: u64 = 7;
 const ALPHANUMERIC: u64 = 10;
 const PUNCTUATION: u64 = 11;
+const NON_BASE: u64 = 8;
+const DECOMPOSABLE: u64 = 9;
+const ILLEGAL: u64 = 12;
+const CAPITALIZED_LETTER: u64 = 13;
 const SYMBOL: u64 = 14;
 const NEWLINE: u64 = 15;
+
+/// The ASCII letters and digits, which every URL component allows.
+const URL_ALNUM: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/// Foundation's `URL…AllowedCharacterSet`s: the characters RFC 3986 lets that
+/// part of a URL hold unescaped (all ASCII).
+fn url_allowed(emu: &mut Emu, extra: &str) -> Result<()> {
+    let s = foundation::new_nsstring(emu, &format!("{URL_ALNUM}{extra}"))?;
+    let set = cf_call(emu, "_CFCharacterSetCreateWithCharactersInString", &[0, s])?;
+    give(emu, set)
+}
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (CS, true, "controlCharacterSet", |e| predefined(e, CONTROL)),
@@ -143,6 +197,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (CS, true, "punctuationCharacterSet", |e| predefined(e, PUNCTUATION)),
     (CS, true, "symbolCharacterSet", |e| predefined(e, SYMBOL)),
     (CS, true, "newlineCharacterSet", |e| predefined(e, NEWLINE)),
+    (CS, true, "nonBaseCharacterSet", |e| predefined(e, NON_BASE)),
+    (CS, true, "decomposableCharacterSet", |e| predefined(e, DECOMPOSABLE)),
+    (CS, true, "illegalCharacterSet", |e| predefined(e, ILLEGAL)),
+    (CS, true, "capitalizedLetterCharacterSet", |e| predefined(e, CAPITALIZED_LETTER)),
+    (CS, true, "URLQueryAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-./:;=?@_~")),
+    (CS, true, "URLFragmentAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-./:;=?@_~")),
+    (CS, true, "URLPathAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-./:=@_~")),
+    (CS, true, "URLHostAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-.:;=[]_~")),
+    (CS, true, "URLUserAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-.;=_~")),
+    (CS, true, "URLPasswordAllowedCharacterSet", |e| url_allowed(e, "!$&'()*+,-.;=_~")),
     (CS, true, "characterSetWithCharactersInString:", |e| {
         let s = e.arg(2);
         let set = cf_call(e, "_CFCharacterSetCreateWithCharactersInString", &[0, s])?;
@@ -206,4 +270,26 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         range_of_character(e, o)
     }),
     ("NSString", false, "componentsSeparatedByCharactersInSet:", components),
+    ("NSString", false, "stringByAddingPercentEncodingWithAllowedCharacters:", adding_percent_encoding),
+    ("NSString", false, "stringByRemovingPercentEncoding", |e| {
+        let text = nsstring(e, e.arg(0))?;
+        let r = match remove_percent_encoding(&text) {
+            Some(s) => foundation::new_nsstring(e, &s)?,
+            None => 0,
+        };
+        ret(e, r)
+    }),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_percent_encoding() {
+        assert_eq!(remove_percent_encoding("a%20b%E2%9C%93").as_deref(), Some("a b✓"));
+        assert_eq!(remove_percent_encoding("100%"), None);
+        assert_eq!(remove_percent_encoding("%zz"), None);
+        assert_eq!(remove_percent_encoding("%C3"), None); // not UTF-8 on its own
+    }
+}

@@ -139,6 +139,9 @@ VENDOR="$VENDOR" TAG="$TAG" "$ROOT/scripts/sysroot/build-swift-foundation.sh"
 # Swift overlays (ObjectiveC, Darwin, Dispatch, os, CoreFoundation, CoreGraphics, ...)
 VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-overlays.sh"
 
+# SQLite (libsqlite3.dylib)
+VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-sqlite.sh"
+
 # System font: Inter, open-source with metrics close to SF Pro.
 FONTS="$VENDOR/sysroot/System/Library/Fonts"
 mkdir -p "$FONTS"

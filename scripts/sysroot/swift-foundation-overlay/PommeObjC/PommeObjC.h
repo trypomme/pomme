@@ -109,6 +109,29 @@ typedef NS_OPTIONS(unsigned long, NSDataBase64DecodingOptions) {
 
 @interface NSLocale : NSObject
 - (instancetype)initWithLocaleIdentifier:(NSString *)string;
+@property (readonly, copy) NSString *localeIdentifier;
+@end
+
+// Swift's DateFormatter, as in Apple's Foundation (JSONEncoder's .formatted strategy holds one).
+__attribute__((swift_name("DateFormatter")))
+@interface NSDateFormatter : NSObject
+- (NSString *)stringFromDate:(NSDate *)date;
+- (nullable NSDate *)dateFromString:(NSString *)string;
+@end
+
+@interface NSTimeZone : NSObject
++ (nullable instancetype)timeZoneWithName:(NSString *)tzName;
++ (instancetype)timeZoneForSecondsFromGMT:(long)seconds;
+@property (readonly, copy) NSString *name;
+@property (readonly) long secondsFromGMT;
+@end
+
+@interface NSCalendar : NSObject
++ (nullable instancetype)calendarWithIdentifier:(NSString *)calendarIdentifierConstant;
+@property (readonly, copy) NSString *calendarIdentifier;
+@property (nullable, copy) NSTimeZone *timeZone;
+@property unsigned long firstWeekday;
+@property unsigned long minimumDaysInFirstWeek;
 @end
 
 typedef NSString *NSNotificationName NS_TYPED_EXTENSIBLE_ENUM;

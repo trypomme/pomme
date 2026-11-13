@@ -39,6 +39,9 @@ mod uuid;
 mod reachability;
 mod storekit;
 mod userdefaults;
+mod numberformatter;
+mod archiver;
+mod dateformatter;
 mod plist;
 mod regex;
 pub mod navigation;
@@ -271,6 +274,9 @@ pub struct Emu {
     pub(crate) reachability: reachability::State,
     pub(crate) storekit: storekit::State,
     pub(crate) defaults: userdefaults::State,
+    pub(crate) numberformatters: numberformatter::State,
+    pub(crate) archiver: archiver::State,
+    pub(crate) dateformatters: dateformatter::State,
     pub(crate) coretext: coretext::State,
     bundle: bundle::State,
 }
@@ -360,6 +366,9 @@ impl Emu {
             reachability: Default::default(),
             storekit: Default::default(),
             defaults: Default::default(),
+            numberformatters: Default::default(),
+            archiver: Default::default(),
+            dateformatters: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),
         };

@@ -227,3 +227,22 @@ int64_t round_lanes(float a, float b) {
     int32x2_t m = vcvtm_s32_f32(v), p = vcvtp_s32_f32(v), n = vcvtn_s32_f32(v);
     return (int64_t)vget_lane_s32(m, 0) * 1000000 + vget_lane_s32(m, 1) * 10000 + vget_lane_s32(p, 0) * 100 + vget_lane_s32(n, 1);
 }
+
+// SDOT / UDOT from the dot-product extension (iPhone A12 and later; SQLite's
+// journal checksum vectorizes to UDOT): vector, 64-bit and by-element forms.
+__attribute__((target("dotprod")))
+uint64_t dot_products(uint64_t seed) {
+    uint8_t a[16], b[16];
+    for (int i = 0; i < 16; i++) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        a[i] = (uint8_t)(seed >> 56);
+        b[i] = (uint8_t)(seed >> 48);
+    }
+    uint8x16_t ua = vld1q_u8(a), ub = vld1q_u8(b);
+    int8x16_t sa = vreinterpretq_s8_u8(ua), sb = vreinterpretq_s8_u8(ub);
+    uint32x4_t u = vdotq_u32(vdupq_n_u32(7), ua, ub);
+    int32x4_t s = vdotq_s32(vdupq_n_s32(-3), sa, sb);
+    int32x4_t l = vdotq_laneq_s32(vdupq_n_s32(0), sa, sb, 2);
+    uint32x2_t h = vdot_u32(vdup_n_u32(1), vget_low_u8(ua), vget_high_u8(ub));
+    return (uint64_t)vaddvq_u32(u) * 3 + (uint64_t)(uint32_t)vaddvq_s32(s) * 5 + (uint64_t)(uint32_t)vaddvq_s32(l) * 7 + (uint64_t)vaddv_u32(h);
+}

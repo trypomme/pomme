@@ -29,3 +29,68 @@ index 1914c52..eb1d854 100644
          self = try strategy.parse(String(value))
      }
  #endif // FOUNDATION_FRAMEWORK
+diff --git a/Sources/FoundationEssentials/JSON/JSONDecoder.swift b/Sources/FoundationEssentials/JSON/JSONDecoder.swift
+index 53e0032..e270cf8 100644
+--- a/Sources/FoundationEssentials/JSON/JSONDecoder.swift
++++ b/Sources/FoundationEssentials/JSON/JSONDecoder.swift
+@@ -17,6 +17,9 @@ import Darwin
+ #endif
+ 
+ internal import _FoundationCShims
++#if POMME
++import PommeObjC // DateFormatter, for the .formatted date strategy
++#endif
+ 
+ /// A marker protocol used to determine whether a value is a `String`-keyed `Dictionary`
+ /// containing `Decodable` values (in which case it should be exempt from key conversion strategies).
+@@ -62,7 +65,7 @@ open class JSONDecoder {
+         @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+         case iso8601
+ 
+-#if FOUNDATION_FRAMEWORK && !NO_FORMATTERS
++#if (FOUNDATION_FRAMEWORK || POMME) && !NO_FORMATTERS
+         /// Decode the `Date` as a string parsed by the given formatter.
+         case formatted(DateFormatter)
+ #endif // FOUNDATION_FRAMEWORK
+@@ -648,7 +651,7 @@ extension JSONDecoderImpl: Decoder {
+             }
+             return date
+ 
+-#if FOUNDATION_FRAMEWORK && !NO_FORMATTERS
++#if (FOUNDATION_FRAMEWORK || POMME) && !NO_FORMATTERS
+         case .formatted(let formatter):
+             let string = try self.unwrapString(from: mapValue, for: codingPathNode, additionalKey)
+             guard let date = formatter.date(from: string) else {
+diff --git a/Sources/FoundationEssentials/JSON/JSONEncoder.swift b/Sources/FoundationEssentials/JSON/JSONEncoder.swift
+index 8ec487a..99ca4d8 100644
+--- a/Sources/FoundationEssentials/JSON/JSONEncoder.swift
++++ b/Sources/FoundationEssentials/JSON/JSONEncoder.swift
+@@ -10,6 +10,10 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++#if POMME
++import PommeObjC // DateFormatter, for the .formatted date strategy
++#endif
++
+ //===----------------------------------------------------------------------===//
+ // JSON Encoder
+ //===----------------------------------------------------------------------===//
+@@ -66,7 +70,7 @@ open class JSONEncoder {
+         @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+         case iso8601
+ 
+-#if FOUNDATION_FRAMEWORK && !NO_FORMATTERS
++#if (FOUNDATION_FRAMEWORK || POMME) && !NO_FORMATTERS
+         /// Encode the `Date` as a string formatted by the given formatter.
+         case formatted(DateFormatter)
+ #endif // FOUNDATION_FRAMEWORK
+@@ -1146,7 +1150,7 @@ private extension __JSONEncoder {
+         case .iso8601:
+             return self.wrap(date.formatted(.iso8601))
+ 
+-#if FOUNDATION_FRAMEWORK && !NO_FORMATTERS
++#if (FOUNDATION_FRAMEWORK || POMME) && !NO_FORMATTERS
+         case .formatted(let formatter):
+             return self.wrap(formatter.string(from: date))
+ #endif

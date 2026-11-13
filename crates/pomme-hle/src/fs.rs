@@ -672,10 +672,110 @@ fn fcntl(emu: &mut Emu) -> Result<()> {
             0
         }
         F_GETFD | F_SETFD => 0,
+        // Record locks: the app is the only process, so no lock can conflict.
+        // Setting one always succeeds; asking finds the range unlocked.
+        F_GETLK => {
+            if !open_or_dir(emu, fd) {
+                return fail(emu, EBADF);
+            }
+            emu.p.memory.write_u16(arg + 20, F_UNLCK)?; // struct flock's l_type
+            0
+        }
+        F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => {
+            if !open_or_dir(emu, fd) {
+                return fail(emu, EBADF);
+            }
+            0
+        }
+        // Writes are already where they're going (memory); caching hints change nothing.
+        F_FULLFSYNC | F_BARRIERFSYNC | F_NOCACHE | F_RDAHEAD | F_RDADVISE | F_PREALLOCATE | F_SETNOSIGPIPE => {
+            if !open_or_dir(emu, fd) {
+                return fail(emu, EBADF);
+            }
+            0
+        }
         _ => return fail(emu, EINVAL),
     };
     emu.ret(r);
     Ok(())
+}
+
+const F_GETLK: u64 = 7;
+const F_SETLK: u64 = 8;
+const F_SETLKW: u64 = 9;
+const F_PREALLOCATE: u64 = 42;
+const F_RDADVISE: u64 = 44;
+const F_RDAHEAD: u64 = 45;
+const F_NOCACHE: u64 = 48;
+const F_FULLFSYNC: u64 = 51;
+const F_SETNOSIGPIPE: u64 = 73;
+const F_BARRIERFSYNC: u64 = 85;
+const F_OFD_SETLK: u64 = 90;
+const F_OFD_SETLKW: u64 = 91;
+const F_UNLCK: u16 = 2;
+
+fn open_or_dir(emu: &Emu, fd: u64) -> bool {
+    emu.fs.files.contains_key(&fd) || emu.fs.dir_fds.contains_key(&fd) || emu.fs.pipe_ends.contains_key(&fd)
+}
+
+/// Set a data-container item's modification time to `t` (seconds since
+/// 1970), or now. ENOENT if it's missing, EACCES in the read-only bundle.
+fn touch_path(emu: &mut Emu, path: &str, t: Option<f64>) -> Result<()> {
+    let now = now_1970(emu);
+    if set_attributes(emu, path, |m| m.modified = t.unwrap_or(now)) {
+        emu.ret(0);
+        Ok(())
+    } else {
+        let errno = if exists(emu, path).is_some() { EACCES } else { ENOENT };
+        fail(emu, errno)
+    }
+}
+
+/// The modification time from `struct timeval times[2]` (NULL: now).
+fn timeval_mtime(emu: &Emu, times: u64) -> Result<Option<f64>> {
+    if times == 0 {
+        return Ok(None);
+    }
+    let (s, us) = (emu.read_u64(times + 16)? as i64, emu.p.memory.read_u32(times + 24)? as i32);
+    Ok(Some(s as f64 + us as f64 / 1e6))
+}
+
+/// `utimes(path, times)`
+fn utimes(emu: &mut Emu) -> Result<()> {
+    let (path, times) = (emu.cstr(emu.arg(0))?, emu.arg(1));
+    let t = timeval_mtime(emu, times)?;
+    touch_path(emu, &path, t)
+}
+
+/// `futimes(fd, times)`
+fn futimes(emu: &mut Emu) -> Result<()> {
+    let (fd, times) = (emu.arg(0) & 0xffff_ffff, emu.arg(1));
+    let Some(path) = emu.fs.files.get(&fd).and_then(|f| f.path.clone()) else { return fail(emu, EBADF) };
+    let t = timeval_mtime(emu, times)?;
+    touch_path(emu, &path, t)
+}
+
+/// `utimensat(dirfd, path, times, flags)`: `struct timespec times[2]`
+/// (NULL: now; UTIME_NOW / UTIME_OMIT in tv_nsec).
+fn utimensat(emu: &mut Emu) -> Result<()> {
+    const UTIME_NOW: i64 = -1;
+    const UTIME_OMIT: i64 = -2;
+    let (path, times) = (emu.cstr(emu.arg(1))?, emu.arg(2));
+    if times == 0 {
+        return touch_path(emu, &path, None);
+    }
+    let (s, ns) = (emu.read_u64(times + 16)? as i64, emu.read_u64(times + 24)? as i64);
+    match ns {
+        UTIME_OMIT => {
+            if exists(emu, &path).is_none() {
+                return fail(emu, ENOENT);
+            }
+            emu.ret(0);
+            Ok(())
+        }
+        UTIME_NOW => touch_path(emu, &path, None),
+        _ => touch_path(emu, &path, Some(s as f64 + ns as f64 / 1e9)),
+    }
 }
 
 // ---- kqueue ----
@@ -1207,7 +1307,66 @@ fn mkdtemp(emu: &mut Emu) -> Result<()> {
     }
 }
 
+/// The phone's storage: 128 GB, half of it free, in 4 KB blocks.
+pub const DISK_BYTES: u64 = 128 << 30;
+pub const FREE_BYTES: u64 = 64 << 30;
+const BLOCK: u64 = 4096;
+
+/// Fill a Darwin `struct statfs` (64-bit inodes, 2168 bytes): the app's
+/// files are on APFS, mounted at /private/var (the bundle, read-only, at /).
+fn write_statfs(emu: &mut Emu, buf: u64, data: bool) -> Result<()> {
+    emu.p.memory.write(buf, &[0u8; 2168])?;
+    emu.p.memory.write_u32(buf, BLOCK as u32)?; // f_bsize
+    emu.p.memory.write_u32(buf + 4, 1 << 20)?; // f_iosize
+    emu.write_u64(buf + 8, DISK_BYTES / BLOCK)?; // f_blocks
+    emu.write_u64(buf + 16, FREE_BYTES / BLOCK)?; // f_bfree
+    emu.write_u64(buf + 24, FREE_BYTES / BLOCK)?; // f_bavail
+    emu.write_u64(buf + 32, DISK_BYTES / BLOCK)?; // f_files
+    emu.write_u64(buf + 40, FREE_BYTES / BLOCK)?; // f_ffree
+    emu.p.memory.write_u32(buf + 48, if data { 0x0100_0004 } else { 0x0100_0001 })?; // f_fsid
+    emu.p.memory.write_u32(buf + 56, 0)?; // f_owner (root)
+    emu.p.memory.write_u32(buf + 60, 0x1a)?; // f_type: APFS
+    const MNT_LOCAL: u32 = 0x1000;
+    const MNT_RDONLY: u32 = 0x1;
+    emu.p.memory.write_u32(buf + 64, MNT_LOCAL | if data { 0 } else { MNT_RDONLY })?; // f_flags
+    emu.p.memory.write(buf + 72, b"apfs")?; // f_fstypename
+    let (on, from) = if data { ("/private/var", "/dev/disk1s2") } else { ("/", "/dev/disk1s1") };
+    emu.p.memory.write(buf + 88, on.as_bytes())?; // f_mntonname
+    emu.p.memory.write(buf + 1112, from.as_bytes())?; // f_mntfromname
+    Ok(())
+}
+
+/// `statfs(path, buf)`
+fn statfs(emu: &mut Emu) -> Result<()> {
+    let (path, buf) = (emu.cstr(emu.arg(0))?, emu.arg(1));
+    if exists(emu, &path).is_none() {
+        return fail(emu, ENOENT);
+    }
+    let data = data_path(&path).is_some();
+    write_statfs(emu, buf, data)?;
+    emu.ret(0);
+    Ok(())
+}
+
+/// `fstatfs(fd, buf)`
+fn fstatfs(emu: &mut Emu) -> Result<()> {
+    let (fd, buf) = (emu.arg(0) & 0xffff_ffff, emu.arg(1));
+    let data = match emu.fs.files.get(&fd) {
+        Some(f) => f.path.is_some(),
+        None if emu.fs.dir_fds.contains_key(&fd) => emu.fs.dir_fds.get(&fd).is_some_and(|p| data_path(p).is_some()),
+        None => return fail(emu, EBADF),
+    };
+    write_statfs(emu, buf, data)?;
+    emu.ret(0);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_utimes", utimes),
+    ("_futimes", futimes),
+    ("_utimensat", utimensat),
+    ("_statfs", statfs),
+    ("_fstatfs", fstatfs),
     ("_mktemp", mktemp),
     ("_mkstemp", |e| mkstemp_with(e, 0, 0)),
     ("_mkostemp", |e| {

@@ -350,8 +350,104 @@ extension Date: _ObjectiveCBridgeable {
     }
 }
 
-extension Locale {
+// DateFormatter with Swift's types, as Apple's overlay gives it.
+extension DateFormatter {
+    public func string(from date: Date) -> String {
+        String._unconditionallyBridgeFromObjectiveC(string(from: date._bridgeToObjectiveC()) as NSString)
+    }
+    public func date(from string: String) -> Date? {
+        let d: NSDate? = date(from: string._bridgeToObjectiveC())
+        return d.map { Date._unconditionallyBridgeFromObjectiveC($0) }
+    }
+}
+
+// Locale, TimeZone and Calendar bridge by identifier, as their Foundation
+// classes and Swift values correspond.
+extension Locale: _ObjectiveCBridgeable {
     public func _bridgeToObjectiveC() -> NSLocale { NSLocale(localeIdentifier: identifier._bridgeToObjectiveC()) }
+    public static func _forceBridgeFromObjectiveC(_ x: NSLocale, result: inout Locale?) {
+        result = Locale(identifier: String._unconditionallyBridgeFromObjectiveC(x.localeIdentifier))
+    }
+    public static func _conditionallyBridgeFromObjectiveC(_ x: NSLocale, result: inout Locale?) -> Bool {
+        _forceBridgeFromObjectiveC(x, result: &result)
+        return true
+    }
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSLocale?) -> Locale {
+        guard let source else { return Locale(identifier: "") }
+        return Locale(identifier: String._unconditionallyBridgeFromObjectiveC(source.localeIdentifier))
+    }
+}
+
+extension TimeZone: _ObjectiveCBridgeable {
+    public func _bridgeToObjectiveC() -> NSTimeZone {
+        NSTimeZone(name: identifier._bridgeToObjectiveC()) ?? NSTimeZone(forSecondsFromGMT: secondsFromGMT())
+    }
+    public static func _forceBridgeFromObjectiveC(_ x: NSTimeZone, result: inout TimeZone?) {
+        result = TimeZone(identifier: String._unconditionallyBridgeFromObjectiveC(x.name)) ?? TimeZone(secondsFromGMT: x.secondsFromGMT)
+    }
+    public static func _conditionallyBridgeFromObjectiveC(_ x: NSTimeZone, result: inout TimeZone?) -> Bool {
+        _forceBridgeFromObjectiveC(x, result: &result)
+        return result != nil
+    }
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSTimeZone?) -> TimeZone {
+        var result: TimeZone?
+        if let source { _forceBridgeFromObjectiveC(source, result: &result) }
+        return result ?? TimeZone(secondsFromGMT: 0)!
+    }
+}
+
+extension Calendar: _ObjectiveCBridgeable {
+    public func _bridgeToObjectiveC() -> NSCalendar {
+        let c = NSCalendar(identifier: Calendar._objCName(identifier)._bridgeToObjectiveC()) ?? NSCalendar(identifier: "gregorian"._bridgeToObjectiveC())!
+        c.timeZone = timeZone._bridgeToObjectiveC()
+        c.firstWeekday = UInt(firstWeekday)
+        c.minimumDaysInFirstWeek = UInt(minimumDaysInFirstWeek)
+        return c
+    }
+    public static func _forceBridgeFromObjectiveC(_ x: NSCalendar, result: inout Calendar?) {
+        var c = Calendar(identifier: _swiftIdentifier(String._unconditionallyBridgeFromObjectiveC(x.calendarIdentifier)))
+        if let zone = x.timeZone { c.timeZone = TimeZone._unconditionallyBridgeFromObjectiveC(zone) }
+        c.firstWeekday = Int(x.firstWeekday)
+        c.minimumDaysInFirstWeek = Int(x.minimumDaysInFirstWeek)
+        result = c
+    }
+    public static func _conditionallyBridgeFromObjectiveC(_ x: NSCalendar, result: inout Calendar?) -> Bool {
+        _forceBridgeFromObjectiveC(x, result: &result)
+        return true
+    }
+    public static func _unconditionallyBridgeFromObjectiveC(_ source: NSCalendar?) -> Calendar {
+        var result: Calendar?
+        if let source { _forceBridgeFromObjectiveC(source, result: &result) }
+        return result ?? Calendar(identifier: .gregorian)
+    }
+
+    /// NSCalendarIdentifier's strings for Calendar.Identifier.
+    static func _objCName(_ id: Calendar.Identifier) -> String {
+        switch id {
+        case .gregorian: "gregorian"
+        case .buddhist: "buddhist"
+        case .chinese: "chinese"
+        case .coptic: "coptic"
+        case .ethiopicAmeteMihret: "ethiopic"
+        case .ethiopicAmeteAlem: "ethiopic-amete-alem"
+        case .hebrew: "hebrew"
+        case .iso8601: "iso8601"
+        case .indian: "indian"
+        case .islamic: "islamic"
+        case .islamicCivil: "islamic-civil"
+        case .japanese: "japanese"
+        case .persian: "persian"
+        case .republicOfChina: "roc"
+        case .islamicTabular: "islamic-tbla"
+        case .islamicUmmAlQura: "islamic-umalqura"
+        default: "gregorian"
+        }
+    }
+
+    static func _swiftIdentifier(_ name: String) -> Calendar.Identifier {
+        let all: [Calendar.Identifier] = [.gregorian, .buddhist, .chinese, .coptic, .ethiopicAmeteMihret, .ethiopicAmeteAlem, .hebrew, .iso8601, .indian, .islamic, .islamicCivil, .japanese, .persian, .republicOfChina, .islamicTabular, .islamicUmmAlQura]
+        return all.first { _objCName($0) == name } ?? .gregorian
+    }
 }
 
 // MARK: NSString-wrapper keys (Hashable by their string value)

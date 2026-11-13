@@ -585,6 +585,17 @@ fn string_mutable_copy(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// A string a factory or initializer made: mutable when it was sent to
+/// NSMutableString (`[[NSMutableString alloc] initWithFormat:...]`), as in Foundation.
+fn ret_made_string(emu: &mut Emu, s: &str) -> Result<()> {
+    if have_cf(emu) && wants_mutable(emu, emu.arg(0), "NSMutableString")? {
+        let m = new_mutable_string(emu, s)?;
+        emu.ret(m);
+        return Ok(());
+    }
+    ret_string(emu, s)
+}
+
 fn string_with_utf8(emu: &mut Emu) -> Result<()> {
     let p = emu.arg(2);
     if p == 0 {
@@ -592,12 +603,7 @@ fn string_with_utf8(emu: &mut Emu) -> Result<()> {
         return Ok(());
     }
     let s = emu.cstr(p)?;
-    if wants_mutable(emu, emu.arg(0), "NSMutableString")? {
-        let m = new_mutable_string(emu, &s)?;
-        emu.ret(m);
-        return Ok(());
-    }
-    ret_string(emu, &s)
+    ret_made_string(emu, &s)
 }
 
 fn string_with_string(emu: &mut Emu) -> Result<()> {
@@ -623,14 +629,14 @@ fn empty_string(emu: &mut Emu) -> Result<()> {
 fn string_with_format(emu: &mut Emu) -> Result<()> {
     let fmt = nsstring(emu, emu.arg(2))?;
     let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
-    ret_string(emu, &String::from_utf8_lossy(&s))
+    ret_made_string(emu, &String::from_utf8_lossy(&s))
 }
 
 /// `-initWithFormat:arguments:` — format x2, va_list x3.
 fn string_with_format_va(emu: &mut Emu) -> Result<()> {
     let fmt = nsstring(emu, emu.arg(2))?;
     let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.arg(3)))?;
-    ret_string(emu, &String::from_utf8_lossy(&s))
+    ret_made_string(emu, &String::from_utf8_lossy(&s))
 }
 
 fn string_by_appending(emu: &mut Emu) -> Result<()> {
@@ -1697,6 +1703,88 @@ fn set_remove(emu: &mut Emu) -> Result<()> {
 
 fn set_remove_all(emu: &mut Emu) -> Result<()> {
     cf(emu, "_CFSetRemoveAllValues", &[emu.arg(0)])?;
+    Ok(())
+}
+
+/// Any NSSet's elements (the argument of a set operation may not be a CF set).
+fn elements_of(emu: &mut Emu, set: u64) -> Result<Vec<u64>> {
+    if set == 0 {
+        return Ok(Vec::new());
+    }
+    let all = send(emu, set, "allObjects", &[])?;
+    array_values(emu, all)
+}
+
+fn set_has(emu: &mut Emu, set: u64, o: u64) -> Result<bool> {
+    Ok(send(emu, set, "containsObject:", &[o])? & 0xff != 0)
+}
+
+/// `isSubsetOfSet:`: every element is in the other set.
+fn set_is_subset(emu: &mut Emu) -> Result<()> {
+    let (s, other) = (emu.arg(0), emu.arg(2));
+    let mut all = true;
+    for o in set_values(emu, s)? {
+        if other == 0 || !set_has(emu, other, o)? {
+            all = false;
+            break;
+        }
+    }
+    ret_bool(emu, all)
+}
+
+/// `intersectsSet:`: some element is in both.
+fn set_intersects(emu: &mut Emu) -> Result<()> {
+    let (s, other) = (emu.arg(0), emu.arg(2));
+    let mut any = false;
+    for o in elements_of(emu, other)? {
+        if cf(emu, "_CFSetContainsValue", &[s, o])? & 0xff != 0 {
+            any = true;
+            break;
+        }
+    }
+    ret_bool(emu, any)
+}
+
+/// A new set: the receiver's elements and `more`.
+fn set_adding(emu: &mut Emu, more: Vec<u64>) -> Result<()> {
+    let src = emu.arg(0);
+    let out = new_set(emu)?;
+    for o in set_values(emu, src)?.into_iter().chain(more) {
+        cf(emu, "_CFSetAddValue", &[out, o])?;
+    }
+    emu.ret(out);
+    Ok(())
+}
+
+/// NSMutableSet's in-place operations: keep elements by `keep(in_other)`, or add the other's.
+fn set_combine(emu: &mut Emu, op: &str) -> Result<()> {
+    let (s, other) = (emu.arg(0), emu.arg(2));
+    match op {
+        "union" => {
+            for o in elements_of(emu, other)? {
+                cf(emu, "_CFSetAddValue", &[s, o])?;
+            }
+        }
+        "minus" => {
+            for o in elements_of(emu, other)? {
+                cf(emu, "_CFSetRemoveValue", &[s, o])?;
+            }
+        }
+        "intersect" => {
+            for o in set_values(emu, s)? {
+                if other == 0 || !set_has(emu, other, o)? {
+                    cf(emu, "_CFSetRemoveValue", &[s, o])?;
+                }
+            }
+        }
+        _ => {
+            // setSet:
+            cf(emu, "_CFSetRemoveAllValues", &[s])?;
+            for o in elements_of(emu, other)? {
+                cf(emu, "_CFSetAddValue", &[s, o])?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3359,7 +3447,7 @@ fn string_from_bytes(emu: &mut Emu, bytes: &[u8], enc: u64) -> Result<()> {
             Err(_) => bytes.iter().map(|&b| b as char).collect(), // Latin-1
         }
     };
-    ret_string(emu, &s)
+    ret_made_string(emu, &s)
 }
 
 /// `+stringWithContentsOfFile:encoding:error:`
@@ -3970,6 +4058,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSDate", false, "compare:", date_compare),
     ("NSDate", false, "earlierDate:", |e| date_pick(e, true)),
     ("NSDate", false, "laterDate:", |e| date_pick(e, false)),
+    // Equal dates are the same instant; the hash is the whole second (as Foundation's).
+    ("NSDate", false, "isEqual:", |e| {
+        let (a, b) = (e.arg(0), e.arg(2));
+        let date_cls = host_class(e, "NSDate")?;
+        let same = b != 0 && objc::is_kind_of(e, b, date_cls)? && date_value(e, a)? == date_value(e, b)?;
+        ret_bool(e, same)
+    }),
+    ("NSDate", false, "hash", |e| {
+        let t = date_value(e, e.arg(0))?;
+        e.ret(t.floor() as i64 as u64);
+        Ok(())
+    }),
     ("NSDate", false, "isEqualToDate:", |e| {
         let (a, b) = (e.arg(0), e.arg(2));
         let eq = b != 0 && date_value(e, a)? == date_value(e, b)?;
@@ -4332,6 +4432,33 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSSet", true, "new", set_empty),
     ("NSSet", false, "init", set_empty),
     ("NSSet", true, "setWithArray:", set_with_array),
+    ("NSSet", false, "isSubsetOfSet:", set_is_subset),
+    ("NSSet", false, "intersectsSet:", set_intersects),
+    ("NSSet", false, "setByAddingObject:", |e| {
+        let o = e.arg(2);
+        set_adding(e, if o == 0 { vec![] } else { vec![o] })
+    }),
+    ("NSSet", false, "setByAddingObjectsFromSet:", |e| {
+        let other = e.arg(2);
+        let more = elements_of(e, other)?;
+        set_adding(e, more)
+    }),
+    ("NSSet", false, "setByAddingObjectsFromArray:", |e| {
+        let a = e.arg(2);
+        let more = if a == 0 { vec![] } else { array_values(e, a)? };
+        set_adding(e, more)
+    }),
+    ("NSMutableSet", false, "addObjectsFromArray:", |e| {
+        let (s, a) = (e.arg(0), e.arg(2));
+        for o in if a == 0 { vec![] } else { array_values(e, a)? } {
+            cf(e, "_CFSetAddValue", &[s, o])?;
+        }
+        Ok(())
+    }),
+    ("NSMutableSet", false, "unionSet:", |e| set_combine(e, "union")),
+    ("NSMutableSet", false, "minusSet:", |e| set_combine(e, "minus")),
+    ("NSMutableSet", false, "intersectSet:", |e| set_combine(e, "intersect")),
+    ("NSMutableSet", false, "setSet:", |e| set_combine(e, "set")),
     ("NSSet", true, "setWithObjects:", set_with_objects_varargs),
     ("NSSet", false, "initWithArray:", set_with_array),
     ("NSSet", true, "setWithObjects:count:", set_with_objects_count),

@@ -13,6 +13,24 @@ fn el(v: u128, esize: u32, i: u32) -> u64 {
 }
 
 #[inline]
+/// SDOT / UDOT: each 32-bit lane of `acc` plus the four byte products of the
+/// same lane of `n` and `m` (signed, or unsigned with `u`); the 64-bit form
+/// clears the upper half.
+fn dot(n: u128, m: u128, acc: u128, q: bool, u: bool) -> u128 {
+    let lanes = if q { 4 } else { 2 };
+    let mut r = 0u128;
+    for i in 0..lanes {
+        let mut sum = el(acc, 32, i) as u32;
+        for j in 0..4 {
+            let k = 4 * i + j;
+            let p = if u { (el(n, 8, k) * el(m, 8, k)) as u32 } else { (sel(n, 8, k) * sel(m, 8, k)) as i32 as u32 };
+            sum = sum.wrapping_add(p);
+        }
+        r |= (sum as u128) << (32 * i);
+    }
+    r
+}
+
 fn sel(v: u128, esize: u32, i: u32) -> i64 {
     sext(el(v, esize, i), esize)
 }
@@ -175,9 +193,22 @@ impl Cpu {
             if insn & 0x9f80_0400 == 0x0f00_0400 && bits(insn, 22, 19) != 0 {
                 return self.neon_shift_imm(insn, q, u, rd, rn, vn, vd);
             }
+            // SDOT / UDOT (by element): each lane against one 32-bit group of Vm (index H:L, Vm M:Rm)
+            if insn & 0x9f00_f400 == 0x0f00_e000 && size == 2 {
+                let index = (bit(insn, 11) as u32) << 1 | bit(insn, 21) as u32;
+                let m = self.q[bits(insn, 20, 16) as usize] >> (32 * index);
+                let group = (m & 0xffff_ffff) * 0x0000_0001_0000_0001_0000_0001_0000_0001;
+                self.q[rd as usize] = dot(vn, group, vd, q, u);
+                return Ok(());
+            }
             // Vector x indexed element
             if insn & 0x9f00_0400 == 0x0f00_0000 {
                 return self.neon_by_element(insn, q, u, size, rd, rn, vn, vd);
+            }
+            // SDOT / UDOT (vector), from the dot-product extension
+            if insn & 0x9f20_fc00 == 0x0e00_9400 && size == 2 {
+                self.q[rd as usize] = dot(vn, vm, vd, q, u);
+                return Ok(());
             }
             // Three different (widening / narrowing)
             if insn & 0x9f20_0c00 == 0x0e20_0000 {

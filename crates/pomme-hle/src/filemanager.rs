@@ -4,8 +4,7 @@
 //!
 //! Attributes are Foundation's dictionary (NSFileType, NSFileSize, the
 //! creation and modification dates, permissions, owner, and the data
-//! protection class, iOS's default for app files unless one was set). The
-//! phone has 128 GB of storage, half of it free.
+//! protection class, iOS's default for app files unless one was set).
 
 use crate::foundation::{self, nsstring};
 use crate::fs::{self, Attributes};
@@ -15,9 +14,9 @@ use crate::{Emu, HostFn, Result};
 /// Seconds from 1970 to 2001 (NSDate's reference date).
 const REFERENCE_1970: f64 = 978_307_200.0;
 
-/// The phone's storage, and what's free.
-const DISK: u64 = 128 << 30;
-const FREE: u64 = 64 << 30;
+/// The phone's storage, and what's free (as statfs reports it).
+const DISK: u64 = fs::DISK_BYTES;
+const FREE: u64 = fs::FREE_BYTES;
 
 /// iOS's protection class for app files that don't ask for another.
 const DEFAULT_PROTECTION: &str = "NSFileProtectionCompleteUntilFirstUserAuthentication";

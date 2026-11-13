@@ -70,7 +70,9 @@ for v in 6.0.2 6.1 6.2 6.3; do
   FEATURES+=(-enable-experimental-feature "AvailabilityMacro=FoundationPreview $v:macOS 15, iOS 18, tvOS 18, watchOS 11")
 done
 # (swift-foundation.patch renames the few `FoundationEssentials.X` qualified names.)
-"${SWIFTC[@]}" -module-name Foundation -package-name SwiftFoundation -enable-library-evolution \
+# POMME: the parts Apple's framework build has that apps' ABI depends on
+# (JSONEncoder/JSONDecoder's .formatted(DateFormatter) date strategies).
+"${SWIFTC[@]}" -module-name Foundation -package-name SwiftFoundation -enable-library-evolution -D POMME \
   -Xcc -I"$SHIMS/include" -I "$OVERLAY/PommeObjC" "${FEATURES[@]}" \
   -emit-module -emit-module-path "$OUT/Foundation.swiftmodule" \
   -c "${FILES[@]}" -o "$OUT/Foundation.o"

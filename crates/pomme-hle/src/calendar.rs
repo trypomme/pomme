@@ -542,6 +542,14 @@ fn new_zone(emu: &mut Emu, info: TimeZoneInfo) -> Result<u64> {
     Ok(z)
 }
 
+/// The zone an NSTimeZone object stands for; 0 is the default (device) zone.
+pub(crate) fn zone_info(emu: &Emu, z: u64) -> TimeZoneInfo {
+    if z == 0 {
+        return emu.calendars.default_zone.clone().unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"));
+    }
+    zone_of(emu, z)
+}
+
 fn zone_of(emu: &Emu, z: u64) -> TimeZoneInfo {
     emu.calendars.zones.get(&z).cloned().unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"))
 }

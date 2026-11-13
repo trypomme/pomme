@@ -4,6 +4,9 @@
 #include <sys/sysctl.h>
 #import <objc/runtime.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#include <sys/mount.h>
+#include <malloc/malloc.h>
+#include <sqlite3.h>
 
 @protocol PommeProbe <NSObject>
 @end
@@ -14,6 +17,35 @@
 }
 @end
 @implementation PommeSized
+@end
+
+// A class that archives itself (NSSecureCoding), for keyed archives.
+@interface PommeNote : NSObject <NSSecureCoding>
+@property (copy) NSString *title;
+@property NSInteger count;
+@property double score;
+@property BOOL done;
+@property (strong) NSArray *tags;
+@end
+@implementation PommeNote
++ (BOOL)supportsSecureCoding { return YES; }
+- (void)encodeWithCoder:(NSCoder *)c {
+    [c encodeObject:self.title forKey:@"title"];
+    [c encodeInteger:self.count forKey:@"count"];
+    [c encodeDouble:self.score forKey:@"score"];
+    [c encodeBool:self.done forKey:@"done"];
+    [c encodeObject:self.tags forKey:@"tags"];
+}
+- (instancetype)initWithCoder:(NSCoder *)c {
+    if ((self = [super init])) {
+        _title = [c decodeObjectOfClass:NSString.class forKey:@"title"];
+        _count = [c decodeIntegerForKey:@"count"];
+        _score = [c decodeDoubleForKey:@"score"];
+        _done = [c decodeBoolForKey:@"done"];
+        _tags = [c decodeObjectOfClasses:[NSSet setWithObjects:NSArray.class, NSString.class, nil] forKey:@"tags"];
+    }
+    return self;
+}
 @end
 
 @interface ViewController : UIViewController
@@ -116,6 +148,15 @@
     check(@"freeSpace", [[fm attributesOfFileSystemForPath:dir error:NULL][NSFileSystemFreeSize] longLongValue] > 0);
     check(@"writable", [fm isWritableFileAtPath:b] && ![fm isWritableFileAtPath:NSBundle.mainBundle.bundlePath] && [fm isReadableFileAtPath:NSBundle.mainBundle.bundlePath]);
 
+    // Initializers sent to NSMutableString make mutable strings (Analytics appends a WHERE clause).
+    NSMutableString *sql = [[NSMutableString alloc] initWithFormat:@"SELECT count(1) FROM %@", @"events"];
+    [sql appendFormat:@" WHERE %@ = ?", @"name"];
+    NSMutableString *utf = [[NSMutableString alloc] initWithUTF8String:"ab"];
+    [utf appendString:@"c"];
+    NSMutableString *bytes = [[NSMutableString alloc] initWithData:[@"x" dataUsingEncoding:NSUTF8StringEncoding] encoding:NSUTF8StringEncoding];
+    [bytes appendString:@"y"];
+    check(@"mutableInit", [sql isEqual:@"SELECT count(1) FROM events WHERE name = ?"] && [utf isEqual:@"abc"] && [bytes isEqual:@"xy"]);
+
     // NSMutableString's replaceOccurrences, as GTMSessionFetcher cleans a user agent.
     NSMutableString *agent = [@"My App (iPhone; iOS 26)" mutableCopy];
     NSUInteger replaced = [agent replaceOccurrencesOfString:@" " withString:@"_" options:0 range:NSMakeRange(0, agent.length)];
@@ -168,6 +209,68 @@
 
     // Assertions (NSAssert) aren't checked here: pomme stops at an uncaught exception.
     check(@"assertionHandler", NSAssertionHandler.currentHandler != nil);
+
+    // Number and date formatters (CFNumberFormatter / CFDateFormatter, ICU).
+    NSNumberFormatter *nf = [NSNumberFormatter new];
+    nf.numberStyle = NSNumberFormatterDecimalStyle;
+    nf.locale = [NSLocale localeWithLocaleIdentifier:@"en_US"];
+    NSNumberFormatter *pct = [NSNumberFormatter new];
+    pct.numberStyle = NSNumberFormatterPercentStyle;
+    check(@"numberFormatter", [[nf stringFromNumber:@1234567.5] isEqual:@"1,234,567.5"] && [[nf numberFromString:@"1,234"] isEqual:@1234] && [nf numberFromString:@"12abc"] == nil && [[pct stringFromNumber:@0.25] isEqual:@"25%"]);
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    df.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss";
+    NSDate *when = [NSDate dateWithTimeIntervalSince1970:1767225600 + 3661]; // 2026-01-01 01:01:01 GMT
+    NSDateFormatter *sydney = [NSDateFormatter new];
+    sydney.locale = df.locale;
+    sydney.dateFormat = @"HH:mm";
+    sydney.timeZone = [NSTimeZone timeZoneWithName:@"Australia/Sydney"];
+    check(@"dateFormatter", [[df stringFromDate:when] isEqual:@"2026-01-01T01:01:01"] && [[df dateFromString:@"2026-01-01T01:01:01"] isEqual:when] && [df dateFromString:@"nope"] == nil && [[sydney stringFromDate:when] isEqual:@"12:01"]);
+
+    // Keyed archives: Foundation's classes and one that archives itself, there and back.
+    PommeNote *note = [PommeNote new];
+    note.title = @"hello"; note.count = 3; note.score = 2.5; note.done = YES; note.tags = @[@"a", @"b"];
+    NSDictionary *root = @{@"note": note, @"n": @42, @"when": when, @"set": [NSSet setWithObject:@"x"], @"null": NSNull.null};
+    NSData *archive = [NSKeyedArchiver archivedDataWithRootObject:root requiringSecureCoding:YES error:NULL];
+    NSDictionary *unarchived = [NSKeyedUnarchiver unarchivedObjectOfClasses:[NSSet setWithObjects:NSDictionary.class, PommeNote.class, nil] fromData:archive error:NULL];
+    PommeNote *restored = unarchived[@"note"];
+    check(@"keyedArchive", archive.length > 100 && [restored isKindOfClass:PommeNote.class] && [restored.title isEqual:@"hello"] && restored.count == 3 && restored.score == 2.5 && restored.done && [restored.tags isEqual:@[@"a", @"b"]] && [unarchived[@"n"] isEqual:@42] && [unarchived[@"when"] isEqual:when] && [unarchived[@"set"] containsObject:@"x"] && unarchived[@"null"] == NSNull.null);
+    NSPropertyListFormat archiveFormat = 0;
+    NSDictionary *raw = [NSPropertyListSerialization propertyListWithData:archive options:0 format:&archiveFormat error:NULL];
+    check(@"keyedArchiveFormat", archiveFormat == NSPropertyListBinaryFormat_v1_0 && [raw[@"$archiver"] isEqual:@"NSKeyedArchiver"] && [raw[@"$objects"][0] isEqual:@"$null"]);
+    check(@"keyedArchiveBadData", [NSKeyedUnarchiver unarchivedObjectOfClass:NSDictionary.class fromData:[@"x" dataUsingEncoding:NSUTF8StringEncoding] error:NULL] == nil);
+
+    // Sets, character sets, file systems, the malloc zone, background refresh.
+    NSSet *s123 = [NSSet setWithArray:@[@1, @2, @3]], *s12 = [NSSet setWithArray:@[@1, @2]];
+    NSMutableSet *ms = [s123 mutableCopy];
+    [ms minusSet:s12];
+    check(@"setAlgebra", [s12 isSubsetOfSet:s123] && ![s123 isSubsetOfSet:s12] && [s12 intersectsSet:s123] && [ms isEqualToSet:[NSSet setWithObject:@3]] && [[s12 setByAddingObject:@9] count] == 3);
+    check(@"charsets", [NSCharacterSet.nonBaseCharacterSet characterIsMember:0x0301] && ![NSCharacterSet.URLQueryAllowedCharacterSet characterIsMember:' '] && [[@"a b&c" stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] isEqual:@"a%20b&c"] && [@"a%20b%E2%9C%93".stringByRemovingPercentEncoding isEqual:@"a b\u2713"] && @"100%".stringByRemovingPercentEncoding == nil);
+    struct statfs sfs;
+    check(@"statfs", statfs(NSTemporaryDirectory().fileSystemRepresentation, &sfs) == 0 && strcmp(sfs.f_fstypename, "apfs") == 0 && sfs.f_bavail > 0);
+    malloc_zone_t *zone = malloc_default_zone();
+    void *zp = malloc_zone_malloc(zone, 40);
+    check(@"mallocZone", zone != NULL && zone->size(zone, zp) >= 40 && zone->zone_name != NULL);
+    malloc_zone_free(zone, zp);
+    check(@"backgroundRefresh", UIApplication.sharedApplication.backgroundRefreshStatus == UIBackgroundRefreshStatusAvailable);
+
+    // A dispatch block can be waited on.
+    __block int ran = 0;
+    dispatch_block_t work = dispatch_block_create(0, ^{ ran = 1; });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), work);
+    check(@"dispatchBlockWait", dispatch_block_wait(work, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0 && ran == 1);
+
+    // SQLite on a file in the data container: tables, binding, a transaction.
+    sqlite3 *db = NULL;
+    NSString *dbPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"probe.sqlite"];
+    BOOL sqlOK = sqlite3_open_v2(dbPath.fileSystemRepresentation, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) == SQLITE_OK;
+    sqlOK = sqlOK && sqlite3_exec(db, "CREATE TABLE t(k TEXT PRIMARY KEY, v INTEGER); BEGIN; INSERT INTO t VALUES('a', 1); INSERT INTO t VALUES('b', 2); COMMIT;", NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_stmt *st = NULL;
+    sqlOK = sqlOK && sqlite3_prepare_v2(db, "SELECT sum(v) FROM t WHERE k >= ?", -1, &st, NULL) == SQLITE_OK && sqlite3_bind_text(st, 1, "a", -1, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 3;
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    check(@"sqlite", sqlOK && [fm fileExistsAtPath:dbPath]);
 
     // An operation queue running its operations on a dispatch queue of its own.
     NSOperationQueue *queue = [NSOperationQueue new];

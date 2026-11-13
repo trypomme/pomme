@@ -30,6 +30,8 @@ pub struct State {
     env_strings: HashMap<(String, String), u64>,
     /// `_NSGetEnviron()`'s cell (a `char **` to the environ array), or 0.
     environ_cell: u64,
+    /// The default malloc zone (a `malloc_zone_t`), once made.
+    pub(crate) malloc_zone: u64,
     /// `uselocale`'s current locale handle (0: the global one).
     thread_locale: u64,
     /// Per-image thread-local storage blocks.
@@ -50,6 +52,8 @@ pub struct State {
     pub unwound_into_host: bool,
     /// Blocks cancelled with `dispatch_block_cancel`: they don't run.
     cancelled: std::collections::HashSet<u64>,
+    /// `dispatch_block_notify` work waiting for a block to finish: block → (queue, invoke, notification block).
+    block_notify: HashMap<u64, Vec<(u64, u64, u64)>>,
     data: HashMap<&'static str, u64>,
     pub next_port: u64,
     /// Seeded random state (arc4random, UUIDs): the same every run.
@@ -1304,10 +1308,72 @@ fn dispatch_after_f(emu: &mut Emu) -> Result<()> {
     submit_after(emu, when, queue, f, ctx)
 }
 
-/// `dispatch_block_create(flags, block)`: a copy that can be cancelled.
+// A dispatch block (dispatch_block_create) is a wrapper, as in libdispatch:
+// a block whose invoke runs the original (unless cancelled), then marks it
+// done, waking `dispatch_block_wait` and submitting `dispatch_block_notify`
+// work. It's a global block, so copies are the same block (cancel, wait and
+// notify find it). After the Block_layout: the original at +48, done at +56.
+const WRAPPED: u64 = 48;
+const DONE: u64 = 56;
+
+/// `dispatch_block_create(flags, block)`
 fn dispatch_block_create(emu: &mut Emu) -> Result<()> {
-    let (_, block) = copied_block(emu, emu.arg(1))?;
-    emu.ret(block);
+    let (_, original) = copied_block(emu, emu.arg(1))?;
+    let invoke = emu.host_thunk(run_dispatch_block)?;
+    let b = emu.alloc(64)?;
+    let isa = crate::objc::host_class(emu, "__NSGlobalBlock__")?;
+    emu.write_u64(b, isa)?;
+    emu.p.memory.write_u32(b + 8, 1 << 28)?; // BLOCK_IS_GLOBAL
+    emu.write_u64(b + 16, invoke)?;
+    emu.write_u64(b + 24, b + 32)?; // descriptor {reserved, size}
+    emu.write_u64(b + 40, 64)?;
+    emu.write_u64(b + WRAPPED, original)?;
+    emu.write_u64(b + DONE, 0)?;
+    emu.ret(b);
+    Ok(())
+}
+
+fn is_dispatch_block(emu: &mut Emu, b: u64) -> Result<bool> {
+    let invoke = emu.host_thunk(run_dispatch_block)?;
+    Ok(b != 0 && emu.read_u64(b + 16)? == invoke)
+}
+
+/// A dispatch block runs: the original, then it's done.
+fn run_dispatch_block(emu: &mut Emu) -> Result<()> {
+    let b = emu.arg(0);
+    if emu.sys.cancelled.contains(&b) {
+        return Ok(());
+    }
+    let original = emu.read_u64(b + WRAPPED)?;
+    call_block(emu, original, &[])?;
+    emu.write_u64(b + DONE, 1)?;
+    for (queue, invoke, block) in emu.sys.block_notify.remove(&b).unwrap_or_default() {
+        submit(emu, queue, invoke, block, None)?;
+    }
+    Ok(())
+}
+
+/// `dispatch_block_wait(block, timeout)`: 0 once it has run, non-zero on timeout.
+fn dispatch_block_wait(emu: &mut Emu) -> Result<()> {
+    let (b, timeout) = (emu.arg(0), emu.arg(1));
+    if !is_dispatch_block(emu, b)? {
+        emu.ret(0);
+        return Ok(());
+    }
+    let deadline = (timeout != u64::MAX).then_some(timeout);
+    let r = crate::threads::block(emu, crate::threads::Wait::Flag { addr: b + DONE, deadline })?;
+    emu.ret(r);
+    Ok(())
+}
+
+/// `dispatch_block_notify(block, queue, notification)`: run it on `queue` once `block` has.
+fn dispatch_block_notify(emu: &mut Emu) -> Result<()> {
+    let (b, queue) = (emu.arg(0), emu.arg(1));
+    let (invoke, note) = copied_block(emu, emu.arg(2))?;
+    if !is_dispatch_block(emu, b)? || emu.read_u64(b + DONE)? != 0 {
+        return submit(emu, queue, invoke, note, None);
+    }
+    emu.sys.block_notify.entry(b).or_default().push((queue, invoke, note));
     Ok(())
 }
 
@@ -1765,6 +1831,14 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_flockfile", noop),
     ("_funlockfile", noop),
     ("_dispatch_block_create", dispatch_block_create),
+    ("_dispatch_block_wait", dispatch_block_wait),
+    ("_dispatch_block_notify", dispatch_block_notify),
+    // (flags, block): run it here and now.
+    ("_dispatch_block_perform", |e| {
+        let b = e.arg(1);
+        call_block(e, b, &[])?;
+        Ok(())
+    }),
     // (flags, qos, relative priority, block): QoS doesn't matter here.
     ("_dispatch_block_create_with_qos_class", |e| {
         e.cpu.x[1] = e.cpu.x[3];

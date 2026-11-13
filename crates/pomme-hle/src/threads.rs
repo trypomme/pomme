@@ -49,8 +49,8 @@ pub enum Wait {
     MachReceive { name: u32, buf: u64, size: u64, deadline: Option<u64> },
     Join { tid: usize, out: u64 },
     Sleep { deadline: u64 },
-    /// Until a 32-bit flag in guest memory becomes non-zero.
-    Flag { addr: u64 },
+    /// Until a 32-bit flag in guest memory becomes non-zero (or the deadline).
+    Flag { addr: u64, deadline: Option<u64> },
     /// A blocking read from an empty pipe.
     PipeRead { fd: u64, buf: u64, n: u64 },
     /// kevent() until an event is ready (or the deadline).
@@ -62,9 +62,9 @@ pub enum Wait {
 impl Wait {
     fn deadline(&self) -> Option<u64> {
         match *self {
-            Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } | Wait::Kevent { deadline, .. } => deadline,
+            Wait::Semaphore { deadline, .. } | Wait::Cond { deadline, .. } | Wait::MachReceive { deadline, .. } | Wait::Kevent { deadline, .. } | Wait::Flag { deadline, .. } => deadline,
             Wait::Sleep { deadline } => Some(deadline),
-            Wait::Join { .. } | Wait::Flag { .. } | Wait::PipeRead { .. } | Wait::Face { .. } => None,
+            Wait::Join { .. } | Wait::PipeRead { .. } | Wait::Face { .. } => None,
         }
     }
 }
@@ -298,7 +298,15 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
             _ => None,
         },
         Wait::Sleep { deadline } => (now >= deadline).then_some(0),
-        Wait::Flag { addr } => (emu.p.memory.read_u32(addr)? != 0).then_some(0),
+        Wait::Flag { addr, deadline } => {
+            if emu.p.memory.read_u32(addr)? != 0 {
+                Some(0)
+            } else if timed_out(deadline) {
+                Some(1) // non-zero: timed out
+            } else {
+                None
+            }
+        }
         Wait::PipeRead { fd, buf, n } => crate::fs::pipe_try_read(emu, fd, buf, n)?,
         Wait::Face { prompt } => crate::keychain::answer(emu, prompt),
         Wait::Kevent { kq, list, n, deadline } => match crate::fs::kevent_try(emu, kq, list, n)? {
@@ -1167,7 +1175,7 @@ fn perform_on_thread(emu: &mut Emu, tid: usize, target: u64, sel: u64, obj: u64,
     let work = perform_block(emu, target, sel, obj, flag)?;
     enqueue_on_run_loop(emu, tid, work)?;
     if wait {
-        block(emu, Wait::Flag { addr: flag })?;
+        block(emu, Wait::Flag { addr: flag, deadline: None })?;
     }
     ret(emu, 0)
 }

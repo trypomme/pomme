@@ -715,6 +715,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "windows", windows),
     ("UIApplication", false, "connectedScenes", connected_scenes),
     ("UIApplication", false, "applicationState", application_state),
+    // Background App Refresh is on, as on a fresh device: UIBackgroundRefreshStatusAvailable.
+    ("UIApplication", false, "backgroundRefreshStatus", |e| {
+        e.ret(2);
+        Ok(())
+    }),
     ("UIApplication", false, "statusBarFrame", |e| {
         let f = crate::orientation::status_bar_frame(e);
         ret_rect(e, f);
