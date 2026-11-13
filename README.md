@@ -95,9 +95,20 @@ Debugging:
   is pomme's, and its pages run in a web engine the front end provides (`webkit::WebEngine`),
   as iOS runs them in WebKit's own process. Every navigation, the app's own loads included,
   goes to the navigation delegate first, so pages that call home through made-up URLs
-  (`ytplayer://onReady`) work. No front end has an engine yet: pages don't load there (each
-  load fails, as WebKit's would). Tests script a page with `webkit::Scripted`; Google's YouTube
-  player helper runs against one in `tests/webkit.rs`. `--trace` shows the traffic as `[webkit]`.
+  (`ytplayer://onReady`) work. On macOS the engine is the Mac's own WebKit, in the
+  `pomme-webview` helper pomme starts (built beside `pomme`; `crates/pomme-webview`): one real
+  web view per page, in a window that's never on screen, snapshotted ~30 times a second
+  whenever it changes, so the page is drawn into the phone's screen with everything else
+  (views above cover it; screenshots and recordings have it, video included). Virtual time
+  keeps to the wall clock while pages run. Pages see the Mac's WebKit, not an iPhone's (as an
+  iPad's web views present themselves): pages built for iPhones can rely on what only iPhones
+  have (YouTube's mobile player won't play). Elsewhere pages don't
+  load yet (each load fails, as WebKit's would). Tests script a page with `webkit::Scripted`;
+  `tests/webkit.rs` runs Google's YouTube player helper against one, and a web view app in
+  the Mac's WebKit (`POMME_ONLINE=1` also plays a real YouTube video). `--trace` shows the
+  traffic as `[webkit]`, and the pages' console. Touches on a page reach it as on iOS: a tap
+  is a click there, a drag scrolls. Not yet: file URLs, popups, Windows, Linux and the browser
+  version.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`
   dumps memory at a register. Breakpoints can sit mid-function (`Image:0xaddr`).

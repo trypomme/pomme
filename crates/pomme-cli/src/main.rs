@@ -809,6 +809,15 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
         emu.max_steps = u64::MAX;
     }
     emu.net.client = net;
+    // Web views' pages: in the host's web view (the pomme-webview helper beside pomme).
+    if cfg!(target_os = "macos")
+        && let Some(helper) = pomme_webview::WebViewEngine::find_helper()
+    {
+        match pomme_webview::WebViewEngine::start(&helper) {
+            Ok(engine) => emu.webkit.engine = Some(Box::new(engine)),
+            Err(e) => eprintln!("web views: couldn't start {}: {e}", helper.display()),
+        }
+    }
     for &(x, y, t) in taps {
         pomme_hle::touch::tap(&mut emu.touch.script, (t * 1e9) as u64, x, y);
     }

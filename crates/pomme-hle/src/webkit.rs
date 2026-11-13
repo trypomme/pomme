@@ -22,11 +22,6 @@
 //! JavaScript and Objective-C as WebKit converts them (numbers to NSNumber,
 //! arrays to NSArray, objects to NSDictionary, null to NSNull, undefined to nil).
 //!
-//! The engine may also ask the emulator for a URL's contents ([`Event::Fetch`]):
-//! file URLs in the app's sandbox, which only the emulator can read, and, for
-//! an engine that routes its network through pomme, everything else (through
-//! [`crate::net::Net`], so tests serve pages from fixtures).
-//!
 //! With no engine, pages don't load: every load fails with WKErrorUnknown,
 //! as does every script.
 //!
@@ -34,7 +29,7 @@
 //! the test says (navigate here once loaded, answer that script with this).
 
 use crate::foundation;
-use crate::net::{Request, Response};
+use crate::net::Request;
 use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result};
 use serde_json::Value;
@@ -50,7 +45,7 @@ pub type PageId = u64;
 pub const ENGINE_IDS: u64 = 1 << 32;
 
 /// WKNavigationType.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NavigationType {
     LinkActivated = 0,
     FormSubmitted = 1,
@@ -61,7 +56,7 @@ pub enum NavigationType {
 }
 
 /// A failed load, as an NSError.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WebError {
     /// "NSURLErrorDomain", "WebKitErrorDomain", "WKErrorDomain".
     pub domain: String,
@@ -76,7 +71,7 @@ impl WebError {
 }
 
 /// A script WKUserScript adds to every page.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UserScript {
     pub source: String,
     /// WKUserScriptInjectionTimeAtDocumentEnd (true) or AtDocumentStart.
@@ -85,7 +80,7 @@ pub struct UserScript {
 }
 
 /// What a new page is made with (its WKWebViewConfiguration).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PageConfig {
     pub user_scripts: Vec<UserScript>,
     /// Names of the script message handlers (`window.webkit.messageHandlers.NAME`).
@@ -94,7 +89,10 @@ pub struct PageConfig {
     pub width: f64,
     pub height: f64,
     pub scale: f64,
-    /// The whole User-Agent the app set (`customUserAgent`), or what it appends (`applicationNameForUserAgent`).
+    /// The whole User-Agent, if the app set one (`customUserAgent`); otherwise the engine's own,
+    /// as its web view sends it, followed by `applicationNameForUserAgent`. (The host's WebKit
+    /// presents itself as the host, as an iPad's does: pages built for iPhones' WebKit
+    /// can rely on what only iPhones have, YouTube's mobile player among them.)
     pub user_agent: Option<String>,
     pub application_name: Option<String>,
     pub inline_media: bool,
@@ -103,7 +101,7 @@ pub struct PageConfig {
 }
 
 /// The emulator to the engine.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// A new page (a WKWebView was made).
     Create(PageConfig),
@@ -126,14 +124,15 @@ pub enum Command {
     UserAgent(Option<String>),
     /// The web view's size changed (points, pixels per point).
     Resize { width: f64, height: f64, scale: f64 },
-    /// What the emulator found for [`Event::Fetch`] `id`.
-    Fetched { id: u64, result: std::result::Result<Response, String> },
+    /// A finger on the page (points, in the web view): began 0, moved 1, ended 2, cancelled 3.
+    /// The engine makes a tap a click, and a drag scrolling, as a finger does on iOS.
+    Touch { phase: u8, x: f64, y: f64 },
     /// The web view went away.
     Close,
 }
 
 /// The engine to the emulator.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     /// A navigation is about to happen: answer with [`Command::Decide`].
     /// For the app's own loads `id` is the load's `nav`.
@@ -151,8 +150,17 @@ pub enum Event {
     Progress(f64),
     /// The page wants a new window (`window.open`, `target=_blank`): the UI delegate decides.
     OpenWindow { url: String },
-    /// The engine needs a URL's contents from the emulator: answer with [`Command::Fetched`].
-    Fetch { id: u64, request: Request },
+    /// The page as it looks now: RGBA8 (not premultiplied), rows top to bottom, at the
+    /// size and scale of the last [`Command::Resize`] (or [`PageConfig`]).
+    Frame {
+        width: u32,
+        height: u32,
+        /// (Carried beside the message, not in it, by engines in other processes.)
+        #[serde(skip)]
+        rgba: Vec<u8>,
+    },
+    /// Something the page logged (`console.log`); shown under `--trace`, as Web Inspector would.
+    Console(String),
 }
 
 /// A web engine the front end provides.
@@ -161,6 +169,14 @@ pub trait WebEngine {
     fn send(&mut self, page: PageId, cmd: Command);
     /// The events ready now, in order.
     fn poll(&mut self) -> Vec<(PageId, Event)>;
+    /// Whether pages run on their own, in real time (a browser engine: timers, video,
+    /// the network), rather than only answering commands (a scripted one). While a
+    /// live engine has pages, virtual time keeps to the wall clock.
+    fn live(&self) -> bool {
+        false
+    }
+    /// Wait up to `timeout` (wall time) for an event; events that arrive are kept for [`poll`](Self::poll).
+    fn wait(&mut self, _timeout: std::time::Duration) {}
 }
 
 /// WKNavigationActionPolicy / WKNavigationResponsePolicy.
@@ -183,6 +199,9 @@ struct Page {
     progress: f64,
     custom_user_agent: Option<String>,
     size: (f64, f64),
+    /// The view showing the page's pixels (WKContentView, in the scroll view), and its image.
+    content_view: u64,
+    image: u64,
 }
 
 #[derive(Default)]
@@ -328,10 +347,6 @@ fn describe_command(cmd: &Command) -> String {
     match cmd {
         Command::LoadHtml { nav, html, base } => format!("load HTML ({} bytes) at {base:?} (navigation {nav})", html.len()),
         Command::Evaluate { id, script } => format!("evaluate {id}: {}", script.chars().take(120).collect::<String>()),
-        Command::Fetched { id, result } => format!("fetched {id}: {}", match result {
-            Ok(r) => format!("{} ({} bytes)", r.status, r.body.len()),
-            Err(e) => e.clone(),
-        }),
         other => format!("{other:?}"),
     }
 }
@@ -355,7 +370,11 @@ fn deliver(emu: &mut Emu) -> Result<()> {
     emu.webkit.delivering = false;
     if let Some((v, ev)) = emu.webkit.queue.pop_front() {
         if emu.trace {
-            println!("[webkit] {v:#x} → {ev:?}");
+            match &ev {
+                Event::Frame { width, height, .. } => println!("[webkit] {v:#x} → frame {width}×{height}"),
+                Event::Console(_) => {}
+                ev => println!("[webkit] {v:#x} → {ev:?}"),
+            }
         }
         handle(emu, v, ev)?;
     }
@@ -363,11 +382,6 @@ fn deliver(emu: &mut Emu) -> Result<()> {
 }
 
 fn handle(emu: &mut Emu, v: u64, ev: Event) -> Result<()> {
-    // Fetches are the emulator's to answer, whether or not the view is still there.
-    if let Event::Fetch { id, request } = ev {
-        let result = fetch(emu, &request);
-        return command(emu, v, Command::Fetched { id, result });
-    }
     if !emu.webkit.pages.contains_key(&v) {
         return Ok(());
     }
@@ -438,7 +452,13 @@ fn handle(emu: &mut Emu, v: u64, ev: Event) -> Result<()> {
             Ok(())
         }
         Event::OpenWindow { url } => open_window(emu, v, &url),
-        Event::Fetch { .. } => Ok(()),
+        Event::Frame { width, height, rgba } => show_frame(emu, v, width, height, rgba),
+        Event::Console(m) => {
+            if emu.trace {
+                println!("[webkit] {v:#x} console: {m}");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -467,47 +487,87 @@ fn start_navigation(emu: &mut Emu) -> Result<(u64, u64)> {
     Ok((id, n))
 }
 
-/// A URL the engine asked the emulator for: the app's files, or the network.
-fn fetch(emu: &mut Emu, req: &Request) -> std::result::Result<Response, String> {
-    if let Some(path) = req.url.strip_prefix("file://") {
-        let path = percent_decode(path.split(['?', '#']).next().unwrap_or(""));
-        let Some(body) = crate::fs::read_file(emu, &path) else { return Err("no such file".into()) };
-        let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-        let mime = crate::uttype::for_tag("public.filename-extension", ext, None).and_then(crate::uttype::mime_of).unwrap_or("application/octet-stream");
-        return Ok(Response { status: 200, headers: vec![("Content-Type".into(), mime.into()), ("Content-Length".into(), body.len().to_string())], body });
+
+/// Show the page's pixels: they're the content view's layer contents (one image per
+/// web view, its pixels replaced as frames come).
+fn show_frame(emu: &mut Emu, v: u64, width: u32, height: u32, mut rgba: Vec<u8>) -> Result<()> {
+    let pg = page(emu, v);
+    if pg.content_view == 0 || rgba.len() != (width * height * 4) as usize {
+        return Ok(());
     }
-    if emu.network.path == crate::network::Path::Offline {
-        return Err("offline".into());
+    for px in rgba.chunks_exact_mut(4) {
+        let a = px[3] as u16;
+        if a != 255 {
+            for c in &mut px[..3] {
+                *c = ((*c as u16 * a + 127) / 255) as u8;
+            }
+        }
     }
-    let result = match emu.net.client.as_mut() {
-        Some(c) => c.fetch(req),
-        None => Err("offline".into()),
-    };
-    if emu.trace {
-        println!("[webkit] fetch {} {} → {}", req.method, req.url, match &result {
-            Ok(r) => format!("{} ({} bytes)", r.status, r.body.len()),
-            Err(e) => e.clone(),
-        });
-    }
-    result
+    let Some(pix) = tiny_skia::IntSize::from_wh(width, height).and_then(|size| tiny_skia::Pixmap::from_vec(rgba, size)) else { return Ok(()) };
+    let image = if pg.image != 0 { pg.image } else { emu.alloc(16)? };
+    let scale = emu.device.scale;
+    let size = [width as f64 / scale, height as f64 / scale];
+    emu.render.images.insert(image, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4], orientation: 0 });
+    page_mut(emu, v).image = image;
+    let layer = send(emu, pg.content_view, "layer", &[])?;
+    let ly = crate::calayer::layer_mut(emu, layer);
+    ly.contents = image;
+    ly.contents_scale = scale;
+    crate::host::changed(emu);
+    Ok(())
 }
 
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
+// ---- pacing a live engine ----
+
+/// Longest a live engine waits before the scheduler looks again (wall time).
+const LIVE_STEP: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Whether a live engine has pages running: virtual time then keeps to the wall clock.
+pub(crate) fn live(emu: &Emu) -> bool {
+    !emu.webkit.pages.is_empty() && emu.webkit.engine.as_ref().is_some_and(|e| e.live())
+}
+
+/// With a live host, the deadline it should wake by: soon, while pages run, to take what they did.
+pub(crate) fn host_deadline(emu: &Emu, next_ns: Option<u64>) -> Option<u64> {
+    if !live(emu) {
+        return next_ns;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    let soon = crate::threads::now_ns(emu) + LIVE_STEP.as_nanos() as u64;
+    Some(next_ns.map_or(soon, |n| n.min(soon)))
+}
+
+/// Take what a live engine's pages did; whether anything came (the main run loop then delivers it).
+pub(crate) fn take_live(emu: &mut Emu) -> Result<bool> {
+    if !live(emu) {
+        return Ok(false);
+    }
+    pump(emu)?;
+    Ok(emu.webkit.delivering)
+}
+
+/// No host, every thread waiting, and a live engine's pages running: wait for them on the
+/// wall clock (up to the next deadline, or [`LIVE_STEP`]), moving virtual time along by as
+/// much. Ok(true): look again; Ok(false): not live, time may jump.
+pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
+    if !live(emu) {
+        return Ok(false);
+    }
+    let now = crate::threads::now_ns(emu);
+    let step = next_ns.map_or(LIVE_STEP, |n| std::time::Duration::from_nanos(n.saturating_sub(now)).min(LIVE_STEP));
+    let start = std::time::Instant::now();
+    if let Some(e) = emu.webkit.engine.as_mut() {
+        e.wait(step);
+    }
+    let waited = start.elapsed().min(step).as_nanos() as u64;
+    let target = now + waited.max(1);
+    if let Some(limit) = emu.time_limit_ns
+        && target > limit
+    {
+        return Err(crate::Stop::TimeLimit(limit));
+    }
+    crate::threads::advance_to(emu, target);
+    pump(emu)?;
+    Ok(true)
 }
 
 // ---- navigation policy ----
@@ -737,6 +797,7 @@ fn page_config(emu: &mut Emu, v: u64, config: u64) -> Result<PageConfig> {
         width: b[2],
         height: b[3],
         scale: emu.device.scale,
+        // The engine's own (with `applicationNameForUserAgent`), unless the app sets one.
         user_agent: None,
         application_name,
         inline_media: objc::bag_get(emu, config, "allowsInlineMediaPlayback").unwrap_or(0) & 0xff != 0,
@@ -767,7 +828,13 @@ fn web_view_init(emu: &mut Emu, with_config: bool) -> Result<()> {
     objc::send_fp(emu, sv, "initWithFrame:", &[], &[0.0, 0.0, b[2], b[3]])?;
     send(emu, sv, "setAutoresizingMask:", &[18])?; // flexible width and height
     send(emu, v, "addSubview:", &[sv])?;
-    emu.webkit.pages.insert(v, Page { config, scroll_view: sv, size: (b[2], b[3]), ..Default::default() });
+    // The page is a view in the scroll view, as in WebKit: WKContentView, which
+    // shows its pixels and takes the touches on it.
+    let cv = new_object(emu, "WKContentView")?;
+    objc::send_fp(emu, cv, "initWithFrame:", &[], &[0.0, 0.0, b[2], b[3]])?;
+    send(emu, cv, "setAutoresizingMask:", &[18])?;
+    send(emu, sv, "addSubview:", &[cv])?;
+    emu.webkit.pages.insert(v, Page { config, scroll_view: sv, content_view: cv, size: (b[2], b[3]), ..Default::default() });
     let pc = page_config(emu, v, config)?;
     command(emu, v, Command::Create(pc))?;
     ret(emu, v)
@@ -818,8 +885,8 @@ fn load_request(emu: &mut Emu) -> Result<()> {
     ret(emu, n)
 }
 
-/// `-loadFileURL:allowingReadAccessToURL:`: the engine fetches the file (and what it
-/// links to) from the emulator, which has the app's files.
+/// `-loadFileURL:allowingReadAccessToURL:`: a request for the file URL (the Mac's
+/// helper can't read the app's files yet, and fails it).
 fn load_file(emu: &mut Emu) -> Result<()> {
     let (v, url) = (emu.arg(0), emu.arg(2));
     let url = url_string(emu, url)?.unwrap_or_default();
@@ -862,6 +929,15 @@ fn layout_subviews(emu: &mut Emu) -> Result<()> {
         command(emu, v, Command::Resize { width: b[2], height: b[3], scale })?;
     }
     Ok(())
+}
+
+/// `-[WKContentView touches…:withEvent:]`: the finger goes to the page, in the web view's points.
+fn content_touches(emu: &mut Emu, phase: u8) -> Result<()> {
+    let (cv, touches) = (emu.arg(0), emu.arg(2));
+    let Some(v) = emu.webkit.pages.iter().find(|(_, p)| p.content_view == cv).map(|(&v, _)| v) else { return Ok(()) };
+    let t = send(emu, touches, "anyObject", &[])?;
+    let Some([x, y]) = crate::touch::location_in(emu, t, v) else { return Ok(()) };
+    command(emu, v, Command::Touch { phase, x, y })
 }
 
 fn dealloc(emu: &mut Emu) -> Result<()> {
@@ -1107,6 +1183,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (WV, false, "evaluateJavaScript:completionHandler:", |e| evaluate(e, 3)),
     (WV, false, "evaluateJavaScript:inFrame:inContentWorld:completionHandler:", |e| evaluate(e, 5)),
     (WV, false, "layoutSubviews", layout_subviews),
+    ("WKContentView", false, "touchesBegan:withEvent:", |e| content_touches(e, 0)),
+    ("WKContentView", false, "touchesMoved:withEvent:", |e| content_touches(e, 1)),
+    ("WKContentView", false, "touchesEnded:withEvent:", |e| content_touches(e, 2)),
+    ("WKContentView", false, "touchesCancelled:withEvent:", |e| content_touches(e, 3)),
     (WV, false, "dealloc", dealloc),
 ];
 
@@ -1294,10 +1374,5 @@ mod tests {
         page.send(1, Command::Decide { id, allow: false });
         assert!(page.poll().is_empty());
         assert_eq!(page.log().cancelled, vec!["app://ready".to_string()]);
-    }
-
-    #[test]
-    fn percent_decoding() {
-        assert_eq!(percent_decode("/a%20b/c%2"), "/a b/c%2");
     }
 }

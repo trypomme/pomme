@@ -422,6 +422,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("CATransition", "CAAnimation"),
     ("WKWebView", "UIView"),
     ("WKWebViewConfiguration", "NSObject"),
+    ("WKContentView", "UIView"),
     ("WKUserContentController", "NSObject"),
 ];
 

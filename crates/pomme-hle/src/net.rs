@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// Virtual time between a task resuming and its response arriving.
 pub const LATENCY_S: f64 = 0.05;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub method: String,
     pub url: String,
@@ -27,7 +27,7 @@ pub struct Request {
     pub body: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,

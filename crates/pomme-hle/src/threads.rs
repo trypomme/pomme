@@ -540,14 +540,19 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
         // host may have drawn a pending frame meanwhile, and a deadline
         // recomputed now could be far later: time would jump ahead of the wall clock).
         if emu.live.host.is_some() {
-            let next = next_deadline(emu, wait.deadline());
-            if crate::host::idle(emu, next)? {
+            // Web pages running in a live engine wake it soon, to take what they did.
+            let next = crate::webkit::host_deadline(emu, next_deadline(emu, wait.deadline()));
+            if crate::host::idle(emu, next)? || crate::webkit::take_live(emu)? {
                 continue;
             }
             if let Some(target) = next {
                 skip_to(emu, target)?;
                 continue;
             }
+        }
+        // No host: pages in a live web engine still run on the wall clock.
+        if crate::webkit::idle(emu, next_deadline(emu, wait.deadline()))? {
+            continue;
         }
         if !advance_time(emu, wait.deadline())? {
             break Err(Stop::Idle(describe(emu, me, &wait)));
