@@ -596,10 +596,10 @@ pub fn host_class(emu: &mut Emu, name: &str) -> Result<u64> {
     // Host classes that keep state in the object itself declare their size.
     let own_size = HOST_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s);
     let cls = new_class(emu, name, superclass, own_size)?;
-    if let Some((_, protocols)) = HOST_PROTOCOLS.iter().find(|(c, _)| *c == name) {
-        if let Some(c) = emu.objc.classes.get_mut(&cls) {
-            c.protocols = protocols.iter().map(|p| p.to_string()).collect();
-        }
+    if let Some((_, protocols)) = HOST_PROTOCOLS.iter().find(|(c, _)| *c == name)
+        && let Some(c) = emu.objc.classes.get_mut(&cls)
+    {
+        c.protocols = protocols.iter().map(|p| p.to_string()).collect();
     }
     emu.objc.by_name.insert(name.to_string(), cls);
     Ok(cls)
