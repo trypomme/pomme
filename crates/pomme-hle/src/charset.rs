@@ -1,6 +1,10 @@
 //! NSCharacterSet: the standard sets are CoreFoundation's predefined ones
 //! (toll-free bridged, so they're `__NSCFCharacterSet`s), and the NSString
 //! methods that take a set: trimming, searching and splitting.
+//!
+//! NSMutableCharacterSet is CFMutableCharacterSet. As in Foundation, the
+//! factory methods called on NSMutableCharacterSet (`[NSMutableCharacterSet
+//! alphanumericCharacterSet]`) give a new mutable set, not the shared one.
 
 use crate::foundation::{self, cf_call, nsstring};
 use crate::{Emu, HostFn, Result};
@@ -12,10 +16,33 @@ fn ret(emu: &mut Emu, v: u64) -> Result<()> {
     Ok(())
 }
 
+/// A factory method's set: as made when sent to NSCharacterSet, a mutable copy
+/// when sent to NSMutableCharacterSet (or a subclass).
+fn give(emu: &mut Emu, set: u64) -> Result<()> {
+    let receiver = emu.arg(0);
+    let mutable = foundation::wants_mutable(emu, receiver, "NSMutableCharacterSet")?;
+    let set = if mutable { cf_call(emu, "_CFCharacterSetCreateMutableCopy", &[0, set])? } else { set };
+    ret(emu, set)
+}
+
 /// `CFCharacterSetGetPredefined(kind)`.
 fn predefined(emu: &mut Emu, kind: u64) -> Result<()> {
     let s = cf_call(emu, "_CFCharacterSetGetPredefined", &[kind])?;
-    ret(emu, s)
+    give(emu, s)
+}
+
+/// A mutator: `CF…(self, argument)`, returning nothing.
+fn mutate(emu: &mut Emu, f: &'static str) -> Result<()> {
+    let (set, arg) = (emu.arg(0), emu.arg(2));
+    cf_call(emu, f, &[set, arg])?;
+    Ok(())
+}
+
+/// `add`/`removeCharactersInRange:` (an NSRange: location, length).
+fn mutate_range(emu: &mut Emu, f: &'static str) -> Result<()> {
+    let (set, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    cf_call(emu, f, &[set, loc, len])?;
+    Ok(())
 }
 
 fn is_member(emu: &mut Emu, set: u64, ch: char) -> Result<bool> {
@@ -89,6 +116,7 @@ fn components(emu: &mut Emu) -> Result<()> {
 }
 
 const CS: &str = "NSCharacterSet";
+const MCS: &str = "NSMutableCharacterSet";
 
 // CFCharacterSetPredefinedSet
 const CONTROL: u64 = 1;
@@ -118,7 +146,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (CS, true, "characterSetWithCharactersInString:", |e| {
         let s = e.arg(2);
         let set = cf_call(e, "_CFCharacterSetCreateWithCharactersInString", &[0, s])?;
-        ret(e, set)
+        give(e, set)
+    }),
+    (CS, true, "characterSetWithRange:", |e| {
+        let (loc, len) = (e.arg(2), e.arg(3));
+        let set = cf_call(e, "_CFCharacterSetCreateWithCharactersInRange", &[0, loc, len])?;
+        give(e, set)
     }),
     (CS, false, "characterIsMember:", |e| {
         let (set, c) = (e.arg(0), e.arg(2) & 0xffff);
@@ -130,10 +163,41 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let m = cf_call(e, "_CFCharacterSetIsLongCharacterMember", &[set, c])? & 0xff;
         ret(e, m)
     }),
+    (CS, false, "isSupersetOfSet:", |e| {
+        let (set, other) = (e.arg(0), e.arg(2));
+        let m = cf_call(e, "_CFCharacterSetIsSupersetOfSet", &[set, other])? & 0xff;
+        ret(e, m)
+    }),
+    (CS, false, "hasMemberInPlane:", |e| {
+        let (set, plane) = (e.arg(0), e.arg(2) & 0xff);
+        let m = cf_call(e, "_CFCharacterSetHasMemberInPlane", &[set, plane])? & 0xff;
+        ret(e, m)
+    }),
     (CS, false, "invertedSet", |e| {
         let set = e.arg(0);
         let inv = cf_call(e, "_CFCharacterSetCreateInvertedSet", &[0, set])?;
         ret(e, inv)
+    }),
+    (CS, false, "copy", |e| {
+        let set = e.arg(0);
+        let c = cf_call(e, "_CFCharacterSetCreateCopy", &[0, set])?;
+        ret(e, c)
+    }),
+    (CS, false, "mutableCopy", |e| {
+        let set = e.arg(0);
+        let c = cf_call(e, "_CFCharacterSetCreateMutableCopy", &[0, set])?;
+        ret(e, c)
+    }),
+    (MCS, false, "addCharactersInString:", |e| mutate(e, "_CFCharacterSetAddCharactersInString")),
+    (MCS, false, "removeCharactersInString:", |e| mutate(e, "_CFCharacterSetRemoveCharactersInString")),
+    (MCS, false, "addCharactersInRange:", |e| mutate_range(e, "_CFCharacterSetAddCharactersInRange")),
+    (MCS, false, "removeCharactersInRange:", |e| mutate_range(e, "_CFCharacterSetRemoveCharactersInRange")),
+    (MCS, false, "formUnionWithCharacterSet:", |e| mutate(e, "_CFCharacterSetUnion")),
+    (MCS, false, "formIntersectionWithCharacterSet:", |e| mutate(e, "_CFCharacterSetIntersect")),
+    (MCS, false, "invert", |e| {
+        let set = e.arg(0);
+        cf_call(e, "_CFCharacterSetInvert", &[set])?;
+        Ok(())
     }),
     ("NSString", false, "stringByTrimmingCharactersInSet:", trimming),
     ("NSString", false, "rangeOfCharacterFromSet:", |e| range_of_character(e, 0)),

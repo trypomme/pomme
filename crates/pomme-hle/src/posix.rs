@@ -570,7 +570,8 @@ fn uname(emu: &mut Emu) -> Result<()> {
     let buf = emu.arg(0);
     let release = format!("{}.0.0", emu.system.os.darwin_major());
     let version = format!("Darwin Kernel Version {release}: pomme");
-    for (i, v) in ["Darwin", "pomme", release.as_str(), version.as_str(), "iPhone17,3"].iter().enumerate() {
+    let model = emu.device.model();
+    for (i, v) in ["Darwin", "pomme", release.as_str(), version.as_str(), model].iter().enumerate() {
         let at = buf + i as u64 * 256;
         emu.p.memory.write(at, &[0u8; 256])?;
         emu.p.memory.write(at, v.as_bytes())?;
@@ -754,8 +755,6 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_NXFindBestFatArch", ret_zero),
     ("_sysdir_start_search_path_enumeration", ret_zero),
     ("_sysdir_get_next_search_path_enumeration", ret_zero),
-    ("_sysctl", fail),
-    ("_sysctlbyname", fail),
     ("___darwin_check_fd_set_overflow", ret_one),
     ("_asl_new", ret_zero),
     ("_asl_open", ret_zero),

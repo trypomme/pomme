@@ -7,7 +7,7 @@
 //!   ...): by Apple's convention their value is usually their own name, and
 //!   apps only compare them with each other, so that's what pomme uses.
 //! - Numbers and structs with Apple's values (font weights, accessibility
-//!   traits, `UIEdgeInsetsZero`, ...).
+//!   traits, `UIBackgroundTaskInvalid`, `UIEdgeInsetsZero`, ...).
 
 use crate::{Emu, HostFn, Result, Stop, foundation};
 
@@ -31,6 +31,8 @@ const STRING_PREFIXES: &[&str] = &[
     "NSUserActivityType",
     "NSFile",
     "kSec",
+    // CoreTelephony's radio technologies ("CTRadioAccessTechnologyLTE").
+    "CTRadioAccessTechnology",
     "kCTFont",
     // ImageIO's option keys are their own names.
     "kCGImageSource",
@@ -56,6 +58,23 @@ const STRINGS: &[(&str, &str)] = &[
     ("kCAAnimationCubicPaced", "cubicPaced"),
     ("kCACornerCurveCircular", "circular"),
     ("kCACornerCurveContinuous", "continuous"),
+    // Foundation's calendar identifiers.
+    ("NSCalendarIdentifierGregorian", "gregorian"),
+    ("NSCalendarIdentifierBuddhist", "buddhist"),
+    ("NSCalendarIdentifierChinese", "chinese"),
+    ("NSCalendarIdentifierCoptic", "coptic"),
+    ("NSCalendarIdentifierEthiopicAmeteMihret", "ethiopic"),
+    ("NSCalendarIdentifierEthiopicAmeteAlem", "ethiopic-amete-alem"),
+    ("NSCalendarIdentifierHebrew", "hebrew"),
+    ("NSCalendarIdentifierISO8601", "iso8601"),
+    ("NSCalendarIdentifierIndian", "indian"),
+    ("NSCalendarIdentifierIslamic", "islamic"),
+    ("NSCalendarIdentifierIslamicCivil", "islamic-civil"),
+    ("NSCalendarIdentifierIslamicTabular", "islamic-tbla"),
+    ("NSCalendarIdentifierIslamicUmmAlQura", "islamic-umalqura"),
+    ("NSCalendarIdentifierJapanese", "japanese"),
+    ("NSCalendarIdentifierPersian", "persian"),
+    ("NSCalendarIdentifierRepublicOfChina", "roc"),
     // UIKit's sheet detent identifiers.
     ("UISheetPresentationControllerDetentIdentifierMedium", "com.apple.UIKit.medium"),
     ("UISheetPresentationControllerDetentIdentifierLarge", "com.apple.UIKit.large"),
@@ -211,6 +230,12 @@ const TRAITS: &[(&str, u64)] = &[
     ("UIAccessibilityTraitTabBar", 1 << 28),
 ];
 
+/// Other integer constants: (name, value).
+const INTEGERS: &[(&str, u64)] = &[
+    // UIKit's "no background task" identifier: 0.
+    ("UIBackgroundTaskInvalid", 0),
+];
+
 /// Struct constants that are all zeros: (name, size).
 const ZEROS: &[(&str, u64)] = &[("UIEdgeInsetsZero", 32), ("CGRectZero", 32), ("CGPointZero", 16), ("CGSizeZero", 16), ("CGAffineTransformIdentity", 48)];
 
@@ -245,7 +270,7 @@ pub(crate) fn bind(emu: &mut Emu) -> Result<()> {
         }
         handled.insert(name);
     }
-    for &(name, v) in TRAITS {
+    for &(name, v) in TRAITS.iter().chain(INTEGERS) {
         let stubs = emu.p.stubs.find(&format!("_{name}"));
         if !stubs.is_empty() {
             let cell = emu.alloc(8)?;

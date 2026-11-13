@@ -968,8 +968,11 @@ fn errno_location(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// The app's process ID.
+pub const PID: u64 = 1000;
+
 fn getpid(emu: &mut Emu) -> Result<()> {
-    emu.ret(1000);
+    emu.ret(PID);
     Ok(())
 }
 

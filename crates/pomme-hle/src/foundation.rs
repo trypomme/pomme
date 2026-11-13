@@ -468,6 +468,25 @@ fn ns_selector_from_string(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `NSStringFromProtocol(proto)`: its name.
+fn ns_string_from_protocol(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(0);
+    if p == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
+    let name = objc::protocol_name(emu, p)?;
+    ret_string(emu, &name)
+}
+
+/// `NSProtocolFromString(name)`: the protocol, or nil.
+fn ns_protocol_from_string(emu: &mut Emu) -> Result<()> {
+    let s = emu.arg(0);
+    let name = if s == 0 { String::new() } else { nsstring(emu, s)? };
+    emu.ret(emu.objc.protocols.get(&name).copied().unwrap_or(0));
+    Ok(())
+}
+
 fn ns_log(emu: &mut Emu) -> Result<()> {
     let fmt = nsstring(emu, emu.arg(0))?;
     let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
@@ -480,6 +499,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_NSClassFromString", ns_class_from_string),
     ("_NSStringFromSelector", ns_string_from_selector),
     ("_NSSelectorFromString", ns_selector_from_string),
+    ("_NSStringFromProtocol", ns_string_from_protocol),
+    ("_NSProtocolFromString", ns_protocol_from_string),
     ("_NSLog", ns_log),
 ];
 
@@ -2248,6 +2269,64 @@ fn url_path(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// An NSURL accessor that's a CFURL function of the URL alone: `f(url)`.
+fn url_cf_copy(emu: &mut Emu, f: &'static str) -> Result<()> {
+    let s = cf(emu, f, &[emu.arg(0)])?;
+    emu.ret(s);
+    Ok(())
+}
+
+/// `query`: percent-encoded, as Foundation gives it (nil without one).
+fn url_query(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyQueryString", &[emu.arg(0), 0])?;
+    emu.ret(s);
+    Ok(())
+}
+
+/// `fragment`: percent-encoded (nil without one).
+fn url_fragment(emu: &mut Emu) -> Result<()> {
+    let s = cf(emu, "_CFURLCopyFragment", &[emu.arg(0), 0])?;
+    emu.ret(s);
+    Ok(())
+}
+
+/// `port`: an NSNumber, or nil when the URL names none.
+fn url_port(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFURLGetPortNumber", &[emu.arg(0)])? as u32 as i32;
+    let n = if p < 0 { 0 } else { new_number_i64(emu, p as i64)? };
+    emu.ret(n);
+    Ok(())
+}
+
+/// `pathComponents`: "/" first for an absolute path, then each name.
+fn url_path_components(emu: &mut Emu) -> Result<()> {
+    let p = cf(emu, "_CFURLCopyFileSystemPath", &[emu.arg(0), POSIX_PATH_STYLE])?;
+    if p == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
+    let path = nsstring(emu, p)?;
+    let mut parts: Vec<&str> = Vec::new();
+    if path.starts_with('/') {
+        parts.push("/");
+    }
+    parts.extend(path.split('/').filter(|s| !s.is_empty()));
+    let mut objs = Vec::new();
+    for part in parts {
+        objs.push(new_nsstring(emu, part)?);
+    }
+    let a = new_array_of(emu, &objs)?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn url_appending_extension(emu: &mut Emu) -> Result<()> {
+    let ext = as_cf_string(emu, emu.arg(2))?;
+    let u = cf(emu, "_CFURLCreateCopyAppendingPathExtension", &[0, emu.arg(0), ext])?;
+    emu.ret(u);
+    Ok(())
+}
+
 fn url_scheme(emu: &mut Emu) -> Result<()> {
     let s = cf(emu, "_CFURLCopyScheme", &[emu.arg(0)])?;
     emu.ret(s);
@@ -2280,8 +2359,18 @@ fn url_is_file(emu: &mut Emu) -> Result<()> {
 }
 
 fn url_appending_component(emu: &mut Emu) -> Result<()> {
+    url_appending(emu, 0)
+}
+
+/// `URLByAppendingPathComponent:isDirectory:`: a directory's URL ends in a slash.
+fn url_appending_component_directory(emu: &mut Emu) -> Result<()> {
+    let dir = emu.arg(3) & 0xff;
+    url_appending(emu, dir)
+}
+
+fn url_appending(emu: &mut Emu, is_directory: u64) -> Result<()> {
     let c = as_cf_string(emu, emu.arg(2))?;
-    let u = cf(emu, "_CFURLCreateCopyAppendingPathComponent", &[0, emu.arg(0), c, 0])?;
+    let u = cf(emu, "_CFURLCreateCopyAppendingPathComponent", &[0, emu.arg(0), c, is_directory])?;
     emu.ret(u);
     Ok(())
 }
@@ -4000,7 +4089,30 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSURL", false, "pathExtension", url_path_extension),
     ("NSURL", false, "isFileURL", url_is_file),
     ("NSURL", false, "URLByAppendingPathComponent:", url_appending_component),
+    ("NSURL", false, "URLByAppendingPathComponent:isDirectory:", url_appending_component_directory),
     ("NSURL", false, "URLByDeletingLastPathComponent", url_deleting_last_component),
+    ("NSURL", false, "URLByAppendingPathExtension:", url_appending_extension),
+    ("NSURL", false, "URLByDeletingPathExtension", |e| {
+        let u = cf(e, "_CFURLCreateCopyDeletingPathExtension", &[0, e.arg(0)])?;
+        e.ret(u);
+        Ok(())
+    }),
+    ("NSURL", false, "query", url_query),
+    ("NSURL", false, "fragment", url_fragment),
+    ("NSURL", false, "port", url_port),
+    ("NSURL", false, "user", |e| url_cf_copy(e, "_CFURLCopyUserName")),
+    ("NSURL", false, "password", |e| url_cf_copy(e, "_CFURLCopyPassword")),
+    ("NSURL", false, "relativeString", |e| {
+        let s = cf(e, "_CFURLGetString", &[e.arg(0)])?;
+        e.ret(s);
+        Ok(())
+    }),
+    ("NSURL", false, "baseURL", |e| {
+        let s = cf(e, "_CFURLGetBaseURL", &[e.arg(0)])?;
+        e.ret(s);
+        Ok(())
+    }),
+    ("NSURL", false, "pathComponents", url_path_components),
     ("NSURL", false, "isEqual:", url_is_equal),
     ("NSURL", false, "hash", url_hash),
     ("NSURL", false, "description", url_description),

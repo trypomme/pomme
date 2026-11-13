@@ -178,6 +178,54 @@ impl Device {
     }
 }
 
+/// Each phone's hardware model identifier, as `uname` and `sysctl hw.machine`
+/// report it (Apple's identifiers; the board-level `hw.model` isn't modelled).
+const MODELS: &[(&str, &str)] = &[
+    ("iphone-se", "iPhone14,6"),
+    ("iphone-8", "iPhone10,4"),
+    ("iphone-8-plus", "iPhone10,5"),
+    ("iphone-x", "iPhone10,6"),
+    ("iphone-xs", "iPhone11,2"),
+    ("iphone-xs-max", "iPhone11,6"),
+    ("iphone-xr", "iPhone11,8"),
+    ("iphone-11", "iPhone12,1"),
+    ("iphone-11-pro", "iPhone12,3"),
+    ("iphone-11-pro-max", "iPhone12,5"),
+    ("iphone-12-mini", "iPhone13,1"),
+    ("iphone-12", "iPhone13,2"),
+    ("iphone-12-pro", "iPhone13,3"),
+    ("iphone-12-pro-max", "iPhone13,4"),
+    ("iphone-13-mini", "iPhone14,4"),
+    ("iphone-13", "iPhone14,5"),
+    ("iphone-13-pro", "iPhone14,2"),
+    ("iphone-13-pro-max", "iPhone14,3"),
+    ("iphone-14", "iPhone14,7"),
+    ("iphone-14-plus", "iPhone14,8"),
+    ("iphone-14-pro", "iPhone15,2"),
+    ("iphone-14-pro-max", "iPhone15,3"),
+    ("iphone-15", "iPhone15,4"),
+    ("iphone-15-plus", "iPhone15,5"),
+    ("iphone-15-pro", "iPhone16,1"),
+    ("iphone-15-pro-max", "iPhone16,2"),
+    ("iphone-16", "iPhone17,3"),
+    ("iphone-16-plus", "iPhone17,4"),
+    ("iphone-16-pro", "iPhone17,1"),
+    ("iphone-16-pro-max", "iPhone17,2"),
+    ("iphone-16e", "iPhone17,5"),
+    ("iphone-17", "iPhone18,3"),
+    ("iphone-17-pro", "iPhone18,1"),
+    ("iphone-17-pro-max", "iPhone18,2"),
+    ("iphone-17e", "iPhone18,5"),
+    ("iphone-air", "iPhone18,4"),
+];
+
+impl Device {
+    /// The hardware model identifier ("iPhone17,5").
+    pub fn model(&self) -> &'static str {
+        MODELS.iter().find(|(id, _)| *id == self.id).map_or("iPhone", |m| m.1)
+    }
+}
+
 const fn island(top: f64) -> Cutout {
     Cutout::Island { top, width: 126.0, height: 37.33 }
 }
@@ -292,6 +340,8 @@ mod tests {
         assert_eq!(d.size_classes(Portrait), (COMPACT, REGULAR));
         assert_eq!(d.size_classes(LandscapeLeft), (COMPACT, COMPACT));
         let e = find("iphone-16e").unwrap();
+        assert_eq!(e.model(), "iPhone17,5");
+        assert!(DEVICES.iter().all(|d| d.model().starts_with("iPhone") && d.model().contains(',')), "every phone has a model identifier");
         assert_eq!(e.safe_area(LandscapeLeft), [0.0, 47.0, 20.0, 47.0]);
         assert_eq!(e.status_bar(Portrait), 47.0);
         assert_eq!(find("iphone-17-pro-max").unwrap().size_classes(LandscapeRight), (REGULAR, COMPACT));

@@ -10,7 +10,8 @@
 //!
 //! A queue starts its ready operations, highest priority first, up to
 //! `maxConcurrentOperationCount` at once, each on its own thread (the main
-//! queue's on the main thread), unless it's suspended.
+//! queue's on the main thread; with an `underlyingQueue`, on that dispatch
+//! queue), unless it's suspended.
 
 use crate::foundation;
 use crate::objc::{self, send};
@@ -50,6 +51,8 @@ struct Queue {
     qos: i64,
     /// The last barrier added (addBarrierBlock:): later operations wait for it.
     barrier: u64,
+    /// The dispatch queue operations run on (`underlyingQueue`), or 0.
+    underlying: u64,
 }
 
 #[derive(Default)]
@@ -195,6 +198,8 @@ fn pump(emu: &mut Emu, q: u64) -> Result<()> {
         let f = emu.host_thunk(run_operation)?;
         if s.main {
             crate::libsystem::run_on_main(emu, f, o);
+        } else if s.underlying != 0 {
+            crate::libsystem::dispatch_on(emu, s.underlying, f, o)?;
         } else {
             crate::threads::spawn(emu, f, o, "NSOperationQueue")?;
         }
@@ -446,6 +451,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (q, n) = (e.arg(0), e.arg(2));
         let n = send(e, n, "copy", &[])?;
         queue(e, q).name = n;
+        Ok(())
+    }),
+    (Q, false, "underlyingQueue", |e| {
+        let q = e.arg(0);
+        let u = queue(e, q).underlying;
+        ret(e, u)
+    }),
+    (Q, false, "setUnderlyingQueue:", |e| {
+        let (q, u) = (e.arg(0), e.arg(2));
+        queue(e, q).underlying = u;
         Ok(())
     }),
     (Q, false, "qualityOfService", |e| {
