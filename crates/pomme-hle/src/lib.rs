@@ -91,6 +91,7 @@ pub mod animation;
 mod spinner;
 mod uikit;
 mod uiview;
+pub mod webkit;
 
 use heap::Heap;
 use objc::Objc;
@@ -265,6 +266,8 @@ pub struct Emu {
     pub live: host::State,
     /// The network (see net.rs) and URL-loading objects.
     pub net: net::State,
+    /// Web views and the web engine behind them (see webkit.rs).
+    pub webkit: webkit::State,
     /// NSTimer targets and blocks.
     timers: nstimer::State,
     /// Image renderers and their formats.
@@ -379,6 +382,7 @@ impl Emu {
             device: device::default(),
             live: Default::default(),
             net: Default::default(),
+            webkit: Default::default(),
             timers: Default::default(),
             images: Default::default(),
             imageio: Default::default(),

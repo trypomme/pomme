@@ -32,15 +32,29 @@ fn build_now(name: &str) -> Option<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"));
     let cxx = dir.join("main.mm").exists();
     let src = dir.join(if cxx { "main.mm" } else { "main.m" });
+    // Other Objective-C files beside main (a library the fixture uses), built in.
+    let mut others: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "m") && *p != src).collect();
+    others.sort();
+    // WebKit only for fixtures whose sources (headers too) import it.
+    let webkit = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "h" || x == "m" || x == "mm")).any(|p| std::fs::read_to_string(p).unwrap_or_default().contains("<WebKit/"));
     let status = Command::new("xcrun")
         .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "SystemConfiguration", "-lsqlite3"])
         .args(if cxx { &["-lc++", "-std=c++17"][..] } else { &[][..] })
+        .args(if webkit { &["-framework", "WebKit"][..] } else { &[][..] })
         .arg(&src)
+        .args(&others)
         .arg("-o")
         .arg(app.join(&exe))
         .status()
         .expect("run clang");
     assert!(status.success(), "building the {name} fixture app failed");
+    // Resources the fixture ships with go in the bundle's top level.
+    if let Ok(entries) = std::fs::read_dir(dir.join("resources")) {
+        for e in entries {
+            let p = e.unwrap().path();
+            std::fs::copy(&p, app.join(p.file_name().unwrap())).unwrap();
+        }
+    }
     // More Info.plist keys (scenes, orientations, …), if the fixture has them.
     let extra = std::fs::read_to_string(dir.join("Info.extra.plist")).unwrap_or_default();
     std::fs::write(

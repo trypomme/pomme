@@ -158,7 +158,7 @@ pub fn write(v: &Json, options: u64) -> String {
 }
 
 /// Build guest objects from parsed JSON.
-fn build(emu: &mut Emu, v: &serde_json::Value) -> Result<u64> {
+pub(crate) fn build(emu: &mut Emu, v: &serde_json::Value) -> Result<u64> {
     use serde_json::Value;
     Ok(match v {
         Value::Null => emu.fnd.null_obj,

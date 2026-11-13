@@ -90,6 +90,14 @@ Debugging:
   run profiles the same way every time; what pomme's own code costs in wall time isn't in it
   (profile the `pomme` binary itself for that, e.g. with samply or Instruments).
 - `os_log` output (including React Native's and Expo's logs) is printed as `[os_log …]`.
+- Web views: `WKWebView` (its configuration, user content controller and script messages,
+  navigation and UI delegates, `loadHTMLString:baseURL:`, `loadRequest:`, `evaluateJavaScript:`)
+  is pomme's, and its pages run in a web engine the front end provides (`webkit::WebEngine`),
+  as iOS runs them in WebKit's own process. Every navigation, the app's own loads included,
+  goes to the navigation delegate first, so pages that call home through made-up URLs
+  (`ytplayer://onReady`) work. No front end has an engine yet: pages don't load there (each
+  load fails, as WebKit's would). Tests script a page with `webkit::Scripted`; Google's YouTube
+  player helper runs against one in `tests/webkit.rs`. `--trace` shows the traffic as `[webkit]`.
 - `POMME_WATCH=0xaddr,… pomme run …` reports who allocated those heap addresses.
 - `POMME_BREAK_VREGS=1` adds registers (vector too) to each break; `POMME_BREAK_MEM=x1:8`
   dumps memory at a register. Breakpoints can sit mid-function (`Image:0xaddr`).
