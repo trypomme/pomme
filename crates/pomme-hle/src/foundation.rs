@@ -227,6 +227,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     emu.hook(retain, hook_collection_retain)?;
     emu.hook(release, hook_collection_release)?;
     crate::userdefaults::hook_cf_preferences(emu)?;
+    crate::tollfree::install(emu)?;
     Ok(())
 }
 
@@ -308,7 +309,8 @@ fn hook_get_type_id(emu: &mut Emu) -> Result<()> {
         "CTFontDescriptor" => crate::coretext::CTFONT_DESCRIPTOR_TYPE_ID,
         "CGPath" => crate::coretext::CGPATH_TYPE_ID,
         "CGContext" => crate::coretext::CGCONTEXT_TYPE_ID,
-        _ => 1, // _kCFRuntimeIDCFType
+        // An Objective-C or Swift NSArray, NSString, …: the type it bridges to.
+        _ => crate::tollfree::bridged_type_id(emu, obj)?.unwrap_or(1), // _kCFRuntimeIDCFType
     };
     emu.ret(id);
     Ok(())
@@ -1027,6 +1029,15 @@ fn fast_character_contents(emu: &mut Emu) -> Result<()> {
 /// `-getCharacters:(unichar *)buffer range:(NSRange)range`
 fn get_characters_range(emu: &mut Emu) -> Result<()> {
     let (s, buf, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4));
+    if !is_cf(emu, s) {
+        // A subclass's own string: built on its characterAtIndex: primitive,
+        // as NSString's default implementation is.
+        for i in 0..len {
+            let c = send(emu, s, "characterAtIndex:", &[loc + i])?;
+            emu.p.memory.write_u16(buf + i * 2, c as u16)?;
+        }
+        return Ok(());
+    }
     cf(emu, "_CFStringGetCharacters", &[s, loc, len, buf])?;
     Ok(())
 }
@@ -1070,6 +1081,11 @@ fn compare_options_range(emu: &mut Emu) -> Result<()> {
 }
 
 fn ret_nil(emu: &mut Emu) -> Result<()> {
+    emu.ret(0);
+    Ok(())
+}
+
+fn ret_no(emu: &mut Emu) -> Result<()> {
     emu.ret(0);
     Ok(())
 }
@@ -4522,7 +4538,33 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "getBytes:maxLength:usedLength:encoding:options:range:remainingRange:", get_bytes),
     ("NSString", false, "compare:options:range:locale:", compare_options_range),
     ("NSString", true, "newTaggedNSStringWithASCIIBytes_:length_:", ret_nil),
+    // Foundation's private type checks (CoreFoundation and the Swift runtime
+    // ask them): NSObject says NO to each, and each class YES to its own.
+    ("NSObject", false, "isNSObject__", ret_yes),
+    ("NSObject", false, "isNSString__", ret_no),
+    ("NSObject", false, "isNSCFConstantString__", ret_no),
+    ("NSObject", false, "isNSArray__", ret_no),
+    ("NSObject", false, "isNSDictionary__", ret_no),
+    ("NSObject", false, "isNSSet__", ret_no),
+    ("NSObject", false, "isNSOrderedSet__", ret_no),
+    ("NSObject", false, "isNSNumber__", ret_no),
+    ("NSObject", false, "isNSValue__", ret_no),
+    ("NSObject", false, "isNSData__", ret_no),
+    ("NSObject", false, "isNSDate__", ret_no),
+    ("NSObject", false, "isNSTimeZone__", ret_no),
+    ("NSObject", false, "isNSAttributedString__", ret_no),
     ("NSString", false, "isNSString__", ret_yes),
+    ("__NSCFConstantString", false, "isNSCFConstantString__", ret_yes),
+    ("NSArray", false, "isNSArray__", ret_yes),
+    ("NSDictionary", false, "isNSDictionary__", ret_yes),
+    ("NSSet", false, "isNSSet__", ret_yes),
+    ("NSOrderedSet", false, "isNSOrderedSet__", ret_yes),
+    ("NSNumber", false, "isNSNumber__", ret_yes),
+    ("NSValue", false, "isNSValue__", ret_yes),
+    ("NSData", false, "isNSData__", ret_yes),
+    ("NSDate", false, "isNSDate__", ret_yes),
+    ("NSTimeZone", false, "isNSTimeZone__", ret_yes),
+    ("NSAttributedString", false, "isNSAttributedString__", ret_yes),
     // NSArray
     ("NSArray", true, "array", array_empty),
     ("NSArray", true, "new", array_empty),
@@ -4882,6 +4924,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSNumber", false, "copyWithZone:", ret_self),
     // NSNull
     ("NSNull", true, "null", null_null),
+    // NSNull has one instance, kCFNull: allocating one gives it (Swift's
+    // NSNull() is alloc/init), and C code compares against it.
+    ("NSNull", true, "alloc", null_null),
+    ("NSNull", true, "allocWithZone:", null_null),
+    ("NSNull", true, "new", null_null),
+    ("NSNull", false, "init", |e| {
+        let n = e.fnd.null_obj;
+        e.ret(n);
+        Ok(())
+    }),
+    ("NSNull", false, "copyWithZone:", null_null),
     // Every other CF type
     ("__NSCFType", false, "description", cf_description),
 ];

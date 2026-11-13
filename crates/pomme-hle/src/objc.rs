@@ -897,6 +897,35 @@ pub fn sel_name(emu: &Emu, sel: Sel) -> String {
 // ---- lookup and dispatch ----
 
 /// The class of an object (for a class object, its metaclass).
+/// The guest code of a method named like `-[Class selector]` or
+/// `+[Class selector]`, found through the runtime (so stripped binaries'
+/// methods can be found too). None if it's not one or has no guest code.
+pub fn method_address(emu: &mut Emu, name: &str) -> Option<u64> {
+    let class_method = name.starts_with('+');
+    let inner = name.strip_prefix(['-', '+'])?.strip_prefix('[')?.strip_suffix(']')?;
+    let (cls, sel) = inner.split_once(' ')?;
+    let mut c = *emu.objc.by_name.get(cls)?;
+    if class_method {
+        c = emu.read_u64(c).ok()?;
+    }
+    let sel = intern(emu, sel).ok()?;
+    match lookup(emu, c, sel).ok()?? {
+        Imp::Guest(a) => Some(a),
+        Imp::Host(_) => None,
+    }
+}
+
+/// The class name of `addr` if it's an Objective-C object pomme knows the
+/// class of (for debugging output); None for anything else.
+pub fn object_class_name(emu: &Emu, addr: u64) -> Option<String> {
+    if addr == 0 || addr >> 63 != 0 || !addr.is_multiple_of(8) {
+        return None;
+    }
+    let isa = emu.p.memory.read_u64(addr).ok()?;
+    let c = emu.objc.classes.get(&isa)?;
+    (!c.meta).then(|| c.name.clone())
+}
+
 pub fn class_of(emu: &mut Emu, obj: u64) -> Result<u64> {
     if obj >> 63 != 0 {
         return Err(Stop::Unsupported(format!("tagged pointer {obj:#x}")));

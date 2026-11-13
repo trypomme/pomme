@@ -49,6 +49,7 @@ mod fortify;
 mod locks;
 mod scanf;
 mod time;
+mod tollfree;
 mod sockets;
 mod plist;
 mod regex;
@@ -666,11 +667,16 @@ impl Emu {
             Exit::Brk { .. } if self.p.stubs.at(self.cpu.pc).is_some() => self.dispatch(),
             Exit::Brk { imm: HOOK_IMM } if self.hooks.contains_key(&self.cpu.pc) => {
                 let (f, original) = self.hooks[&self.cpu.pc];
+                // Hooks nest (a hook's guest calls can reach another hook): each
+                // sees its own target, and the outer one gets it back afterwards.
+                let outer = (self.hook_original, self.hook_target);
                 self.hook_original = original;
                 self.hook_target = self.cpu.pc;
                 let frame = profile::HostFrame::Hook(self.cpu.pc);
                 self.cpu.pc = self.cpu.x[30];
-                self.in_host(frame, f)
+                let r = self.in_host(frame, f);
+                (self.hook_original, self.hook_target) = outer;
+                r
             }
             Exit::Brk { imm: 0x5f } if (THUNK_BASE..THUNK_BASE + THUNK_SLOTS * 4).contains(&self.cpu.pc) => {
                 let i = ((self.cpu.pc - THUNK_BASE) / 4) as usize;

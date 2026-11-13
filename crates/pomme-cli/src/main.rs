@@ -606,14 +606,19 @@ fn load(path: &Path, show_stubs: bool) -> Result<()> {
 /// A hook for POMME_BREAK: print the call, then run the function normally.
 fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
     let c = &emu.cpu;
+    // An argument that's an Objective-C object shows its class: x2=0x… <NSArray>.
+    let arg = |i: usize| match pomme_hle::objc::object_class_name(emu, c.x[i]) {
+        Some(n) => format!("{:#x} <{n}>", c.x[i]),
+        None => format!("{:#x}", c.x[i]),
+    };
     println!(
-        "[break] {} from {}  x0={:#x} x1={:#x} x2={:#x} x3={:#x} d0={} d1={} d2={} d3={}",
+        "[break] {} from {}  x0={} x1={} x2={} x3={} d0={} d1={} d2={} d3={}",
         emu.symbolize(emu.hook_target()),
         emu.symbolize(c.x[30].wrapping_sub(4)),
-        c.x[0],
-        c.x[1],
-        c.x[2],
-        c.x[3],
+        arg(0),
+        arg(1),
+        arg(2),
+        arg(3),
         f64::from_bits(c.q[0] as u64),
         f64::from_bits(c.q[1] as u64),
         f64::from_bits(c.q[2] as u64),
@@ -823,7 +828,11 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
                 u64::from_str_radix(a, 16).ok().map(|a| a + i.slide)
             });
             let named = || emu.p.images.iter().find_map(|i| i.symbol(sym).or_else(|| i.local_symbol(sym)));
-            match at.or_else(named) {
+            // `-[Class selector]` without a symbol (a stripped binary): through the runtime.
+            let method = |emu: &mut pomme_hle::Emu| pomme_hle::objc::method_address(emu, sym);
+            let found = at.or_else(named);
+            let found = found.or_else(|| method(&mut emu));
+            match found {
                 Some(addr) => {
                     if let Err(e) = emu.hook(addr, print_call) {
                         println!("POMME_BREAK: {e}");

@@ -19,6 +19,7 @@
 #include <mach/mach.h>
 #include <sys/syscall.h>
 #include <errno.h>
+#include <objc/message.h>
 
 // The exclusive monitor across a thread switch: a load-exclusive, then a
 // yield to a thread that writes the same word. The kernel clears the monitor
@@ -38,6 +39,35 @@ static void *spinner(void *arg) {
     while (!spinStop) spins++;
     return arg;
 }
+
+
+// Collections that aren't CoreFoundation's own (as Swift's bridged arrays,
+// dictionaries and strings aren't), for C code that reads them through CF.
+@interface PommeArray : NSArray
+@end
+@implementation PommeArray
+- (NSUInteger)count { return 3; }
+- (id)objectAtIndex:(NSUInteger)i { return @[@"a", @"b", @"c"][i]; }
+@end
+
+@interface PommeDictionary : NSDictionary
+@end
+@implementation PommeDictionary
+- (NSUInteger)count { return 2; }
+- (id)objectForKey:(id)key { return @{@"one": @1, @"two": @2}[key]; }
+- (NSArray *)allKeys { return @[@"one", @"two"]; }
+- (NSEnumerator *)keyEnumerator { return self.allKeys.objectEnumerator; }
+@end
+
+@interface PommeString : NSString
+@end
+@implementation PommeString
+- (NSUInteger)length { return 5; }
+- (unichar)characterAtIndex:(NSUInteger)i { return "pomme"[i]; }
+@end
+
+static void countApplied(const void *value, void *context) { *(int *)context += 1; }
+static void sumApplied(const void *key, const void *value, void *context) { *(long *)context += [(__bridge NSNumber *)value longValue]; }
 
 @interface ViewController : UIViewController
 @end
@@ -174,6 +204,22 @@ static void *spinner(void *arg) {
     gid_t gid;
     long tid = syscall(SYS_gettid, &uid, &gid);
     check(@"errors", !removed && [removeError.domain isEqual:NSCocoaErrorDomain] && removeError.code == NSFileNoSuchFileError && tid == -1 && errno == ESRCH);
+
+    // Toll-free bridging for objects that aren't CF's own, and NSNull's one instance.
+    CFArrayRef ca = (__bridge CFArrayRef)[PommeArray new];
+    int applied = 0;
+    CFArrayApplyFunction(ca, CFRangeMake(0, 3), countApplied, &applied);
+    CFDictionaryRef cd = (__bridge CFDictionaryRef)[PommeDictionary new];
+    long sum = 0;
+    CFDictionaryApplyFunction(cd, sumApplied, &sum);
+    CFStringRef cs = (__bridge CFStringRef)[PommeString new];
+    char cbuf[16] = {0};
+    BOOL bridged = CFGetTypeID(ca) == CFArrayGetTypeID() && CFArrayGetCount(ca) == 3 && [(__bridge NSString *)CFArrayGetValueAtIndex(ca, 1) isEqual:@"b"] && applied == 3 &&
+                   CFGetTypeID(cd) == CFDictionaryGetTypeID() && CFDictionaryGetCount(cd) == 2 && [(__bridge NSNumber *)CFDictionaryGetValue(cd, @"two") intValue] == 2 && sum == 3 &&
+                   CFGetTypeID(cs) == CFStringGetTypeID() && CFStringGetLength(cs) == 5 && CFStringGetCString(cs, cbuf, sizeof cbuf, kCFStringEncodingUTF8) && strcmp(cbuf, "pomme") == 0;
+    BOOL oneNull = [[NSNull alloc] init] == [NSNull null] && (__bridge CFNullRef)[NSNull null] == kCFNull && [NSNull new] == [NSNull null];
+    check(@"tollFree", bridged && oneNull && ((BOOL (*)(id, SEL))objc_msgSend)(@"x", sel_registerName("isNSString__")) &&
+                           !((BOOL (*)(id, SEL))objc_msgSend)([NSNull null], sel_registerName("isNSString__")) && ((BOOL (*)(id, SEL))objc_msgSend)(@[], sel_registerName("isNSArray__")));
 
     // How the app was launched.
     NSArray *args = NSProcessInfo.processInfo.arguments;
