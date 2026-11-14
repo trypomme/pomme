@@ -535,6 +535,7 @@ fn next_deadline(emu: &Emu, own: Option<u64>) -> Option<u64> {
     }
     consider(crate::keychain::next_face_at(emu));
     consider(crate::host::frame_due(emu));
+    consider(crate::host::accessibility_due(emu));
     next
 }
 

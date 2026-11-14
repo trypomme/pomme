@@ -8,9 +8,18 @@
 //! on the main thread between run-loop iterations. Frames are rendered at the
 //! layout pass before the run loop sleeps (CoreAnimation's commit point).
 //!
+//! Hosts can also show the app to the person's screen reader: one that
+//! [`Host::wants_accessibility`] gets the screen's accessibility tree
+//! ([`crate::accessibility::tree`]) through [`Host::accessibility`] whenever
+//! it changes, and sends back what the screen reader did to an element as
+//! [`Event::Accessibility`]. The tree is read on the main thread at a run-loop
+//! turn (it asks the app's objects, as VoiceOver does), at most every
+//! [`AX_INTERVAL_NS`] while the screen keeps changing.
+//!
 //! A run without a host (tests, `pomme run`) stays fully deterministic; a
 //! live run is deterministic given the input and the times it arrived.
 
+use crate::accessibility::{Action, Node};
 use crate::touch::Input;
 use crate::{Emu, Result, Stop, foundation};
 
@@ -32,6 +41,8 @@ pub enum Event {
     /// every frame also comes at the phone's own resolution in [`Host::recorded`],
     /// and [`Host::recording_stopped`] says when it ends.
     Record(bool),
+    /// The screen reader did something to an element of the last tree the host got (by its id).
+    Accessibility { id: u64, action: Action },
 }
 
 /// A rendered frame: RGBA8, `width` × `height`, rows top to bottom, upright
@@ -79,6 +90,32 @@ pub trait Host {
     fn recorded(&mut self, _frame: Frame<'_>) {}
     /// The recording ended at this (virtual) time: the last frame lasts until then.
     fn recording_stopped(&mut self, _at_ns: u64) {}
+    /// Whether the host shows the app to assistive technology now (a screen
+    /// reader is listening): then [`Host::accessibility`] hears of the screen.
+    fn wants_accessibility(&mut self) -> bool {
+        false
+    }
+    /// The screen as a screen reader sees it, when it's first wanted and
+    /// whenever it changes: windows, groups and elements in reading order.
+    fn accessibility(&mut self, _tree: &[Node]) {}
+}
+
+/// The least time between two readings of the accessibility tree while the screen changes.
+pub const AX_INTERVAL_NS: u64 = 200_000_000;
+
+/// The accessibility tree, as the host has it.
+#[derive(Default)]
+struct Ax {
+    /// The host wants it.
+    on: bool,
+    /// The screen changed since it was last read.
+    stale: bool,
+    /// The input source is signalled to read it.
+    signalled: bool,
+    /// When it was last read (virtual ns).
+    read_at: Option<u64>,
+    /// What the host was last given (actions name its nodes).
+    shown: Vec<Node>,
 }
 
 #[derive(Clone, Default)]
@@ -99,6 +136,7 @@ pub struct State {
     recording: bool,
     /// The minute the status bar's clock showed in the last frame.
     clock_minute: Option<i64>,
+    ax: Ax,
 }
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
@@ -129,6 +167,19 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
             draw(emu)?;
         } else {
             next_ns = Some(next_ns.map_or(due, |n| n.min(due)));
+        }
+    }
+    // The accessibility tree: read it on the main thread when it may have changed.
+    let wants = emu.live.host.as_mut().is_some_and(|h| h.wants_accessibility());
+    if wants != emu.live.ax.on {
+        emu.live.ax = Ax { on: wants, stale: wants, ..Ax::default() };
+    }
+    if let Some(due) = accessibility_due(emu) {
+        if now < due {
+            next_ns = Some(next_ns.map_or(due, |n| n.min(due)));
+        } else if signal_input(emu)? {
+            emu.live.ax.signalled = true;
+            return Ok(true);
         }
     }
     let Some(mut host) = emu.live.host.take() else { return Ok(false) };
@@ -184,9 +235,12 @@ pub(crate) fn signal_input(emu: &mut Emu) -> Result<bool> {
     Ok(true)
 }
 
-/// The source's perform callout: deliver what arrived, in order, then give
-/// a driving test its turn.
+/// The source's perform callout: read the accessibility tree if that's due,
+/// deliver what arrived, in order, then give a driving test its turn.
 fn perform(emu: &mut Emu) -> Result<()> {
+    if std::mem::take(&mut emu.live.ax.signalled) {
+        read_accessibility(emu)?;
+    }
     deliver(emu)?;
     crate::driver::turn(emu)
 }
@@ -198,10 +252,40 @@ fn deliver(emu: &mut Emu) -> Result<()> {
             Event::Key(ch) => crate::textinput::key(emu, ch)?,
             Event::Rotate(o) => crate::orientation::turn_device(emu, o)?,
             Event::Face(f) => crate::keychain::present(emu, f)?,
+            Event::Accessibility { id, action } => {
+                let shown = std::mem::take(&mut emu.live.ax.shown);
+                let r = crate::accessibility::perform(emu, &shown, id, action);
+                emu.live.ax.shown = shown;
+                // As VoiceOver, look again after acting: what changed may not have drawn anything.
+                accessibility_changed(emu);
+                r?
+            }
             Event::SaveScreen | Event::Record(_) => {}
         }
     }
     Ok(())
+}
+
+/// Read the accessibility tree and give it to the host if it changed.
+fn read_accessibility(emu: &mut Emu) -> Result<()> {
+    let tree = crate::accessibility::tree(emu)?;
+    // Changes made while reading (an app building its elements as it's asked) don't count.
+    emu.live.ax.stale = false;
+    emu.live.ax.read_at = Some(crate::threads::now_ns(emu));
+    if tree != emu.live.ax.shown
+        && let Some(host) = emu.live.host.as_mut()
+    {
+        host.accessibility(&tree);
+        emu.live.ax.shown = tree;
+    }
+    Ok(())
+}
+
+/// What assistive technology sees may have changed (an accessibility property was set).
+pub(crate) fn accessibility_changed(emu: &mut Emu) {
+    if emu.live.ax.on {
+        emu.live.ax.stale = true;
+    }
 }
 
 /// Render the screen at the phone's own resolution and hand it to the host.
@@ -251,6 +335,17 @@ pub(crate) fn frame_due(emu: &Emu) -> Option<u64> {
     }
     let now = crate::threads::now_ns(emu);
     Some(emu.live.last_frame.map_or(now, |t| (t + FRAME_NS).max(now)))
+}
+
+/// When the accessibility tree is next to be read, if the host wants it and
+/// the screen changed since: a deadline for the scheduler, like a frame's.
+pub(crate) fn accessibility_due(emu: &Emu) -> Option<u64> {
+    let ax = &emu.live.ax;
+    if !(ax.on && ax.stale) || ax.signalled || emu.live.host.is_none() {
+        return None;
+    }
+    let now = crate::threads::now_ns(emu);
+    Some(ax.read_at.map_or(now, |t| (t + AX_INTERVAL_NS).max(now)))
 }
 
 /// Between thread slices while the main thread waits: keep the app's clock up
@@ -316,6 +411,7 @@ fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.last_frame = Some(crate::threads::now_ns(emu));
     emu.live.dirty = false;
     emu.live.clock_minute = Some(crate::statusbar::minute(emu).0);
+    accessibility_changed(emu);
     let pix = crate::render::render(emu, emu.live.scale)?;
     give_frame(emu, &pix, |h, f| h.frame(f));
     if emu.live.recording {

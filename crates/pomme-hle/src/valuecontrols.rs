@@ -358,6 +358,17 @@ fn slider_set_value(emu: &mut Emu, s: u64, v: f32) -> Result<()> {
     redraw_slider(emu, s)
 }
 
+/// VoiceOver's swipe up or down on a slider (`accessibilityIncrement` /
+/// `accessibilityDecrement`): a tenth of the range, as UIKit's slider moves,
+/// and the slider's targets hear of it.
+fn slider_step(emu: &mut Emu, up: bool) -> Result<()> {
+    let s = emu.arg(0);
+    let (v, min, max) = slider_values(emu, s);
+    let step = (max - min) / 10.0;
+    slider_set_value(emu, s, if up { v + step } else { v - step })?;
+    changed(emu, s, 0)
+}
+
 /// A new end of the range: the value stays inside it.
 fn slider_set_bound(emu: &mut Emu, key: &str) -> Result<()> {
     let (s, x) = (emu.arg(0), f32_arg(emu, 0));
@@ -667,6 +678,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (s, v) = (e.arg(0), f32_arg(e, 0));
         slider_set_value(e, s, v)
     }),
+    (SL, false, "accessibilityIncrement", |e| slider_step(e, true)),
+    (SL, false, "accessibilityDecrement", |e| slider_step(e, false)),
     (SL, false, "minimumValue", |e| {
         let v = slider_values(e, e.arg(0)).1;
         ret_f32(e, v)

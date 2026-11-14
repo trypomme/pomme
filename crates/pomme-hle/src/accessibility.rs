@@ -26,11 +26,18 @@ const NOT_FOUND: u64 = i64::MAX as u64;
 
 /// `UIAccessibilityTraits` bits UIKit's own views carry.
 pub const TRAIT_BUTTON: u64 = 1;
+pub const TRAIT_LINK: u64 = 1 << 1;
 pub const TRAIT_IMAGE: u64 = 1 << 2;
 pub const TRAIT_SELECTED: u64 = 1 << 3;
 pub const TRAIT_STATIC_TEXT: u64 = 1 << 6;
 pub const TRAIT_NOT_ENABLED: u64 = 1 << 8;
+pub const TRAIT_SEARCH_FIELD: u64 = 1 << 10;
 pub const TRAIT_ADJUSTABLE: u64 = 1 << 12;
+pub const TRAIT_TAB_BAR: u64 = 1 << 15;
+pub const TRAIT_HEADER: u64 = 1 << 16;
+/// UIKit's private trait for text you can edit (`UITextField`'s traits carry
+/// it on iOS, and VoiceOver says "text field" for it).
+pub const TRAIT_TEXT_ENTRY: u64 = 1 << 18;
 
 /// What an object has been told about itself (nothing told: UIKit's defaults).
 #[derive(Debug, Default, Clone)]
@@ -64,7 +71,9 @@ fn props(emu: &Emu, o: u64) -> Props {
     emu.ax.props.get(&o).cloned().unwrap_or_default()
 }
 
+/// For a setter: what assistive technology sees may change.
 fn props_mut(emu: &mut Emu, o: u64) -> &mut Props {
+    crate::host::accessibility_changed(emu);
     emu.ax.props.entry(o).or_default()
 }
 
@@ -156,6 +165,9 @@ fn default_traits(emu: &mut Emu, o: u64) -> Result<u64> {
     } else {
         0
     };
+    if is_kind(emu, o, "UITextField")? || (is_kind(emu, o, "UITextView")? && send(emu, o, "isEditable", &[])? & 0xff != 0) {
+        t |= TRAIT_TEXT_ENTRY;
+    }
     if is_kind(emu, o, "UIControl")? {
         if send(emu, o, "isEnabled", &[])? & 0xff == 0 {
             t |= TRAIT_NOT_ENABLED;
@@ -461,6 +473,13 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (O, false, "setAccessibilityViewIsModal:", set_view_is_modal),
     (O, false, "accessibilityActivationPoint", activation_point),
     (O, false, "setAccessibilityActivationPoint:", set_activation_point),
+    // What VoiceOver asks of an element: NSObject's answers do nothing (an
+    // activation that isn't handled becomes a tap at the activation point).
+    (O, false, "accessibilityActivate", |e| ret(e, 0)),
+    (O, false, "accessibilityIncrement", |_| Ok(())),
+    (O, false, "accessibilityDecrement", |_| Ok(())),
+    (O, false, "accessibilityElementDidBecomeFocused", |_| Ok(())),
+    (O, false, "accessibilityElementDidLoseFocus", |_| Ok(())),
     (O, false, "accessibilityElementCount", element_count),
     (O, false, "accessibilityElementAtIndex:", element_at_index),
     (O, false, "indexOfAccessibilityElement:", index_of_element),
@@ -498,11 +517,16 @@ pub struct Element {
     pub identifier: Option<String>,
     pub label: Option<String>,
     pub value: Option<String>,
+    pub hint: Option<String>,
     pub traits: u64,
     /// Whether it's an accessibility element itself (VoiceOver stops on it).
     pub is_element: bool,
+    /// Whether it's modal (`accessibilityViewIsModal`): VoiceOver ignores its siblings.
+    pub modal: bool,
     /// Where it is on screen, in points: x, y, width, height.
     pub frame: [f64; 4],
+    /// Where VoiceOver taps to activate it, in screen points (its frame's center by default).
+    pub activation_point: [f64; 2],
 }
 
 impl Element {
@@ -591,9 +615,15 @@ fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element
         identifier: string_of(emu, o, "accessibilityIdentifier")?,
         label: string_of(emu, o, "accessibilityLabel")?,
         value: string_of(emu, o, "accessibilityValue")?,
+        hint: string_of(emu, o, "accessibilityHint")?,
         traits: send(emu, o, "accessibilityTraits", &[])?,
         is_element: send(emu, o, "isAccessibilityElement", &[])? & 0xff != 0,
+        modal: send(emu, o, "accessibilityViewIsModal", &[])? & 0xff != 0,
         frame: r,
+        activation_point: {
+            let p = send_fp(emu, o, "accessibilityActivationPoint", &[], &[])?;
+            [p[0], p[1]]
+        },
     };
     let in_view = element.view;
     out.push(element);
@@ -648,4 +678,234 @@ pub fn hittable(emu: &mut Emu, e: &Element) -> Result<bool> {
         hit = view(emu, hit).superview;
     }
     Ok(hit != 0)
+}
+
+// ---- For the host's assistive technology ----
+
+/// What kind of thing a [`Node`] is, from its traits (and class, for a switch):
+/// what a screen reader announces it as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Role {
+    /// A window: the root of what's on screen in it.
+    Window,
+    /// A container that names the elements in it (it has a label or an identifier).
+    Group,
+    Button,
+    Link,
+    /// A `UISwitch`: its value is "1" when on.
+    Switch,
+    /// Adjustable: VoiceOver swipes it up and down (a slider, a stepper, a picker).
+    Adjustable,
+    TextField,
+    SearchField,
+    Heading,
+    Image,
+    StaticText,
+    TabBar,
+    /// An element with no more specific trait.
+    Element,
+}
+
+impl Role {
+    fn of(e: &Element, switch: bool) -> Role {
+        let t = e.traits;
+        if !e.is_element {
+            if e.depth == 0 {
+                Role::Window
+            } else if t & TRAIT_TAB_BAR != 0 {
+                Role::TabBar
+            } else {
+                Role::Group
+            }
+        } else if t & TRAIT_SEARCH_FIELD != 0 {
+            Role::SearchField
+        } else if t & TRAIT_TEXT_ENTRY != 0 {
+            Role::TextField
+        } else if switch {
+            Role::Switch
+        } else if t & TRAIT_ADJUSTABLE != 0 {
+            Role::Adjustable
+        } else if t & TRAIT_LINK != 0 {
+            Role::Link
+        } else if t & TRAIT_BUTTON != 0 {
+            Role::Button
+        } else if t & TRAIT_HEADER != 0 {
+            Role::Heading
+        } else if t & TRAIT_IMAGE != 0 {
+            Role::Image
+        } else if t & TRAIT_STATIC_TEXT != 0 {
+            Role::StaticText
+        } else if t & TRAIT_TAB_BAR != 0 {
+            Role::TabBar
+        } else {
+            Role::Element
+        }
+    }
+}
+
+/// Something a host's screen reader can see: a window, a group, or an
+/// accessibility element. Hosts get them as a list in reading order (a
+/// parent before its children, as VoiceOver moves through them).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Node {
+    /// The object it is (stable while it's on screen): actions name it.
+    pub id: u64,
+    /// The node it's in (none for a window).
+    pub parent: Option<u64>,
+    pub role: Role,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub identifier: Option<String>,
+    pub traits: u64,
+    /// In screen points: x, y, width, height.
+    pub frame: [f64; 4],
+    /// Where a tap activates it, in screen points.
+    pub activation_point: [f64; 2],
+}
+
+impl Node {
+    /// An accessibility element: a screen reader stops on it (windows and groups only hold them).
+    pub fn is_element(&self) -> bool {
+        !matches!(self.role, Role::Window | Role::Group | Role::TabBar)
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.traits & TRAIT_NOT_ENABLED == 0
+    }
+
+    pub fn selected(&self) -> bool {
+        self.traits & TRAIT_SELECTED != 0
+    }
+
+    /// A switch that's on.
+    pub fn on(&self) -> bool {
+        self.role == Role::Switch && self.value.as_deref() == Some("1")
+    }
+}
+
+/// What a screen reader can do to an element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Double-tap: `accessibilityActivate`, or else a tap at its activation point.
+    Activate,
+    /// Swipe up on an adjustable element.
+    Increment,
+    /// Swipe down on an adjustable element.
+    Decrement,
+    /// The screen reader's cursor arrived on it.
+    Focus,
+}
+
+/// The screen as VoiceOver would present it, for a host's screen reader:
+/// windows, the accessibility elements in them, and the containers that
+/// name groups of them. VoiceOver doesn't look inside an element, nor at
+/// what's beside a modal view; containers that say nothing about themselves
+/// are left out (their elements belong to the nearest one that does).
+pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
+    let elements = snapshot(emu)?;
+    let ends: Vec<usize> = (0..elements.len()).map(|i| subtree_end(&elements, i)).collect();
+    // Each element's window, and the front-most modal view in each window.
+    let mut window_of = Vec::with_capacity(elements.len());
+    let mut modal: HashMap<usize, usize> = HashMap::new();
+    for (i, e) in elements.iter().enumerate() {
+        let w = if e.depth == 0 { i } else { window_of.last().copied().unwrap_or(0) };
+        window_of.push(w);
+        if e.modal && e.depth > 0 {
+            modal.insert(w, i);
+        }
+    }
+    // Beside the modal view in its window: neither in it nor one of its ancestors.
+    let beside_modal = |i: usize| modal.get(&window_of[i]).is_some_and(|&m| !(m <= i && i < ends[m]) && !(i <= m && m < ends[i]));
+    let mut out: Vec<Node> = Vec::new();
+    // The kept ancestors of the current element: (depth, id).
+    let mut path: Vec<(usize, u64)> = Vec::new();
+    let mut i = 0;
+    while i < elements.len() {
+        let e = &elements[i];
+        while path.last().is_some_and(|&(d, _)| d >= e.depth) {
+            path.pop();
+        }
+        if beside_modal(i) {
+            i = ends[i]; // not this, nor anything in it
+            continue;
+        }
+        let keep = e.depth == 0 || e.is_element || e.label.is_some() || e.identifier.is_some();
+        if keep {
+            let switch = e.is_element && is_kind(emu, e.object, "UISwitch")?;
+            out.push(Node {
+                id: e.object,
+                parent: path.last().map(|&(_, id)| id),
+                role: Role::of(e, switch),
+                label: e.label.clone(),
+                value: e.value.clone(),
+                hint: e.hint.clone(),
+                identifier: e.identifier.clone(),
+                traits: e.traits,
+                frame: e.frame,
+                activation_point: e.activation_point,
+            });
+            if e.is_element {
+                i = ends[i]; // VoiceOver doesn't look inside an element
+                continue;
+            }
+            path.push((e.depth, e.object));
+        }
+        i += 1;
+    }
+    // Groups with no elements in them say nothing a screen reader can visit.
+    loop {
+        let has_child: std::collections::HashSet<u64> = out.iter().filter_map(|n| n.parent).collect();
+        let before = out.len();
+        out.retain(|n| n.role == Role::Window || n.is_element() || has_child.contains(&n.id));
+        if out.len() == before {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// The index just past `i`'s subtree in a pre-order snapshot.
+fn subtree_end(elements: &[Element], i: usize) -> usize {
+    let d = elements[i].depth;
+    elements[i + 1..].iter().position(|e| e.depth <= d).map_or(elements.len(), |p| i + 1 + p)
+}
+
+/// Do what a screen reader asked of an element on the screen it was shown
+/// (`shown`: the last tree the host got; anything else is gone, and ignored).
+pub fn perform(emu: &mut Emu, shown: &[Node], id: u64, action: Action) -> Result<()> {
+    let Some(node) = shown.iter().find(|n| n.id == id) else { return Ok(()) };
+    match action {
+        Action::Activate => {
+            // As VoiceOver: the element's own activation first, else a tap.
+            if send(emu, id, "accessibilityActivate", &[])? & 0xff == 0 {
+                let [x, y] = node.activation_point;
+                crate::touch::send_touch(emu, crate::touch::BEGAN, x, y)?;
+                let info = ((x as f32).to_bits() as u64) << 32 | (y as f32).to_bits() as u64;
+                crate::uikit::after_on_main(emu, TAP_HOLD_S, lift, info)?;
+            }
+        }
+        Action::Increment => {
+            send(emu, id, "accessibilityIncrement", &[])?;
+        }
+        Action::Decrement => {
+            send(emu, id, "accessibilityDecrement", &[])?;
+        }
+        Action::Focus => {
+            send(emu, id, "accessibilityElementDidBecomeFocused", &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// How long VoiceOver's tap holds the finger down.
+const TAP_HOLD_S: f64 = 0.05;
+
+/// Timer callout `(timer, info)`: the activation's finger lifts (info: the point, two f32s).
+fn lift(emu: &mut Emu) -> Result<()> {
+    let info = emu.arg(1);
+    let (x, y) = (f32::from_bits((info >> 32) as u32) as f64, f32::from_bits(info as u32) as f64);
+    crate::touch::send_touch(emu, crate::touch::ENDED, x, y)
 }
