@@ -1,0 +1,13 @@
+# The tabbar fixture on the iOS 26.2 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+METRIC first.bar 0.0 761.0 390.0 83.0
+METRIC first.insets 0.0 47.0 0.0 83.0
+METRIC first.text.3 295.0 8.0 10.333333333333314 14.333333333333336
+METRIC first.text.Home 95.0 39.0 29.0 12.0
+METRIC first.text.Search 178.0 39.0 34.33333333333334 12.0
+METRIC first.text.Settings 260.0 39.0 41.333333333333314 12.0
+METRIC second.bar 0.0 761.0 390.0 83.0
+METRIC second.insets 0.0 47.0 0.0 83.0
+METRIC second.text.3 295.0 8.0 10.333333333333314 14.333333333333336
+METRIC second.text.Home 95.0 39.0 29.0 12.0
+METRIC second.text.Search 178.0 39.0 34.33333333333334 12.0
+METRIC second.text.Settings 260.0 39.0 41.333333333333314 12.0
