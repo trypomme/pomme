@@ -37,6 +37,7 @@ extension EnvironmentValues {
     "layoutDirection": LayoutDirection.leftToRight,
     "colorScheme": ColorScheme.light,
     "isEnabled": true,
+    "imageScale": Image.Scale.medium,
   ]
 
   /// A built-in value, by name: as set, else the system's default.

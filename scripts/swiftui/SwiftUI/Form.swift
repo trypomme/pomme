@@ -20,7 +20,10 @@ extension Form {
 
 extension Form: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
-    [ListNode(path: path, rows: graph.resolve(pommeContent, at: path.appending("content"), preferences))]
+    let rows = graph.withEnvironment({ $0.pommeInList = true }) { graph.resolve(pommeContent, at: path.appending("content"), preferences) }
+    let list = ListNode(path: path, rows: rows)
+    list.underNavigationBar = graph.environment.pommeUnderNavigationBar
+    return [list]
   }
 }
 

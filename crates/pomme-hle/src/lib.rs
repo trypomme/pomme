@@ -92,6 +92,7 @@ pub mod appearance;
 pub mod keychain;
 pub mod animation;
 mod spinner;
+pub mod symbols;
 mod uikit;
 mod uiview;
 pub mod webkit;

@@ -350,6 +350,15 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     // UIImageView.removeAllSymbolEffects(options:animated:) (Swift; self in x20):
     // pomme runs no SF Symbol effects, so there are none to remove.
     ("_$sSo11UIImageViewC5UIKitE22removeAllSymbolEffects7options8animatedy7Symbols0F13EffectOptionsV_SbtF", |_| Ok(())),
+    // UIImage.baselineOffsetFromBottom: CGFloat? (Swift; self in x20): a
+    // symbol's baseline, nil for other images. (An optional CGFloat comes back
+    // as its bits in x0 and w1 set for nil.)
+    ("_$sSo7UIImageC5UIKitE24baselineOffsetFromBottom12CoreGraphics7CGFloatVSgvg", |e| {
+        let b = e.render.images.get(&e.cpu.x[20]).and_then(|i| i.look.baseline);
+        e.cpu.x[0] = b.unwrap_or(0.0).to_bits();
+        e.cpu.x[1] = b.is_none() as u64;
+        Ok(())
+    }),
     // Swift's AccessibilitySettings (default settings): animated images on, no
     // preference for non-blinking cursors; change notifications are their names.
     ("_$sSo21AccessibilitySettingsV0A0E21animatedImagesEnabledSbvgZ", |e| {

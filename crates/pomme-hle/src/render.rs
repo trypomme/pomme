@@ -175,6 +175,29 @@ pub struct Image {
     pub caps: [f64; 4],
     /// UIImageOrientation: how the pixels are turned to show upright (0, up: as they are).
     pub orientation: u8,
+    /// How it's drawn (template, tinted) and what it is (a symbol).
+    pub look: ImageLook,
+}
+
+/// How an image is drawn, beyond its pixels.
+#[derive(Clone, Debug, Default)]
+pub struct ImageLook {
+    /// UIImageRenderingMode: automatic (0), alwaysOriginal (1), alwaysTemplate (2).
+    pub rendering_mode: u8,
+    /// A template image's own color (`imageWithTintColor:`), a UIColor; 0: the view's tint.
+    pub tint: u64,
+    /// Its baseline, from the bottom (a symbol's), in points.
+    pub baseline: Option<f64>,
+    /// The symbol it is (`systemImageNamed:`), and its configuration.
+    pub symbol: Option<crate::symbols::Symbol>,
+}
+
+impl ImageLook {
+    /// Whether it's drawn as a template: its alpha in a tint color (a symbol
+    /// is, unless it's made always original).
+    pub fn is_template(&self) -> bool {
+        self.rendering_mode == 2 || (self.rendering_mode == 0 && self.symbol.is_some())
+    }
 }
 
 #[derive(Default)]
@@ -1440,8 +1463,14 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     let clips = vw.clips || ly.masks || text_view;
     let clipped = if clips { p.intersect(mask, &layer_shape(&ly, w, h), &vt) } else { None };
     let m = if clips { clipped.as_ref() } else { mask };
-    // The layer's own contents are clipped with it too (masksToBounds).
-    if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
+    // The layer's own contents are clipped with it too (masksToBounds); a
+    // template image in its own color, else the view's tint.
+    if let Some(mut img) = emu.render.images.get(&ly.contents).cloned() {
+        if img.look.is_template() {
+            let c = if img.look.tint != 0 { img.look.tint } else { crate::uiview::tint_color(emu, v).unwrap_or(0) };
+            let color = rgba(emu, c);
+            img = tinted(&img, color);
+        }
         let r = contents_rect(emu, &ly, &img, w, h);
         draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &vt), m);
     }
@@ -1660,6 +1689,18 @@ fn contents_rect(emu: &mut Emu, ly: &Layer, img: &Image, w: f32, h: f32) -> [f32
 
 #[allow(clippy::too_many_arguments)]
 /// Draw a layer's `contents` image into its bounds, nine-slicing by `contentsCenter`.
+/// A template image in a color: its alpha, in that color.
+fn tinted(img: &Image, color: [f32; 4]) -> Image {
+    let mut pix = (*img.pix).clone();
+    for px in pix.pixels_mut() {
+        let a = px.alpha() as f32 / 255.0 * color[3];
+        let c = |v: f32| (v * a * 255.0).round().clamp(0.0, 255.0) as u8;
+        let a8 = (a * 255.0).round() as u8;
+        *px = tiny_skia::PremultipliedColorU8::from_rgba(c(color[0]).min(a8), c(color[1]).min(a8), c(color[2]).min(a8), a8).unwrap_or(*px);
+    }
+    Image { pix: std::rc::Rc::new(pix), ..img.clone() }
+}
+
 fn draw_contents(p: &mut Painter, img: &Image, center: [f64; 4], w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
     let (pw, ph) = (img.pix.width() as f32, img.pix.height() as f32);
     let unit = center == [0.0, 0.0, 1.0, 1.0];

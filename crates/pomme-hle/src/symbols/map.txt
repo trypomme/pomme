@@ -1,0 +1,191 @@
+# SF Symbols drawn with Material Symbols Rounded: an SF Symbol's name, the
+# Material symbol that stands for it, and `fill` where it's drawn filled
+# (Material's FILL axis). Names SF writes `x.fill` are the same symbol
+# filled. Sizes come from iOS (ios26.txt, recorded on the simulator).
+airplane flight
+antenna.radiowaves.left.and.right cell_tower
+archivebox inventory_2
+archivebox.fill inventory_2 fill
+arrow.clockwise refresh
+arrow.counterclockwise undo
+arrow.down arrow_downward
+arrow.left arrow_back
+arrow.right arrow_forward
+arrow.up arrow_upward
+arrow.up.arrow.down swap_vert
+arrow.triangle.2.circlepath sync
+arrow.uturn.backward undo
+bag shopping_bag
+bag.fill shopping_bag fill
+barcode barcode
+battery.100 battery_full
+bell notifications
+bell.fill notifications fill
+bell.slash notifications_off
+bicycle directions_bike
+bolt bolt
+bolt.fill bolt fill
+book menu_book
+book.fill menu_book fill
+bookmark bookmark
+bookmark.fill bookmark fill
+bubble.left chat_bubble
+bubble.left.fill chat_bubble fill
+calendar calendar_today
+camera photo_camera
+camera.fill photo_camera fill
+car directions_car
+car.fill directions_car fill
+cart shopping_cart
+cart.fill shopping_cart fill
+checkmark check
+checkmark.circle check_circle
+checkmark.circle.fill check_circle fill
+checkmark.square check_box
+checkmark.square.fill check_box fill
+chevron.down keyboard_arrow_down
+chevron.left chevron_left
+chevron.right chevron_right
+chevron.up keyboard_arrow_up
+chevron.up.chevron.down unfold_more
+circle circle
+circle.fill circle fill
+clock schedule
+clock.fill schedule fill
+cloud cloud
+cloud.fill cloud fill
+creditcard credit_card
+creditcard.fill credit_card fill
+desktopcomputer desktop_windows
+doc description
+doc.fill description fill
+doc.on.doc content_copy
+doc.text article
+ellipsis more_horiz
+ellipsis.circle more_horiz
+envelope mail
+envelope.fill mail fill
+exclamationmark.circle error
+exclamationmark.circle.fill error fill
+exclamationmark.triangle warning
+exclamationmark.triangle.fill warning fill
+eye visibility
+eye.fill visibility fill
+eye.slash visibility_off
+film movie
+flag flag
+flag.fill flag fill
+flame local_fire_department
+flame.fill local_fire_department fill
+folder folder
+folder.fill folder fill
+gamecontroller sports_esports
+gearshape settings
+gearshape.fill settings fill
+gear settings
+gift redeem
+globe language
+graduationcap school
+hammer construction
+hand.thumbsup thumb_up
+hand.thumbsup.fill thumb_up fill
+headphones headphones
+heart favorite
+heart.fill favorite fill
+house home
+house.fill home fill
+info.circle info
+info.circle.fill info fill
+iphone smartphone
+keyboard keyboard
+leaf eco
+leaf.fill eco fill
+line.3.horizontal menu
+line.3.horizontal.decrease filter_list
+link link
+list.bullet format_list_bulleted
+location near_me
+location.fill near_me fill
+lock lock
+lock.fill lock fill
+lock.open lock_open
+magnifyingglass search
+map map
+map.fill map fill
+mappin location_on
+mappin.circle location_on
+message chat
+message.fill chat fill
+mic mic
+mic.fill mic fill
+minus remove
+minus.circle do_not_disturb_on
+moon dark_mode
+moon.fill dark_mode fill
+music.note music_note
+network lan
+newspaper newspaper
+paintbrush brush
+paperclip attach_file
+paperplane send
+paperplane.fill send fill
+pause pause
+pause.fill pause fill
+pencil edit
+person person
+person.fill person fill
+person.2 group
+person.2.fill group fill
+person.circle account_circle
+person.circle.fill account_circle fill
+person.crop.circle account_circle
+person.crop.circle.fill account_circle fill
+phone call
+phone.fill call fill
+photo image
+photo.fill image fill
+play play_arrow
+play.fill play_arrow fill
+plus add
+plus.circle add_circle
+plus.circle.fill add_circle fill
+plus.square add_box
+power power_settings_new
+printer print
+qrcode qr_code
+questionmark.circle help
+questionmark.circle.fill help fill
+rectangle.portrait.and.arrow.right logout
+scissors content_cut
+shield shield
+shield.fill shield fill
+slider.horizontal.3 tune
+sparkles auto_awesome
+speaker.wave.2 volume_up
+speaker.wave.2.fill volume_up fill
+square check_box_outline_blank
+square.and.arrow.down download
+square.and.arrow.up ios_share
+square.and.pencil edit_square
+square.grid.2x2 grid_view
+star star
+star.fill star fill
+stop.fill stop fill
+sun.max light_mode
+sun.max.fill light_mode fill
+tag sell
+tag.fill sell fill
+trash delete
+trash.fill delete fill
+tray inbox
+trophy trophy
+trophy.fill trophy fill
+tv tv
+video videocam
+video.fill videocam fill
+wand.and.stars auto_fix_high
+wifi wifi
+wrench build
+xmark close
+xmark.circle cancel
+xmark.circle.fill cancel fill

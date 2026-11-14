@@ -873,9 +873,16 @@ fn ret_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<()> {
 fn preferred_font(emu: &mut Emu) -> Result<()> {
     let style = emu.arg(2);
     let name = if style == 0 { String::new() } else { foundation::nsstring(emu, style)? };
-    // (UIFontTextStyleHeadline, or UIKit's own UICTFontTextStyleHeadline.)
+    let (size, semibold) = text_style(&name);
+    if semibold { ret_font(emu, ".SFUI-Semibold", size, 0.3) } else { ret_font(emu, ".SFUI-Regular", size, 0.0) }
+}
+
+/// A text style's point size (at the default text size, Large) and whether
+/// it's semibold, by its name (UIFontTextStyleHeadline, or UIKit's own
+/// UICTFontTextStyleHeadline); body for any other.
+pub(crate) fn text_style(name: &str) -> (f64, bool) {
     let style = name.rsplit("TextStyle").next().unwrap_or("");
-    let (size, semibold) = match style {
+    match style {
         "ExtraLargeTitle" => (36.0, true),
         "ExtraLargeTitle2" => (28.0, true),
         "LargeTitle" | "Title0" => (34.0, false),
@@ -889,8 +896,20 @@ fn preferred_font(emu: &mut Emu) -> Result<()> {
         "Caption1" => (12.0, false),
         "Caption2" => (11.0, false),
         _ => (17.0, false), // Body
-    };
-    if semibold { ret_font(emu, ".SFUI-Semibold", size, 0.3) } else { ret_font(emu, ".SFUI-Regular", size, 0.0) }
+    }
+}
+
+/// A view's tint color (a UIColor): its own, else the nearest superview's,
+/// else the system tint.
+pub(crate) fn tint_color(emu: &mut Emu, mut v: u64) -> Result<u64> {
+    while v != 0 {
+        if let Some(c) = objc::bag_get(emu, v, "tintColor").filter(|&c| c != 0) {
+            return Ok(c);
+        }
+        v = view(emu, v).superview;
+    }
+    let cls = host_class(emu, "UIColor")?;
+    objc::send(emu, cls, "tintColor", &[])
 }
 
 /// UIFontDescriptorSymbolicTraits: italic (1), bold (2).
@@ -1149,7 +1168,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "setAccessibilityViewIsModal:", noop),
     ("UIView", false, "setAccessibilityIgnoresInvertColors:", noop),
     ("UIView", false, "setShouldGroupAccessibilityChildren:", noop),
-    ("UIView", false, "tintColor", ret_zero),
+    // Its tint: its own, else its superview's, else the system's.
+    ("UIView", false, "tintColor", |e| {
+        let c = tint_color(e, e.arg(0))?;
+        e.ret(c);
+        Ok(())
+    }),
     ("UIView", false, "isExclusiveTouch", ret_zero),
     ("UIView", false, "isMultipleTouchEnabled", ret_zero),
     ("UIView", false, "layoutSubviewsIfNeeded", noop),
@@ -1332,7 +1356,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "isOpaque", ret_zero),
     ("UIView", false, "setMultipleTouchEnabled:", noop),
     ("UIView", false, "setExclusiveTouch:", noop),
-    ("UIView", false, "setTintColor:", noop),
+    ("UIView", false, "setTintColor:", |e| {
+        let (v, c) = (e.arg(0), e.arg(2));
+        if c != 0 {
+            objc::send(e, c, "retain", &[])?;
+        }
+        objc::bag_set(e, v, "tintColor", c);
+        crate::host::frame_changed(e);
+        Ok(())
+    }),
     ("UIView", true, "areAnimationsEnabled", ret_one),
     ("UIView", true, "setAnimationsEnabled:", noop),
     ("UIView", true, "userInterfaceLayoutDirectionForSemanticContentAttribute:", ret_zero),

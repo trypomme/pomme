@@ -54,6 +54,17 @@ fn new_object(emu: &mut Emu, class: &str) -> Result<u64> {
     objc::create_instance(emu, cls, 0)
 }
 
+/// The image drawn another way (a rendering mode, a tint): a new UIImage.
+fn restyled(emu: &mut Emu, change: impl FnOnce(&mut crate::render::ImageLook)) -> Result<()> {
+    let Some(mut img) = image(emu, emu.arg(0)) else { return ret(emu, emu.arg(0)) };
+    change(&mut img.look);
+    if img.look.tint != 0 {
+        objc::send(emu, img.look.tint, "retain", &[])?;
+    }
+    let o = new_image(emu, img)?;
+    ret(emu, o)
+}
+
 /// A UIImage for `img`.
 pub fn new_image(emu: &mut Emu, img: Image) -> Result<u64> {
     let o = new_object(emu, "UIImage")?;
@@ -99,7 +110,7 @@ fn draw(emu: &mut Emu, renderer: u64, block: u64) -> Result<Image> {
         let _ = std::fs::write(format!("{dir}/image-{n}-{}x{}.png", pix.width(), pix.height()), pix.encode_png().unwrap_or_default());
         println!("[image] {n}: {:?} pt at {}x, {} ops: {ops:?}", r.size, r.scale, ops.len());
     }
-    Ok(Image { pix: std::rc::Rc::new(pix), size: r.size, scale: r.scale, caps: [0.0; 4], orientation: 0 })
+    Ok(Image { pix: std::rc::Rc::new(pix), size: r.size, scale: r.scale, caps: [0.0; 4], orientation: 0, look: Default::default() })
 }
 
 fn image_with_actions(emu: &mut Emu) -> Result<()> {
@@ -141,7 +152,7 @@ fn image_of(pix: std::rc::Rc<tiny_skia::Pixmap>, scale: f64, orientation: u8) ->
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let (w, h) = (pix.width() as f64 / scale, pix.height() as f64 / scale);
     let size = if matches!(orientation, 2 | 3 | 6 | 7) { [h, w] } else { [w, h] };
-    Image { pix, size, scale, caps: [0.0; 4], orientation }
+    Image { pix, size, scale, caps: [0.0; 4], orientation, look: Default::default() }
 }
 
 /// The receiver (an init) or a new UIImage of the receiving class (a class
@@ -413,9 +424,30 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (I, false, "CGImage", ret_self),
     (I, false, "resizableImageWithCapInsets:", resizable),
     (I, false, "resizableImageWithCapInsets:resizingMode:", resizable),
-    (I, false, "imageWithRenderingMode:", ret_self),
+    (I, false, "imageWithRenderingMode:", |e| {
+        let mode = e.arg(2) as u8;
+        restyled(e, |l| l.rendering_mode = mode)
+    }),
+    // A template in its own color.
+    (I, false, "imageWithTintColor:", |e| {
+        let c = e.arg(2);
+        restyled(e, |l| {
+            l.tint = c;
+            l.rendering_mode = 2;
+        })
+    }),
+    (I, false, "imageWithTintColor:renderingMode:", |e| {
+        let (c, mode) = (e.arg(2), e.arg(3) as u8);
+        restyled(e, |l| {
+            l.tint = c;
+            l.rendering_mode = mode;
+        })
+    }),
     (I, false, "imageFlippedForRightToLeftLayoutDirection", ret_self),
-    (I, false, "renderingMode", |e| ret(e, 0)),
+    (I, false, "renderingMode", |e| {
+        let m = image(e, e.arg(0)).map_or(0, |i| i.look.rendering_mode);
+        ret(e, m as u64)
+    }),
     (I, false, "imageOrientation", |e| {
         let o = image(e, e.arg(0)).map_or(0, |i| i.orientation);
         ret(e, o as u64)
@@ -439,7 +471,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         crate::uikit::ret_f64(e, 0.0);
         Ok(())
     }),
-    (I, false, "isSymbolImage", |e| ret(e, 0)),
     (I, false, "drawInRect:", |e| {
         let r = [d(e, 0), d(e, 1), d(e, 2), d(e, 3)];
         draw_in(e, Some(r), [0.0; 2], 1.0)

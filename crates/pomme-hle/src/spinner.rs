@@ -88,7 +88,7 @@ fn frames(emu: &mut Emu, v: u64) -> Result<Vec<u64>> {
     for f in 0..FRAMES {
         let Some(pix) = draw_frame(style, rgba, f, scale) else { continue };
         let id = emu.alloc(16)?;
-        emu.render.images.insert(id, Image { pix: std::rc::Rc::new(pix), size: [size, size], scale, caps: [0.0; 4], orientation: 0 });
+        emu.render.images.insert(id, Image { pix: std::rc::Rc::new(pix), size: [size, size], scale, caps: [0.0; 4], orientation: 0, look: Default::default() });
         ids.push(id);
     }
     emu.spinner_frames.insert(key, ids.clone());

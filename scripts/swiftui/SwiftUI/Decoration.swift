@@ -77,14 +77,17 @@ extension Color: PrimitiveView {
 
 // ---- Backgrounds ----
 
-/// A view with others behind it, laid out in its frame.
+/// A view with others behind it (a background) or in front (an overlay),
+/// laid out in its frame.
 final class BackgroundNode: WrapperNode {
   let background: [Node]
   let alignment: Alignment
+  let inFront: Bool
 
-  init(path: ViewPath, child: Node, background: [Node], alignment: Alignment) {
+  init(path: ViewPath, child: Node, background: [Node], alignment: Alignment, inFront: Bool = false) {
     self.background = background
     self.alignment = alignment
+    self.inFront = inFront
     super.init(path: path, child: child)
   }
 
@@ -94,13 +97,18 @@ final class BackgroundNode: WrapperNode {
     parent.pommeAdopt(container)
     let bounds = CGRect(origin: .zero, size: frame.size)
     let box = ViewDimensions(size: frame.size)
+    // (Views placed later are in front.)
+    if inFront {
+      child.place(in: bounds, of: container, renderer)
+    }
     for node in background {
       let d = node.pommeDimensions(in: ProposedViewSize(frame.size))
       let origin = CGPoint(x: box[alignment.horizontal] - d[alignment.horizontal], y: box[alignment.vertical] - d[alignment.vertical])
       node.place(in: CGRect(origin: origin, size: CGSize(width: d.width, height: d.height)), of: container, renderer)
     }
-    // (After the background's views: in front of them.)
-    child.place(in: bounds, of: container, renderer)
+    if !inFront {
+      child.place(in: bounds, of: container, renderer)
+    }
   }
 }
 
@@ -120,6 +128,15 @@ extension _BackgroundModifier: PrimitiveModifier {
     content().enumerated().map { i, node in
       let behind = graph.resolve(background, at: path.appending("background").appending(i), preferences)
       return BackgroundNode(path: path.appending(i), child: node, background: behind, alignment: alignment)
+    }
+  }
+}
+
+extension _OverlayModifier: PrimitiveModifier {
+  func pommeResolve(content: () -> [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    content().enumerated().map { i, node in
+      let front = graph.resolve(overlay, at: path.appending("overlay").appending(i), preferences)
+      return BackgroundNode(path: path.appending(i), child: node, background: front, alignment: alignment, inFront: true)
     }
   }
 }

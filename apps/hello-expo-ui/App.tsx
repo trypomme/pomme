@@ -5,6 +5,8 @@ import {
   Group,
   Host,
   HStack,
+  Image,
+  Label,
   Picker,
   ProgressView,
   Section,
@@ -26,7 +28,8 @@ import { useState } from 'react';
 // - everyday controls: a text field (echoed below it), a secure field, a
 //   menu picker, progress (a bar and a spinner), a group with a divider;
 // - modifiers: font, a secondary foreground style, a padded, rounded badge,
-//   a plain button.
+//   a plain button;
+// - symbols: labels with SF Symbols, and images (sized, colored, filled).
 
 export default function App() {
   const [wifi, setWifi] = useState(true);
@@ -74,6 +77,15 @@ export default function App() {
           <Text modifiers={[foregroundStyle({ type: 'hierarchical', style: 'secondary' })]}>Secondary</Text>
           <Text modifiers={[padding({ all: 8 }), background('#ffa500'), clipShape('roundedRectangle')]}>Badge</Text>
           <Button label="Plain button" modifiers={[buttonStyle('plain')]} />
+        </Section>
+        <Section title="Symbols">
+          <Label title="Favorites" systemImage="heart" />
+          <Label title="Settings" systemImage="gearshape" />
+          <HStack spacing={12}>
+            <Image systemName="star.fill" />
+            <Image systemName="bell" size={28} />
+            <Image systemName="checkmark.circle.fill" color="green" />
+          </HStack>
         </Section>
       </Form>
     </Host>

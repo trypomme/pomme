@@ -40,7 +40,8 @@ xcrun simctl terminate "$DEVICE" dev.pomme.$PROBE || true
 wait || true
 OS=$(xcrun simctl list devices | grep -B100 "$DEVICE" | grep -- '-- iOS' | tail -1 | tr -d '-' | xargs)
 {
-  echo "# The $PROBE fixture on the $OS Simulator (iPhone 16e): each view's last frame, in points."
-  grep '^METRIC' "$OUT" | tr -d '\r' | awk '{last[$2]=$0} END {for (k in last) print last[k]}' | sort
+  echo "# The $PROBE fixture on the $OS Simulator (iPhone 16e): what it reports (frames, sizes), in points."
+  # (Each name's last report, of the kinds probes print.)
+  grep -E '^(METRIC|SYMBOL|SMALL|LARGE|CONFIG) ' "$OUT" | tr -d '\r' | awk '{last[$1" "$2]=$0} END {for (k in last) print last[k]}' | sort
 } >"$FIXTURE/ios26.txt"
 cat "$FIXTURE/ios26.txt"

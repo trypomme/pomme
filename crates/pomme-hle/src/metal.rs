@@ -938,7 +938,7 @@ fn replace_region(emu: &mut Emu) -> Result<()> {
 pub(crate) fn show_frame(emu: &mut Emu, layer: u64, pix: tiny_skia::Pixmap) -> Result<()> {
     let scale = emu.device.scale;
     let size = [pix.width() as f64 / scale, pix.height() as f64 / scale];
-    let img = crate::image::new_image(emu, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4], orientation: 0 })?;
+    let img = crate::image::new_image(emu, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4], orientation: 0, look: Default::default() })?;
     crate::calayer::layer_mut(emu, layer).contents = img;
     crate::host::frame_changed(emu);
     Ok(())

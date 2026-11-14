@@ -13,7 +13,8 @@
 #   - Combine and SwiftUI: pomme's own, from the SDK's module interfaces
 #     (scripts/combine/build.sh, scripts/swiftui/build.sh)
 #   - Inter (rsms/inter, SIL OFL) as the system font, for text metrics and drawing,
-#     and Noto Color Emoji (SIL OFL) for emoji
+#     and Noto Color Emoji (SIL OFL) for emoji, and Material Symbols Rounded
+#     (Apache 2.0) standing in for SF Symbols
 #   - CoreFoundation (swiftlang/swift-corelibs-foundation) with ICU linked in
 #     (swiftlang/swift-foundation-icu). Built for arm64 *macOS*: its Darwin code
 #     paths assume macOS APIs that the iOS SDK hides, and the machine code and
@@ -164,6 +165,14 @@ mkdir -p "$FONTS"
   'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf'
 [ -f "$FONTS/NotoColorEmoji-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoColorEmoji-OFL.txt" \
   'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/OFL.txt'
+# SF Symbols' stand-in: Material Symbols Rounded (Apache 2.0), a variable font
+# with weight and fill axes, and its codepoints by name.
+MS='https://raw.githubusercontent.com/google/material-design-icons/master'
+[ -f "$FONTS/MaterialSymbolsRounded.ttf" ] || curl -fsSL -o "$FONTS/MaterialSymbolsRounded.ttf" \
+  "$MS/variablefont/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf"
+[ -f "$FONTS/MaterialSymbolsRounded.codepoints" ] || curl -fsSL -o "$FONTS/MaterialSymbolsRounded.codepoints" \
+  "$MS/variablefont/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.codepoints"
+[ -f "$FONTS/MaterialSymbols-LICENSE.txt" ] || curl -fsSL -o "$FONTS/MaterialSymbols-LICENSE.txt" "$MS/LICENSE"
 
 # libswiftFoundation is a shim on iOS 13+ (its symbols live in Foundation, which
 # here is swift-foundation): point it at Foundation, as one image.

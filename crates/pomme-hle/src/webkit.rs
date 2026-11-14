@@ -555,7 +555,7 @@ fn show_frame(emu: &mut Emu, v: u64, width: u32, height: u32, mut rgba: Vec<u8>)
     let image = if pg.image != 0 { pg.image } else { emu.alloc(16)? };
     let scale = emu.device.scale;
     let size = [width as f64 / scale, height as f64 / scale];
-    emu.render.images.insert(image, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4], orientation: 0 });
+    emu.render.images.insert(image, crate::render::Image { pix: std::rc::Rc::new(pix), size, scale, caps: [0.0; 4], orientation: 0, look: Default::default() });
     page_mut(emu, v).image = image;
     let layer = send(emu, pg.content_view, "layer", &[])?;
     let ly = crate::calayer::layer_mut(emu, layer);

@@ -176,3 +176,46 @@ fn typing_reaches_react() {
     assert!(field.ends_with("\"Ada\""), "{field}");
     assert!(views.contains("\"Typed: Ada\""), "{views}");
 }
+
+/// Expo UI's Label and Image with SF Symbols (drawn with their stand-ins): a
+/// list's labels with their icons in the tint, before their titles; images
+/// in the primary color, a sized one larger, and a colored one in its color.
+#[test]
+fn symbols_draw_as_on_ios() {
+    let Some(mut emu) = boot() else { return };
+    // (Flung to the end, the list rests against its bottom.)
+    touch::swipe(&mut emu.touch.script, 3_000_000_000, (195.0, 700.0), (195.0, 100.0), 300_000_000);
+    touch::swipe(&mut emu.touch.script, 4_000_000_000, (195.0, 700.0), (195.0, 100.0), 300_000_000);
+    let views = run_for(&mut emu, 7.0);
+    // The labels: the icon (large heart, 26.7 × 23.7) centered 12 pt in, the title 40 pt in.
+    let lines: Vec<&str> = views.lines().collect();
+    let fav = lines.iter().position(|l| l.contains("\"Favorites\"")).expect("no Favorites label");
+    assert!(lines[fav - 1].contains("UIImageView (-1.3, -1.7, 26.7×23.7)"), "{}", lines[fav - 1]);
+    assert!(lines[fav].contains("UILabel (40.0, 0.0, "), "{}", lines[fav]);
+    assert!(lines[fav + 1].contains("UIView (56.0, "), "the separator starts at the title\n{}", lines[fav + 1]);
+    // The images: star.fill and checkmark.circle.fill at Expo's default 24 pt, the bell at 28.
+    assert!(views.contains("UIImageView (0.0, 1.8, 31.0×28.3)"), "{views}");
+    assert!(views.contains("UIImageView (43.0, 0.0, 31.3×32.0)"), "{views}");
+
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    // Pixels of each kind in a region (points).
+    let count = |x0: f64, y0: f64, x1: f64, y1: f64, kind: &dyn Fn(u8, u8, u8) -> bool| {
+        let mut n = 0;
+        for y in (y0 * 3.0) as u32..(y1 * 3.0) as u32 {
+            for x in (x0 * 3.0) as u32..(x1 * 3.0) as u32 {
+                let c = pix.pixel(x, y).unwrap();
+                if kind(c.red(), c.green(), c.blue()) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let blue = |r: u8, g: u8, b: u8| r < 60 && (100..170).contains(&g) && b > 220;
+    let black = |r: u8, g: u8, b: u8| r < 60 && g < 60 && b < 60;
+    let green = |r: u8, g: u8, b: u8| r < 80 && g > 100 && b < 80;
+    // (Where they rest: the heart's row, then the images' row.)
+    assert!(count(28.0, 618.0, 60.0, 650.0, &blue) > 200, "the label's heart isn't in the tint");
+    assert!(count(30.0, 725.0, 66.0, 760.0, &black) > 300, "the star isn't in the primary color");
+    assert!(count(115.0, 725.0, 150.0, 760.0, &green) > 300, "the checkmark isn't green");
+}

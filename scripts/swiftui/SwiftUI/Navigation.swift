@@ -21,7 +21,7 @@ extension NavigationStack: PrimitiveView {
   /// The root view and the title it sets, which the navigation bar shows.
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     let inner = Preferences()
-    let root = graph.resolve(pommeRoot, at: path.appending("root"), inner)
+    let root = graph.withEnvironment({ $0.pommeUnderNavigationBar = true }) { graph.resolve(pommeRoot, at: path.appending("root"), inner) }
     return [NavigationStackNode(path: path, root: root, title: inner.navigationTitle, displayMode: inner.titleDisplayMode ?? .automatic)]
   }
 }
@@ -92,5 +92,13 @@ extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func navigationBarTitleDisplayMode(_ displayMode: SwiftUI.NavigationBarItem.TitleDisplayMode) -> some SwiftUICore.View
   nonisolated public func navigationBarTitleDisplayMode(_ displayMode: NavigationBarItem.TitleDisplayMode) -> some View {
     modifier(TitleDisplayModeModifier(mode: displayMode))
+  }
+}
+
+extension EnvironmentValues {
+  /// Whether views are a navigation stack's screens, under its bar.
+  var pommeUnderNavigationBar: Bool {
+    get { pommeByName["pommeUnderNavigationBar"] as? Bool ?? false }
+    set { pommeByName["pommeUnderNavigationBar"] = newValue }
   }
 }

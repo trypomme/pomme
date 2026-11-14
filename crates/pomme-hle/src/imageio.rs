@@ -230,7 +230,7 @@ fn status(emu: &mut Emu, s: u64) -> i64 {
 /// A CGImage (pomme's UIImage objects are their own CGImages) at 1×.
 pub fn new_cg_image(emu: &mut Emu, pix: Rc<Pixmap>) -> Result<u64> {
     let size = [pix.width() as f64, pix.height() as f64];
-    crate::image::new_image(emu, Image { pix, size, scale: 1.0, caps: [0.0; 4], orientation: 0 })
+    crate::image::new_image(emu, Image { pix, size, scale: 1.0, caps: [0.0; 4], orientation: 0, look: Default::default() })
 }
 
 /// An option's value in an options dictionary (0 if absent).

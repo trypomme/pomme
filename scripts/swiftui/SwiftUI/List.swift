@@ -19,8 +19,10 @@ extension List where SelectionValue == Never {
 
 extension List: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
-    let rows = graph.resolve(pommeContent, at: path.appending("content"), preferences)
-    return [ListNode(path: path, rows: rows)]
+    let rows = graph.withEnvironment({ $0.pommeInList = true }) { graph.resolve(pommeContent, at: path.appending("content"), preferences) }
+    let list = ListNode(path: path, rows: rows)
+    list.underNavigationBar = graph.environment.pommeUnderNavigationBar
+    return [list]
   }
 }
 
@@ -44,12 +46,16 @@ final class ListNode: Node {
   static let firstHeaderTop: CGFloat = 10
   static let headerAfterGroup: CGFloat = 27.33
   static let headerAboveGroup: CGFloat = 10
-  /// A section without a header: below the previous group; the first one at
-  /// the safe area's top.
+  /// A section without a header: below the previous group, or (the first)
+  /// below the safe area's top; under a navigation bar (measured under a
+  /// large title), the first at the top.
   static let sectionWithoutHeader: CGFloat = 35
   static let headerGap: CGFloat = 7
   /// The system separator (iOS 26's: 12% in light mode, measured, and 50% in dark).
   static var separatorColor: UIColor { .separator }
+
+  /// Whether it's under a navigation bar (its first section's place).
+  var underNavigationBar = false
 
   init(path: ViewPath, rows: [Node]) {
     var sections: [SectionNode] = []
@@ -110,7 +116,7 @@ final class ListNode: Node {
         header.place(in: CGRect(x: x + Self.rowInset, y: top, width: contentWidth, height: size.height), of: scroll, renderer)
         y = top + size.height + Self.headerAboveGroup
       } else {
-        y = previousBottom.map { $0 + Self.sectionWithoutHeader } ?? 0
+        y = previousBottom.map { $0 + Self.sectionWithoutHeader } ?? (underNavigationBar ? 0 : Self.sectionWithoutHeader)
       }
 
       let group = renderer.view(for: section.path.appending("group")) {
