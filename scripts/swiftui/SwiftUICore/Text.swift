@@ -46,7 +46,7 @@ extension LocalizedStringKey {
 extension LocalizedStringKey {
   /// The string for the key in the app's localizations (the key itself when it has none).
   package func pommeLocalized(in bundle: Bundle? = nil, table: String? = nil) -> String {
-    if hasFormatting { _pommeUnimplemented("LocalizedStringKey with interpolated arguments") }
-    return (bundle ?? .main).localizedString(forKey: key, value: key, table: table)
+    let localized = (bundle ?? .main).localizedString(forKey: key, value: key, table: table)
+    return hasFormatting ? pommeFormatted(localized) : localized
   }
 }

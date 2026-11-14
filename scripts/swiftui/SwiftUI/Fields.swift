@@ -15,9 +15,25 @@ public struct TextField<Label>: View where Label: View {
   var pommeText: Binding<String>
   var pommePrompt: Text?
   var pommeSelection: Binding<TextSelection?>? = nil
+  /// `onEditingChanged:` and `onCommit:` (TextField's first initializers).
+  var pommeEditingChanged: ((Bool) -> Void)? = nil
+  var pommeCommit: (() -> Void)? = nil
 }
 
 extension TextField where Label == Text {
+  // pomme: replaces extension SwiftUI.TextField where Label == SwiftUICore.Text :: nonisolated public init(_ titleKey: SwiftUICore.LocalizedStringKey, text: SwiftUICore.Binding<Swift.String>, onEditingChanged: @escaping (Swift.Bool) -> Swift.Void, onCommit: @escaping () -> Swift.Void)
+  /// Editing beginning and ending (true, false) and return reported as they happen;
+  /// `TextField(_:text:)` comes here, with nothing to do for either.
+  nonisolated public init(_ titleKey: LocalizedStringKey, text: Binding<String>, onEditingChanged: @escaping (Bool) -> Void, onCommit: @escaping () -> Void) {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeText: text, pommePrompt: nil, pommeEditingChanged: onEditingChanged, pommeCommit: onCommit)
+  }
+
+  // pomme: replaces extension SwiftUI.TextField where Label == SwiftUICore.Text :: nonisolated public init<S>(_ title: S, text: SwiftUICore.Binding<Swift.String>, onEditingChanged: @escaping (Swift.Bool) -> Swift.Void, onCommit: @escaping () -> Swift.Void) where S : Swift.StringProtocol
+  @_disfavoredOverload
+  nonisolated public init<S>(_ title: S, text: Binding<String>, onEditingChanged: @escaping (Bool) -> Void, onCommit: @escaping () -> Void) where S: StringProtocol {
+    self.init(pommeTitle: String(title), pommeText: text, pommePrompt: nil, pommeEditingChanged: onEditingChanged, pommeCommit: onCommit)
+  }
+
   // pomme: replaces extension SwiftUI.TextField where Label == SwiftUICore.Text :: nonisolated public init(_ titleKey: SwiftUICore.LocalizedStringKey, text: SwiftUICore.Binding<Swift.String>)
   nonisolated public init(_ titleKey: LocalizedStringKey, text: Binding<String>) {
     self.init(pommeTitle: titleKey.pommeLocalized(), pommeText: text, pommePrompt: nil)
@@ -86,6 +102,8 @@ extension TextField: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     let node = TextFieldNode(path: path, placeholder: pommePrompt?.pommeString ?? pommeTitle, text: pommeText, secure: false)
     node.selection = pommeSelection
+    node.editingChanged = pommeEditingChanged
+    node.commit = pommeCommit
     return [node]
   }
 }
@@ -139,12 +157,15 @@ extension SecureField: PrimitiveView {
 final class PommeTextField: UITextField {
   var changed: ((String) -> Void)?
   var focusChanged: ((Bool) -> Void)?
+  var onEditing: ((Bool) -> Void)?
+  var onReturn: (() -> Void)?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
     addTarget(self, action: #selector(editingChanged), for: .editingChanged)
     addTarget(self, action: #selector(began), for: .editingDidBegin)
     addTarget(self, action: #selector(ended), for: .editingDidEnd)
+    addTarget(self, action: #selector(returned), for: .editingDidEndOnExit)
   }
 
   required init?(coder: NSCoder) {
@@ -172,8 +193,15 @@ final class PommeTextField: UITextField {
     changed?(text ?? "")
     if let s = pommeSelection { selectionChanged?(s) }
   }
-  @objc private func began() { focusChanged?(true) }
-  @objc private func ended() { focusChanged?(false) }
+  @objc private func began() {
+    focusChanged?(true)
+    onEditing?(true)
+  }
+  @objc private func ended() {
+    focusChanged?(false)
+    onEditing?(false)
+  }
+  @objc private func returned() { onReturn?() }
 }
 
 /// A one-line field: as wide as offered, as tall as a line of body text.
@@ -183,6 +211,9 @@ final class TextFieldNode: Node {
   let secure: Bool
   /// The selection it follows, both ways (`TextField(_:text:selection:)`).
   var selection: Binding<TextSelection?>?
+  /// What editing beginning and ending, and return, do (`onEditingChanged:`, `onCommit:`).
+  var editingChanged: ((Bool) -> Void)?
+  var commit: (() -> Void)?
   static var font: UIFont { .preferredFont(forTextStyle: .body) }
 
   init(path: ViewPath, placeholder: String, text: Binding<String>, secure: Bool) {
@@ -229,6 +260,8 @@ final class TextFieldNode: Node {
     } else {
       field.selectionChanged = nil
     }
+    field.onEditing = editingChanged
+    field.onReturn = commit
     field.accessibilityIdentifier = accessibilityIdentifier
     parent.pommeAdopt(field)
     // The focus, as a FocusState has it, and back.

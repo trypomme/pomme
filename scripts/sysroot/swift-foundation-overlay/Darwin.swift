@@ -161,6 +161,13 @@ extension String {
             String._unconditionallyBridgeFromObjectiveC(NSString(format: format._bridgeToObjectiveC(), arguments: $0))
         }
     }
+
+    /// The same with the arguments in an array (SwiftUI's localized string keys format so).
+    public init(format: __shared String, arguments: __shared [CVarArg]) {
+        self = withVaList(arguments) {
+            String._unconditionallyBridgeFromObjectiveC(NSString(format: format._bridgeToObjectiveC(), arguments: $0))
+        }
+    }
 }
 
 /// Where `needle` occurs in `haystack[within]`: swift-foundation's own
