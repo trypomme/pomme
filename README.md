@@ -66,6 +66,17 @@ Debugging:
   another app) into whatever has focus at 4 s; `--paste '@4'` pastes what's there. Reads
   of another app's text count iOS's "Allow Paste" prompts, answered by
   `--paste-permission allow|deny`; tests drive the same through `emu.clipboard`.
+- End-to-end tests, as XCUITest or Maestro write them: `pomme_hle::driver::drive` runs the app
+  with a test driving it step by step: find an element by accessibility identifier or text,
+  tap it, type, swipe, wait until something shows (`app.tap(&id("name"))?`,
+  `app.type_text("Ada")?`, `app.wait_for(&text("Hello, Ada!"))?`). The test runs in lockstep
+  with the app and takes its turns on the main run loop while the app is idle, so runs stay
+  deterministic; a wait that times out reports what the screen had. Elements come from
+  UIAccessibility, which pomme's UIKit implements (identifiers, labels, values, traits,
+  frames, containers), so React Native's `testID`, SwiftUI's `.accessibilityIdentifier` and
+  Flutter's `Semantics(identifier:)` all work: Flutter builds its semantics tree once
+  something asks its view for elements, as on iOS. `tests/e2e.rs` drives hello-expo,
+  hello-flutter and a SwiftUI form. `pomme run … --elements` prints what accessibility sees.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the

@@ -8,6 +8,8 @@
 //! call back into guest code with [`Emu::call`] — e.g. `UIApplicationMain`
 //! calling the app delegate.
 
+pub mod accessibility;
+pub mod driver;
 pub mod heap;
 pub mod profile;
 mod bundle;
@@ -323,6 +325,9 @@ pub struct Emu {
     pub(crate) invocations: std::collections::HashMap<usize, Vec<invocation::Pending>>,
     pub(crate) coretext: coretext::State,
     bundle: bundle::State,
+    pub(crate) ax: accessibility::State,
+    /// A test driving the app (see driver.rs).
+    pub(crate) driver: Option<driver::State>,
 }
 
 impl Emu {
@@ -332,7 +337,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, rand::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, rand::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS, accessibility::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -433,6 +438,8 @@ impl Emu {
             invocations: Default::default(),
             coretext: Default::default(),
             bundle: Default::default(),
+            ax: Default::default(),
+            driver: None,
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
         for slot in thunks.data.chunks_exact_mut(4) {
@@ -481,6 +488,14 @@ impl Emu {
     /// The UIKit window hierarchy as indented text (for reports and tests).
     pub fn describe_views(&mut self) -> String {
         uiview::describe_tree(self).unwrap_or_else(|e| format!("(couldn't describe the views: {e})"))
+    }
+
+    /// What accessibility sees on screen (see accessibility.rs), as indented text.
+    pub fn describe_elements(&mut self) -> String {
+        match accessibility::snapshot(self) {
+            Ok(elements) => accessibility::describe(&elements),
+            Err(e) => format!("(couldn't read the accessibility tree: {e})"),
+        }
     }
 
     /// Images in initialization order: every library before the images that link it.

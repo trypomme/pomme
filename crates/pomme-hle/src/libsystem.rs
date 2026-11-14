@@ -2439,6 +2439,19 @@ fn wcslen(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `wmemchr(s, c, n)`: the first of `n` wide characters equal to `c`, or NULL.
+fn wmemchr(emu: &mut Emu) -> Result<()> {
+    let (s, c, n) = (emu.arg(0), emu.arg(1) as u32, emu.arg(2));
+    for i in 0..n {
+        if emu.p.memory.read_u32(s + i * 4)? == c {
+            emu.ret(s + i * 4);
+            return Ok(());
+        }
+    }
+    emu.ret(0);
+    Ok(())
+}
+
 fn arc4random(emu: &mut Emu) -> Result<()> {
     emu.cpu.x[0] = 1 << 32;
     arc4random_uniform(emu)
@@ -2535,6 +2548,7 @@ pub(crate) const MORE_FUNCS: &[(&str, HostFn)] = &[
         Ok(())
     }),
     ("_wcslen", wcslen),
+    ("_wmemchr", wmemchr),
     ("_arc4random", arc4random),
     ("___ulock_wait", ulock_wait),
     ("___ulock_wake", ret_zero),

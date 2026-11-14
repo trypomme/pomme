@@ -1,0 +1,651 @@
+//! UIAccessibility: what assistive technologies and UI tests see of an app.
+//!
+//! On iOS every object can describe itself to accessibility through an
+//! informal protocol on NSObject: whether it's an element, its label, value,
+//! traits and frame on screen, and the elements it contains. UIKit's views
+//! and controls answer with defaults (a label's text, a button's title); apps
+//! set or override the rest. React Native's `testID` becomes a view's
+//! `accessibilityIdentifier`, pomme's SwiftUI sets it from
+//! `.accessibilityIdentifier(_:)`, and Flutter builds its own tree of
+//! `UIAccessibilityElement`s from its semantics tree, which it turns on as
+//! soon as something asks its view for its elements (as XCUITest does).
+//!
+//! The properties are kept host-side by object, like views' state. Reading
+//! goes through messages ([`snapshot`]), so an app's overrides answer for
+//! themselves, as they do for VoiceOver.
+
+use crate::foundation;
+use crate::objc::{self, send, send_fp};
+use crate::uikit::ret_rect;
+use crate::uiview::{self, view};
+use crate::{Emu, HostFn, Result};
+use std::collections::HashMap;
+
+/// `NSNotFound`, which `accessibilityElementCount` answers when there's no count.
+const NOT_FOUND: u64 = i64::MAX as u64;
+
+/// `UIAccessibilityTraits` bits UIKit's own views carry.
+pub const TRAIT_BUTTON: u64 = 1;
+pub const TRAIT_IMAGE: u64 = 1 << 2;
+pub const TRAIT_SELECTED: u64 = 1 << 3;
+pub const TRAIT_STATIC_TEXT: u64 = 1 << 6;
+pub const TRAIT_NOT_ENABLED: u64 = 1 << 8;
+pub const TRAIT_ADJUSTABLE: u64 = 1 << 12;
+
+/// What an object has been told about itself (nothing told: UIKit's defaults).
+#[derive(Debug, Default, Clone)]
+pub struct Props {
+    /// Strings and arrays are retained copies.
+    pub identifier: u64,
+    pub label: u64,
+    pub value: u64,
+    pub hint: u64,
+    pub elements: u64,
+    pub traits: Option<u64>,
+    pub is_element: Option<bool>,
+    pub elements_hidden: bool,
+    pub modal: bool,
+    /// Screen coordinates (`accessibilityFrame`).
+    pub frame: Option<[f64; 4]>,
+    /// A UIAccessibilityElement's frame in its container (iOS 10+), which follows the container.
+    pub frame_in_container: Option<[f64; 4]>,
+    /// A UIAccessibilityElement's container (not retained, as UIKit's is weak).
+    pub container: u64,
+    /// Where activating it touches, in screen coordinates (default: its frame's center).
+    pub activation_point: Option<[f64; 2]>,
+}
+
+#[derive(Debug, Default)]
+pub struct State {
+    pub props: HashMap<u64, Props>,
+}
+
+fn props(emu: &Emu, o: u64) -> Props {
+    emu.ax.props.get(&o).cloned().unwrap_or_default()
+}
+
+fn props_mut(emu: &mut Emu, o: u64) -> &mut Props {
+    emu.ax.props.entry(o).or_default()
+}
+
+fn d(emu: &Emu, i: usize) -> f64 {
+    f64::from_bits(emu.cpu.q[i] as u64)
+}
+
+fn is_kind(emu: &mut Emu, o: u64, class: &str) -> Result<bool> {
+    let cls = objc::host_class(emu, class)?;
+    objc::is_kind_of(emu, o, cls)
+}
+
+/// Store a retained copy of the object argument (a string or array) in a slot.
+fn set_object(emu: &mut Emu, slot: fn(&mut Props) -> &mut u64) -> Result<()> {
+    let (o, v) = (emu.arg(0), emu.arg(2));
+    let copy = if v == 0 { 0 } else { send(emu, v, "copy", &[])? };
+    let old = std::mem::replace(slot(props_mut(emu, o)), copy);
+    if old != 0 {
+        objc::objc_release_obj(emu, old)?;
+    }
+    Ok(())
+}
+
+fn ret(emu: &mut Emu, v: u64) -> Result<()> {
+    emu.ret(v);
+    Ok(())
+}
+
+// ---- defaults ----
+
+/// Whether UIKit makes this an element by default: its standard controls and text.
+fn element_by_default(emu: &mut Emu, o: u64) -> Result<bool> {
+    for class in ["UILabel", "UIButton", "UITextField", "UITextView", "UISwitch", "UISlider", "UISegmentedControl"] {
+        if is_kind(emu, o, class)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// A string from a message, if the object answers one.
+fn string_message(emu: &mut Emu, o: u64, sel: &str) -> Result<u64> {
+    let s = objc::intern(emu, sel)?;
+    if !objc::responds(emu, o, s)? {
+        return Ok(0);
+    }
+    send(emu, o, sel, &[])
+}
+
+fn default_label(emu: &mut Emu, o: u64) -> Result<u64> {
+    if is_kind(emu, o, "UILabel")? {
+        return string_message(emu, o, "text");
+    }
+    if is_kind(emu, o, "UIButton")? {
+        return string_message(emu, o, "currentTitle");
+    }
+    if is_kind(emu, o, "UITextField")? {
+        return string_message(emu, o, "placeholder");
+    }
+    Ok(0)
+}
+
+fn default_value(emu: &mut Emu, o: u64) -> Result<u64> {
+    if is_kind(emu, o, "UITextField")? || is_kind(emu, o, "UITextView")? {
+        return string_message(emu, o, "text");
+    }
+    if is_kind(emu, o, "UISwitch")? {
+        let on = send(emu, o, "isOn", &[])? & 0xff != 0;
+        return foundation::new_nsstring(emu, if on { "1" } else { "0" });
+    }
+    if is_kind(emu, o, "UISlider")? {
+        let (v, lo, hi) = crate::valuecontrols::slider_values(emu, o);
+        let (v, lo, hi) = (v as f64, lo as f64, hi as f64);
+        let pct = if hi > lo { ((v - lo) / (hi - lo) * 100.0).round() } else { 0.0 };
+        return foundation::new_nsstring(emu, &format!("{pct}%"));
+    }
+    Ok(0)
+}
+
+fn default_traits(emu: &mut Emu, o: u64) -> Result<u64> {
+    let mut t = if is_kind(emu, o, "UIButton")? {
+        TRAIT_BUTTON
+    } else if is_kind(emu, o, "UILabel")? {
+        TRAIT_STATIC_TEXT
+    } else if is_kind(emu, o, "UISlider")? {
+        TRAIT_ADJUSTABLE
+    } else if is_kind(emu, o, "UIImageView")? {
+        TRAIT_IMAGE
+    } else {
+        0
+    };
+    if is_kind(emu, o, "UIControl")? {
+        if send(emu, o, "isEnabled", &[])? & 0xff == 0 {
+            t |= TRAIT_NOT_ENABLED;
+        }
+        if send(emu, o, "isSelected", &[])? & 0xff != 0 {
+            t |= TRAIT_SELECTED;
+        }
+    }
+    Ok(t)
+}
+
+/// A rect in a view's coordinates, in screen coordinates (the window is the screen).
+pub fn to_screen(emu: &mut Emu, v: u64, r: [f64; 4]) -> [f64; 4] {
+    if v == 0 {
+        return r;
+    }
+    let o = uiview::window_origin(emu, v);
+    let b = view(emu, v).bounds;
+    [r[0] + o[0] - b[0], r[1] + o[1] - b[1], r[2], r[3]]
+}
+
+fn is_view(emu: &mut Emu, o: u64) -> bool {
+    emu.ui.views.views.contains_key(&o)
+}
+
+// ---- NSObject (UIAccessibility) ----
+
+fn is_accessibility_element(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let v = match props(emu, o).is_element {
+        Some(v) => v,
+        None => element_by_default(emu, o)?,
+    };
+    ret(emu, v as u64)
+}
+
+fn set_is_accessibility_element(emu: &mut Emu) -> Result<()> {
+    let (o, v) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    props_mut(emu, o).is_element = Some(v);
+    Ok(())
+}
+
+fn label(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let l = match props(emu, o).label {
+        0 => default_label(emu, o)?,
+        l => l,
+    };
+    ret(emu, l)
+}
+
+fn value(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let v = match props(emu, o).value {
+        0 => default_value(emu, o)?,
+        v => v,
+    };
+    ret(emu, v)
+}
+
+fn traits(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let t = match props(emu, o).traits {
+        Some(t) => t,
+        None => default_traits(emu, o)?,
+    };
+    ret(emu, t)
+}
+
+fn set_traits(emu: &mut Emu) -> Result<()> {
+    let (o, t) = (emu.arg(0), emu.arg(2));
+    props_mut(emu, o).traits = Some(t);
+    Ok(())
+}
+
+/// Where it is on screen: what it was told, a UIAccessibilityElement's frame
+/// in its container, or a view's bounds.
+fn frame(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let p = props(emu, o);
+    let r = if let Some(r) = p.frame {
+        r
+    } else if let Some(r) = p.frame_in_container {
+        let c = p.container;
+        if c != 0 && is_view(emu, c) { to_screen(emu, c, r) } else { r }
+    } else if is_view(emu, o) {
+        let b = view(emu, o).bounds;
+        to_screen(emu, o, b)
+    } else {
+        [0.0; 4]
+    };
+    ret_rect(emu, r);
+    Ok(())
+}
+
+fn set_frame(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
+    props_mut(emu, o).frame = Some(r);
+    Ok(())
+}
+
+fn elements_hidden(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let h = props(emu, o).elements_hidden;
+    ret(emu, h as u64)
+}
+
+fn set_elements_hidden(emu: &mut Emu) -> Result<()> {
+    let (o, h) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    props_mut(emu, o).elements_hidden = h;
+    Ok(())
+}
+
+fn view_is_modal(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let m = props(emu, o).modal;
+    ret(emu, m as u64)
+}
+
+fn set_view_is_modal(emu: &mut Emu) -> Result<()> {
+    let (o, m) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    props_mut(emu, o).modal = m;
+    Ok(())
+}
+
+/// The UIAccessibilityContainer protocol's count: the elements it was given, if any.
+fn element_count(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let n = match send(emu, o, "accessibilityElements", &[])? {
+        0 => 0,
+        a => send(emu, a, "count", &[])?,
+    };
+    ret(emu, n)
+}
+
+fn element_at_index(emu: &mut Emu) -> Result<()> {
+    let (o, i) = (emu.arg(0), emu.arg(2));
+    let a = send(emu, o, "accessibilityElements", &[])?;
+    let n = if a == 0 { 0 } else { send(emu, a, "count", &[])? };
+    let e = if i < n { send(emu, a, "objectAtIndex:", &[i])? } else { 0 };
+    ret(emu, e)
+}
+
+fn index_of_element(emu: &mut Emu) -> Result<()> {
+    let (o, e) = (emu.arg(0), emu.arg(2));
+    let a = send(emu, o, "accessibilityElements", &[])?;
+    let i = if a == 0 { NOT_FOUND } else { send(emu, a, "indexOfObject:", &[e])? };
+    ret(emu, i)
+}
+
+fn activation_point(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let p = match props(emu, o).activation_point {
+        Some(p) => p,
+        None => {
+            let [x, y, w, h] = send_fp(emu, o, "accessibilityFrame", &[], &[])?;
+            [x + w / 2.0, y + h / 2.0]
+        }
+    };
+    emu.cpu.q[0] = p[0].to_bits() as u128;
+    emu.cpu.q[1] = p[1].to_bits() as u128;
+    Ok(())
+}
+
+fn set_activation_point(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let p = [d(emu, 0), d(emu, 1)];
+    props_mut(emu, o).activation_point = Some(p);
+    Ok(())
+}
+
+// ---- UIAccessibilityElement ----
+
+fn element_init_with_container(emu: &mut Emu) -> Result<()> {
+    let (o, c) = (emu.arg(0), emu.arg(2));
+    props_mut(emu, o).container = c;
+    ret(emu, o)
+}
+
+fn container(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let c = props(emu, o).container;
+    ret(emu, c)
+}
+
+fn set_container(emu: &mut Emu) -> Result<()> {
+    let (o, c) = (emu.arg(0), emu.arg(2));
+    props_mut(emu, o).container = c;
+    Ok(())
+}
+
+fn frame_in_container(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let r = props(emu, o).frame_in_container.unwrap_or_default();
+    ret_rect(emu, r);
+    Ok(())
+}
+
+fn set_frame_in_container(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
+    let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
+    props_mut(emu, o).frame_in_container = Some(r);
+    Ok(())
+}
+
+const O: &str = "NSObject";
+const E: &str = "UIAccessibilityElement";
+
+macro_rules! object_prop {
+    ($class:expr, $get:literal, $set:literal, $field:ident) => {
+        [
+            ($class, false, $get, (|e: &mut Emu| {
+                let v = props(e, e.arg(0)).$field;
+                ret(e, v)
+            }) as HostFn),
+            ($class, false, $set, (|e: &mut Emu| set_object(e, |p| &mut p.$field)) as HostFn),
+        ]
+    };
+}
+
+const STRINGS: &[[(&str, bool, &str, HostFn); 2]] = &[
+    // An identifier is UIAccessibilityIdentification's: views, elements, images and bar items.
+    object_prop!("UIView", "accessibilityIdentifier", "setAccessibilityIdentifier:", identifier),
+    object_prop!(E, "accessibilityIdentifier", "setAccessibilityIdentifier:", identifier),
+    object_prop!("UIImage", "accessibilityIdentifier", "setAccessibilityIdentifier:", identifier),
+    object_prop!("UIBarItem", "accessibilityIdentifier", "setAccessibilityIdentifier:", identifier),
+    object_prop!(O, "accessibilityHint", "setAccessibilityHint:", hint),
+    object_prop!(O, "accessibilityElements", "setAccessibilityElements:", elements),
+    [(O, false, "accessibilityLabel", label), (O, false, "setAccessibilityLabel:", |e| set_object(e, |p| &mut p.label))],
+    [(O, false, "accessibilityValue", value), (O, false, "setAccessibilityValue:", |e| set_object(e, |p| &mut p.value))],
+];
+
+/// The rest of the protocol: kept as given and read back, for apps and
+/// assistive technology; pomme doesn't act on them (yet).
+macro_rules! kept {
+    (object $get:literal, $set:literal) => {
+        [
+            (O, false, $get, (|e: &mut Emu| {
+                let v = objc::bag_get(e, e.arg(0), $get).unwrap_or(0);
+                ret(e, v)
+            }) as HostFn),
+            (O, false, $set, (|e: &mut Emu| {
+                let (o, v) = (e.arg(0), e.arg(2));
+                let copy = if v == 0 { 0 } else { send(e, v, "copy", &[])? };
+                if let Some(old) = objc::bag_get(e, o, $get).filter(|&old| old != 0) {
+                    objc::objc_release_obj(e, old)?;
+                }
+                objc::bag_set(e, o, $get, copy);
+                Ok(())
+            }) as HostFn),
+        ]
+    };
+    (scalar $get:literal, $set:literal, $default:expr) => {
+        [
+            (O, false, $get, (|e: &mut Emu| {
+                let v = objc::bag_get(e, e.arg(0), $get).unwrap_or($default);
+                ret(e, v)
+            }) as HostFn),
+            (O, false, $set, (|e: &mut Emu| {
+                let (o, v) = (e.arg(0), e.arg(2));
+                objc::bag_set(e, o, $get, v);
+                Ok(())
+            }) as HostFn),
+        ]
+    };
+}
+
+const KEPT: &[[(&str, bool, &str, HostFn); 2]] = &[
+    kept!(object "accessibilityLanguage", "setAccessibilityLanguage:"),
+    kept!(object "accessibilityAttributedLabel", "setAccessibilityAttributedLabel:"),
+    kept!(object "accessibilityAttributedValue", "setAccessibilityAttributedValue:"),
+    kept!(object "accessibilityAttributedHint", "setAccessibilityAttributedHint:"),
+    kept!(object "accessibilityUserInputLabels", "setAccessibilityUserInputLabels:"),
+    kept!(object "accessibilityCustomActions", "setAccessibilityCustomActions:"),
+    kept!(object "accessibilityCustomRotors", "setAccessibilityCustomRotors:"),
+    kept!(object "accessibilityPath", "setAccessibilityPath:"),
+    kept!(object "accessibilityTextualContext", "setAccessibilityTextualContext:"),
+    kept!(object "accessibilityHeaderElements", "setAccessibilityHeaderElements:"),
+    kept!(scalar "accessibilityNavigationStyle", "setAccessibilityNavigationStyle:", 0),
+    kept!(scalar "accessibilityContainerType", "setAccessibilityContainerType:", 0),
+    kept!(scalar "shouldGroupAccessibilityChildren", "setShouldGroupAccessibilityChildren:", 0),
+    kept!(scalar "accessibilityIgnoresInvertColors", "setAccessibilityIgnoresInvertColors:", 0),
+    kept!(scalar "accessibilityRespondsToUserInteraction", "setAccessibilityRespondsToUserInteraction:", 0),
+];
+
+pub(crate) fn methods() -> Vec<(&'static str, bool, &'static str, HostFn)> {
+    let mut m: Vec<_> = STRINGS.iter().chain(KEPT).flatten().copied().collect();
+    m.extend_from_slice(METHODS);
+    m
+}
+
+const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    (O, false, "isAccessibilityElement", is_accessibility_element),
+    (O, false, "setIsAccessibilityElement:", set_is_accessibility_element),
+    (O, false, "accessibilityTraits", traits),
+    (O, false, "setAccessibilityTraits:", set_traits),
+    (O, false, "accessibilityFrame", frame),
+    (O, false, "setAccessibilityFrame:", set_frame),
+    (O, false, "accessibilityElementsHidden", elements_hidden),
+    (O, false, "setAccessibilityElementsHidden:", set_elements_hidden),
+    (O, false, "accessibilityViewIsModal", view_is_modal),
+    (O, false, "setAccessibilityViewIsModal:", set_view_is_modal),
+    (O, false, "accessibilityActivationPoint", activation_point),
+    (O, false, "setAccessibilityActivationPoint:", set_activation_point),
+    (O, false, "accessibilityElementCount", element_count),
+    (O, false, "accessibilityElementAtIndex:", element_at_index),
+    (O, false, "indexOfAccessibilityElement:", index_of_element),
+    (E, false, "initWithAccessibilityContainer:", element_init_with_container),
+    (E, false, "accessibilityContainer", container),
+    (E, false, "setAccessibilityContainer:", set_container),
+    (E, false, "accessibilityFrameInContainerSpace", frame_in_container),
+    (E, false, "setAccessibilityFrameInContainerSpace:", set_frame_in_container),
+];
+
+/// `UIAccessibilityConvertFrameToScreenCoordinates(rect, view)`: rect (d0–d3) in the view's coordinates.
+fn convert_frame_to_screen(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
+    let r = if is_view(emu, v) { to_screen(emu, v, r) } else { r };
+    ret_rect(emu, r);
+    Ok(())
+}
+
+pub(crate) const FUNCS: &[(&str, HostFn)] = &[("_UIAccessibilityConvertFrameToScreenCoordinates", convert_frame_to_screen)];
+
+// ---- Reading the tree ----
+
+/// Something on screen as accessibility sees it: a view, or an element a
+/// container provides (Flutter's semantics nodes, a paragraph's links).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Element {
+    /// How deep in the tree (windows are 0).
+    pub depth: usize,
+    /// The object (a view or a UIAccessibilityElement).
+    pub object: u64,
+    /// The view it's in: itself, for a view.
+    pub view: u64,
+    pub class: String,
+    pub identifier: Option<String>,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub traits: u64,
+    /// Whether it's an accessibility element itself (VoiceOver stops on it).
+    pub is_element: bool,
+    /// Where it is on screen, in points: x, y, width, height.
+    pub frame: [f64; 4],
+}
+
+impl Element {
+    pub fn center(&self) -> (f64, f64) {
+        (self.frame[0] + self.frame[2] / 2.0, self.frame[1] + self.frame[3] / 2.0)
+    }
+
+    /// Whether any of it is on a screen of this size.
+    pub fn on_screen(&self, (w, h): (f64, f64)) -> bool {
+        let [x, y, fw, fh] = self.frame;
+        fw > 0.0 && fh > 0.0 && x < w && y < h && x + fw > 0.0 && y + fh > 0.0
+    }
+
+    /// Whether it says anything about itself (an identifier, a label or a value).
+    pub fn is_described(&self) -> bool {
+        self.identifier.is_some() || self.label.is_some() || self.value.is_some()
+    }
+}
+
+impl std::fmt::Display for Element {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [x, y, w, h] = self.frame;
+        write!(f, "{}", self.class)?;
+        if let Some(id) = &self.identifier {
+            write!(f, " #{id}")?;
+        }
+        if let Some(l) = &self.label {
+            write!(f, " {l:?}")?;
+        }
+        if let Some(v) = &self.value {
+            write!(f, " value {v:?}")?;
+        }
+        if self.traits & TRAIT_BUTTON != 0 {
+            write!(f, " button")?;
+        }
+        write!(f, " ({x:.1}, {y:.1}, {w:.1}×{h:.1})")
+    }
+}
+
+fn string_of(emu: &mut Emu, o: u64, sel: &str) -> Result<Option<String>> {
+    let s = string_message(emu, o, sel)?;
+    if s == 0 {
+        return Ok(None);
+    }
+    let s = if is_kind(emu, s, "NSAttributedString")? { send(emu, s, "string", &[])? } else { s };
+    Ok(foundation::nsstring(emu, s).ok().filter(|s| !s.is_empty()))
+}
+
+/// The objects accessibility finds inside `o`: the elements it provides, or a view's subviews.
+fn children(emu: &mut Emu, o: u64) -> Result<Vec<u64>> {
+    let elements = send(emu, o, "accessibilityElements", &[])?;
+    if elements != 0 {
+        let n = send(emu, elements, "count", &[])?;
+        return (0..n).map(|i| send(emu, elements, "objectAtIndex:", &[i])).collect();
+    }
+    // A container that counts its own elements (UIAccessibilityContainer).
+    let n = send(emu, o, "accessibilityElementCount", &[])?;
+    if n != 0 && n != NOT_FOUND {
+        return (0..n.min(10_000)).map(|i| send(emu, o, "accessibilityElementAtIndex:", &[i])).collect();
+    }
+    Ok(if is_view(emu, o) { view(emu, o).subviews } else { Vec::new() })
+}
+
+fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element>) -> Result<()> {
+    if o == 0 || depth > 200 {
+        return Ok(());
+    }
+    let own_view = is_view(emu, o);
+    if own_view {
+        let vw = view(emu, o);
+        if vw.hidden || vw.alpha < 0.01 {
+            return Ok(());
+        }
+    }
+    if send(emu, o, "accessibilityElementsHidden", &[])? & 0xff != 0 {
+        return Ok(());
+    }
+    let r = send_fp(emu, o, "accessibilityFrame", &[], &[])?;
+    let isa = emu.read_u64(o)?;
+    let class = emu.objc.class_name(isa);
+    let element = Element {
+        depth,
+        object: o,
+        view: if own_view { o } else { in_view },
+        class,
+        identifier: string_of(emu, o, "accessibilityIdentifier")?,
+        label: string_of(emu, o, "accessibilityLabel")?,
+        value: string_of(emu, o, "accessibilityValue")?,
+        traits: send(emu, o, "accessibilityTraits", &[])?,
+        is_element: send(emu, o, "isAccessibilityElement", &[])? & 0xff != 0,
+        frame: r,
+    };
+    let in_view = element.view;
+    out.push(element);
+    for c in children(emu, o)? {
+        if c != o {
+            walk(emu, c, in_view, depth + 1, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Everything accessibility can see on screen, window by window, in tree
+/// order (later is in front). Hidden views and hidden elements are left out.
+pub fn snapshot(emu: &mut Emu) -> Result<Vec<Element>> {
+    let mut out = Vec::new();
+    for w in emu.ui.windows.clone() {
+        walk(emu, w, w, 0, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// The snapshot as indented text: the elements that describe themselves,
+/// each under the nearest of its ancestors that does.
+pub fn describe(elements: &[Element]) -> String {
+    let mut s = String::new();
+    // The path to the current element (pre-order): each ancestor's depth, and whether it's shown.
+    let mut path: Vec<(usize, bool)> = Vec::new();
+    for e in elements {
+        while path.last().is_some_and(|&(d, _)| d >= e.depth) {
+            path.pop();
+        }
+        let shown = e.is_described() || e.depth == 0;
+        if shown {
+            let indent = path.iter().filter(|&&(_, shown)| shown).count();
+            s += &format!("{}{e}\n", "  ".repeat(indent));
+        }
+        path.push((e.depth, shown));
+    }
+    s
+}
+
+/// Whether a touch at the element's center would land on it: the window's
+/// hit test finds its view or something inside it (XCUITest's `isHittable`).
+pub fn hittable(emu: &mut Emu, e: &Element) -> Result<bool> {
+    let window = if emu.ui.key_window != 0 { emu.ui.key_window } else { emu.ui.windows.first().copied().unwrap_or(0) };
+    if window == 0 {
+        return Ok(false);
+    }
+    let (x, y) = e.center();
+    let mut hit = objc::send_fp_id(emu, window, "hitTest:withEvent:", &[0], &[x, y])?;
+    while hit != 0 && hit != e.view {
+        hit = view(emu, hit).superview;
+    }
+    Ok(hit != 0)
+}

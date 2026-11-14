@@ -550,6 +550,10 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
                 continue;
             }
         }
+        // A driving test takes its turns while the app is idle, and says how far time goes.
+        if crate::driver::idle(emu, next_deadline(emu, wait.deadline()))? {
+            continue;
+        }
         // No host: pages in a live web engine still run on the wall clock.
         if crate::webkit::idle(emu, next_deadline(emu, wait.deadline()))? {
             continue;

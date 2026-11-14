@@ -166,17 +166,32 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
                 return Ok(true);
             }
             emu.live.pending.extend(app);
-            if emu.live.source != 0 {
-                foundation::cf_call(emu, "_CFRunLoopSourceSignal", &[emu.live.source])?;
-                foundation::cf_call(emu, "_CFRunLoopWakeUp", &[emu.live.run_loop])?;
-            }
+            signal_input(emu)?;
             Ok(true)
         }
     }
 }
 
-/// The source's perform callout: deliver what arrived, in order.
+/// Signal the input source and wake the main run loop: its perform callout
+/// runs on the main thread at the run loop's next turn. False before the
+/// source is installed.
+pub(crate) fn signal_input(emu: &mut Emu) -> Result<bool> {
+    if emu.live.source == 0 {
+        return Ok(false);
+    }
+    foundation::cf_call(emu, "_CFRunLoopSourceSignal", &[emu.live.source])?;
+    foundation::cf_call(emu, "_CFRunLoopWakeUp", &[emu.live.run_loop])?;
+    Ok(true)
+}
+
+/// The source's perform callout: deliver what arrived, in order, then give
+/// a driving test its turn.
 fn perform(emu: &mut Emu) -> Result<()> {
+    deliver(emu)?;
+    crate::driver::turn(emu)
+}
+
+fn deliver(emu: &mut Emu) -> Result<()> {
     for ev in std::mem::take(&mut emu.live.pending) {
         match ev {
             Event::Touch(inp) => crate::touch::send_touch(emu, inp.phase, inp.x, inp.y)?,
@@ -207,7 +222,7 @@ fn give_frame(emu: &mut Emu, pix: &tiny_skia::Pixmap, give: impl FnOnce(&mut dyn
 
 /// Set up the input source on the main run loop (when there's a host).
 pub(crate) fn install(emu: &mut Emu) -> Result<()> {
-    if emu.live.host.is_none() {
+    if emu.live.host.is_none() && !crate::driver::active(emu) {
         return Ok(());
     }
     if emu.live.scale == 0.0 {

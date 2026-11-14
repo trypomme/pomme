@@ -1163,11 +1163,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "semanticContentAttribute", ret_zero),
     ("UIView", false, "setInsetsLayoutMarginsFromSafeArea:", noop),
     ("UIView", false, "setPreservesSuperviewLayoutMargins:", noop),
-    ("UIView", false, "setAccessibilityElementsHidden:", noop),
-    ("UIView", false, "setAccessibilityTraits:", noop),
-    ("UIView", false, "setAccessibilityViewIsModal:", noop),
-    ("UIView", false, "setAccessibilityIgnoresInvertColors:", noop),
-    ("UIView", false, "setShouldGroupAccessibilityChildren:", noop),
     // Its tint: its own, else its superview's, else the system's.
     ("UIView", false, "tintColor", |e| {
         let c = tint_color(e, e.arg(0))?;
@@ -1349,9 +1344,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "intrinsicContentSize", intrinsic_size),
     ("UIView", false, "traitCollection", trait_collection),
     ("UIView", false, "setTranslatesAutoresizingMaskIntoConstraints:", noop),
-    ("UIView", false, "setAccessibilityIdentifier:", noop),
-    ("UIView", false, "setAccessibilityLabel:", noop),
-    ("UIView", false, "setIsAccessibilityElement:", noop),
     ("UIView", false, "setOpaque:", noop),
     ("UIView", false, "isOpaque", ret_zero),
     ("UIView", false, "setMultipleTouchEnabled:", noop),

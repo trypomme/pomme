@@ -46,7 +46,10 @@ class _HelloPageState extends State<HelloPage> {
           children: [
             const Text('Hello from Flutter', style: TextStyle(fontSize: 17)),
             const SizedBox(height: 16),
-            GestureDetector(
+            Semantics(
+              identifier: 'square',
+              button: true,
+              child: GestureDetector(
               onTap: () => setState(() => _taps++),
               child: Container(
                 width: 300,
@@ -73,8 +76,12 @@ class _HelloPageState extends State<HelloPage> {
                 ),
               ),
             ),
+            ),
             const SizedBox(height: 16),
-            Text('Tapped $_taps ${_taps == 1 ? 'time' : 'times'}', style: const TextStyle(fontSize: 17)),
+            Semantics(
+              identifier: 'taps',
+              child: Text('Tapped $_taps ${_taps == 1 ? 'time' : 'times'}', style: const TextStyle(fontSize: 17)),
+            ),
           ],
         ),
       ),
@@ -85,16 +92,22 @@ class _HelloPageState extends State<HelloPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
+              Semantics(
+                identifier: 'greeting',
+                child: Text(
                 _submitted.isNotEmpty ? 'Submitted $_submitted' : (_name.isEmpty ? 'Type your name below' : 'Hello, $_name!'),
                 style: const TextStyle(fontSize: 17),
               ),
+              ),
               const SizedBox(height: 8),
-              TextField(
+              Semantics(
+                identifier: 'name',
+                child: TextField(
                 decoration: const InputDecoration(hintText: 'Your name', border: OutlineInputBorder()),
                 autocorrect: false,
                 onChanged: (v) => setState(() => _name = v),
                 onSubmitted: (v) => setState(() => _submitted = v),
+              ),
               ),
             ],
           ),

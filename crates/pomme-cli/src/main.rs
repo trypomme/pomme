@@ -32,6 +32,11 @@ enum Cmd {
         /// Print the view hierarchy when the run stops.
         #[arg(long)]
         views: bool,
+        /// Print what accessibility sees when the run stops: identifiers
+        /// (React Native's testID, SwiftUI's and Flutter's), labels, values
+        /// and frames, as UI tests find elements by them.
+        #[arg(long)]
+        elements: bool,
         /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
         #[arg(long, value_parser = parse_tap)]
         tap: Vec<(f64, f64, f64)>,
@@ -400,7 +405,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } => {
+        Cmd::Run { path, steps, seconds, views, elements, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } => {
             // A live network talks to servers that check the date: use the real one.
             if state.clock.is_none() && !offline {
                 state.clock = Some(Clock::Now);
@@ -420,7 +425,7 @@ fn main() -> Result<()> {
                 let out = result.clone();
                 pomme_desktop::launch(config, move |host, scale| {
                     let r = make_net(offline, &fixture).and_then(|net| {
-                        run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, Some((host, scale)))
+                        run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, Some((host, scale)))
                     });
                     *out.lock().unwrap() = r;
                 })
@@ -428,7 +433,7 @@ fn main() -> Result<()> {
                 return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
             }
             let net = make_net(offline, &fixture)?;
-            run(&path, steps, seconds, views, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, None)
+            run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, None)
         }
     }
 }
@@ -820,7 +825,7 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, profile: &ProfileArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, profile: &ProfileArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
     use pomme_hle::{Emu, Stop};
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
@@ -974,6 +979,9 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     emu.time_limit_ns = None;
     if views {
         println!("\nviews:\n{}", emu.describe_views());
+    }
+    if elements {
+        println!("\nelements:\n{}", emu.describe_elements());
     }
     clipboard.report(&mut emu);
     if let Some(out) = screenshot {
