@@ -68,6 +68,7 @@ impl Emu {
             )));
         }
         let host = self.live.host.take();
+        let host_side = crate::host::take_host_side(self);
         let client = self.net.client.take();
         let engine = self.webkit.engine.take();
         let driver = self.driver.take();
@@ -75,6 +76,7 @@ impl Emu {
         let (max_steps, time_limit_ns, trace, serial) = (self.max_steps, self.time_limit_ns, self.trace, self.frame_serial);
         *self = (*snapshot.emu).clone();
         *self.live.host = host;
+        crate::host::put_host_side(self, host_side);
         *self.net.client = client;
         *self.webkit.engine = engine;
         *self.driver = driver;

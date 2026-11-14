@@ -321,13 +321,50 @@ pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) 
 /// As [`corner_shape`], each corner with its own radius (top-left, top-right,
 /// bottom-left, bottom-right; 0: square).
 pub(crate) fn corner_shape_radii(w: f32, h: f32, radii: [f32; 4], continuous: bool) -> Vec<El> {
-    // How far along each edge a corner reaches, per unit of radius.
-    const REACH: f32 = 1.528_664_8;
-    let reach = if continuous { REACH } else { 1.0 };
-    let radii = radii.map(|r| r.max(0.0).min(w / 2.0 / reach).min(h / 2.0 / reach));
+    let (radii, reach) = clamp_radii(w, h, radii, continuous);
     if radii.iter().all(|&r| r == 0.0) {
         return rect_els(0.0, 0.0, w, h);
     }
+    let mut out = Vec::new();
+    // Start on the top edge, where the top-left corner leaves it.
+    out.push(El::Move(reach * radii[0], 0.0));
+    for &(c, u, v, r) in &corners_of(w, h, radii) {
+        if r == 0.0 {
+            out.push(El::Line(c.0, c.1));
+            continue;
+        }
+        corner_curve(&mut out, c, u, v, r, reach, continuous);
+    }
+    out.push(El::Close);
+    out
+}
+
+/// How far along each edge a continuous corner reaches, per unit of radius.
+const CONTINUOUS_REACH: f32 = 1.528_664_8;
+
+/// The radii as drawn (no corner reaching past the middle of an edge), and
+/// how far along its edges a corner reaches, per unit of radius.
+fn clamp_radii(w: f32, h: f32, radii: [f32; 4], continuous: bool) -> ([f32; 4], f32) {
+    let reach = if continuous { CONTINUOUS_REACH } else { 1.0 };
+    (radii.map(|r| r.max(0.0).min(w / 2.0 / reach).min(h / 2.0 / reach)), reach)
+}
+
+/// A corner: its point, the direction arriving at it, the direction leaving it, its radius.
+type Corner = ((f32, f32), (f32, f32), (f32, f32), f32);
+
+/// The corners clockwise from top-right (radii: top-left, top-right, bottom-left, bottom-right).
+fn corners_of(w: f32, h: f32, radii: [f32; 4]) -> [Corner; 4] {
+    [
+        ((w, 0.0), (1.0, 0.0), (0.0, 1.0), radii[1]),
+        ((w, h), (0.0, 1.0), (-1.0, 0.0), radii[3]),
+        ((0.0, h), (-1.0, 0.0), (0.0, -1.0), radii[2]),
+        ((0.0, 0.0), (0.0, -1.0), (1.0, 0.0), radii[0]),
+    ]
+}
+
+/// A rounded corner from where it leaves the arriving edge (a line to there)
+/// to where it meets the leaving one.
+fn corner_curve(out: &mut Vec<El>, c: (f32, f32), u: (f32, f32), v: (f32, f32), r: f32, reach: f32, continuous: bool) {
     // A corner as cubics in (a, b): a back along the edge arriving at the
     // corner, b along the edge leaving it, in units of the radius.
     const CONTINUOUS: [[(f32, f32); 3]; 3] = [
@@ -337,31 +374,31 @@ pub(crate) fn corner_shape_radii(w: f32, h: f32, radii: [f32; 4], continuous: bo
     ];
     const K: f32 = 0.447_715; // 1 − 0.552285, the circle's cubic handles
     const CIRCULAR: [[(f32, f32); 3]; 1] = [[(K, 0.0), (0.0, K), (0.0, 1.0)]];
-    // Corners clockwise from top-right: (corner point, arriving direction, leaving direction, radius).
-    let corners: [((f32, f32), (f32, f32), (f32, f32), f32); 4] = [
-        ((w, 0.0), (1.0, 0.0), (0.0, 1.0), radii[1]),
-        ((w, h), (0.0, 1.0), (-1.0, 0.0), radii[3]),
-        ((0.0, h), (-1.0, 0.0), (0.0, -1.0), radii[2]),
-        ((0.0, 0.0), (0.0, -1.0), (1.0, 0.0), radii[0]),
-    ];
-    let mut out = Vec::new();
-    // Start on the top edge, where the top-left corner leaves it.
-    out.push(El::Move(reach * radii[0], 0.0));
-    for &(c, u, v, r) in &corners {
-        if r == 0.0 {
-            out.push(El::Line(c.0, c.1));
-            continue;
-        }
-        let at = |a: f32, b: f32| (c.0 - a * r * u.0 + b * r * v.0, c.1 - a * r * u.1 + b * r * v.1);
-        let start = at(reach, 0.0);
-        out.push(El::Line(start.0, start.1));
-        let segs: &[[(f32, f32); 3]] = if continuous { &CONTINUOUS } else { &CIRCULAR };
-        for seg in segs {
-            let (p1, p2, p3) = (at(seg[0].0, seg[0].1), at(seg[1].0, seg[1].1), at(seg[2].0, seg[2].1));
-            out.push(El::Cubic(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1));
-        }
+    let at = |a: f32, b: f32| (c.0 - a * r * u.0 + b * r * v.0, c.1 - a * r * u.1 + b * r * v.1);
+    let start = at(reach, 0.0);
+    out.push(El::Line(start.0, start.1));
+    let segs: &[[(f32, f32); 3]] = if continuous { &CONTINUOUS } else { &CIRCULAR };
+    for seg in segs {
+        let (p1, p2, p3) = (at(seg[0].0, seg[0].1), at(seg[1].0, seg[1].1), at(seg[2].0, seg[2].1));
+        out.push(El::Cubic(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1));
     }
-    out.push(El::Close);
+}
+
+/// The display's shape held this way, as an SVG path in points (its corners:
+/// continuous on Face ID iPhones, as moving screens' cards are, so the two
+/// coincide), for a host that clips the screen itself (the browser page).
+pub fn display_svg_path(d: &crate::device::Device, o: crate::device::Orientation) -> String {
+    let (w, h) = d.screen(o);
+    let shape = corner_shape(w as f32, h as f32, d.corner_radius as f32, 15, !d.home_button);
+    let mut out = String::new();
+    for e in shape {
+        out += &match e {
+            El::Move(x, y) => format!("M{x:.3} {y:.3}"),
+            El::Line(x, y) => format!("L{x:.3} {y:.3}"),
+            El::Cubic(a, b, c, d, e, f) => format!("C{a:.3} {b:.3} {c:.3} {d:.3} {e:.3} {f:.3}"),
+            El::Close => "Z".into(),
+        };
+    }
     out
 }
 
@@ -371,6 +408,17 @@ pub(crate) fn new_card_path(emu: &mut Emu, size: [f64; 2], r: f64) -> Result<u64
     let id = emu.alloc(16)?;
     emu.render.paths.insert(id, corner_shape(size[0] as f32, size[1] as f32, r as f32, 15, true));
     Ok(id)
+}
+
+/// A layer's corner radii (top-left, top-right, bottom-left, bottom-right).
+fn layer_radii(ly: &Layer) -> [f32; 4] {
+    match ly.corner_radii {
+        Some(r) => r.map(|v| v as f32),
+        None => {
+            let r = ly.corner_radius as f32;
+            [1, 2, 4, 8].map(|bit| if ly.masked_corners & bit != 0 { r } else { 0.0 })
+        }
+    }
 }
 
 /// A layer's own shape, `w` × `h`.
@@ -916,6 +964,89 @@ impl Painter<'_> {
         }
     }
 
+    /// Fill a `w` × `h` box with these corners. Unrotated and big, as most
+    /// layers' backgrounds are, its inside is filled as rectangles (fast) and
+    /// only the corners as paths, cut at whole pixels so the pieces meet
+    /// without seams; the same pixels as filling its shape, at a fraction of
+    /// the cost (anti-aliased paths are rasterised at 4× resolution).
+    #[allow(clippy::too_many_arguments)]
+    fn fill_box(&mut self, w: f32, h: f32, radii: [f32; 4], continuous: bool, color: [f32; 4], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let [sx, ky, kx, sy, tx, ty] = *t;
+        let axis_aligned = ky == 0.0 && kx == 0.0 && sx > 0.0 && sy > 0.0;
+        // Small boxes: the path is as quick.
+        if !axis_aligned || w * sx * h * sy < 64.0 * 64.0 || w <= 0.0 || h <= 0.0 {
+            let (radii, _) = clamp_radii(w, h, radii, continuous);
+            self.fill(&corner_shape_radii(w, h, radii, continuous), color, alpha, false, t, mask);
+            return;
+        }
+        let Some(paint) = paint(color, alpha) else { return };
+        let (radii, reach) = clamp_radii(w, h, radii, continuous);
+        // In device pixels: the box, and how far each corner reaches along its edges.
+        let (x0, y0, x1, y1) = (tx, ty, tx + w * sx, ty + h * sy);
+        let rx = radii.map(|r| r * reach * sx);
+        let ry = radii.map(|r| r * reach * sy);
+        // Where the inside starts: past every corner on that side, on a whole pixel.
+        let left = (x0 + rx[0].max(rx[2])).ceil().min(x1);
+        let right = (x1 - rx[1].max(rx[3])).floor().max(left);
+        let top = (y0 + ry[0].max(ry[1])).ceil().min(y1);
+        let bottom = (y1 - ry[2].max(ry[3])).floor().max(top);
+        let rect = |pix: &mut Pixmap, x: f32, y: f32, x2: f32, y2: f32| {
+            if let Some(r) = tiny_skia::Rect::from_ltrb(x, y, x2, y2) {
+                pix.fill_rect(r, &paint, Transform::identity(), mask);
+            }
+        };
+        // The middle, full height; the sides between the corners.
+        rect(&mut self.pix, left, y0, right, y1);
+        rect(&mut self.pix, x0, top, left, bottom);
+        rect(&mut self.pix, right, top, x1, bottom);
+        // Each corner's box: the corner, and what's inside it up to the inside's edges.
+        let device = |(x, y): (f32, f32)| (x0 + x * sx, y0 + y * sy);
+        for (i, &(c, u, v, r)) in corners_of(w, h, radii).iter().enumerate() {
+            // (corners_of goes top-right, bottom-right, bottom-left, top-left)
+            let (bx, by) = match i {
+                0 => (right, top),
+                1 => (right, bottom),
+                2 => (left, bottom),
+                _ => (left, top),
+            };
+            let cd = device(c);
+            let (box_l, box_r) = (cd.0.min(bx), cd.0.max(bx));
+            let (box_t, box_b) = (cd.1.min(by), cd.1.max(by));
+            if box_r <= box_l || box_b <= box_t {
+                continue;
+            }
+            if r == 0.0 {
+                rect(&mut self.pix, box_l, box_t, box_r, box_b);
+                continue;
+            }
+            // The corner's box corner on the arriving edge, the curve, the
+            // box corner on the leaving edge, and the inner corner.
+            let on_edge = |d: (f32, f32)| (if d.0 != 0.0 { bx } else { cd.0 }, if d.1 != 0.0 { by } else { cd.1 });
+            let arrive = on_edge(u);
+            let leave = on_edge(v);
+            let mut els = vec![El::Move(arrive.0, arrive.1)];
+            let mut curve = Vec::new();
+            corner_curve(&mut curve, c, u, v, r, reach, continuous);
+            els.extend(curve.into_iter().map(|e| match e {
+                El::Line(x, y) => {
+                    let (x, y) = device((x, y));
+                    El::Line(x, y)
+                }
+                El::Cubic(a, b, c2, d, e2, f) => {
+                    let ((a, b), (c2, d), (e2, f)) = (device((a, b)), device((c2, d)), device((e2, f)));
+                    El::Cubic(a, b, c2, d, e2, f)
+                }
+                other => other,
+            }));
+            els.push(El::Line(leave.0, leave.1));
+            els.push(El::Line(bx, by));
+            els.push(El::Close);
+            if let Some(path) = build(&els) {
+                self.pix.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), mask);
+            }
+        }
+    }
+
     fn stroke(&mut self, els: &[El], color: [f32; 4], alpha: f32, width: f32, t: &[f32; 6], mask: Option<&Mask>) {
         self.stroke_line(els, color, alpha, width, Line::default(), t, mask);
     }
@@ -950,16 +1081,11 @@ impl Painter<'_> {
                 if let Some((_, f)) = &app
                     && let Some(gid) = f.glyph_index(g.ch)
                 {
-                    let mut b = Outline(PathBuilder::new());
-                    if f.outline_glyph(gid, &mut b).is_some()
-                        && let Some(path) = b.0.finish()
-                    {
-                        let s = g.size as f32 / f.units_per_em() as f32;
-                        let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
-                        if let Some(p) = paint(g.color.map(|v| v as f32), alpha) {
-                            self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
-                        }
-                    }
+                    let font = faces.get(g.face).map_or((0, 0), |(bytes, index, coords)| {
+                        let vars = coords.iter().fold(*index as u64, |h, (tag, v)| h.rotate_left(13) ^ u32::from_be_bytes(*tag) as u64 ^ (v.to_bits() as u64) << 7);
+                        (bytes.as_ptr() as usize ^ vars as usize, bytes.len())
+                    });
+                    self.outline_glyph(f, font, gid, g, alpha, t, mask);
                     continue;
                 }
             }
@@ -974,17 +1100,35 @@ impl Painter<'_> {
                 self.emoji_glyph(g, alpha, t, mask);
                 continue;
             };
+            let font = (data.as_ptr() as usize ^ ((wght as usize) << 16 | opsz as usize), data.len());
+            self.outline_glyph(&face, font, gid, g, alpha, t, mask);
+        }
+        let _ = upem;
+    }
+
+    /// An outline glyph in its color: from the glyph cache when the
+    /// transform allows, else rasterised in place. `font` names the face and
+    /// its variation (for the cache).
+    #[allow(clippy::too_many_arguments)]
+    fn outline_glyph(&mut self, face: &ttf_parser::Face, font: (usize, usize), gid: ttf_parser::GlyphId, g: &Glyph, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let color = g.color.map(|v| v as f32);
+        let s = g.size as f32 / face.units_per_em() as f32;
+        let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
+        let outline = || {
             let mut b = Outline(PathBuilder::new());
-            if face.outline_glyph(gid, &mut b).is_none() {
-                continue;
+            face.outline_glyph(gid, &mut b)?;
+            b.0.finish()
+        };
+        let key_color = color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let drawn = glyph_cache::draw(&mut self.pix, (font, gid.0, key_color), face.glyph_bounding_box(gid), s, (g.x as f32, g.y as f32), t, alpha, mask, |pix, base| {
+            if let (Some(path), Some(p)) = (outline(), paint(color, 1.0)) {
+                pix.fill_path(&path, &p, FillRule::Winding, base, None);
             }
-            let Some(path) = b.0.finish() else { continue };
-            let s = g.size as f32 / upem;
-            let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
-            let color = g.color.map(|v| v as f32);
-            if let Some(p) = paint(color, alpha) {
-                self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
-            }
+        });
+        if !drawn
+            && let (Some(path), Some(p)) = (outline(), paint(color, alpha))
+        {
+            self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
         }
     }
 
@@ -1019,8 +1163,19 @@ impl Painter<'_> {
         let s = g.size as f32 / face.units_per_em() as f32;
         let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
         let base = ts(&concat(&place, t));
-        let mut painter = ColrPainter { face: &face, pix: &mut self.pix, base, transforms: Vec::new(), clips: Vec::new(), outline: None, alpha, mask };
         let fg = ttf_parser::RgbaColor::new(0, 0, 0, 255);
+        if face.is_color_glyph(gid) {
+            // Painted once (layer by layer, at full opacity), then copied.
+            let font = (data.as_ptr() as usize, data.len());
+            let drawn = glyph_cache::draw(&mut self.pix, (font, gid.0, [0; 4]), face.glyph_bounding_box(gid), s, (g.x as f32, g.y as f32), t, alpha, mask, |pix, base| {
+                let mut painter = ColrPainter { face: &face, pix, base, transforms: Vec::new(), clips: Vec::new(), outline: None, alpha: 1.0, mask: None };
+                face.paint_color_glyph(gid, 0, fg, &mut painter);
+            });
+            if drawn {
+                return;
+            }
+        }
+        let mut painter = ColrPainter { face: &face, pix: &mut self.pix, base, transforms: Vec::new(), clips: Vec::new(), outline: None, alpha, mask };
         if face.is_color_glyph(gid) {
             face.paint_color_glyph(gid, 0, fg, &mut painter);
         } else if let Some(path) = painter.glyph_path(gid) {
@@ -1081,6 +1236,109 @@ fn rect_path(w: f32, h: f32) -> Option<tiny_skia::Path> {
 /// Paints COLR (v0 and v1) color glyphs: layers of outlines filled with solid
 /// colors or gradients, under clips and transforms. Layer compositing modes
 /// are treated as plain source-over.
+/// Rasterised glyphs, kept between frames: text that's drawn again (every
+/// frame of an animation) is copied, not rasterised again. A glyph is kept
+/// per face and variation, glyph, color, size in pixels and position within a
+/// pixel (to a quarter), so the copy has the pixels rasterising would.
+mod glyph_cache {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    /// The face (bytes and variation), the glyph, its color (RGBA, 0–255).
+    pub(super) type Glyph = ((usize, usize), u16, [u8; 4]);
+
+    #[derive(Hash, PartialEq, Eq)]
+    struct Key {
+        glyph: Glyph,
+        /// Pixels per em × 64.
+        size: u32,
+        /// Where its origin falls within a pixel, in quarters.
+        phase: (u8, u8),
+    }
+
+    struct Raster {
+        pix: Option<Pixmap>,
+        /// Its top-left, from the pixel its origin is in.
+        left: i32,
+        top: i32,
+    }
+
+    /// Enough for the text of several screens; past it, start again.
+    const MAX: usize = 8192;
+    /// Bigger glyphs are drawn directly (they're rare, and big to keep).
+    const MAX_PX: f32 = 256.0;
+
+    thread_local! {
+        static CACHE: RefCell<HashMap<Key, Rc<Raster>>> = RefCell::new(HashMap::new());
+    }
+
+    /// Draw a glyph (`scale`: font units to user space; `origin`: its origin
+    /// in user space; `t`: user space to device) from the cache, rasterising
+    /// it with `paint` (glyph space → the raster's pixels) the first time.
+    /// False when it can't be cached (a rotated or skewed transform, a big
+    /// glyph): the caller draws it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw(pix: &mut Pixmap, glyph: Glyph, bbox: Option<ttf_parser::Rect>, scale: f32, origin: (f32, f32), t: &[f32; 6], alpha: f32, mask: Option<&Mask>, paint: impl FnOnce(&mut Pixmap, Transform)) -> bool {
+        let [sx, ky, kx, sy, tx, ty] = *t;
+        if ky != 0.0 || kx != 0.0 || sx <= 0.0 || (sx - sy).abs() > 1e-4 {
+            return false;
+        }
+        let px_per_unit = scale * sx;
+        if px_per_unit * 1000.0 > MAX_PX * 4.0 {
+            return false;
+        }
+        // The origin on the device, split into a whole pixel and a quarter-pixel phase.
+        let (dx, dy) = (sx * origin.0 + tx, sy * origin.1 + ty);
+        let quarter = |v: f32| ((v - v.floor()) * 4.0).round() as i32;
+        let (mut ix, mut iy) = (dx.floor() as i32, dy.floor() as i32);
+        let (mut qx, mut qy) = (quarter(dx), quarter(dy));
+        if qx == 4 {
+            (ix, qx) = (ix + 1, 0);
+        }
+        if qy == 4 {
+            (iy, qy) = (iy + 1, 0);
+        }
+        let key = Key { glyph, size: (px_per_unit * 64_000.0).round() as u32, phase: (qx as u8, qy as u8) };
+        let raster = CACHE.with(|c| c.borrow().get(&key).cloned());
+        let raster = match raster {
+            Some(r) => r,
+            None => {
+                let (fx, fy) = (qx as f32 / 4.0, qy as f32 / 4.0);
+                // The glyph's box on the device (font units are y-up), with a pixel to spare.
+                let (x0, y0, x1, y1) = match bbox {
+                    Some(b) => (b.x_min as f32, b.y_min as f32, b.x_max as f32, b.y_max as f32),
+                    // (No box: generously round the origin, for faces of 1000 to 2048 units per em.)
+                    None => (-600.0, -800.0, 3000.0, 2600.0),
+                };
+                let left = (fx + x0 * px_per_unit).floor() as i32 - 1;
+                let top = (fy - y1 * px_per_unit).floor() as i32 - 1;
+                let right = (fx + x1 * px_per_unit).ceil() as i32 + 1;
+                let bottom = (fy - y0 * px_per_unit).ceil() as i32 + 1;
+                let mut out = Pixmap::new((right - left).max(1) as u32, (bottom - top).max(1) as u32);
+                if let Some(p) = out.as_mut() {
+                    paint(p, Transform::from_row(px_per_unit, 0.0, 0.0, -px_per_unit, fx - left as f32, fy - top as f32));
+                }
+                let r = Rc::new(Raster { pix: out, left, top });
+                CACHE.with(|c| {
+                    let mut c = c.borrow_mut();
+                    if c.len() >= MAX {
+                        c.clear();
+                    }
+                    c.insert(key, r.clone());
+                });
+                r
+            }
+        };
+        if let Some(g) = &raster.pix {
+            let paint = tiny_skia::PixmapPaint { opacity: alpha.clamp(0.0, 1.0), quality: tiny_skia::FilterQuality::Nearest, ..Default::default() };
+            pix.draw_pixmap(ix + raster.left, iy + raster.top, g.as_ref(), &paint, Transform::identity(), mask);
+        }
+        true
+    }
+}
+
 struct ColrPainter<'f, 'p, 'm> {
     face: &'f ttf_parser::Face<'f>,
     pix: &'p mut Pixmap,
@@ -1238,9 +1496,8 @@ fn placement(frame: [f64; 4], ly: &Layer) -> [f32; 6] {
 /// A layer's background: `bg` is the colour (an animated one), or its colour object's.
 #[allow(clippy::too_many_arguments)]
 fn draw_layer_box(p: &mut Painter, ly: &Layer, bg: Option<[f64; 4]>, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    let shape = layer_shape(ly, w, h);
     if let Some(c) = bg {
-        p.fill(&shape, c.map(|v| v as f32), alpha, false, t, mask);
+        p.fill_box(w, h, layer_radii(ly), ly.continuous_corners, c.map(|v| v as f32), alpha, t, mask);
     }
 }
 
@@ -2439,6 +2696,77 @@ mod tests {
         // Scale by 2 then move by 10.
         let m = concat(&[2.0, 0.0, 0.0, 2.0, 0.0, 0.0], &[1.0, 0.0, 0.0, 1.0, 10.0, 0.0]);
         assert_eq!(apply(&m, 1.0, 1.0), (12.0, 2.0));
+    }
+
+    fn painter(w: u32, h: u32) -> Painter<'static> {
+        Painter { pix: Pixmap::new(w, h).unwrap(), font: None, emoji: None, faces: Default::default() }
+    }
+
+    /// The largest difference in any channel between two pictures.
+    fn largest_difference(a: &Pixmap, b: &Pixmap) -> u8 {
+        a.data().iter().zip(b.data()).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+    }
+
+    /// A big box filled in pieces (rectangles, and paths for the corners) is
+    /// the box's shape filled: rounded or square, continuous or circular, at
+    /// fractional positions and scales, opaque or not.
+    #[test]
+    fn boxes_in_pieces_are_their_shape() {
+        let cases: &[([f32; 4], bool, [f32; 6], [f32; 4])] = &[
+            ([47.33; 4], true, [2.0, 0.0, 0.0, 2.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0]),
+            ([12.0, 0.0, 30.0, 5.0], false, [3.0, 0.0, 0.0, 3.0, 10.3, 7.7], [0.2, 0.4, 0.9, 1.0]),
+            ([0.0; 4], false, [1.5, 0.0, 0.0, 1.5, 3.25, 0.5], [0.9, 0.1, 0.1, 0.5]),
+            ([60.0; 4], true, [2.0, 0.0, 0.0, 2.0, -40.6, 12.2], [0.0, 0.0, 0.0, 0.8]),
+        ];
+        for &(radii, continuous, t, color) in cases {
+            let (w, h) = (180.0, 260.0);
+            let mut fast = painter(600, 900);
+            fast.fill_box(w, h, radii, continuous, color, 1.0, &t, None);
+            let mut slow = painter(600, 900);
+            let (r, _) = clamp_radii(w, h, radii, continuous);
+            slow.fill(&corner_shape_radii(w, h, r, continuous), color, 1.0, false, &t, None);
+            let d = largest_difference(&fast.pix, &slow.pix);
+            // (On edges across pixels: rectangles' coverage is exact, a path's
+            // is in quarters of a pixel, so they may differ by up to an eighth.)
+            assert!(d <= 32, "radii {radii:?} at {t:?}: off by up to {d}");
+            // No seams: the inside is solid.
+            let px = fast.pix.pixel((t[4] + w * t[0] / 2.0) as u32, (t[5] + h * t[3] / 2.0) as u32).unwrap();
+            assert_eq!(px.alpha(), (color[3] * 255.0).round() as u8);
+        }
+    }
+
+    /// Text from the glyph cache looks as rasterised in place: the first
+    /// drawing rasterises, later ones copy; both match drawing the outline.
+    #[test]
+    fn cached_glyphs_match_rasterised_ones() {
+        // pomme's text font (from the sysroot; skipped without it).
+        let Ok(font) = std::fs::read("../../vendor/sysroot/System/Library/Fonts/Inter.ttf") else { return };
+        let face = ttf_parser::Face::parse(&font, 0).unwrap();
+        let gid = face.glyph_index('g').unwrap();
+        let size = 17.0f32;
+        let s = size / face.units_per_em() as f32;
+        let t = [2.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+        let color = [0.1, 0.2, 0.3, 1.0];
+        for origin in [(10.0f32, 30.0f32), (10.37, 30.81)] {
+            let mut slow = painter(120, 120);
+            let mut b = Outline(PathBuilder::new());
+            face.outline_glyph(gid, &mut b).unwrap();
+            let path = b.0.finish().unwrap();
+            let place = [s, 0.0, 0.0, -s, origin.0, origin.1];
+            slow.pix.fill_path(&path, &paint(color, 1.0).unwrap(), FillRule::Winding, ts(&concat(&place, &t)), None);
+            for _ in 0..2 {
+                let mut fast = painter(120, 120);
+                let drawn = glyph_cache::draw(&mut fast.pix, (((font.as_ptr() as usize), font.len()), gid.0, [26, 51, 77, 255]), face.glyph_bounding_box(gid), s, origin, &t, 1.0, None, |pix, base| {
+                    pix.fill_path(&path, &paint(color, 1.0).unwrap(), FillRule::Winding, base, None);
+                });
+                assert!(drawn);
+                // (Positions are kept to a quarter pixel, so edges may differ a little.)
+                let d = largest_difference(&fast.pix, &slow.pix);
+                let inked = |p: &Pixmap| p.data().chunks(4).filter(|c| c[3] > 0).count() as i64;
+                assert!((inked(&fast.pix) - inked(&slow.pix)).abs() <= 12, "{origin:?}");
+                assert!(d <= 140, "{origin:?}: off by up to {d}");
+            }
+        }
     }
 
     #[test]

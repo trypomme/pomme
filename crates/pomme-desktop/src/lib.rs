@@ -50,53 +50,8 @@ pub struct Config {
     pub title: String,
     /// Face ID starts enrolled (the Features ▸ Face ID ▸ Enrolled check).
     pub enrolled: bool,
-    /// Print frame statistics each second frames arrive (see [`FrameStats`]).
+    /// Print frame statistics each second frames arrive (see [`pomme_hle::host::FrameStats`]).
     pub frame_stats: bool,
-}
-
-/// How smoothly frames arrive: per second of wall time, how many, how much
-/// of the app's (virtual) time they covered, and the longest wall-clock gap
-/// between consecutive frames of motion.
-#[derive(Default)]
-pub struct FrameStats {
-    since: Option<Instant>,
-    count: u32,
-    first_virtual: u64,
-    last_virtual: u64,
-    last: Option<Instant>,
-    longest: Duration,
-}
-
-impl FrameStats {
-    fn frame(&mut self, virtual_ns: u64) {
-        let now = Instant::now();
-        let since = *self.since.get_or_insert(now);
-        if self.count == 0 {
-            self.first_virtual = virtual_ns;
-        }
-        // A gap counts only between consecutive frames of motion (no more
-        // than ~1.5 frames apart in the app's time): idle stretches with
-        // nothing to draw aren't stutters.
-        if let Some(last) = self.last
-            && virtual_ns.saturating_sub(self.last_virtual) <= 50_000_000
-        {
-            self.longest = self.longest.max(now - last);
-        }
-        self.last = Some(now);
-        self.count += 1;
-        self.last_virtual = virtual_ns;
-        if now - since >= Duration::from_secs(1) {
-            let wall = (now - since).as_secs_f64();
-            let app = (self.last_virtual - self.first_virtual) as f64 / 1e9;
-            eprintln!(
-                "frames: {:.0}/s, {:.2} s of the app's time in {wall:.2} s, longest gap {:.0} ms",
-                self.count as f64 / wall,
-                app,
-                self.longest.as_secs_f64() * 1000.0
-            );
-            *self = FrameStats::default();
-        }
-    }
 }
 
 /// What a menu item or shortcut does.
@@ -154,7 +109,8 @@ pub struct DesktopHost {
     /// wall − virtual time, fixed when the app first idles.
     base: Option<Instant>,
     closed: Arc<std::sync::atomic::AtomicBool>,
-    stats: Option<FrameStats>,
+    /// Frame statistics, and when they started (`--frame-stats`).
+    stats: Option<(pomme_hle::host::FrameStats, Instant)>,
     /// The phone's name, for capture files.
     device: &'static str,
     recording: Option<capture::Recording>,
@@ -256,13 +212,20 @@ impl Host for DesktopHost {
         self.screen_reader.load(Ordering::Relaxed)
     }
 
+    fn clock_ms(&mut self) -> Option<f64> {
+        // Only while it's reporting: the clock costs a little on every idle call.
+        self.stats.as_ref().map(|(_, start)| start.elapsed().as_secs_f64() * 1000.0)
+    }
+
     fn accessibility(&mut self, tree: &[pomme_hle::accessibility::Node]) {
         let _ = self.proxy.send_event(ToWindow::Tree(tree.to_vec()));
     }
 
     fn frame(&mut self, f: Frame<'_>) {
-        if let Some(s) = self.stats.as_mut() {
-            s.frame(f.at_ns);
+        if let Some((s, start)) = self.stats.as_mut()
+            && let Some(line) = s.frame(&f, start.elapsed().as_secs_f64() * 1000.0)
+        {
+            eprintln!("{line}");
         }
         *self.frame.lock().unwrap() = Some(LatestFrame { rgba: f.rgba.to_vec(), width: f.width, height: f.height, orientation: f.orientation });
         let _ = self.proxy.send_event(ToWindow::Frame);
@@ -671,7 +634,7 @@ impl ApplicationHandler<ToWindow> for App {
         // Start the emulator.
         let (tx, rx) = channel();
         self.events = Some(tx);
-        let stats = self.config.frame_stats.then(FrameStats::default);
+        let stats = self.config.frame_stats.then(|| (pomme_hle::host::FrameStats::default(), Instant::now()));
         let host = DesktopHost { events: rx, frame: self.frame.clone(), proxy: self.proxy.clone(), base: None, closed: self.closed.clone(), stats, device: self.config.device.name, recording: None, screen_reader: self.screen_reader.clone(), screen_reader_seen: false };
         let app = self.app.take().unwrap();
         let proxy = self.proxy.clone();

@@ -228,7 +228,17 @@ draws it with Inter because SF Pro can't be redistributed.
      sysroot files it loads come as one in-memory bundle (`pomme bundle`, ~90 MB for hello-expo);
      taps go through a SharedArrayBuffer and frames come back to a canvas. Virtual time follows
      the wall clock while the app idles. `scripts/build-web.sh && scripts/serve-web.py`, then open
-     http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps
+     http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps. The
+     screen is clipped to the device's own display shape (continuous corners, as screens'
+     cards are in a transition). Built with WebAssembly SIMD, which doubles drawing speed.
+   - Frame timing: `pomme run … --window --frame-stats` and the browser's `?stats` report, each
+     second, the frame rate, how far the app's time kept up with the wall clock, the longest
+     stall, and where each frame of motion went: the app (its instructions), rendering,
+     handing the frame over, reading the accessibility tree, waiting (`host::FrameStats`,
+     `Frame::timing`, from the host's `Host::clock_ms`). In the browser the app and render
+     spans are also in DevTools' Performance panel (the worker's track). Rendering keeps text
+     as rasterised glyphs between frames and fills big boxes as rectangles with path corners,
+     so a navigation push in hello-expo renders a frame in ~25 ms in the browser (from ~100)
    - Networking ✅: `NSURLRequest`, `NSURLSession` data tasks (delegate and completion-handler),
      `NSHTTPURLResponse`, through one `Net` interface: real HTTP in the CLI (`--offline`, and
      `--fixture URL=FILE` for deterministic runs), synchronous XHR in the browser, `Fixtures` in

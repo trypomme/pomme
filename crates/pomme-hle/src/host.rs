@@ -54,6 +54,30 @@ pub struct Frame<'a> {
     pub orientation: crate::device::Orientation,
     /// The virtual time it shows (ns).
     pub at_ns: u64,
+    /// Where the wall-clock time since the last frame went, when the host
+    /// keeps a clock ([`Host::clock_ms`]); none for captures.
+    pub timing: Option<FrameTiming>,
+}
+
+/// Where the wall-clock time between two frames went (ms, the host's clock).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameTiming {
+    /// When the time since the last frame started (the last frame was handed over).
+    pub since_ms: f64,
+    /// When rendering this frame started.
+    pub render_start_ms: f64,
+    /// Rendering this frame.
+    pub render_ms: f64,
+    /// The app running (its code and pomme's system libraries), since the last frame.
+    pub app_ms: f64,
+    /// Reading the accessibility tree for the host's screen reader.
+    pub accessibility_ms: f64,
+    /// Waiting: every thread idle, the host pacing virtual time or waiting for input.
+    pub idle_ms: f64,
+    /// Handing the last frame to the host (copying it out).
+    pub present_ms: f64,
+    /// The app's instructions since the last frame.
+    pub instructions: u64,
 }
 
 /// What the host wants after an idle call.
@@ -90,6 +114,11 @@ pub trait Host {
     fn recorded(&mut self, _frame: Frame<'_>) {}
     /// The recording ended at this (virtual) time: the last frame lasts until then.
     fn recording_stopped(&mut self, _at_ns: u64) {}
+    /// A monotonic wall clock (ms), if the host keeps one: then each frame
+    /// says where the time since the last one went ([`Frame::timing`]).
+    fn clock_ms(&mut self) -> Option<f64> {
+        None
+    }
     /// Whether the host shows the app to assistive technology now (a screen
     /// reader is listening): then [`Host::accessibility`] hears of the screen.
     fn wants_accessibility(&mut self) -> bool {
@@ -100,11 +129,90 @@ pub trait Host {
     fn accessibility(&mut self, _tree: &[Node]) {}
 }
 
+/// How smoothly frames arrive, for a host to report: per second of wall
+/// time, how many, how much of the app's (virtual) time they covered, the
+/// longest wall-clock gap between consecutive frames of motion, and, when
+/// frames carry their [`FrameTiming`], where the time per frame went. The
+/// host gives each frame and its own wall clock (ms).
+#[derive(Default)]
+pub struct FrameStats {
+    since: Option<f64>,
+    count: u32,
+    first_virtual: u64,
+    last_virtual: u64,
+    last: Option<f64>,
+    longest_ms: f64,
+    timed: u32,
+    sum: FrameTiming,
+    max_render_ms: f64,
+    max_app_ms: f64,
+}
+
+impl FrameStats {
+    /// A frame arrived; once a second's worth has, the line to report.
+    pub fn frame(&mut self, f: &Frame<'_>, wall_ms: f64) -> Option<String> {
+        let virtual_ns = f.at_ns;
+        let since = *self.since.get_or_insert(wall_ms);
+        if self.count == 0 {
+            self.first_virtual = virtual_ns;
+        }
+        // A gap counts only between consecutive frames of motion (no more
+        // than ~1.5 frames apart in the app's time): idle stretches with
+        // nothing to draw aren't stutters.
+        let moving = self.last.is_some() && virtual_ns.saturating_sub(self.last_virtual) <= 50_000_000;
+        if let Some(last) = self.last
+            && moving
+        {
+            self.longest_ms = self.longest_ms.max(wall_ms - last);
+        }
+        // Timings of frames of motion (an idle stretch's wait isn't a frame's cost).
+        if let Some(t) = f.timing
+            && moving
+        {
+            self.timed += 1;
+            self.sum.render_ms += t.render_ms;
+            self.sum.app_ms += t.app_ms;
+            self.sum.accessibility_ms += t.accessibility_ms;
+            self.sum.idle_ms += t.idle_ms;
+            self.sum.present_ms += t.present_ms;
+            self.sum.instructions += t.instructions;
+            self.max_render_ms = self.max_render_ms.max(t.render_ms);
+            self.max_app_ms = self.max_app_ms.max(t.app_ms);
+        }
+        self.last = Some(wall_ms);
+        self.count += 1;
+        self.last_virtual = virtual_ns;
+        if wall_ms - since < 1000.0 {
+            return None;
+        }
+        let wall = (wall_ms - since) / 1000.0;
+        let app = (self.last_virtual - self.first_virtual) as f64 / 1e9;
+        let mut line = format!("frames: {:.0}/s, {app:.2} s of the app's time in {wall:.2} s, longest gap {:.0} ms", self.count as f64 / wall, self.longest_ms);
+        if self.timed > 0 {
+            let n = self.timed as f64;
+            let s = &self.sum;
+            line += &format!(
+                "; per moving frame: app {:.1} ms (max {:.1}, {:.1}M instructions), render {:.1} ms (max {:.1}), present {:.1} ms, accessibility {:.1} ms, waiting {:.1} ms",
+                s.app_ms / n,
+                self.max_app_ms,
+                s.instructions as f64 / n / 1e6,
+                s.render_ms / n,
+                self.max_render_ms,
+                s.present_ms / n,
+                s.accessibility_ms / n,
+                s.idle_ms / n
+            );
+        }
+        *self = FrameStats::default();
+        Some(line)
+    }
+}
+
 /// The least time between two readings of the accessibility tree while the screen changes.
 pub const AX_INTERVAL_NS: u64 = 200_000_000;
 
 /// The accessibility tree, as the host has it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Ax {
     /// The host wants it.
     on: bool,
@@ -137,6 +245,22 @@ pub struct State {
     /// The minute the status bar's clock showed in the last frame.
     clock_minute: Option<i64>,
     ax: Ax,
+    timing: Timing,
+}
+
+/// The time since the last frame so far, by where it went.
+#[derive(Clone, Default)]
+struct Timing {
+    /// When the last frame was handed over (none: no clock, or no frame yet).
+    since: Option<f64>,
+    idle_ms: f64,
+    accessibility_ms: f64,
+    present_ms: f64,
+    instructions_at: u64,
+}
+
+fn clock(emu: &mut Emu) -> Option<f64> {
+    emu.live.host.as_mut().and_then(|h| h.clock_ms())
 }
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
@@ -183,7 +307,11 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
         }
     }
     let Some(mut host) = emu.live.host.take() else { return Ok(false) };
+    let waiting = host.clock_ms();
     let r = host.idle(now, next_ns);
+    if let (Some(a), Some(b)) = (waiting, host.clock_ms()) {
+        emu.live.timing.idle_ms += b - a;
+    }
     *emu.live.host = Some(host);
     match r {
         Idle::Advance => Ok(false),
@@ -266,9 +394,35 @@ fn deliver(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Where the time since the last frame went, now that this one is rendered
+/// (rendering started at `render_start`); the tally starts again.
+fn frame_timing(emu: &mut Emu, render_start: Option<f64>) -> Option<FrameTiming> {
+    let (start, end) = (render_start?, clock(emu)?);
+    let steps = emu.cpu.steps;
+    let t = std::mem::take(&mut emu.live.timing);
+    emu.live.timing.instructions_at = steps;
+    // (The first frame has nothing before it to account for.)
+    let since = t.since?;
+    let between = start - since;
+    Some(FrameTiming {
+        since_ms: since,
+        render_start_ms: start,
+        render_ms: end - start,
+        app_ms: (between - t.idle_ms - t.accessibility_ms).max(0.0),
+        accessibility_ms: t.accessibility_ms,
+        idle_ms: t.idle_ms,
+        present_ms: t.present_ms,
+        instructions: steps - t.instructions_at,
+    })
+}
+
 /// Read the accessibility tree and give it to the host if it changed.
 fn read_accessibility(emu: &mut Emu) -> Result<()> {
+    let started = clock(emu);
     let tree = crate::accessibility::tree(emu)?;
+    if let (Some(a), Some(b)) = (started, clock(emu)) {
+        emu.live.timing.accessibility_ms += b - a;
+    }
     // Changes made while reading (an app building its elements as it's asked) don't count.
     emu.live.ax.stale = false;
     emu.live.ax.read_at = Some(crate::threads::now_ns(emu));
@@ -279,6 +433,26 @@ fn read_accessibility(emu: &mut Emu) -> Result<()> {
         emu.live.ax.shown = tree;
     }
     Ok(())
+}
+
+/// What the host side knows, which isn't the phone's: the accessibility tree
+/// the host was given and the frame timing so far. Restoring a snapshot keeps
+/// it, as it keeps the host ([`take_host_side`], [`put_host_side`]).
+pub(crate) struct HostSide {
+    ax: Ax,
+    timing: Timing,
+}
+
+pub(crate) fn take_host_side(emu: &mut Emu) -> HostSide {
+    HostSide { ax: std::mem::take(&mut emu.live.ax), timing: std::mem::take(&mut emu.live.timing) }
+}
+
+/// Put back what the host side knows; the screen it shows may have changed, so the tree is read again.
+pub(crate) fn put_host_side(emu: &mut Emu, side: HostSide) {
+    emu.live.ax = side.ax;
+    emu.live.ax.signalled = false;
+    emu.live.timing = side.timing;
+    accessibility_changed(emu);
 }
 
 /// What assistive technology sees may have changed (an accessibility property was set).
@@ -296,10 +470,14 @@ fn capture(emu: &mut Emu, give: impl FnOnce(&mut dyn Host, Frame<'_>)) -> Result
 }
 
 fn give_frame(emu: &mut Emu, pix: &tiny_skia::Pixmap, give: impl FnOnce(&mut dyn Host, Frame<'_>)) {
+    give_timed_frame(emu, pix, None, give)
+}
+
+fn give_timed_frame(emu: &mut Emu, pix: &tiny_skia::Pixmap, timing: Option<FrameTiming>, give: impl FnOnce(&mut dyn Host, Frame<'_>)) {
     let orientation = crate::orientation::current(emu);
     let at_ns = crate::threads::now_ns(emu);
     if let Some(mut host) = emu.live.host.take() {
-        give(host.as_mut(), Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns });
+        give(host.as_mut(), Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns, timing });
         *emu.live.host = Some(host);
     }
 }
@@ -412,8 +590,17 @@ fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.dirty = false;
     emu.live.clock_minute = Some(crate::statusbar::minute(emu).0);
     accessibility_changed(emu);
+    let render_start = clock(emu);
     let pix = crate::render::render(emu, emu.live.scale)?;
-    give_frame(emu, &pix, |h, f| h.frame(f));
+    let timing = frame_timing(emu, render_start);
+    give_timed_frame(emu, &pix, timing, |h, f| h.frame(f));
+    // The next frame's time starts once this one is handed over.
+    if let Some(handed) = clock(emu) {
+        if let Some(t) = timing {
+            emu.live.timing.present_ms = handed - (t.render_start_ms + t.render_ms);
+        }
+        emu.live.timing.since = Some(handed);
+    }
     if emu.live.recording {
         // The recording is at the phone's resolution, whatever the window's.
         if emu.device.scale as f32 == emu.live.scale {

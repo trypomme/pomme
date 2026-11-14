@@ -9,6 +9,7 @@ const AX_EVENT = 16; // + the action: a screen reader's, on an element
 const params = new URLSearchParams(location.search);
 const bundle = params.get('app') || 'helloexpo.pfs';
 const ios = params.get('ios') || ''; // e.g. ?ios=18.6
+const frameStats = params.has('stats'); // ?stats: frame rate and stutters in the console
 
 const canvas = document.getElementById('screen');
 const status = document.getElementById('status');
@@ -37,6 +38,13 @@ worker.onmessage = (e) => {
     }
     ctx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
     if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.`;
+  } else if (m.type === 'display') {
+    // The display's own shape clips the screen (its continuous corners, as transitions' cards have).
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${m.width} ${m.height}" preserveAspectRatio="none"><path d="${m.path}"/></svg>`;
+    const mask = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+    for (const k of ['maskImage', 'webkitMaskImage']) layer.style[k] = mask;
+    for (const k of ['maskSize', 'webkitMaskSize']) layer.style[k] = '100% 100%';
+    layer.style.borderRadius = '0';
   } else if (m.type === 'accessibility') {
     Accessibility.update(JSON.parse(m.json));
   } else if (m.type === 'webview') {
@@ -49,7 +57,7 @@ worker.onmessage = (e) => {
     console.warn('[pomme]', m.text);
   }
 };
-worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios, webViews: WebViews.sab });
+worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios, webViews: WebViews.sab, frameStats });
 
 // Pointer → touch phases (UITouchPhase: began 0, moved 1, ended 3, cancelled 4), in points.
 function send(phase, ev) {

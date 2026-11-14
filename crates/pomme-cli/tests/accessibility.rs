@@ -85,7 +85,7 @@ fn the_host_reads_and_acts_on_the_screen() {
         act("Activated 0 times", Action::Activate),
         act("Show alert", Action::Activate),
     ];
-    emu.live.host = Some(Box::new(ScreenReader { trees: trees.clone(), steps, seen: 0 }));
+    *emu.live.host = Some(Box::new(ScreenReader { trees: trees.clone(), steps, seen: 0 }));
     emu.live.scale = 1.0;
     common::views(&mut emu, 3.0);
     let trees = trees.lock().unwrap();

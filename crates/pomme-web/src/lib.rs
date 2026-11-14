@@ -14,6 +14,11 @@
 //!   goes to the global `pommeAccessibility(json)` (a list of
 //!   `pomme_hle::accessibility::Node`s); the page mirrors it in ARIA over the
 //!   screen (web/accessibility.js) for the browser's screen reader.
+//! - **the display**: its shape (an SVG path in points, with the device's
+//!   continuous corners) goes to the global `pommeDisplay(width, height, path)`
+//!   whenever the way it's held changes; the page clips the screen to it, as
+//!   the display's glass does, so screens' rounded cards in a transition fit
+//!   its corners exactly.
 //! - **web views**: pages run in the browser itself, in frames the page puts
 //!   under the screen (web/webview.js) where pomme leaves a hole. The worker's
 //!   commands go out through the global `pommeWebView(json)`; the page's events
@@ -48,6 +53,10 @@ extern "C" {
     fn pomme_web_view(json: &str);
     #[wasm_bindgen(js_name = pommeAccessibility)]
     fn pomme_accessibility(json: &str);
+    #[wasm_bindgen(js_namespace = performance, js_name = measure)]
+    fn performance_measure(name: &str, options: &JsValue);
+    #[wasm_bindgen(js_name = pommeDisplay)]
+    fn pomme_display(width: f64, height: f64, path: &str);
 }
 
 /// Bytes of the web view event ring (after its two-int header: bytes written, bytes read).
@@ -112,6 +121,11 @@ struct WebHost {
     base: Option<f64>,
     /// Wall time of the last progress line in the console.
     last_log: f64,
+    /// Frame statistics in the console (`?stats=1`).
+    stats: Option<pomme_hle::host::FrameStats>,
+    /// The phone, and how its display was last held (the page has its shape).
+    device: &'static pomme_hle::device::Device,
+    held: Option<pomme_hle::device::Orientation>,
 }
 
 impl WebHost {
@@ -171,7 +185,26 @@ impl Host for WebHost {
     }
 
     fn frame(&mut self, f: Frame<'_>) {
+        if self.held != Some(f.orientation) {
+            self.held = Some(f.orientation);
+            let (w, h) = self.device.screen(f.orientation);
+            pomme_display(w, h, &pomme_hle::render::display_svg_path(self.device, f.orientation));
+        }
         pomme_frame(f.rgba, f.width, f.height);
+        if let Some(stats) = self.stats.as_mut() {
+            // In the browser's performance tools too (the worker's track).
+            if let Some(t) = f.timing {
+                measure("pomme: app", t.since_ms, t.render_start_ms);
+                measure("pomme: render", t.render_start_ms, t.render_start_ms + t.render_ms);
+            }
+            if let Some(line) = stats.frame(&f, now_ms()) {
+                pomme_log(&line);
+            }
+        }
+    }
+
+    fn clock_ms(&mut self) -> Option<f64> {
+        self.stats.is_some().then(now_ms)
     }
 
     /// The page can't tell whether a screen reader is on, so it always has the tree.
@@ -184,6 +217,14 @@ impl Host for WebHost {
             pomme_accessibility(&json);
         }
     }
+}
+
+/// A span of the worker's time in the browser's performance tools.
+fn measure(name: &str, start_ms: f64, end_ms: f64) {
+    let o = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&o, &"start".into(), &start_ms.into());
+    let _ = js_sys::Reflect::set(&o, &"end".into(), &end_ms.into());
+    performance_measure(name, &o);
 }
 
 /// The network: synchronous XMLHttpRequest (fine in a worker), so CORS applies.
@@ -232,16 +273,17 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 }
 
 /// Mount `bundle` (from `pomme bundle`) and run its app until it stops,
-/// presenting iOS `ios` ("18.6", "26"; empty for the default).
+/// presenting iOS `ios` ("18.6", "26"; empty for the default); with
+/// `frame_stats`, how smoothly frames arrive goes to the console each second.
 /// Never returns while the app runs; returns a description of why it stopped.
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer) -> String {
-    match run_inner(bundle, input, scale, &ios, &web_views) {
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool) -> String {
+    match run_inner(bundle, input, scale, &ios, &web_views, frame_stats) {
         Ok(s) | Err(s) => s,
     }
 }
 
-fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, web_views: &js_sys::SharedArrayBuffer) -> Result<String, String> {
+fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, web_views: &js_sys::SharedArrayBuffer, frame_stats: bool) -> Result<String, String> {
     let app = app_path(&bundle).ok_or("the bundle has no .app")?;
     pomme_loader::vfs::mount(&bundle)?;
     drop(bundle);
@@ -256,7 +298,7 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, 
     pomme_log(&format!("presenting iOS {}", emu.system.os));
     *emu.net.client = Some(Box::new(XhrNet));
     *emu.webkit.engine = Some(Box::new(BrowserEngine::new(web_views)));
-    *emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
+    *emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));
     pomme_log("running");
     let r = emu.run_main();
     let steps = emu.cpu.steps;
