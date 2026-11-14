@@ -140,3 +140,28 @@ fn apps_shape_it_and_read_the_battery() {
     let Some(mut emu) = statusbar_app(2.5) else { return };
     assert_eq!(status_ink(&mut emu), (0, 0, 0), "the status bar shows after the app hid it");
 }
+
+/// Offline, the signal is no service: four dim dots where the bars go
+/// (nothing above a bar's width), and no Wi-Fi.
+#[test]
+fn offline_shows_no_service() {
+    let Some(mut emu) = common::boot("largetitles") else { return };
+    emu.network.path = pomme_hle::network::Path::Offline;
+    emu.status_bar.overrides = "time=9:41,battery=100".parse().unwrap();
+    common::views(&mut emu, 2.0);
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    // The iPhone 16e's bars: 302.33–319.33 pt across, their bottom at 30.33; dots 3 pt tall.
+    let ink = |x0: f64, x1: f64, y0: f64, y1: f64| {
+        let mut darkest = 255u8;
+        for y in (y0 * 3.0) as u32..(y1 * 3.0) as u32 {
+            for x in (x0 * 3.0) as u32..(x1 * 3.0) as u32 {
+                darkest = darkest.min(pix.pixel(x, y).unwrap().red());
+            }
+        }
+        darkest
+    };
+    let dots = ink(302.33, 319.33, 27.5, 30.2);
+    assert!((190..=215).contains(&dots), "the dots aren't dim ({dots})");
+    assert_eq!(ink(302.0, 320.0, 18.0, 27.0), 255, "something above the dots");
+    assert_eq!(ink(324.0, 342.0, 17.0, 31.0), 255, "a Wi-Fi fan offline");
+}

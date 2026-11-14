@@ -95,16 +95,29 @@ impl std::str::FromStr for BatteryChange {
 }
 
 /// What the Wi-Fi slot shows: the Wi-Fi fan (with this many of its 3 bars
-/// lit), the cellular data network ("5G"), or nothing.
+/// lit), the fan while it searches, the cellular data network ("5G"), or nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
     Wifi(u8),
+    WifiSearching,
     Cellular(String),
     Hidden,
 }
 
+/// The cellular signal: this many of its 4 bars lit; searching (a wave
+/// running along four dots); failed (no service: four dim dots); or none
+/// (no cellular).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Signal {
+    Bars(u8),
+    Searching,
+    Failed,
+    Hidden,
+}
+
 /// What `--status-bar` pins, as `simctl status_bar override` does:
-/// `time=9:41,battery=100,battery-state=charging,cellular-bars=4,wifi-bars=3,data-network=5g`.
+/// `time=9:41,battery=100,battery-state=charging,cellular-bars=4,wifi-bars=3,data-network=5g`,
+/// `cellular-mode=active|searching|failed|not-supported`, `wifi-mode=active|searching|failed`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overrides {
     /// The time of day shown, in minutes (shown as the phone shows the time).
@@ -115,6 +128,10 @@ pub struct Overrides {
     pub wifi_bars: Option<u8>,
     /// `wifi`, `hide`, or a cellular network's label.
     pub data_network: Option<Data>,
+    /// The signal's mode (bars come from `cellular_bars`).
+    pub cellular_mode: Option<Signal>,
+    /// Wi-Fi's mode: searching, or failed (the fan, dim).
+    pub wifi_mode: Option<Data>,
 }
 
 impl std::str::FromStr for Overrides {
@@ -136,6 +153,23 @@ impl std::str::FromStr for Overrides {
                 }
                 "battery-state" => o.charge = Some(v.parse()?),
                 "cellular-bars" => o.cellular_bars = Some(bars(4)?),
+                "cellular-mode" => {
+                    o.cellular_mode = Some(match v {
+                        "active" => Signal::Bars(4),
+                        "searching" => Signal::Searching,
+                        "failed" => Signal::Failed,
+                        "not-supported" => Signal::Hidden,
+                        m => return Err(format!("{m}: expected active, searching, failed or not-supported")),
+                    })
+                }
+                "wifi-mode" => {
+                    o.wifi_mode = Some(match v {
+                        "active" => Data::Wifi(3),
+                        "searching" => Data::WifiSearching,
+                        "failed" => Data::Wifi(0),
+                        m => return Err(format!("{m}: expected active, searching or failed")),
+                    })
+                }
                 "wifi-bars" => o.wifi_bars = Some(bars(3)?),
                 "data-network" => {
                     o.data_network = Some(match v {
@@ -144,7 +178,7 @@ impl std::str::FromStr for Overrides {
                         n => Data::Cellular(cellular_label(n).ok_or_else(|| format!("{n}: expected wifi, hide, 3g, 4g, lte, lte-a, lte+, 5g, 5g+, 5g-uwb or 5g-uc"))?.to_string()),
                     })
                 }
-                o => return Err(format!("{o}: expected time, battery, battery-state, cellular-bars, wifi-bars or data-network")),
+                o => return Err(format!("{o}: expected time, battery, battery-state, cellular-mode, cellular-bars, wifi-mode, wifi-bars or data-network")),
             }
         }
         Ok(o)
@@ -192,8 +226,7 @@ pub struct State {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shown {
     pub time: String,
-    /// Lit signal bars (of 4).
-    pub cellular_bars: u8,
+    pub signal: Signal,
     pub data: Data,
     pub battery: Battery,
 }
@@ -203,17 +236,21 @@ pub fn shown(emu: &Emu, layout: &Layout) -> Shown {
     use crate::network::Path;
     let o = &emu.status_bar.overrides;
     // On Wi-Fi a phone shows its signal and the Wi-Fi fan; on cellular, the
-    // signal and the network's name ("5G"); wired, just the signal; offline
-    // (no service), no bars.
-    let (bars, data) = match emu.network.path {
-        Path::Wifi => (4, Data::Wifi(3)),
-        Path::Cellular => (4, Data::Cellular("5G".into())),
-        Path::Wired => (4, Data::Hidden),
-        Path::Offline => (0, Data::Hidden),
+    // signal and the network's name ("5G"); wired, just the signal; offline,
+    // no service.
+    let (signal, data) = match emu.network.path {
+        Path::Wifi => (Signal::Bars(4), Data::Wifi(3)),
+        Path::Cellular => (Signal::Bars(4), Data::Cellular("5G".into())),
+        Path::Wired => (Signal::Bars(4), Data::Hidden),
+        Path::Offline => (Signal::Failed, Data::Hidden),
     };
-    let mut data = o.data_network.clone().unwrap_or(data);
+    let mut data = o.wifi_mode.clone().or(o.data_network.clone()).unwrap_or(data);
     if let (Data::Wifi(n), Some(w)) = (&mut data, o.wifi_bars) {
         *n = w;
+    }
+    let mut signal = o.cellular_mode.unwrap_or(signal);
+    if let (Signal::Bars(n), Some(b)) = (&mut signal, o.cellular_bars) {
+        *n = b;
     }
     let time = match o.time {
         Some(minutes) => format_time(minutes as i64 * 60, layout.am_pm),
@@ -222,10 +259,31 @@ pub fn shown(emu: &Emu, layout: &Layout) -> Shown {
     let b = emu.status_bar.battery;
     Shown {
         time,
-        cellular_bars: o.cellular_bars.unwrap_or(bars),
+        signal,
         data,
         battery: b.with(BatteryChange { level: o.level, charge: o.charge, low_power: None }),
     }
+}
+
+/// Searching's wave (measured from the simulator's frames, about 0.35 s
+/// apart: it runs across in about 0.9 s and starts again every 1.05 s): how
+/// far (0…1) each of `n` marks, first to last, is lit now.
+pub fn wave(emu: &Emu, n: usize) -> Vec<f64> {
+    wave_at(crate::threads::now_ns(emu) as f64 / 1e9, n)
+}
+
+fn wave_at(seconds: f64, n: usize) -> Vec<f64> {
+    const PERIOD: f64 = 1.05;
+    const ACROSS: f64 = 0.9;
+    let t = seconds % PERIOD;
+    let centre = -1.0 + (n as f64 + 2.0) * t / ACROSS;
+    (0..n).map(|i| (1.0 - (i as f64 - centre).abs()).max(0.0)).collect()
+}
+
+/// Whether the status bar moves by itself (searching): the live window keeps drawing it.
+pub fn animating(emu: &Emu) -> bool {
+    let o = &emu.status_bar.overrides;
+    o.cellular_mode == Some(Signal::Searching) || o.wifi_mode == Some(Data::WifiSearching)
 }
 
 /// The phone's wall clock, in seconds since 1970 in its time zone.
@@ -485,6 +543,13 @@ mod tests {
     }
 
     #[test]
+    fn searching_runs_a_wave_along() {
+        // A third of the way across, the second mark is lit; between runs, none.
+        assert_eq!(wave_at(1.05 + 0.3, 4).iter().map(|k| (k * 100.0).round()).collect::<Vec<_>>(), [0.0, 100.0, 0.0, 0.0]);
+        assert!(wave_at(1.0, 4).iter().all(|&k| k == 0.0));
+    }
+
+    #[test]
     fn battery_changes_parse() {
         assert_eq!("80%".parse(), Ok(BatteryChange { level: Some(0.8), ..Default::default() }));
         assert_eq!("20%,charging".parse(), Ok(BatteryChange { level: Some(0.2), charge: Some(Charge::Charging), low_power: None }));
@@ -504,6 +569,8 @@ mod tests {
         assert_eq!((o.level, o.charge, o.cellular_bars, o.wifi_bars), (Some(1.0), Some(Charge::Charging), Some(2), Some(1)));
         assert_eq!(o.data_network, Some(Data::Cellular("LTE".into())));
         assert!("wifi-bars=4".parse::<Overrides>().is_err());
+        let o: Overrides = "cellular-mode=searching,wifi-mode=failed".parse().unwrap();
+        assert_eq!((o.cellular_mode, o.wifi_mode), (Some(Signal::Searching), Some(Data::Wifi(0))));
     }
 
     #[test]

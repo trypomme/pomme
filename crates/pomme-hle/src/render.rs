@@ -1661,39 +1661,58 @@ fn draw_status_bar(emu: &mut Emu, p: &mut Painter, scale: f32) -> Result<()> {
         p.glyphs(&placed, 1.0, &t, None);
     }
 
+    // The signal: bars (lit or not); with no service, dots as wide as a bar
+    // and as tall; searching, a wave runs along the dots, raising each
+    // towards its bar and darkening it (to 60%, measured).
+    use crate::statusbar::{Data, Signal};
     let (x0, bottom, w, pitch, heights) = layout.bars;
-    for (i, h) in heights.iter().enumerate() {
-        let bar = transform_els(&rounded_rect(w as f32, *h as f32, w as f32 * 0.4), &[1.0, 0.0, 0.0, 1.0, (x0 + i as f64 * pitch) as f32, (bottom - h) as f32]);
-        p.fill(&bar, fg, if (i as u8) < shown.cellular_bars { 1.0 } else { STATUS_UNLIT }, false, &t, None);
+    let wave = crate::statusbar::wave(emu, 4);
+    for (i, &full) in heights.iter().enumerate() {
+        let (h, alpha) = match shown.signal {
+            Signal::Bars(n) => (full, if (i as u8) < n { 1.0 } else { STATUS_UNLIT }),
+            Signal::Failed => (w, STATUS_UNLIT),
+            Signal::Searching => (w + wave[i] * (full - w), STATUS_UNLIT + wave[i] as f32 * (0.6 - STATUS_UNLIT)),
+            Signal::Hidden => continue,
+        };
+        let bar = transform_els(&rounded_rect(w as f32, h as f32, w as f32 * 0.4), &[1.0, 0.0, 0.0, 1.0, (x0 + i as f64 * pitch) as f32, (bottom - h) as f32]);
+        p.fill(&bar, fg, alpha, false, &t, None);
     }
     match &shown.data {
-        crate::statusbar::Data::Wifi(lit) => draw_wifi(p, layout.wifi, *lit, fg, &t),
-        crate::statusbar::Data::Cellular(label) => {
+        Data::Wifi(lit) => {
+            let lit = |band: u8| if *lit >= band { 1.0 } else { STATUS_UNLIT };
+            draw_wifi(p, layout.wifi, [lit(1), lit(2), lit(3)], fg, &t)
+        }
+        // Searching, a wave runs in from the outside.
+        Data::WifiSearching => {
+            let k = crate::statusbar::wave(emu, 3);
+            let a = |i: usize| STATUS_UNLIT + k[i] as f32 * (1.0 - STATUS_UNLIT);
+            draw_wifi(p, layout.wifi, [a(2), a(1), a(0)], fg, &t)
+        }
+        Data::Cellular(label) => {
             // Centred where the Wi-Fi fan goes, 78% of its height (measured "5G", "LTE").
             let [wx0, _, wx1, wy1] = layout.wifi;
             text(emu, p, label, (wx0 + wx1) / 2.0, wy1 - 0.33, (layout.wifi[3] - layout.wifi[1]) * 0.78);
         }
-        crate::statusbar::Data::Hidden => {}
+        Data::Hidden => {}
     }
     draw_battery(p, &layout, shown.battery, light, fg, scale);
     Ok(())
 }
 
-/// The Wi-Fi fan in its box: two bands and a wedge spreading up from the
-/// bottom's middle, `lit` of them (from the inside) in full.
-fn draw_wifi(p: &mut Painter, b: [f64; 4], lit: u8, fg: [f32; 4], t: &[f32; 6]) {
+/// The Wi-Fi fan in its box: a wedge and two bands spreading up from the
+/// bottom's middle, at these opacities (the wedge's, the middle band's, the outer's).
+fn draw_wifi(p: &mut Painter, b: [f64; 4], alphas: [f32; 3], fg: [f32; 4], t: &[f32; 6]) {
     use std::f32::consts::FRAC_PI_2;
     // Measured on a 12-pt fan: bands 2.67 thick, their outer radii 12 and
     // 7.67, the wedge's 3.67; round-ended, 37.5° either side of upright.
     let s = (b[3] - b[1]) as f32 / 12.0;
     let (cx, apex) = (((b[0] + b[2]) / 2.0) as f32, b[3] as f32);
     let half = 37.5f32.to_radians();
-    for (band, outer) in [(3u8, 12.0f32), (2, 7.67)] {
+    for (band, outer) in [(2usize, 12.0f32), (1, 7.67)] {
         let thick = 2.67 * s;
         let mut arc = Vec::new();
         arc_els(&mut arc, cx, apex, outer * s - thick / 2.0, -FRAC_PI_2 - half, -FRAC_PI_2 + half, false);
-        let alpha = if lit >= band { 1.0 } else { STATUS_UNLIT };
-        if let (Some(path), Some(paint)) = (build(&arc), paint(fg, alpha)) {
+        if let (Some(path), Some(paint)) = (build(&arc), paint(fg, alphas[band])) {
             let stroke = Stroke { width: thick, line_cap: tiny_skia::LineCap::Round, ..Default::default() };
             p.pix.stroke_path(&path, &paint, &stroke, ts(t), None);
         }
@@ -1703,7 +1722,7 @@ fn draw_wifi(p: &mut Painter, b: [f64; 4], lit: u8, fg: [f32; 4], t: &[f32; 6]) 
     let mut wedge = vec![El::Move(cx, apex)];
     arc_els(&mut wedge, cx, apex, r, -FRAC_PI_2 - a, -FRAC_PI_2 + a, false);
     wedge.push(El::Close);
-    p.fill(&wedge, fg, if lit >= 1 { 1.0 } else { STATUS_UNLIT }, false, t, None);
+    p.fill(&wedge, fg, alphas[0], false, t, None);
 }
 
 /// The battery: its outline and cap, filled to its level (yellow in Low

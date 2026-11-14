@@ -103,6 +103,11 @@ pub struct State {
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
 
+/// Something moves by itself: an animation, or the status bar searching.
+fn moving(emu: &Emu) -> bool {
+    crate::animation::animating(emu) || crate::statusbar::animating(emu)
+}
+
 /// Called from the scheduler when nothing can run. Ok(true): input was delivered, look again.
 pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     if emu.live.host.is_none() {
@@ -118,7 +123,7 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
         emu.live.dirty = true;
     }
     next_ns = Some(next_ns.map_or(next_minute, |n| n.min(next_minute)));
-    if emu.live.dirty || crate::animation::animating(emu) {
+    if emu.live.dirty || moving(emu) {
         let due = emu.live.last_frame.map_or(now, |t| t + FRAME_NS);
         if now >= due {
             draw(emu)?;
@@ -226,7 +231,7 @@ pub(crate) fn install(emu: &mut Emu) -> Result<()> {
 /// (a change, or an animation running): a deadline for the scheduler, so idle
 /// time stops there for the frame instead of jumping past it.
 pub(crate) fn frame_due(emu: &Emu) -> Option<u64> {
-    if emu.live.host.is_none() || !(emu.live.dirty || crate::animation::animating(emu)) {
+    if emu.live.host.is_none() || !(emu.live.dirty || moving(emu)) {
         return None;
     }
     let now = crate::threads::now_ns(emu);
@@ -282,7 +287,7 @@ pub(crate) fn frame_changed(emu: &mut Emu) {
 /// something changed and the frame interval has passed; otherwise the next
 /// idle moment draws it.
 pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
-    if emu.live.host.is_none() || !(emu.live.dirty || crate::animation::animating(emu)) {
+    if emu.live.host.is_none() || !(emu.live.dirty || moving(emu)) {
         return Ok(());
     }
     let now = crate::threads::now_ns(emu);
