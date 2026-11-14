@@ -3976,7 +3976,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         e.ret(0);
         Ok(())
     }),
-    ("NSProcessInfo", false, "isLowPowerModeEnabled", |e| ret_bool(e, false)),
     ("NSProcessInfo", false, "isiOSAppOnMac", |e| ret_bool(e, false)),
     ("NSProcessInfo", false, "isMacCatalystApp", |e| ret_bool(e, false)),
     ("NSProcessInfo", false, "beginActivityWithOptions:reason:", |e| {

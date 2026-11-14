@@ -591,10 +591,13 @@ pub(crate) fn new_traits(emu: &mut Emu, size_classes: (u64, u64)) -> Result<u64>
     Ok(t)
 }
 
-/// The traits as they are now (the size classes follow the orientation).
+/// The traits as they are now (the size classes follow the orientation; the
+/// style, the appearance).
 pub(crate) fn current_traits(emu: &mut Emu) -> Result<u64> {
     let classes = crate::orientation::size_classes(emu);
-    new_traits(emu, classes)
+    let t = new_traits(emu, classes)?;
+    objc::bag_set(emu, t, "userInterfaceStyle", crate::appearance::style(emu));
+    Ok(t)
 }
 
 /// A size class the collection was made with, else the current one.
@@ -768,14 +771,6 @@ fn color_white(emu: &mut Emu) -> Result<()> {
     ret_color(emu, [w, w, w, a])
 }
 
-fn color_dynamic(emu: &mut Emu) -> Result<()> {
-    let block = emu.arg(2);
-    let traits = current_traits(emu)?;
-    let c = crate::libsystem::call_block(emu, block, &[traits])?;
-    emu.ret(c);
-    Ok(())
-}
-
 fn color_hsba(emu: &mut Emu) -> Result<()> {
     let (h, s, v, a) = (f(emu, 0), f(emu, 1), f(emu, 2), f(emu, 3));
     let h6 = (h.fract() + if h < 0.0 { 1.0 } else { 0.0 }) * 6.0;
@@ -790,10 +785,6 @@ fn color_hsba(emu: &mut Emu) -> Result<()> {
         _ => (v, p, q),
     };
     ret_color(emu, [r, g, b, a])
-}
-
-fn color_cg(_: &mut Emu) -> Result<()> {
-    Ok(()) // the UIColor stands in for its CGColor
 }
 
 fn color_with_alpha(emu: &mut Emu) -> Result<()> {
@@ -919,7 +910,7 @@ fn convert_point(emu: &mut Emu, to: bool) -> Result<()> {
 // their end values (and presentation layers are the model layers); the
 // completion block runs, finished, once the delay and duration have passed.
 
-fn copy_block(emu: &mut Emu, b: u64) -> Result<u64> {
+pub(crate) fn copy_block(emu: &mut Emu, b: u64) -> Result<u64> {
     let saved = emu.cpu.x[0];
     emu.cpu.x[0] = b;
     crate::libc::block_copy(emu)?;
@@ -1273,12 +1264,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", true, "whiteColor", |e| ret_color(e, [1.0, 1.0, 1.0, 1.0])),
     ("UIColor", true, "blackColor", |e| ret_color(e, [0.0, 0.0, 0.0, 1.0])),
     ("UIColor", true, "clearColor", |e| ret_color(e, [0.0, 0.0, 0.0, 0.0])),
-    ("UIColor", true, "systemBackgroundColor", |e| ret_color(e, [1.0, 1.0, 1.0, 1.0])),
-    ("UIColor", true, "labelColor", |e| ret_color(e, [0.0, 0.0, 0.0, 1.0])),
     ("UIColor", true, "grayColor", |e| ret_color(e, [0.5, 0.5, 0.5, 1.0])),
     ("UIColor", true, "redColor", |e| ret_color(e, [1.0, 0.0, 0.0, 1.0])),
-    ("UIColor", false, "CGColor", color_cg),
-    ("UIColor", false, "resolvedColorWithTraitCollection:", color_cg),
     ("UIColor", true, "colorWithCGColor:", |e| {
         let c = e.arg(2);
         e.ret(c);
@@ -1289,25 +1276,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         e.ret(c);
         Ok(())
     }),
-    // Dynamic colours resolve once, against the light-mode traits.
-    ("UIColor", true, "colorWithDynamicProvider:", color_dynamic),
-    ("UIColor", false, "initWithDynamicProvider:", color_dynamic),
     ("UIColor", true, "colorWithHue:saturation:brightness:alpha:", color_hsba),
     ("UIColor", false, "initWithWhite:alpha:", color_white),
     ("UIColor", true, "colorNamed:", ret_zero),
-    ("UIColor", true, "secondarySystemBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
-    // Grouped content (lists, settings): a light gray page under white sections.
-    ("UIColor", true, "systemGroupedBackgroundColor", |e| ret_color(e, [0.949, 0.949, 0.969, 1.0])),
-    ("UIColor", true, "secondarySystemGroupedBackgroundColor", |e| ret_color(e, [1.0, 1.0, 1.0, 1.0])),
-    ("UIColor", true, "secondaryLabelColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.6])),
-    ("UIColor", true, "placeholderTextColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.3])),
-    ("UIColor", true, "separatorColor", |e| ret_color(e, [0.235, 0.235, 0.263, 0.29])),
-    ("UIColor", true, "linkColor", |e| ret_color(e, system_blue(e))),
-    ("UIColor", true, "systemBlueColor", |e| ret_color(e, system_blue(e))),
-    // The app's accent (iOS 15): the system blue, as for an app without one of its own.
-    ("UIColor", true, "tintColor", |e| ret_color(e, system_blue(e))),
-    ("UIColor", true, "systemRedColor", |e| ret_color(e, [1.0, 0.231, 0.188, 1.0])),
-    ("UIColor", true, "systemGrayColor", |e| ret_color(e, [0.557, 0.557, 0.576, 1.0])),
     ("UIColor", true, "darkGrayColor", |e| ret_color(e, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0])),
     ("UIColor", true, "lightGrayColor", |e| ret_color(e, [2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0])),
     ("UIColor", true, "blueColor", |e| ret_color(e, [0.0, 0.0, 1.0, 1.0])),
@@ -1335,7 +1306,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIColor", false, "getRed:green:blue:alpha:", color_get_rgba),
     ("UITraitCollection", true, "currentTraitCollection", trait_collection),
     ("UITraitCollection", true, "setCurrentTraitCollection:", noop),
-    ("UITraitCollection", false, "userInterfaceStyle", ret_one), // light
     ("UITraitCollection", false, "displayScale", |e| {
         ret_f64(e, e.device.scale);
         Ok(())
@@ -1355,9 +1325,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 
 /// The window hierarchy as indented text: class, frame, colour, text.
 /// The system blue: #007AFF, and #0088FF in the iOS 26 design (measured on its simulator).
-fn system_blue(emu: &Emu) -> [f64; 4] {
-    if emu.system.liquid_glass() { [0.0, 0.533, 1.0, 1.0] } else { [0.0, 0.478, 1.0, 1.0] }
-}
 
 pub fn describe_tree(emu: &mut Emu) -> Result<String> {
     fn rgba_hex(emu: &Emu, c: u64) -> Option<String> {

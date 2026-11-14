@@ -88,16 +88,18 @@ fn layout_matches_ios() {
 /// plugged in at 1 s; run to `secs`.
 fn statusbar_app(secs: f64) -> Option<Emu> {
     let mut emu = common::boot("statusbar")?;
-    emu.status_bar.battery = Battery { level: 0.8, charge: Charge::Unplugged };
+    emu.status_bar.battery = Battery { level: 0.8, charge: Charge::Unplugged, low_power: false };
     emu.status_bar.battery_changes.push((1_000_000_000, "15%,charging".parse::<BatteryChange>().unwrap()));
+    emu.status_bar.battery_changes.push((1_200_000_000, "low-power".parse::<BatteryChange>().unwrap()));
     common::views(&mut emu, secs);
     Some(emu)
 }
 
-/// Pixels in the status bar's band (the top 47 pt) that are white-ish, and red-ish.
-fn status_ink(emu: &mut Emu) -> (usize, usize) {
+/// Pixels in the status bar's band (the top 47 pt) that are white-ish,
+/// red-ish and yellow-ish.
+fn status_ink(emu: &mut Emu) -> (usize, usize, usize) {
     let pix = pomme_hle::render::render(emu, 1.0).unwrap();
-    let (mut white, mut red) = (0, 0);
+    let (mut white, mut red, mut yellow) = (0, 0, 0);
     for y in 0..47 {
         for x in 0..pix.width() {
             let c = pix.pixel(x, y).unwrap();
@@ -107,24 +109,34 @@ fn status_ink(emu: &mut Emu) -> (usize, usize) {
             if c.red() > 200 && c.green() < 120 {
                 red += 1;
             }
+            if c.red() > 200 && c.green() > 180 && c.blue() < 60 {
+                yellow += 1;
+            }
         }
     }
-    (white, red)
+    (white, red, yellow)
 }
 
 /// The battery as UIDevice reports it: unknown until monitored, then the
-/// phone's, and the changes with their notifications. The status bar shows
-/// it, white on the app's black (light content), the low level red; hidden
-/// once the app asks.
+/// phone's, and the changes with their notifications; Low Power Mode through
+/// ProcessInfo. The status bar shows it, white on the app's black (light
+/// content), the low level red, yellow in Low Power Mode; hidden once the app
+/// asks.
 #[test]
 fn apps_shape_it_and_read_the_battery() {
-    let Some(mut emu) = statusbar_app(1.5) else { return };
+    let Some(mut emu) = statusbar_app(1.1) else { return };
     let lines: Vec<&str> = emu.console.lines().filter(|l| l.starts_with("BATTERY ")).collect();
     assert_eq!(lines, ["BATTERY unmonitored -1.0 0", "BATTERY monitored 0.8 1", "BATTERY state 0.15 2", "BATTERY level 0.15 2"], "{}", emu.console);
-    let (white, red) = status_ink(&mut emu);
+    let (white, red, _) = status_ink(&mut emu);
     assert!(white > 50, "no light content in the status bar ({white} white pixels)");
     assert!(red > 5, "the low battery isn't red ({red} red pixels)");
 
+    let Some(mut emu) = statusbar_app(1.5) else { return };
+    let low_power: Vec<&str> = emu.console.lines().filter(|l| l.starts_with("LOW POWER ")).collect();
+    assert_eq!(low_power, ["LOW POWER false", "LOW POWER true"], "{}", emu.console);
+    let (_, red, yellow) = status_ink(&mut emu);
+    assert!(yellow > 5 && red == 0, "Low Power Mode isn't yellow ({yellow} yellow, {red} red pixels)");
+
     let Some(mut emu) = statusbar_app(2.5) else { return };
-    assert_eq!(status_ink(&mut emu), (0, 0), "the status bar shows after the app hid it");
+    assert_eq!(status_ink(&mut emu), (0, 0, 0), "the status bar shows after the app hid it");
 }

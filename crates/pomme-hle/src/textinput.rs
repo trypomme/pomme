@@ -1028,7 +1028,7 @@ pub fn unescape(s: &str) -> String {
 pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, f64, f64, [f64; 4])>> {
     let mut text = tf_text(emu, f);
     let attrs;
-    let mut color_default = [0.0, 0.0, 0.0, 1.0];
+    let mut color_default = crate::appearance::label(emu);
     if text.is_empty() {
         let ph = send(emu, f, "attributedPlaceholder", &[])?;
         if ph == 0 {

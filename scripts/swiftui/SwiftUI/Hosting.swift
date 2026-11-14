@@ -56,6 +56,8 @@ final class ViewHost {
   /// Resolve the tree and show it.
   func update() {
     guard let view else { return }
+    // The environment's colour scheme is the appearance's.
+    EnvironmentValues.pommeDefaults["colorScheme"] = view.traitCollection.userInterfaceStyle == .dark ? ColorScheme.dark : ColorScheme.light
     let (nodes, _) = graph.update(root)
     self.nodes = nodes
     if nodes.count == 1, let stack = nodes[0] as? NavigationStackNode {
@@ -142,6 +144,14 @@ final class HostingView: UIView {
   override func layoutSubviews() {
     super.layoutSubviews()
     host.layout()
+  }
+
+  /// Light or dark changed: the tree resolves again (its colour scheme) and is drawn again.
+  override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+    super.traitCollectionDidChange(previous)
+    if previous?.userInterfaceStyle != traitCollection.userInterfaceStyle {
+      host.setNeedsUpdate()
+    }
   }
 
   override var intrinsicContentSize: CGSize {

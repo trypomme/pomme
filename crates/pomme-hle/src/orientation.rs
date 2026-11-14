@@ -280,7 +280,7 @@ fn post_with(emu: &mut Emu, name: &str, object: u64, key: &str, value: u64) -> R
 
 /// `traitCollectionDidChange:` to every view controller and view that
 /// implements it, parents first.
-fn traits_did_change(emu: &mut Emu, previous: u64) -> Result<()> {
+pub(crate) fn traits_did_change(emu: &mut Emu, previous: u64) -> Result<()> {
     let sel = objc::intern(emu, "traitCollectionDidChange:")?;
     let mut todo: Vec<u64> = emu.ui.windows.iter().rev().copied().collect();
     while let Some(v) = todo.pop() {

@@ -134,9 +134,15 @@ struct DeviceStateArgs {
     #[arg(long, value_parser = parse_network)]
     network: Vec<(pomme_hle::network::Path, Option<f64>)>,
     /// The battery: a level, `charging`, `full` or `unplugged` (the default: full,
-    /// unplugged), or both (`--battery 20%,charging`), and changes while it runs:
+    /// unplugged), `low-power` (Low Power Mode; `low-power-off`), or several
+    /// (`--battery 20%,charging`), and changes while it runs:
     /// `--battery 15%@3`. The status bar shows it; apps read it through UIDevice
     /// (batteryLevel, batteryState and their notifications, once they monitor it).
+    /// Light (the default) or dark, as Settings ▸ Display sets it, and changes while
+    /// it runs: `--appearance dark@3`. System colours follow, apps hear
+    /// `traitCollectionDidChange:`, and the status bar's default style turns white.
+    #[arg(long, value_parser = parse_appearance)]
+    appearance: Vec<(bool, Option<f64>)>,
     #[arg(long, value_parser = parse_battery)]
     battery: Vec<(pomme_hle::statusbar::BatteryChange, Option<f64>)>,
     /// Pin what the status bar shows, as `simctl status_bar override` does, for
@@ -250,10 +256,15 @@ impl DeviceStateArgs {
         for &(c, at) in &self.battery {
             match at {
                 None => {
-                    let b = &mut emu.status_bar.battery;
-                    *b = pomme_hle::statusbar::Battery { level: c.level.unwrap_or(b.level), charge: c.charge.unwrap_or(b.charge) };
+                    emu.status_bar.battery = emu.status_bar.battery.with(c);
                 }
                 Some(t) => emu.status_bar.battery_changes.push(((t * 1e9) as u64, c)),
+            }
+        }
+        for &(dark, at) in &self.appearance {
+            match at {
+                None => emu.appearance.dark = dark,
+                Some(t) => emu.appearance.changes.push(((t * 1e9) as u64, dark)),
             }
         }
         if let Some(o) = &self.status_bar {
@@ -267,6 +278,18 @@ fn parse_network(s: &str) -> std::result::Result<(pomme_hle::network::Path, Opti
     match s.rsplit_once('@') {
         Some((p, t)) => Ok((p.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
         None => Ok((s.parse()?, None)),
+    }
+}
+
+fn parse_appearance(s: &str) -> std::result::Result<(bool, Option<f64>), String> {
+    let (a, at) = match s.rsplit_once('@') {
+        Some((a, t)) => (a, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?)),
+        None => (s, None),
+    };
+    match a.trim() {
+        "light" => Ok((false, at)),
+        "dark" => Ok((true, at)),
+        o => Err(format!("{o}: expected light or dark")),
     }
 }
 

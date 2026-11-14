@@ -87,6 +87,7 @@ mod rand;
 pub mod uttype;
 pub mod network;
 pub mod statusbar;
+pub mod appearance;
 pub mod keychain;
 pub mod animation;
 mod spinner;
@@ -282,6 +283,8 @@ pub struct Emu {
     pub network: network::State,
     /// The status bar's battery and overrides.
     pub status_bar: statusbar::State,
+    /// Light or dark, and the dynamic colours that follow it.
+    pub appearance: appearance::State,
     pub keychain: keychain::State,
     /// Core Animation: animations running on layers.
     pub anim: animation::State,
@@ -397,6 +400,7 @@ impl Emu {
             ops: Default::default(),
             network: Default::default(),
             status_bar: Default::default(),
+            appearance: Default::default(),
             keychain: Default::default(),
             anim: Default::default(),
             spinner_frames: Default::default(),

@@ -1442,7 +1442,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
     let row = (look.row as f32).min(h);
     let baseline = row as f64 / 2.0 + TITLE_SIZE * 0.35;
     if back_alpha.is_none() {
-        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
+        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, crate::appearance::label(emu), 0.0, baseline);
         let x = (w as f64 - width) / 2.0 + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
         p.glyphs(&placed, alpha, t, mask);
@@ -1461,12 +1461,12 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         // (which shows none), moving with the bar's bottom as it collapses.
         use crate::navigation::{LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, LARGE_TITLE_X};
         let large_baseline = h as f64 - crate::navigation::large_title_metrics(emu).1;
-        let (glyphs, _) = crate::textkit::line_glyphs(emu, &look.title, LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, large_baseline);
+        let (glyphs, _) = crate::textkit::line_glyphs(emu, &look.title, LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, crate::appearance::label(emu), 0.0, large_baseline);
         let x = look.leading + LARGE_TITLE_X + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
         p.glyphs(&placed, alpha, t, mask);
     } else {
-        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, [0.0, 0.0, 0.0, 1.0], 0.0, baseline);
+        let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, crate::appearance::label(emu), 0.0, baseline);
         let x = (w as f64 - width) / 2.0 + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
         p.glyphs(&placed, alpha, t, mask);
@@ -1706,8 +1706,8 @@ fn draw_wifi(p: &mut Painter, b: [f64; 4], lit: u8, fg: [f32; 4], t: &[f32; 6]) 
     p.fill(&wedge, fg, if lit >= 1 { 1.0 } else { STATUS_UNLIT }, false, t, None);
 }
 
-/// The battery: its outline and cap, filled to its level (red at 20% and
-/// below, green while plugged in), with a bolt over it while plugged in,
+/// The battery: its outline and cap, filled to its level (yellow in Low
+/// Power Mode, else red at 20% and below, green while plugged in), with a bolt over it while plugged in,
 /// cut out of what's under it by a 1-pt gap. Drawn on a layer of its own so
 /// the gap shows the app beneath.
 fn draw_battery(p: &mut Painter, l: &crate::statusbar::Layout, b: crate::statusbar::Battery, light: bool, fg: [f32; 4], scale: f32) {
@@ -1728,8 +1728,11 @@ fn draw_battery(p: &mut Painter, l: &crate::statusbar::Layout, b: crate::statusb
     layer.fill(&transform_els(&rounded_rect(cx1 - cx0, cy1 - cy0, cx1 - cx0), &at(cx0, cy0)), fg, STATUS_OUTLINE, false, &t, None);
     // The level, 2 pt in.
     let plugged = b.charge != Charge::Unplugged;
-    let low = b.level <= 0.2;
-    let color = if low {
+    let low = b.level <= 0.2 && !b.low_power;
+    // Low Power Mode fills it yellow, whatever the level.
+    let color = if b.low_power {
+        if light { [1.0, 0.839, 0.0, 1.0] } else { [1.0, 0.8, 0.0, 1.0] }
+    } else if low {
         if light { [1.0, 0.259, 0.271, 1.0] } else { [1.0, 0.220, 0.235, 1.0] }
     } else if plugged {
         if light { [0.188, 0.820, 0.345, 1.0] } else { [0.204, 0.780, 0.349, 1.0] }

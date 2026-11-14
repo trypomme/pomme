@@ -1,7 +1,8 @@
 // The status bar as an app sees and shapes it: a black screen asking for
 // light content, then (after 2 s) for no status bar at all; and the battery
 // through UIDevice, before and after monitoring it, and as it changes
-// (`BATTERY what level state`). tests/status_bar.rs drives it.
+// (`BATTERY what level state`), and Low Power Mode through ProcessInfo
+// (`LOW POWER on`). tests/status_bar.rs drives it.
 
 import Darwin
 import UIKit
@@ -25,6 +26,10 @@ final class Controller: UIViewController {
     let center = NotificationCenter.default
     center.addObserver(forName: UIDevice.batteryStateDidChangeNotification, object: nil, queue: .main) { _ in report("state") }
     center.addObserver(forName: UIDevice.batteryLevelDidChangeNotification, object: nil, queue: .main) { _ in report("level") }
+    fputs("LOW POWER \(ProcessInfo.processInfo.isLowPowerModeEnabled)\n", stderr)
+    center.addObserver(forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { _ in
+      fputs("LOW POWER \(ProcessInfo.processInfo.isLowPowerModeEnabled)\n", stderr)
+    }
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
       hidden = true
       setNeedsStatusBarAppearanceUpdate()

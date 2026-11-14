@@ -133,7 +133,7 @@ pub fn lay_out(emu: &mut Emu, v: u64) -> Result<Laid> {
     let attrs = typing_attributes(emu, v)?;
     let font = textkit::font_in_attributes(emu, attrs)?;
     let (size, weight) = textkit::font_info(emu, font)?;
-    let mut color = [0.0, 0.0, 0.0, 1.0];
+    let mut color = crate::appearance::label(emu);
     let key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
     let c = send(emu, attrs, "objectForKey:", &[key])?;
     if let Some(rgba) = emu.ui.views.colors.get(&c) {

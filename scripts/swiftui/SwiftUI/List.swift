@@ -48,7 +48,8 @@ final class ListNode: Node {
   /// the safe area's top.
   static let sectionWithoutHeader: CGFloat = 35
   static let headerGap: CGFloat = 7
-  static let separatorColor = UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.12)
+  /// The system separator (iOS 26's: 12% in light mode, measured, and 50% in dark).
+  static var separatorColor: UIColor { .separator }
 
   init(path: ViewPath, rows: [Node]) {
     var sections: [SectionNode] = []

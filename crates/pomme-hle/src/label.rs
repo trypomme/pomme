@@ -65,7 +65,7 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
         font = objc::bag_get(emu, v, "font").unwrap_or(0);
     }
     let (size, weight) = if font == 0 { (DEFAULT_SIZE, 0.0) } else { textkit::font_info(emu, font)? };
-    let mut color = [0.0, 0.0, 0.0, 1.0];
+    let mut color = crate::appearance::label(emu);
     let mut c = 0;
     if attrs != 0 {
         let key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;

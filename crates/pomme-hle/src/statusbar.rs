@@ -35,25 +35,36 @@ impl std::str::FromStr for Charge {
     }
 }
 
-/// The battery: how full (0…1) and whether it's plugged in.
+/// The battery: how full (0…1), whether it's plugged in, and whether Low
+/// Power Mode is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Battery {
     pub level: f64,
     pub charge: Charge,
+    pub low_power: bool,
 }
 
 impl Default for Battery {
     fn default() -> Self {
-        Battery { level: 1.0, charge: Charge::Unplugged }
+        Battery { level: 1.0, charge: Charge::Unplugged, low_power: false }
+    }
+}
+
+impl Battery {
+    /// This battery with `c`'s changes.
+    pub fn with(self, c: BatteryChange) -> Battery {
+        Battery { level: c.level.unwrap_or(self.level), charge: c.charge.unwrap_or(self.charge), low_power: c.low_power.unwrap_or(self.low_power) }
     }
 }
 
 /// A change to the battery (`--battery 20%`, `--battery charging`,
-/// `--battery 80%,charging`): what it names changes, the rest stays.
+/// `--battery 80%,charging`, `--battery low-power`): what it names changes,
+/// the rest stays.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BatteryChange {
     pub level: Option<f64>,
     pub charge: Option<Charge>,
+    pub low_power: Option<bool>,
 }
 
 impl std::str::FromStr for BatteryChange {
@@ -67,8 +78,12 @@ impl std::str::FromStr for BatteryChange {
                     return Err(format!("{part}: a level is 0% to 100%"));
                 }
                 c.level = Some(v / 100.0);
+            } else if part == "low-power" {
+                c.low_power = Some(true);
+            } else if part == "low-power-off" {
+                c.low_power = Some(false);
             } else {
-                c.charge = Some(part.parse()?);
+                c.charge = Some(part.parse().map_err(|e: String| format!("{e}, low-power or low-power-off"))?);
             }
         }
         // Full means full.
@@ -209,7 +224,7 @@ pub fn shown(emu: &Emu, layout: &Layout) -> Shown {
         time,
         cellular_bars: o.cellular_bars.unwrap_or(bars),
         data,
-        battery: Battery { level: o.level.unwrap_or(b.level), charge: o.charge.unwrap_or(b.charge) },
+        battery: b.with(BatteryChange { level: o.level, charge: o.charge, low_power: None }),
     }
 }
 
@@ -340,9 +355,15 @@ pub fn layout_for(d: &Device) -> Layout {
 /// Change the battery; apps monitoring it hear (UIDevice's notifications).
 pub fn set_battery(emu: &mut Emu, c: BatteryChange) -> Result<()> {
     let before = emu.status_bar.battery;
-    let after = Battery { level: c.level.unwrap_or(before.level), charge: c.charge.unwrap_or(before.charge) };
+    let after = before.with(c);
     emu.status_bar.battery = after;
     crate::host::frame_changed(emu);
+    // Low Power Mode is ProcessInfo's, heard whether or not the battery's monitored.
+    if after.low_power != before.low_power {
+        let cls = objc::host_class(emu, "NSProcessInfo")?;
+        let info = objc::send(emu, cls, "processInfo", &[])?;
+        crate::foundation::post_named(emu, "NSProcessInfoPowerStateDidChangeNotification", info)?;
+    }
     if !emu.status_bar.monitoring {
         return Ok(());
     }
@@ -377,6 +398,10 @@ fn ret(emu: &mut Emu, v: u64) -> Result<()> {
 const DEVICE: &str = "UIDevice";
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSProcessInfo", false, "isLowPowerModeEnabled", |e| {
+        let on = e.status_bar.battery.low_power as u64;
+        ret(e, on)
+    }),
     (DEVICE, false, "isBatteryMonitoringEnabled", |e| {
         let on = e.status_bar.monitoring as u64;
         ret(e, on)
@@ -410,8 +435,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 /// full screen over it; or the child it defers to:
 /// `childViewControllerForStatusBarHidden` / `…Style`; a navigation
 /// controller's top controller while its bar is hidden) `prefersStatusBarHidden`
-/// and `preferredStatusBarStyle`. Light content (style 1) is white; the
-/// default and dark content are black (pomme presents light mode).
+/// and `preferredStatusBarStyle`. Light content is white, dark content
+/// black, and the default follows the appearance.
 pub fn appearance(emu: &mut Emu) -> Result<(bool, bool)> {
     let Some(&window) = emu.ui.windows.last() else { return Ok((false, false)) };
     let root = objc::send(emu, window, "rootViewController", &[])?;
@@ -436,7 +461,13 @@ pub fn appearance(emu: &mut Emu) -> Result<(bool, bool)> {
     let h = deciding(emu, "childViewControllerForStatusBarHidden")?;
     let hidden = objc::send(emu, h, "prefersStatusBarHidden", &[])? & 0xff != 0;
     let s = deciding(emu, "childViewControllerForStatusBarStyle")?;
-    let light = objc::send(emu, s, "preferredStatusBarStyle", &[])? == 1;
+    // UIStatusBarStyle: default (dark content in light mode, light in dark),
+    // light content (1), dark content (3).
+    let light = match objc::send(emu, s, "preferredStatusBarStyle", &[])? {
+        1 => true,
+        3 => false,
+        _ => emu.appearance.dark,
+    };
     Ok((hidden, light))
 }
 
@@ -455,9 +486,10 @@ mod tests {
 
     #[test]
     fn battery_changes_parse() {
-        assert_eq!("80%".parse(), Ok(BatteryChange { level: Some(0.8), charge: None }));
-        assert_eq!("20%,charging".parse(), Ok(BatteryChange { level: Some(0.2), charge: Some(Charge::Charging) }));
-        assert_eq!("full".parse(), Ok(BatteryChange { level: Some(1.0), charge: Some(Charge::Full) }));
+        assert_eq!("80%".parse(), Ok(BatteryChange { level: Some(0.8), ..Default::default() }));
+        assert_eq!("20%,charging".parse(), Ok(BatteryChange { level: Some(0.2), charge: Some(Charge::Charging), low_power: None }));
+        assert_eq!("full".parse(), Ok(BatteryChange { level: Some(1.0), charge: Some(Charge::Full), low_power: None }));
+        assert_eq!("30%,low-power".parse(), Ok(BatteryChange { level: Some(0.3), charge: None, low_power: Some(true) }));
         assert!("120%".parse::<BatteryChange>().is_err());
         assert!("plugged".parse::<BatteryChange>().is_err());
     }
