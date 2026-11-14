@@ -463,6 +463,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 
 /// `CGImageGetWidth` / `CGImageGetHeight` (pixels).
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    // An image's PNG (`image.pngData()`), at its pixels (nil without any).
+    ("_UIImagePNGRepresentation", |e| {
+        let Some(img) = image(e, e.arg(0)) else { return ret(e, 0) };
+        let Ok(png) = img.pix.encode_png() else { return ret(e, 0) };
+        let data = crate::foundation::new_data(e, &png)?;
+        ret(e, data)
+    }),
     ("_CGImageGetWidth", |e| {
         let w = image(e, e.arg(0)).map_or(0, |i| i.pix.width());
         ret(e, w as u64)

@@ -34,6 +34,8 @@ pub struct Glyph {
     pub y: f64,
     pub size: f64,
     pub weight: f64,
+    /// The face it's in (coretext's; 0: the system font).
+    pub face: usize,
     pub color: [f64; 4],
 }
 
@@ -462,7 +464,7 @@ fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
     let alpha_only = b.bpp == 1 && b.info & 0x1f == 7;
     let (order, skip) = pixel_layout(b.info);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
-    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()), faces: crate::coretext::draw_faces(emu) };
     p.ops(&ops, 1.0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None);
     for y in 0..b.h {
         let mut row = vec![0u8; (b.w * b.bpp) as usize];
@@ -797,6 +799,8 @@ struct Painter<'a> {
     font: Option<&'a [u8]>,
     /// For characters the text font lacks (emoji): color glyphs (COLR).
     emoji: Option<&'a [u8]>,
+    /// CoreText's faces (the app's fonts), for glyphs set in one.
+    faces: crate::coretext::DrawFaces,
 }
 
 impl Painter<'_> {
@@ -827,7 +831,36 @@ impl Painter<'_> {
         let Ok(mut face) = ttf_parser::Face::parse(data, 0) else { return };
         let upem = face.units_per_em() as f32;
         let mut current: Option<(u16, u16)> = None;
+        let faces = self.faces.clone();
+        let mut app: Option<(usize, ttf_parser::Face)> = None;
         for g in glyphs {
+            // In an app's face (at its named instance); what it lacks, in the system font.
+            if g.face != 0 {
+                if app.as_ref().map(|a| a.0) != Some(g.face) {
+                    app = faces.get(g.face).and_then(|(bytes, index, coords)| {
+                        let mut f = ttf_parser::Face::parse(bytes, *index).ok()?;
+                        for (tag, v) in coords {
+                            f.set_variation(ttf_parser::Tag::from_bytes(tag), *v);
+                        }
+                        Some((g.face, f))
+                    });
+                }
+                if let Some((_, f)) = &app
+                    && let Some(gid) = f.glyph_index(g.ch)
+                {
+                    let mut b = Outline(PathBuilder::new());
+                    if f.outline_glyph(gid, &mut b).is_some()
+                        && let Some(path) = b.0.finish()
+                    {
+                        let s = g.size as f32 / f.units_per_em() as f32;
+                        let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
+                        if let Some(p) = paint(g.color.map(|v| v as f32), alpha) {
+                            self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
+                        }
+                    }
+                    continue;
+                }
+            }
             let wght = crate::textkit::ot_weight(g.weight).round() as u16;
             let opsz = g.size.clamp(14.0, 32.0).round() as u16;
             if current != Some((wght, opsz)) {
@@ -1197,7 +1230,7 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
             let y1 = (pts.iter().map(|q| q.1).fold(f32::MIN, f32::max) + margin).ceil();
             let (bw, bh) = ((x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32);
             let Some(pix) = Pixmap::new(bw, bh) else { return };
-            let mut off = Painter { pix, font: p.font, emoji: p.emoji };
+            let mut off = Painter { pix, font: p.font, emoji: p.emoji, faces: p.faces.clone() };
             off.fill(&els, [0.0, 0.0, 0.0, 1.0], 1.0, false, &concat(&at0, &[1.0, 0.0, 0.0, 1.0, -x0, -y0]), None);
             let Some(sh) = blurred_shadow(&off.pix, sigma, color, strength) else { return };
             if emu.render.shadows.len() > 32 {
@@ -1220,7 +1253,7 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
     let y1 = (pts.iter().map(|q| q.1).fold(f32::MIN, f32::max) + margin).ceil().min(ph + dy.abs() + margin).min(2.0 * ph);
     let (bw, bh) = ((x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32);
     let Some(pix) = Pixmap::new(bw, bh) else { return };
-    let mut off = Painter { pix, font: p.font, emoji: p.emoji };
+    let mut off = Painter { pix, font: p.font, emoji: p.emoji, faces: p.faces.clone() };
     let shift = [1.0, 0.0, 0.0, 1.0, -x0, -y0];
     source(emu, &mut off, &concat(t, &shift));
     // The source already carries the layer's own opacity.
@@ -1367,11 +1400,11 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
 /// A UITextField's text (or placeholder): one line, vertically centered in its
 /// text rect (`textRectForBounds:`, which apps override for padding).
 fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) -> Result<()> {
-    let Some((text, size, weight, color)) = crate::textinput::appearance(emu, v)? else { return Ok(()) };
+    let Some((text, font, color)) = crate::textinput::appearance(emu, v)? else { return Ok(()) };
     let sel = if crate::textinput::is_editing(emu, v) { "editingRectForBounds:" } else { "textRectForBounds:" };
     let r = objc::send_fp(emu, v, sel, &[], &bounds)?;
-    let baseline = r[1] + r[3] / 2.0 + size * 0.35;
-    let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, size, weight, color, r[0], baseline);
+    let baseline = r[1] + r[3] / 2.0 + font.size * 0.35;
+    let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &font, color, r[0], baseline);
     p.glyphs(&glyphs, alpha, t, mask);
     Ok(())
 }
@@ -1389,7 +1422,7 @@ fn draw_text_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
             _ => 0.0,
         };
         let baseline = laid.origin.1 + l.y + l.ascent;
-        let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, laid.size, laid.weight, laid.color, laid.origin.0 + dx, baseline);
+        let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &laid.font, laid.color, laid.origin.0 + dx, baseline);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())
@@ -1407,7 +1440,7 @@ fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f
             2 => bounds[2] - l.width,
             _ => 0.0,
         };
-        let (glyphs, _) = crate::textkit::line_glyphs(emu, &text, laid.size, laid.weight, laid.color, bounds[0] + dx, top + l.y + l.ascent);
+        let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &laid.font, laid.color, bounds[0] + dx, top + l.y + l.ascent);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())
@@ -1506,7 +1539,7 @@ pub(crate) fn rasterize(emu: &mut Emu, ops: &[Op], size: [f64; 2], scale: f64) -
     let (w, h) = (((size[0] * scale).ceil() as u32).max(1), ((size[1] * scale).ceil() as u32).max(1));
     let pix = Pixmap::new(w, h).ok_or_else(|| Stop::Unsupported(format!("can't make a {w}×{h} bitmap")))?;
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
-    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()), faces: crate::coretext::draw_faces(emu) };
     let s = scale as f32;
     p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None);
     Ok(p.pix)
@@ -1595,7 +1628,7 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     let mut pix = Pixmap::new(sw, sh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
     pix.fill(tiny_skia::Color::BLACK);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
-    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()) };
+    let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()), faces: crate::coretext::draw_faces(emu) };
     let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
     for w in emu.ui.windows.clone() {
         draw_view(emu, &mut p, w, 1.0, &t, None);
@@ -1738,7 +1771,7 @@ fn draw_battery(p: &mut Painter, l: &crate::statusbar::Layout, b: crate::statusb
     let (px, py) = (((x0 - 4.0 * s) * scale).floor(), ((y0 - 4.0 * s) * scale).floor());
     let (pw, ph) = (((cx1 + 4.0 * s) * scale - px).ceil() as u32, ((y1 + 4.0 * s) * scale - py).ceil() as u32);
     let Some(pix) = Pixmap::new(pw.max(1), ph.max(1)) else { return };
-    let mut layer = Painter { pix, font: None, emoji: None };
+    let mut layer = Painter { pix, font: None, emoji: None, faces: Default::default() };
     let t = [scale, 0.0, 0.0, scale, -px, -py];
     let at = |x: f32, y: f32| [1.0, 0.0, 0.0, 1.0, x, y];
     // A 1-pt outline inside the body's edge (its corners 4 pt), and the cap.
@@ -1862,7 +1895,7 @@ impl Shell {
         let (bw, bh) = (sw + 2.0 * BEZEL, sh + forehead + chin);
         let total = (bw + 2.0 * BUTTONS, bh);
         let pix = Pixmap::new((total.0 * scale) as u32, (total.1 * scale) as u32).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?;
-        let mut p = Painter { pix, font: None, emoji: None };
+        let mut p = Painter { pix, font: None, emoji: None, faces: Default::default() };
         let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
         let body_r = if d.home_button { 56.0 } else { d.corner_radius as f32 + BEZEL };
         // iPhone corners are continuous curves, the display's and the body's.
@@ -1902,7 +1935,7 @@ impl Shell {
         // The display's corners where the screen landed (a rounded rectangle looks the same turned).
         // The display's corners (continuous, as moving screens' cards are, so the two coincide).
         let shape = transform_els(&corner_shape(x1 - x0, y1 - y0, d.corner_radius as f32 * scale, 15, !d.home_button), &[1.0, 0.0, 0.0, 1.0, x0, y0]);
-        let mask = Painter { pix: Pixmap::new(ow, oh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?, font: None, emoji: None }.intersect(None, &shape, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let mask = Painter { pix: Pixmap::new(ow, oh).ok_or_else(|| Stop::Unsupported("can't make a pixmap".into()))?, font: None, emoji: None, faces: Default::default() }.intersect(None, &shape, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
         Ok(Shell { body, screen: [x0, y0, x1 - x0, y1 - y0], mask })
     }
 

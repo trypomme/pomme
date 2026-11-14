@@ -1025,7 +1025,7 @@ pub fn unescape(s: &str) -> String {
 // ---- drawing ----
 
 /// What a text field shows: its text (or placeholder), font size, weight and color.
-pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, f64, f64, [f64; 4])>> {
+pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, crate::textkit::TextFont, [f64; 4])>> {
     let mut text = tf_text(emu, f);
     let attrs;
     let mut color_default = crate::appearance::label(emu);
@@ -1048,7 +1048,7 @@ pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, f64, f64, [f6
         }
     }
     let font = crate::textkit::font_in_attributes(emu, attrs)?;
-    let (size, weight) = crate::textkit::font_info(emu, font)?;
+    let font = crate::textkit::font_info(emu, font)?;
     let mut color = color_default;
     if attrs != 0 {
         let key = foundation::new_nsstring(emu, "NSColor")?;
@@ -1061,7 +1061,7 @@ pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, f64, f64, [f6
             color = *rgba;
         }
     }
-    Ok(Some((text, size, weight, color)))
+    Ok(Some((text, font, color)))
 }
 
 #[cfg(test)]

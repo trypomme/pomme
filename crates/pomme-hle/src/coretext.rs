@@ -4,7 +4,12 @@
 //! - Faces: the system UI font (`.AppleSystemUIFont`, the family Flutter asks
 //!   for on iOS; pomme draws it with Inter) and the color emoji font
 //!   (`Apple Color Emoji`, drawn with Noto Color Emoji's COLR glyphs), plus
-//!   fonts apps register from data (`CTFontManagerCreateFontDescriptorFromData`).
+//!   the app's own: from its Info.plist's `UIAppFonts` (registered at
+//!   launch), files it registers (`CTFontManagerRegisterFontsForURL`), and
+//!   data (`CTFontManagerCreateFontDescriptorFromData`). A file holds a face
+//!   per font in a collection, and a variable font a face per named instance
+//!   (RobotoSlab-Thin … -Black, each at its axes' values), as iOS lists them.
+//!   Only registered faces answer to their names (UIFont, CTFontCreateWithName).
 //! - A CTFont is a face at a size, with a matrix and (for the variable system
 //!   font) a weight. Metrics, glyph mapping, advances, bounds, outlines and raw
 //!   tables come from the font file (ttf-parser).
@@ -38,6 +43,20 @@ pub struct Face {
     pub color: bool,
     /// The variable system font: weight is an axis.
     pub variable_weight: bool,
+    /// A named instance's place on the font's axes (tag, value).
+    pub coords: Vec<([u8; 4], f32)>,
+    /// Its weight as UIFont reports it (-0.8 … 0.62; 0 regular).
+    pub weight: f64,
+    pub italic: bool,
+    /// Registered: it answers to its names.
+    pub available: bool,
+}
+
+impl Face {
+    /// A face of the system's own (always available, upright, regular).
+    fn system(family: &str, postscript: &str, full: &str, bytes: Rc<Vec<u8>>, color: bool, variable_weight: bool) -> Face {
+        Face { family: family.into(), postscript: postscript.into(), full: full.into(), style: "Regular".into(), bytes, index: 0, color, variable_weight, coords: Vec::new(), weight: 0.0, italic: false, available: true }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +76,8 @@ pub struct State {
     pub fonts: HashMap<u64, Font>,
     /// CTFontDescriptor → (its attributes dictionary, the face it was made for, if any).
     descriptors: HashMap<u64, (u64, Option<usize>)>,
+    /// Font files read (guest path) → their faces; registered or not.
+    files: HashMap<String, Vec<usize>>,
 }
 
 pub const SYSTEM_FAMILY: &str = ".AppleSystemUIFont";
@@ -67,36 +88,29 @@ const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 fn faces(emu: &mut Emu) -> &Vec<Face> {
     if emu.coretext.faces.is_empty() {
         if let Some(bytes) = crate::textkit::font_bytes(emu) {
-            emu.coretext.faces.push(Face {
-                family: SYSTEM_FAMILY.into(),
-                postscript: ".SFUI-Regular".into(),
-                full: "System Font Regular".into(),
-                style: "Regular".into(),
-                bytes,
-                index: 0,
-                color: false,
-                variable_weight: true,
-            });
+            emu.coretext.faces.push(Face::system(SYSTEM_FAMILY, ".SFUI-Regular", "System Font Regular", bytes, false, true));
         }
         if let Some(bytes) = crate::textkit::emoji_bytes(emu) {
-            emu.coretext.faces.push(Face {
-                family: EMOJI_FAMILY.into(),
-                postscript: "AppleColorEmoji".into(),
-                full: "Apple Color Emoji".into(),
-                style: "Regular".into(),
-                bytes,
-                index: 0,
-                color: true,
-                variable_weight: false,
-            });
+            emu.coretext.faces.push(Face::system(EMOJI_FAMILY, "AppleColorEmoji", "Apple Color Emoji", bytes, true, false));
         }
     }
     &emu.coretext.faces
 }
 
-fn face_named(emu: &mut Emu, family: &str) -> Option<usize> {
+/// The registered face with this PostScript, full or family name (a
+/// family's first face); the system font's other names.
+pub(crate) fn face_named(emu: &mut Emu, family: &str) -> Option<usize> {
     let f = family.trim();
-    faces(emu).iter().position(|x| x.family.eq_ignore_ascii_case(f) || x.postscript.eq_ignore_ascii_case(f) || x.full.eq_ignore_ascii_case(f)).or_else(|| {
+    let faces = faces(emu);
+    let named = |n: &dyn Fn(&Face) -> &str| faces.iter().position(|x| x.available && n(x).eq_ignore_ascii_case(f));
+    // By family: its regular, upright face (or the nearest to it), as UIFont gives.
+    let family = || {
+        faces.iter().enumerate().filter(|(_, x)| x.available && x.family.eq_ignore_ascii_case(f)).min_by(|(_, a), (_, b)| {
+            let key = |x: &Face| (x.italic, x.weight.abs());
+            key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
+        }).map(|(i, _)| i)
+    };
+    named(&|x| &x.postscript).or_else(|| named(&|x| &x.full)).or_else(family).or_else(|| {
         // The system font's other names.
         let system = [".SF UI Text", ".SF UI Display", "System Font", ".SFUI-Regular", "SF Pro", "SF Pro Text", "SF Pro Display", "Helvetica", "Helvetica Neue", "CupertinoSystemText", "CupertinoSystemDisplay"];
         system.iter().any(|s| s.eq_ignore_ascii_case(f)).then_some(0)
@@ -579,18 +593,242 @@ fn character_set(emu: &mut Emu) -> Result<()> {
     ret(emu, set)
 }
 
-/// `CTFontManagerCreateFontDescriptorFromData(data)`: an app's own font.
+/// Every face's font file, index and instance values, by face number (for drawing).
+pub(crate) type DrawFaces = Rc<Vec<(Rc<Vec<u8>>, u32, Vec<([u8; 4], f32)>)>>;
+
+pub(crate) fn draw_faces(emu: &mut Emu) -> DrawFaces {
+    Rc::new(faces(emu).iter().map(|f| (f.bytes.clone(), f.index, f.coords.clone())).collect())
+}
+
+/// A face's (family, PostScript name, UIFont weight).
+pub(crate) fn face_names(emu: &mut Emu, face: usize) -> Option<(String, String, f64)> {
+    faces(emu).get(face).map(|f| (f.family.clone(), f.postscript.clone(), f.weight))
+}
+
+pub(crate) fn face_italic(emu: &mut Emu, face: usize) -> bool {
+    faces(emu).get(face).is_some_and(|f| f.italic)
+}
+
+/// The registered families, in the order they came (the hidden system UI font left out).
+pub(crate) fn families(emu: &mut Emu) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in faces(emu).iter().filter(|f| f.available && !f.family.starts_with('.')) {
+        if !out.contains(&f.family) {
+            out.push(f.family.clone());
+        }
+    }
+    out
+}
+
+/// A registered family's fonts by PostScript name (none for one nobody has).
+pub(crate) fn family_members(emu: &mut Emu, family: &str) -> Vec<String> {
+    faces(emu).iter().filter(|f| f.available && f.family.eq_ignore_ascii_case(family.trim())).map(|f| f.postscript.clone()).collect()
+}
+
+/// A face's font file, its index in it, and its named instance's axis values
+/// (for textkit and drawing).
+pub(crate) fn face_data(emu: &mut Emu, face: usize) -> Option<(Rc<Vec<u8>>, u32, Vec<([u8; 4], f32)>)> {
+    faces(emu).get(face).map(|f| (f.bytes.clone(), f.index, f.coords.clone()))
+}
+
+/// UIFont's weight for an OpenType `wght` (100 thin … 400 regular … 900 black).
+pub(crate) fn ui_weight(wght: f64) -> f64 {
+    const STOPS: [(f64, f64); 9] = [(100.0, -0.8), (200.0, -0.6), (300.0, -0.4), (400.0, 0.0), (500.0, 0.23), (600.0, 0.3), (700.0, 0.4), (800.0, 0.56), (900.0, 0.62)];
+    if wght <= STOPS[0].0 {
+        return STOPS[0].1;
+    }
+    for p in STOPS.windows(2) {
+        let ((a, wa), (b, wb)) = (p[0], p[1]);
+        if wght <= b {
+            return wa + (wb - wa) * (wght - a) / (b - a);
+        }
+    }
+    STOPS[8].1
+}
+
+/// The faces in a font file, unregistered: one per font in a collection;
+/// for a variable font, one per named instance (its PostScript name its own,
+/// or the font's prefix and the instance's style), as CoreText lists them.
+fn faces_in(bytes: Rc<Vec<u8>>) -> Vec<Face> {
+    let count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
+    let mut out = Vec::new();
+    for index in 0..count {
+        let Ok(parsed) = ttf_parser::Face::parse(&bytes, index) else { continue };
+        let name = |id: u16| parsed.names().into_iter().find(|n| n.name_id == id && n.is_unicode()).and_then(|n| n.to_string());
+        let family = name(16).or_else(|| name(1)).unwrap_or_default();
+        let style = name(17).or_else(|| name(2)).unwrap_or_else(|| "Regular".into());
+        let (full, ps) = (name(4).unwrap_or_else(|| format!("{family} {style}")), name(6).unwrap_or_default());
+        let italic = parsed.is_italic();
+        let face = |postscript: String, full: String, style: String, coords: Vec<([u8; 4], f32)>, weight: f64| Face {
+            family: family.clone(), postscript, full, style, bytes: bytes.clone(), index, color: false, variable_weight: false, coords, weight, italic, available: false,
+        };
+        let instances = named_instances(&parsed);
+        if instances.is_empty() {
+            let weight = ui_weight(parsed.weight().to_number() as f64);
+            out.push(face(ps, full, style, Vec::new(), weight));
+            continue;
+        }
+        let prefix = name(25).unwrap_or_else(|| family.replace(' ', ""));
+        // The default instance (at the axes' defaults) first, as CoreText lists a family.
+        let defaults: Vec<f32> = parsed.variation_axes().into_iter().map(|a| a.def_value).collect();
+        let mut instances = instances;
+        instances.sort_by_key(|(_, coords, _)| coords.iter().map(|c| c.1).ne(defaults.iter().copied()));
+        for (sub, coords, ps_id) in instances {
+            let style = name(sub).unwrap_or_default();
+            let postscript = ps_id.and_then(name).unwrap_or_else(|| format!("{prefix}-{}", style.replace(' ', "")));
+            let wght = coords.iter().find(|(t, _)| t == b"wght").map_or(400.0, |c| c.1 as f64);
+            out.push(face(postscript, format!("{family} {style}"), style, coords, ui_weight(wght)));
+        }
+    }
+    out
+}
+
+/// A variable font's named instances (`fvar`): (style name ID, axis values, PostScript name ID).
+fn named_instances(face: &ttf_parser::Face) -> Vec<(u16, Vec<([u8; 4], f32)>, Option<u16>)> {
+    let Some(fvar) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"fvar")) else { return Vec::new() };
+    let u16_at = |o: usize| fvar.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let i32_at = |o: usize| fvar.get(o..o + 4).map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let (Some(axes_at), Some(axes), Some(axis_size), Some(count), Some(size)) = (u16_at(4), u16_at(8), u16_at(10), u16_at(12), u16_at(14)) else { return Vec::new() };
+    let (axes_at, axes, axis_size, size) = (axes_at as usize, axes as usize, axis_size as usize, size as usize);
+    let tags: Vec<[u8; 4]> = (0..axes).filter_map(|i| fvar.get(axes_at + i * axis_size..axes_at + i * axis_size + 4).map(|t| [t[0], t[1], t[2], t[3]])).collect();
+    let start = axes_at + axes * axis_size;
+    (0..count as usize)
+        .filter_map(|i| {
+            let at = start + i * size;
+            let sub = u16_at(at)?;
+            let coords = tags.iter().enumerate().map(|(j, t)| i32_at(at + 4 + 4 * j).map(|v| (*t, v as f32 / 65536.0))).collect::<Option<Vec<_>>>()?;
+            let ps = if size >= axes * 4 + 6 { u16_at(at + 4 + 4 * axes).filter(|&id| id != 0xFFFF) } else { None };
+            Some((sub, coords, ps))
+        })
+        .collect()
+}
+
+/// The faces of the font file at a guest path, read once (unregistered at first).
+fn file_faces(emu: &mut Emu, path: &str) -> Option<Vec<usize>> {
+    if let Some(f) = emu.coretext.faces_of(path) {
+        return Some(f);
+    }
+    let bytes = crate::fs::read_file(emu, path)?;
+    let found = faces_in(Rc::new(bytes));
+    if found.is_empty() {
+        return None;
+    }
+    faces(emu);
+    let start = emu.coretext.faces.len();
+    emu.coretext.faces.extend(found);
+    let ids: Vec<usize> = (start..emu.coretext.faces.len()).collect();
+    emu.coretext.files.insert(path.to_string(), ids.clone());
+    Some(ids)
+}
+
+impl State {
+    fn faces_of(&self, path: &str) -> Option<Vec<usize>> {
+        self.files.get(path).cloned()
+    }
+}
+
+/// CTFontManagerError.
+const ALREADY_REGISTERED: i64 = 105;
+const NOT_REGISTERED: i64 = 201;
+const INVALID_FONT: i64 = 103;
+const FILE_NOT_FOUND: i64 = 101;
+
+/// Register the font file at a guest path: its faces answer to their names.
+pub(crate) fn register_file(emu: &mut Emu, path: &str) -> std::result::Result<(), i64> {
+    if crate::fs::read_file(emu, path).is_none() {
+        return Err(FILE_NOT_FOUND);
+    }
+    let ids = file_faces(emu, path).ok_or(INVALID_FONT)?;
+    if ids.iter().all(|&i| emu.coretext.faces[i].available) {
+        return Err(ALREADY_REGISTERED);
+    }
+    for i in ids {
+        emu.coretext.faces[i].available = true;
+    }
+    crate::textkit::fonts_changed(emu);
+    Ok(())
+}
+
+/// Unregister the font file at a guest path.
+fn unregister_file(emu: &mut Emu, path: &str) -> std::result::Result<(), i64> {
+    let ids = emu.coretext.faces_of(path).ok_or(NOT_REGISTERED)?;
+    if !ids.iter().any(|&i| emu.coretext.faces[i].available) {
+        return Err(NOT_REGISTERED);
+    }
+    for i in ids {
+        emu.coretext.faces[i].available = false;
+    }
+    crate::textkit::fonts_changed(emu);
+    Ok(())
+}
+
+/// The fonts the app's Info.plist lists (`UIAppFonts`, paths in its bundle),
+/// registered as the app launches, as iOS does.
+pub(crate) fn register_app_fonts(emu: &mut Emu) -> Result<()> {
+    let list = crate::bundle::main_info_value(emu, "UIAppFonts")?;
+    if list == 0 {
+        return Ok(());
+    }
+    let bundle = crate::fs::guest_bundle_path(emu);
+    for item in foundation::array_values(emu, list)? {
+        let file = nsstring(emu, item)?;
+        if let Err(e) = register_file(emu, &format!("{bundle}/{file}")) {
+            // (As iOS logs a font it can't register.)
+            eprintln!("UIAppFonts: couldn't register {file} (CTFontManagerError {e})");
+        }
+    }
+    Ok(())
+}
+
+/// A CTFontManager error, for an out `CFErrorRef *`.
+fn manager_error(emu: &mut Emu, out: u64, code: i64) -> Result<()> {
+    if out == 0 {
+        return Ok(());
+    }
+    let domain = foundation::new_nsstring(emu, "com.apple.CoreText.CTFontManagerErrorDomain")?;
+    let e = foundation::cf_call(emu, "_CFErrorCreate", &[0, domain, code as u64, 0])?;
+    emu.write_u64(out, e)
+}
+
+/// `CTFontManagerRegisterFontsForURL(url, scope, CFErrorRef *)` / `…Unregister…`.
+fn manage_url(emu: &mut Emu, register: bool) -> Result<()> {
+    let (url, out) = (emu.arg(0), emu.arg(2));
+    let path = foundation::url_file_path(emu, url)?;
+    let r = if register { register_file(emu, &path) } else { unregister_file(emu, &path) };
+    match r {
+        Ok(()) => ret(emu, 1),
+        Err(code) => {
+            manager_error(emu, out, code)?;
+            ret(emu, 0)
+        }
+    }
+}
+
+/// `CTFontManagerCreateFontDescriptorsFromURL(url)`: the file's faces, without registering them.
+fn descriptors_from_url(emu: &mut Emu) -> Result<()> {
+    let path = foundation::url_file_path(emu, emu.arg(0))?;
+    let Some(ids) = file_faces(emu, &path) else { return ret(emu, 0) };
+    let mut v = Vec::new();
+    for i in ids {
+        v.push(face_descriptor(emu, i)?);
+    }
+    let a = foundation::new_array_of(emu, &v)?;
+    ret(emu, a)
+}
+
+/// `CTFontManagerCreateFontDescriptorFromData(data)`: an app's own font (its
+/// first face), not registered.
 fn descriptor_from_data(emu: &mut Emu) -> Result<()> {
     let data = emu.arg(0);
     let bytes = foundation::data_bytes(emu, data)?;
-    let Ok(parsed) = ttf_parser::Face::parse(&bytes, 0) else { return ret(emu, 0) };
-    let name = |id: u16| {
-        parsed.names().into_iter().find(|n| n.name_id == id && n.is_unicode()).and_then(|n| n.to_string()).unwrap_or_default()
-    };
-    let (family, style, full, ps) = (name(1), name(2), name(4), name(6));
-    let variable = parsed.variation_axes().into_iter().any(|a| a.tag == ttf_parser::Tag::from_bytes(b"wght"));
+    let Some(mut face) = faces_in(Rc::new(bytes)).into_iter().next() else { return ret(emu, 0) };
+    // (Data fonts are drawn as Skia asks: the whole variable font, its weight an axis.)
+    if !face.coords.is_empty() {
+        face.coords.clear();
+        face.variable_weight = true;
+    }
     faces(emu);
-    emu.coretext.faces.push(Face { family, postscript: ps, full, style, bytes: Rc::new(bytes), index: 0, color: false, variable_weight: variable });
+    emu.coretext.faces.push(face);
     let i = emu.coretext.faces.len() - 1;
     let d = face_descriptor(emu, i)?;
     ret(emu, d)
@@ -641,8 +879,32 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         ret(e, a)
     }),
     ("_CTFontManagerCreateFontDescriptorFromData", descriptor_from_data),
-    ("_CTFontManagerRegisterGraphicsFont", |e| ret(e, 1)),
-    ("_CTFontManagerRegisterFontsForURL", |e| ret(e, 1)),
+    // (A CGFont's face answers to its names.)
+    ("_CTFontManagerRegisterGraphicsFont", |e| {
+        let (src, out) = (e.arg(0), e.arg(1));
+        let Some(f) = font(e, src) else { return ret(e, 0) };
+        if faces(e)[f.face].available {
+            manager_error(e, out, ALREADY_REGISTERED)?;
+            return ret(e, 0);
+        }
+        e.coretext.faces[f.face].available = true;
+        crate::textkit::fonts_changed(e);
+        ret(e, 1)
+    }),
+    ("_CTFontManagerUnregisterGraphicsFont", |e| {
+        let (src, out) = (e.arg(0), e.arg(1));
+        let Some(f) = font(e, src) else { return ret(e, 0) };
+        if !faces(e)[f.face].available {
+            manager_error(e, out, NOT_REGISTERED)?;
+            return ret(e, 0);
+        }
+        e.coretext.faces[f.face].available = false;
+        crate::textkit::fonts_changed(e);
+        ret(e, 1)
+    }),
+    ("_CTFontManagerRegisterFontsForURL", |e| manage_url(e, true)),
+    ("_CTFontManagerUnregisterFontsForURL", |e| manage_url(e, false)),
+    ("_CTFontManagerCreateFontDescriptorsFromURL", descriptors_from_url),
     ("_CTFontDescriptorCreateWithAttributes", |e| {
         let attrs = e.arg(0);
         let d = make_descriptor(e, attrs, None)?;
@@ -869,9 +1131,52 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         let a = foundation::cf_call(e, "_CFArrayCreate", &[0, buf, tags.len() as u64, 0])?;
         ret(e, a)
     }),
+    // A font file's CGFont: its default instance, unregistered.
+    ("_CGFontCreateWithDataProvider", |e| {
+        let Some(bytes) = e.imageio.providers.get(&e.arg(0)).map(|b| b.to_vec()) else { return ret(e, 0) };
+        let Ok(parsed) = ttf_parser::Face::parse(&bytes, 0) else { return ret(e, 0) };
+        let name = |id: u16| parsed.names().into_iter().find(|n| n.name_id == id && n.is_unicode()).and_then(|n| n.to_string());
+        let family = name(16).or_else(|| name(1)).unwrap_or_default();
+        let style = name(17).or_else(|| name(2)).unwrap_or_else(|| "Regular".into());
+        let (full, postscript) = (name(4).unwrap_or_else(|| format!("{family} {style}")), name(6).unwrap_or_default());
+        let (weight, italic) = (ui_weight(parsed.weight().to_number() as f64), parsed.is_italic());
+        let face = Face { family, postscript, full, style, bytes: Rc::new(bytes.to_vec()), index: 0, color: false, variable_weight: false, coords: Vec::new(), weight, italic, available: false };
+        faces(e);
+        e.coretext.faces.push(face);
+        let i = e.coretext.faces.len() - 1;
+        let f = make_font(e, Font { face: i, size: 12.0, matrix: IDENTITY, weight })?;
+        ret(e, f)
+    }),
+    ("_CGFontCopyPostScriptName", |e| ret_name(e, |f| &f.postscript)),
+    ("_CGFontCopyFullName", |e| ret_name(e, |f| &f.full)),
     ("_CGFontRelease", |_| Ok(())),
     ("_CGFontRetain", |e| {
         let f = e.arg(0);
         ret(e, f)
     }),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A variable font is a face per named instance, the default first, each
+    /// with its PostScript name and weight (Roboto Slab: Thin … Black).
+    #[test]
+    fn variable_fonts_are_their_named_instances() {
+        let Ok(bytes) = std::fs::read("../../apps/hello-expo-font/assets/fonts/RobotoSlab.ttf") else { return };
+        let faces = faces_in(Rc::new(bytes));
+        let names: Vec<&str> = faces.iter().map(|f| f.postscript.as_str()).collect();
+        assert_eq!(names, ["RobotoSlab-Regular", "RobotoSlab-Thin", "RobotoSlab-ExtraLight", "RobotoSlab-Light", "RobotoSlab-Medium", "RobotoSlab-SemiBold", "RobotoSlab-Bold", "RobotoSlab-ExtraBold", "RobotoSlab-Black"]);
+        assert!(faces.iter().all(|f| f.family == "Roboto Slab" && !f.available && !f.italic));
+        let bold = faces.iter().find(|f| f.postscript == "RobotoSlab-Bold").unwrap();
+        assert_eq!((bold.weight, bold.coords.clone()), (0.4, vec![(*b"wght", 700.0)]));
+    }
+
+    #[test]
+    fn weights_map_to_uifont_weights() {
+        assert_eq!(ui_weight(400.0), 0.0);
+        assert_eq!(ui_weight(700.0), 0.4);
+        assert_eq!(ui_weight(100.0), -0.8);
+    }
+}

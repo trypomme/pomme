@@ -139,6 +139,11 @@ fn info_value_of(emu: &mut Emu, i: usize, key: &str) -> Result<u64> {
     foundation::dict_get(emu, info, k)
 }
 
+/// A value from the main bundle's Info.plist (0 if it hasn't one).
+pub(crate) fn main_info_value(emu: &mut Emu, key: &str) -> Result<u64> {
+    info_value(emu, key)
+}
+
 fn info_value(emu: &mut Emu, key: &str) -> Result<u64> {
     main_bundle(emu)?;
     info_value_of(emu, 0, key)

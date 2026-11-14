@@ -3400,7 +3400,7 @@ fn string_write(emu: &mut Emu, path: &str, enc: u64, error: u64) -> Result<()> {
     }
 }
 
-fn url_file_path(emu: &mut Emu, url: u64) -> Result<String> {
+pub(crate) fn url_file_path(emu: &mut Emu, url: u64) -> Result<String> {
     let p = send(emu, url, "path", &[])?;
     nsstring(emu, p)
 }
@@ -4342,6 +4342,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("NSURL", false, "path", url_path),
+    // The file path as a C string (lives as long as the URL would autorelease it: pomme keeps it).
+    ("NSURL", false, "fileSystemRepresentation", |e| {
+        let path = url_file_path(e, e.arg(0))?;
+        let p = e.alloc_cstr(&path)?;
+        e.ret(p);
+        Ok(())
+    }),
     ("NSURL", false, "scheme", url_scheme),
     ("NSURL", false, "host", url_host),
     ("NSURL", false, "lastPathComponent", url_last_path_component),

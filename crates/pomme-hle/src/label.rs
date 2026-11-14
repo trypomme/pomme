@@ -44,8 +44,7 @@ fn content(emu: &mut Emu, v: u64) -> Result<(String, u64)> {
 pub struct LabelText {
     pub text: Vec<u16>,
     pub lines: Vec<Line>,
-    pub size: f64,
-    pub weight: f64,
+    pub font: textkit::TextFont,
     pub color: [f64; 4],
     /// NSTextAlignment: 1 center, 2 right; anything else is left.
     pub alignment: u64,
@@ -64,7 +63,7 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
     if font == 0 {
         font = objc::bag_get(emu, v, "font").unwrap_or(0);
     }
-    let (size, weight) = if font == 0 { (DEFAULT_SIZE, 0.0) } else { textkit::font_info(emu, font)? };
+    let f = if font == 0 { textkit::TextFont::system(DEFAULT_SIZE, 0.0) } else { textkit::font_info(emu, font)? };
     let mut color = crate::appearance::label(emu);
     let mut c = 0;
     if attrs != 0 {
@@ -79,10 +78,10 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
     }
     let max_lines = objc::bag_get(emu, v, "numberOfLines").unwrap_or(1) as usize;
     let text: Vec<u16> = text.encode_utf16().collect();
-    let runs = [Run { len: text.len(), size, weight }];
-    let lines = textkit::layout(&text, &runs, |ch, s, w| textkit::advance(emu, ch, s, w), width, f64::INFINITY, max_lines);
+    let runs = [Run::new(emu, text.len(), f)];
+    let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), width, f64::INFINITY, max_lines);
     let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(0) & 0xff;
-    Ok(LabelText { text, lines, size, weight, color, alignment })
+    Ok(LabelText { text, lines, font: f, color, alignment })
 }
 
 fn size_that_fits(emu: &mut Emu) -> Result<()> {

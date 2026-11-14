@@ -33,8 +33,8 @@ const NOT_FOUND: u64 = i64::MAX as u64;
 pub struct State {
     /// System fonts by file name, once looked for (None: not in the sysroot).
     fonts: HashMap<&'static str, Option<std::rc::Rc<Vec<u8>>>>,
-    /// (char, weight, optical size) → advance in em.
-    advances: HashMap<(char, u16, u16), f64>,
+    /// (char, weight, optical size, face) → advance in em.
+    advances: HashMap<(char, u16, u16, usize), f64>,
 }
 
 /// A font from the sysroot's System/Library/Fonts (found from where
@@ -91,29 +91,91 @@ pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, col
     let mut pen = x;
     let mut out = Vec::new();
     for ch in text.chars() {
-        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size, weight, color });
+        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size, weight, face: 0, color });
         pen += advance(emu, ch, size, weight);
     }
     (out, pen - x)
 }
 
-/// Advance width of `ch` in points.
+/// One line of text in `font`, as glyphs from `x` along `baseline`, and its width.
+pub(crate) fn line_glyphs_in(emu: &mut Emu, text: &str, font: &TextFont, color: [f64; 4], x: f64, baseline: f64) -> (Vec<crate::render::Glyph>, f64) {
+    let mut pen = x;
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size: font.size, weight: font.weight, face: font.face, color });
+        pen += advance_in(emu, ch, font);
+    }
+    (out, pen - x)
+}
+
+/// A font as text is set in it: a size, a weight (for the system font's
+/// weight axis) and a face (`coretext` faces; 0: the system font).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextFont {
+    pub size: f64,
+    pub weight: f64,
+    pub face: usize,
+}
+
+impl TextFont {
+    pub fn system(size: f64, weight: f64) -> TextFont {
+        TextFont { size, weight, face: 0 }
+    }
+}
+
+/// Advance width of `ch` in points, in the system font.
 pub(crate) fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
+    advance_in(emu, ch, &TextFont::system(size, weight))
+}
+
+/// The fonts available changed: what was measured in them goes.
+pub(crate) fn fonts_changed(emu: &mut Emu) {
+    emu.text.advances.retain(|k, _| k.3 == 0);
+}
+
+/// A run's line height and ascent: the system font's proportions (SF's), or
+/// a face's own (its `hhea` ascender, descender and line gap).
+pub(crate) fn line_metrics(emu: &mut Emu, f: &TextFont) -> (f64, f64) {
+    if f.face != 0
+        && let Some((bytes, index, _)) = crate::coretext::face_data(emu, f.face)
+        && let Ok(face) = ttf_parser::Face::parse(&bytes, index)
+    {
+        let upem = face.units_per_em() as f64;
+        let (asc, desc, gap) = (face.ascender() as f64, face.descender() as f64, face.line_gap() as f64);
+        return ((asc - desc + gap) / upem * f.size, asc / upem * f.size);
+    }
+    (f.size * LINE_HEIGHT, f.size * ASCENT)
+}
+
+/// Advance width of `ch` in points, in `f`.
+pub(crate) fn advance_in(emu: &mut Emu, ch: char, f: &TextFont) -> f64 {
+    let (size, weight) = (f.size, f.weight);
     let wght = ot_weight(weight).round() as u16;
     let opsz = size.clamp(14.0, 32.0).round() as u16;
-    let key = (ch, wght, opsz);
+    let key = (ch, wght, opsz, f.face);
     if let Some(&em) = emu.text.advances.get(&key) {
         return em * size;
     }
-    let text = font_bytes(emu);
-    let face = text.as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok());
+    // An app's face (at its named instance), or the system font.
+    let (text, index, coords, axis_weight) = match crate::coretext::face_data(emu, f.face).filter(|_| f.face != 0) {
+        Some((bytes, index, coords)) => (Some(bytes), index, coords, false),
+        None => (font_bytes(emu), 0, Vec::new(), true),
+    };
+    let face = text.as_deref().and_then(|d| ttf_parser::Face::parse(d, index).ok());
     let em = match face {
         Some(mut face) => {
-            face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), wght as f32);
-            face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
+            if axis_weight {
+                face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), wght as f32);
+                face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
+            }
+            for (tag, v) in &coords {
+                face.set_variation(ttf_parser::Tag::from_bytes(tag), *v);
+            }
             let upem = face.units_per_em() as f64;
             match face.glyph_index(ch) {
                 Some(g) => face.glyph_hor_advance(g).map_or(0.55, |a| a as f64 / upem),
+                // Not in an app's font: the system font's (as iOS falls back).
+                None if !axis_weight => advance(emu, ch, size, weight) / size,
                 // Not in the text font: emoji (and other symbols) come from the emoji font.
                 None => emoji_advance(emu, ch).unwrap_or_else(|| {
                     face.glyph_index('\u{fffd}').and_then(|g| face.glyph_hor_advance(g)).map_or(0.55, |a| a as f64 / upem)
@@ -129,12 +191,22 @@ pub(crate) fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
 
 // ---- layout ----
 
-/// A stretch of text in one font, in UTF-16 units.
+/// A stretch of text in one font, in UTF-16 units, with that font's line
+/// height and ascent.
 #[derive(Clone, Copy, Debug)]
 pub struct Run {
     pub len: usize,
-    pub size: f64,
-    pub weight: f64,
+    pub font: TextFont,
+    pub line_height: f64,
+    pub ascent: f64,
+}
+
+impl Run {
+    /// `len` units in `font`.
+    pub(crate) fn new(emu: &mut Emu, len: usize, font: TextFont) -> Run {
+        let (line_height, ascent) = line_metrics(emu, &font);
+        Run { len, font, line_height, ascent }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,7 +228,8 @@ struct Item {
     units: usize,
     ch: char,
     adv: f64,
-    size: f64,
+    /// Its run's line height and ascent.
+    metrics: (f64, f64),
 }
 
 fn is_newline(c: char) -> bool {
@@ -202,8 +275,8 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
         }
         xs.push(cx);
         let width = line_items.iter().rev().skip_while(|it| it.ch.is_whitespace()).map(|it| it.adv).sum();
-        let size = line_items.iter().map(|it| it.size).fold(0.0, f64::max);
-        let (lh, asc) = (size * LINE_HEIGHT, size * ASCENT);
+        // The line is as tall as its tallest font.
+        let (lh, asc) = line_items.iter().map(|it| it.metrics).fold((0.0, 0.0), |a, m| (f64::max(a.0, m.0), f64::max(a.1, m.1)));
         if !lines.is_empty() && y + lh > height + 1e-9 {
             break;
         }
@@ -219,8 +292,8 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
     lines
 }
 
-/// Lay out UTF-16 text with per-run fonts; `adv(ch, size, weight)` measures a character.
-pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, f64, f64) -> f64, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
+/// Lay out UTF-16 text with per-run fonts; `adv(ch, font)` measures a character.
+pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -> f64, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
     let mut items = Vec::new();
     let mut unit = 0;
     let mut run_iter = runs.iter();
@@ -239,10 +312,11 @@ pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, f64, f64) ->
                 }
             }
         }
-        let (size, weight) = run.map_or((DEFAULT_SIZE, 0.0), |r| (r.size, r.weight));
+        let font = run.map_or(TextFont::system(DEFAULT_SIZE, 0.0), |r| r.font);
+        let metrics = run.map_or((DEFAULT_SIZE * LINE_HEIGHT, DEFAULT_SIZE * ASCENT), |r| (r.line_height, r.ascent));
         let units = ch.len_utf16();
-        let a = if is_newline(ch) { 0.0 } else { adv(ch, size, weight) };
-        items.push(Item { unit, units, ch, adv: a, size });
+        let a = if is_newline(ch) { 0.0 } else { adv(ch, &font) };
+        items.push(Item { unit, units, ch, adv: a, metrics });
         unit += units;
     }
     break_lines(&items, text.len(), width, height, max_lines)
@@ -280,9 +354,9 @@ fn size_with_attributes(emu: &mut Emu) -> Result<()> {
     let (string, attrs) = (emu.arg(0), emu.arg(2));
     let text = foundation::nsstring(emu, string)?;
     let font = font_in_attributes(emu, attrs)?;
-    let (size, weight) = font_info(emu, font)?;
-    let width: f64 = text.chars().map(|ch| advance(emu, ch, size, weight)).sum();
-    let height = if text.is_empty() { 0.0 } else { (size * LINE_HEIGHT).ceil() };
+    let f = font_info(emu, font)?;
+    let width: f64 = text.chars().map(|ch| advance_in(emu, ch, &f)).sum();
+    let height = if text.is_empty() { 0.0 } else { line_metrics(emu, &f).0.ceil() };
     emu.cpu.q[0] = width.to_bits() as u128;
     emu.cpu.q[1] = height.to_bits() as u128;
     Ok(())
@@ -295,31 +369,147 @@ fn bounding_rect_with_size(emu: &mut Emu) -> Result<()> {
     let (w, h) = (d(emu, 0), d(emu, 1));
     let text: Vec<u16> = foundation::nsstring(emu, string)?.encode_utf16().collect();
     let font = font_in_attributes(emu, attrs)?;
-    let (size, weight) = font_info(emu, font)?;
-    let runs = [Run { len: text.len(), size, weight }];
+    let f = font_info(emu, font)?;
+    let runs = [Run::new(emu, text.len(), f)];
     let (width, height, max_lines) = if options & 1 != 0 { (w, h, 0) } else { (f64::INFINITY, f64::INFINITY, 1) };
-    let lines = layout(&text, &runs, |ch, s, wt| advance(emu, ch, s, wt), width, height, max_lines);
+    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
     let used_w = lines.iter().map(|l| l.width).fold(0.0, f64::max);
     let used_h = lines.last().map_or(0.0, |l| l.y + l.height);
     ret_rect(emu, [0.0, 0.0, used_w, used_h]);
     Ok(())
 }
 
-/// Font size and weight of a UIFont (other fonts: TextKit's default).
-pub(crate) fn font_info(emu: &mut Emu, font: u64) -> Result<(f64, f64)> {
+/// A UIFont as text is set in it: its size, weight and face (other fonts:
+/// TextKit's default).
+pub(crate) fn font_info(emu: &mut Emu, font: u64) -> Result<TextFont> {
     if font == 0 || foundation::is_cf(emu, font) || class_name_of(emu, font) != "UIFont" {
-        return Ok((DEFAULT_SIZE, 0.0));
+        return Ok(TextFont::system(DEFAULT_SIZE, 0.0));
     }
-    Ok((f64_at(emu, font + 16)?, f64_at(emu, font + 24)?))
+    let face = crate::uiview::font_face(emu, font)?;
+    Ok(TextFont { size: f64_at(emu, font + 16)?, weight: f64_at(emu, font + 24)?, face })
 }
 
 struct Laid {
     lines: Vec<Line>,
     padding: f64,
     len: usize,
-    /// Per run: (start, end, size, weight, rgba) for drawing.
-    styles: Vec<(usize, usize, f64, f64, [f64; 4])>,
+    /// Per run: (start, end, font, rgba) for drawing.
+    styles: Vec<(usize, usize, TextFont, [f64; 4])>,
     text: Vec<u16>,
+}
+
+/// Per run of a CF attributed string: its font, and (start, end, font, color)
+/// for drawing (black where it sets no color, as UIKit draws).
+type Styles = Vec<(usize, usize, TextFont, [f64; 4])>;
+
+fn attributed_runs(emu: &mut Emu, s: u64) -> Result<(Vec<u16>, Vec<Run>, Styles)> {
+    let string = cf(emu, "_CFAttributedStringGetString", &[s])?;
+    let text: Vec<u16> = foundation::nsstring(emu, string)?.encode_utf16().collect();
+    let font_key = foundation::new_nsstring(emu, "NSFontAttributeName")?;
+    let color_key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
+    let mut styles = Vec::new();
+    let range = emu.alloc(16)?;
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        let attrs = cf(emu, "_CFAttributedStringGetAttributes", &[s, i as u64, range])?;
+        let (loc, n) = (emu.read_u64(range)? as usize, emu.read_u64(range + 8)? as usize);
+        let font = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, font_key])? };
+        let f = font_info(emu, font)?;
+        let color = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, color_key])? };
+        let rgba = emu.ui.views.colors.get(&color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let end = (loc + n).max(i + 1).min(text.len());
+        runs.push(Run::new(emu, end - i, f));
+        styles.push((i, end, f, rgba));
+        i = end;
+    }
+    emu.heap.free(&emu.p.memory, range)?;
+    Ok((text, runs, styles))
+}
+
+/// The glyphs of laid-out lines, the first line's top-left at (x, y).
+fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, range: (usize, usize)) -> Vec<crate::render::Glyph> {
+    let mut glyphs = Vec::new();
+    for line in lines {
+        let mut k = line.start.max(range.0);
+        while k < (line.start + line.len).min(range.1) {
+            let (ch, units) = match char::decode_utf16([text[k], text.get(k + 1).copied().unwrap_or(0)]).next() {
+                Some(Ok(c)) => (c, c.len_utf16()),
+                _ => ('\u{fffd}', 1),
+            };
+            if !ch.is_whitespace() {
+                let &(_, _, f, color) = styles.iter().find(|s| k >= s.0 && k < s.1).unwrap_or(&(0, 0, TextFont::system(DEFAULT_SIZE, 0.0), [0.0, 0.0, 0.0, 1.0]));
+                glyphs.push(crate::render::Glyph { ch, x: x + line.xs[k - line.start], y: y + line.y + line.ascent, size: f.size, weight: f.weight, face: f.face, color });
+            }
+            k += units;
+        }
+    }
+    glyphs
+}
+
+/// An attributed string laid out at `width` (wrapping; infinite: only at newlines).
+fn attributed_lines(emu: &mut Emu, s: u64, width: f64, height: f64, max_lines: usize) -> Result<(Vec<u16>, Styles, Vec<Line>)> {
+    let (text, runs, styles) = attributed_runs(emu, s)?;
+    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    Ok((text, styles, lines))
+}
+
+fn lines_size(lines: &[Line]) -> (f64, f64) {
+    (lines.iter().map(|l| l.width).fold(0.0, f64::max), lines.last().map_or(0.0, |l| l.y + l.height))
+}
+
+/// The CF attributed string a string with attributes makes.
+fn attributed_from(emu: &mut Emu, string: u64, attrs: u64) -> Result<u64> {
+    let attrs = if attrs == 0 { foundation::new_dict(emu)? } else { attrs };
+    cf(emu, "_CFAttributedStringCreate", &[0, string, attrs])
+}
+
+/// UIKit's string drawing (NSStringDrawing): `size`, `boundingRectWithSize:…`,
+/// `drawAtPoint:` and `drawInRect:`, for an attributed string, into the current context.
+fn attributed_size(emu: &mut Emu) -> Result<()> {
+    let s = cf_attributed(emu, emu.arg(0))?;
+    let (_, _, lines) = attributed_lines(emu, s, f64::INFINITY, f64::INFINITY, 0)?;
+    let (w, h) = lines_size(&lines);
+    emu.cpu.q[0] = w.to_bits() as u128;
+    emu.cpu.q[1] = h.to_bits() as u128;
+    Ok(())
+}
+
+fn attributed_bounding_rect(emu: &mut Emu) -> Result<()> {
+    let (s, options) = (cf_attributed(emu, emu.arg(0))?, emu.arg(2));
+    let (w, h) = (d(emu, 0), d(emu, 1));
+    let (width, height, max_lines) = if options & 1 != 0 { (w, h, 0) } else { (f64::INFINITY, f64::INFINITY, 1) };
+    let (_, _, lines) = attributed_lines(emu, s, width, height, max_lines)?;
+    let (uw, uh) = lines_size(&lines);
+    ret_rect(emu, [0.0, 0.0, uw, uh]);
+    Ok(())
+}
+
+fn draw_attributed(emu: &mut Emu, s: u64, rect: [f64; 4]) -> Result<()> {
+    let (text, styles, lines) = attributed_lines(emu, s, rect[2], rect[3], 0)?;
+    let glyphs = glyphs_of(&text, &styles, &lines, rect[0], rect[1], (0, text.len()));
+    crate::render::draw_glyphs(emu, glyphs);
+    Ok(())
+}
+
+fn attributed_draw_at(emu: &mut Emu) -> Result<()> {
+    let s = cf_attributed(emu, emu.arg(0))?;
+    draw_attributed(emu, s, [d(emu, 0), d(emu, 1), f64::INFINITY, f64::INFINITY])
+}
+
+fn attributed_draw_in(emu: &mut Emu) -> Result<()> {
+    let s = cf_attributed(emu, emu.arg(0))?;
+    draw_attributed(emu, s, [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)])
+}
+
+fn string_draw_at(emu: &mut Emu) -> Result<()> {
+    let s = attributed_from(emu, emu.arg(0), emu.arg(2))?;
+    draw_attributed(emu, s, [d(emu, 0), d(emu, 1), f64::INFINITY, f64::INFINITY])
+}
+
+fn string_draw_in(emu: &mut Emu) -> Result<()> {
+    let s = attributed_from(emu, emu.arg(0), emu.arg(2))?;
+    draw_attributed(emu, s, [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)])
 }
 
 /// Lay out a layout manager's text storage in its container.
@@ -334,35 +524,15 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
     if s == 0 {
         return Ok(Laid { lines: Vec::new(), padding, len: 0, styles: Vec::new(), text: Vec::new() });
     }
-    let string = cf(emu, "_CFAttributedStringGetString", &[s])?;
-    let text: Vec<u16> = foundation::nsstring(emu, string)?.encode_utf16().collect();
-    let font_key = foundation::new_nsstring(emu, "NSFontAttributeName")?;
-    let color_key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
-    let mut styles = Vec::new();
-    let range = emu.alloc(16)?;
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < text.len() {
-        let attrs = cf(emu, "_CFAttributedStringGetAttributes", &[s, i as u64, range])?;
-        let (loc, n) = (emu.read_u64(range)? as usize, emu.read_u64(range + 8)? as usize);
-        let font = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, font_key])? };
-        let (size, weight) = font_info(emu, font)?;
-        let color = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, color_key])? };
-        let rgba = emu.ui.views.colors.get(&color).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let end = (loc + n).max(i + 1).min(text.len());
-        runs.push(Run { len: end - i, size, weight });
-        styles.push((i, end, size, weight, rgba));
-        i = end;
-    }
-    emu.heap.free(&emu.p.memory, range)?;
+    let (text, runs, styles) = attributed_runs(emu, s)?;
     let width = (w - 2.0 * padding).max(0.0);
-    let mut cache: Vec<(char, f64, f64, f64)> = Vec::new();
-    let mut measure = |ch: char, size: f64, weight: f64| {
-        if let Some(&(_, _, _, a)) = cache.iter().find(|(c, s, w, _)| *c == ch && *s == size && *w == weight) {
+    let mut cache: Vec<(char, TextFont, f64)> = Vec::new();
+    let mut measure = |ch: char, f: &TextFont| {
+        if let Some(&(_, _, a)) = cache.iter().find(|(c, cf, _)| *c == ch && cf == f) {
             return a;
         }
-        let a = advance(emu, ch, size, weight);
-        cache.push((ch, size, weight, a));
+        let a = advance_in(emu, ch, f);
+        cache.push((ch, *f, a));
         a
     };
     let lines = layout(&text, &runs, &mut measure, width, h, max_lines);
@@ -639,10 +809,10 @@ fn lm_draw_glyphs(emu: &mut Emu) -> Result<()> {
                 _ => ('\u{fffd}', 1),
             };
             if !ch.is_whitespace() {
-                let &(_, _, size, weight, color) = l.styles.iter().find(|s| k >= s.0 && k < s.1).unwrap_or(&(0, 0, DEFAULT_SIZE, 0.0, [0.0, 0.0, 0.0, 1.0]));
+                let &(_, _, f, color) = l.styles.iter().find(|s| k >= s.0 && k < s.1).unwrap_or(&(0, 0, TextFont::system(DEFAULT_SIZE, 0.0), [0.0, 0.0, 0.0, 1.0]));
                 let x = ox + l.padding + line.xs[k - line.start];
                 let y = oy + line.y + line.ascent;
-                glyphs.push(crate::render::Glyph { ch, x, y, size, weight, color });
+                glyphs.push(crate::render::Glyph { ch, x, y, size: f.size, weight: f.weight, face: f.face, color });
             }
             k += units;
         }
@@ -720,6 +890,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (TC, false, "size", tc_size),
     ("NSString", false, "sizeWithAttributes:", size_with_attributes),
     ("NSString", false, "boundingRectWithSize:options:attributes:context:", bounding_rect_with_size),
+    ("NSString", false, "drawAtPoint:withAttributes:", string_draw_at),
+    ("NSString", false, "drawInRect:withAttributes:", string_draw_in),
+    ("NSAttributedString", false, "size", attributed_size),
+    ("NSAttributedString", false, "boundingRectWithSize:options:context:", attributed_bounding_rect),
+    ("NSAttributedString", false, "drawAtPoint:", attributed_draw_at),
+    ("NSAttributedString", false, "drawInRect:", attributed_draw_in),
+    ("NSAttributedString", false, "drawWithRect:options:context:", attributed_draw_in),
     (TC, false, "setSize:", tc_set_size),
     (TC, false, "lineFragmentPadding", tc_padding),
     (TC, false, "setLineFragmentPadding:", tc_set_padding),
@@ -789,8 +966,8 @@ mod tests {
 
     fn lay(s: &str, width: f64) -> Vec<(String, f64)> {
         let units: Vec<u16> = s.encode_utf16().collect();
-        let runs = [Run { len: units.len(), size: 10.0, weight: 0.0 }];
-        layout(&units, &runs, |c, _, _| if c == ' ' { 5.0 } else { 10.0 }, width, f64::MAX, 0)
+        let runs = [Run { len: units.len(), font: TextFont::system(10.0, 0.0), line_height: 10.0 * LINE_HEIGHT, ascent: 10.0 * ASCENT }];
+        layout(&units, &runs, |c, _| if c == ' ' { 5.0 } else { 10.0 }, width, f64::MAX, 0)
             .iter()
             .map(|l| (String::from_utf16_lossy(&units[l.start..l.start + l.len]), l.width))
             .collect()
@@ -810,7 +987,7 @@ mod tests {
     #[test]
     fn line_metrics() {
         let units: Vec<u16> = "hi".encode_utf16().collect();
-        let l = layout(&units, &[Run { len: 2, size: 20.0, weight: 0.0 }], |_, _, _| 7.0, 1e9, f64::MAX, 0);
+        let l = layout(&units, &[Run { len: 2, font: TextFont::system(20.0, 0.0), line_height: 20.0 * LINE_HEIGHT, ascent: 20.0 * ASCENT }], |_, _| 7.0, 1e9, f64::MAX, 0);
         assert_eq!(l.len(), 1);
         assert!((l[0].height - 20.0 * LINE_HEIGHT).abs() < 1e-9);
         assert_eq!(l[0].xs, vec![0.0, 7.0, 14.0]);

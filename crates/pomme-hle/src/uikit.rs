@@ -90,6 +90,8 @@ fn application_main(emu: &mut Emu, principal: Option<String>, delegate: Option<S
     let app = send(emu, app_cls, "alloc", &[])?;
     let app = send(emu, app, "init", &[])?;
     emu.ui.app = app;
+    // The app's own fonts (Info.plist's UIAppFonts) are there from launch.
+    crate::coretext::register_app_fonts(emu)?;
     // The interface starts as the phone is held, if Info.plist allows.
     let held = emu.ui.device_orientation;
     crate::orientation::launch(emu, held);

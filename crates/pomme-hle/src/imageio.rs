@@ -182,7 +182,7 @@ pub struct State {
     sources: HashMap<u64, Source>,
     destinations: HashMap<u64, Destination>,
     /// CGDataProviders: their bytes.
-    providers: HashMap<u64, Rc<Vec<u8>>>,
+    pub(crate) providers: HashMap<u64, Rc<Vec<u8>>>,
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {
@@ -674,6 +674,19 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         if release != 0 {
             e.call(release, &[info, data, size])?;
         }
+        ret(e, p)
+    }),
+    // A file's bytes (0 if it isn't there).
+    ("_CGDataProviderCreateWithURL", |e| {
+        let path = foundation::url_file_path(e, e.arg(0))?;
+        let Some(bytes) = crate::fs::read_file(e, &path) else { return ret(e, 0) };
+        let p = new_provider(e, bytes)?;
+        ret(e, p)
+    }),
+    ("_CGDataProviderCreateWithFilename", |e| {
+        let path = e.cstr(e.arg(0))?;
+        let Some(bytes) = crate::fs::read_file(e, &path) else { return ret(e, 0) };
+        let p = new_provider(e, bytes)?;
         ret(e, p)
     }),
     ("_CGDataProviderRetain", |e| {

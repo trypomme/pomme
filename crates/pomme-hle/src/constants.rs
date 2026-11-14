@@ -14,6 +14,8 @@ use crate::{Emu, HostFn, Result, Stop, foundation};
 /// Name patterns of NSString constants.
 const STRING_SUFFIXES: &[&str] = &[
     "Notification", "Key", "Name", "Category", "Attribute", "Identifier", "Option", "Type", "Domain", "Exception", "Mode",
+    // Font descriptor trait keys (UIFontWeightTrait, kCTFontSymbolicTrait …).
+    "Trait",
 ];
 const STRING_PREFIXES: &[&str] = &[
     "NSLocale",

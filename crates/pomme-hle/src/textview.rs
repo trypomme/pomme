@@ -95,8 +95,7 @@ fn typing_attributes(emu: &mut Emu, v: u64) -> Result<u64> {
 pub struct Laid {
     pub text: Vec<u16>,
     pub lines: Vec<Line>,
-    pub size: f64,
-    pub weight: f64,
+    pub font: textkit::TextFont,
     pub color: [f64; 4],
     /// NSTextAlignment: 1 center, 2 right; anything else is left.
     pub alignment: u64,
@@ -132,7 +131,7 @@ pub fn lay_out(emu: &mut Emu, v: u64) -> Result<Laid> {
     let text = crate::textinput::text_units(emu, v);
     let attrs = typing_attributes(emu, v)?;
     let font = textkit::font_in_attributes(emu, attrs)?;
-    let (size, weight) = textkit::font_info(emu, font)?;
+    let f = textkit::font_info(emu, font)?;
     let mut color = crate::appearance::label(emu);
     let key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
     let c = send(emu, attrs, "objectForKey:", &[key])?;
@@ -143,16 +142,16 @@ pub fn lay_out(emu: &mut Emu, v: u64) -> Result<Laid> {
     let pad = padding(emu, v)?;
     let b = view(emu, v).bounds;
     let width = (b[2] - inset[1] - inset[3] - 2.0 * pad).max(0.0);
-    let runs = [Run { len: text.len(), size, weight }];
-    let lines = textkit::layout(&text, &runs, |ch, s, w| textkit::advance(emu, ch, s, w), width, f64::INFINITY, 0);
-    let line_height = size * textkit::LINE_HEIGHT;
+    let runs = [Run::new(emu, text.len(), f)];
+    let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), width, f64::INFINITY, 0);
+    let line_height = runs[0].line_height;
     let ends_in_newline = text.last().is_some_and(|&c| c == '\n' as u16 || c == '\r' as u16);
     let text_height = match lines.last() {
         None => line_height,
         Some(l) => l.y + l.height + if ends_in_newline { line_height } else { 0.0 },
     };
     let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(0) & 0xff;
-    Ok(Laid { text, lines, size, weight, color, alignment, origin: (inset[1] + pad, inset[0]), width, text_height, line_height, inset })
+    Ok(Laid { text, lines, font: f, color, alignment, origin: (inset[1] + pad, inset[0]), width, text_height, line_height, inset })
 }
 
 /// Scroll the content to `y` (clamped to it), telling the delegate.
@@ -337,7 +336,7 @@ mod tests {
         let text: Vec<u16> = text.encode_utf16().collect();
         let ends = text.last() == Some(&('\n' as u16));
         let text_height = lines.last().map_or(line_height, |l| l.y + l.height + if ends { line_height } else { 0.0 });
-        Laid { text, lines, size: 17.0, weight: 0.0, color: [0.0; 4], alignment: 0, origin: (5.0, 8.0), width: 100.0, text_height, line_height, inset: DEFAULT_INSET }
+        Laid { text, lines, font: textkit::TextFont::system(17.0, 0.0), color: [0.0; 4], alignment: 0, origin: (5.0, 8.0), width: 100.0, text_height, line_height, inset: DEFAULT_INSET }
     }
 
     fn line(start: usize, len: usize, y: f64) -> Line {

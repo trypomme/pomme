@@ -816,7 +816,37 @@ pub(crate) fn safe_area_insets(emu: &mut Emu) -> Result<()> {
 }
 
 // ---- UIFont {isa, name (NSString), point size (f64 bits), weight (f64 bits)} ----
-// No font files yet: every font is "the system font" with SF Pro's proportions.
+// A font named for a registered face (an app's own: coretext) is that face;
+// any other is the system font, with SF Pro's proportions.
+
+/// The face a UIFont is set in (coretext's faces; 0: the system font).
+pub(crate) fn font_face(emu: &mut Emu, font: u64) -> Result<usize> {
+    let name = foundation::nsstring(emu, emu.read_u64(font + 8)?)?;
+    Ok(crate::coretext::face_named(emu, &name).unwrap_or(0))
+}
+
+/// An app's face's metric, in points: (ascender, descender, line gap, cap height, x-height) by `pick`.
+fn face_metric(emu: &mut Emu, font: u64, pick: fn(&ttf_parser::Face) -> f64) -> Result<Option<f64>> {
+    let face = font_face(emu, font)?;
+    if face == 0 {
+        return Ok(None);
+    }
+    let size = font_size(emu, font)?;
+    let Some((bytes, index, _)) = crate::coretext::face_data(emu, face) else { return Ok(None) };
+    let Ok(f) = ttf_parser::Face::parse(&bytes, index) else { return Ok(None) };
+    Ok(Some(pick(&f) / f.units_per_em() as f64 * size))
+}
+
+/// A metric: the app's face's own, else the system font's proportion of the size.
+fn font_metric_of(emu: &mut Emu, factor: f64, pick: fn(&ttf_parser::Face) -> f64) -> Result<()> {
+    let font = emu.arg(0);
+    let v = match face_metric(emu, font, pick)? {
+        Some(v) => v,
+        None => font_size(emu, font)? * factor,
+    };
+    ret_f64(emu, v);
+    Ok(())
+}
 
 pub(crate) fn new_font(emu: &mut Emu, name: &str, size: f64, weight: f64) -> Result<u64> {
     let cls = host_class(emu, "UIFont")?;
@@ -861,6 +891,44 @@ fn preferred_font(emu: &mut Emu) -> Result<()> {
         _ => (17.0, false), // Body
     };
     if semibold { ret_font(emu, ".SFUI-Semibold", size, 0.3) } else { ret_font(emu, ".SFUI-Regular", size, 0.0) }
+}
+
+/// UIFontDescriptorSymbolicTraits: italic (1), bold (2).
+fn font_symbolic_traits(emu: &mut Emu, font: u64) -> Result<u32> {
+    if font == 0 {
+        return Ok(0);
+    }
+    let face = font_face(emu, font)?;
+    let weight = f64::from_bits(emu.read_u64(font + 24)?);
+    let italic = face != 0 && crate::coretext::face_italic(emu, face);
+    Ok(italic as u32 | ((weight >= 0.4) as u32) << 1)
+}
+
+/// `-[UIFontDescriptor objectForKey:]`: the name, family, size, and traits
+/// (UIFontWeightTrait, UIFontSymbolicTrait).
+fn font_descriptor_value(emu: &mut Emu) -> Result<()> {
+    let (d, key) = (emu.arg(0), emu.arg(2));
+    let font = objc::bag_get(emu, d, "font").unwrap_or(0);
+    let key = foundation::nsstring(emu, key)?;
+    if font == 0 {
+        emu.ret(0);
+        return Ok(());
+    }
+    let v = match key.as_str() {
+        "UIFontDescriptorNameAttribute" | "NSFontNameAttribute" => emu.read_u64(font + 8)?,
+        "UIFontDescriptorFamilyAttribute" | "NSFontFamilyAttribute" => objc::send(emu, font, "familyName", &[])?,
+        "UIFontDescriptorSizeAttribute" | "NSFontSizeAttribute" => foundation::new_number_f64(emu, font_size(emu, font)?)?,
+        "UIFontDescriptorTraitsAttribute" | "NSCTFontTraitsAttribute" => {
+            let weight = f64::from_bits(emu.read_u64(font + 24)?);
+            let sym = font_symbolic_traits(emu, font)?;
+            let (wk, sk) = (foundation::new_nsstring(emu, "UIFontWeightTrait")?, foundation::new_nsstring(emu, "UIFontSymbolicTrait")?);
+            let (wv, sv) = (foundation::new_number_f64(emu, weight)?, foundation::new_number_i64(emu, sym as i64)?);
+            foundation::new_dict_of(emu, &[(wk, wv), (sk, sv)])?
+        }
+        _ => 0,
+    };
+    emu.ret(v);
+    Ok(())
 }
 
 fn font_metric(emu: &mut Emu, factor: f64) -> Result<()> {
@@ -1105,19 +1173,40 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (s, w) = (f(e, 0), f(e, 1));
         ret_font(e, ".SFUI-Regular", s, w)
     }),
+    // An app's registered face, by its PostScript, full or family name, at its
+    // weight; any other name, the system font under that name.
     ("UIFont", true, "fontWithName:size:", |e| {
         let name = foundation::nsstring(e, e.arg(2))?;
         let s = f(e, 0);
-        ret_font(e, &name, s, 0.0)
+        match crate::coretext::face_named(e, &name).filter(|&i| i != 0) {
+            Some(i) => {
+                let (ps, w) = crate::coretext::face_names(e, i).map(|n| (n.1, n.2)).unwrap_or((name, 0.0));
+                ret_font(e, &ps, s, w)
+            }
+            None => ret_font(e, &name, s, 0.0),
+        }
     }),
     ("UIFont", true, "preferredFontForTextStyle:", preferred_font),
+    // The registered families (the app's fonts, and the system's that pomme has).
     ("UIFont", true, "familyNames", |e| {
-        let a = foundation::new_array_of(e, &[])?;
+        let names: Vec<String> = crate::coretext::families(e);
+        let mut v = Vec::new();
+        for n in names {
+            v.push(foundation::new_nsstring(e, &n)?);
+        }
+        let a = foundation::new_array_of(e, &v)?;
         e.ret(a);
         Ok(())
     }),
+    // A registered family's fonts, by PostScript name.
     ("UIFont", true, "fontNamesForFamilyName:", |e| {
-        let a = foundation::new_array_of(e, &[])?;
+        let family = foundation::nsstring(e, e.arg(2))?;
+        let names = crate::coretext::family_members(e, &family);
+        let mut v = Vec::new();
+        for n in names {
+            v.push(foundation::new_nsstring(e, &n)?);
+        }
+        let a = foundation::new_array_of(e, &v)?;
         e.ret(a);
         Ok(())
     }),
@@ -1133,17 +1222,49 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIFont", false, "familyName", |e| {
-        let s = foundation::new_nsstring(e, ".SF UI")?;
+        let face = font_face(e, e.arg(0))?;
+        let family = match crate::coretext::face_names(e, face).filter(|_| face != 0) {
+            Some((family, _, _)) => family,
+            None => ".SF UI".to_string(),
+        };
+        let s = foundation::new_nsstring(e, &family)?;
         e.ret(s);
         Ok(())
     }),
     ("UIFont", false, "pointSize", |e| font_metric(e, 1.0)),
-    ("UIFont", false, "lineHeight", |e| font_metric(e, 1.193)),
-    ("UIFont", false, "ascender", |e| font_metric(e, 0.952)),
-    ("UIFont", false, "descender", |e| font_metric(e, -0.241)),
-    ("UIFont", false, "capHeight", |e| font_metric(e, 0.705)),
-    ("UIFont", false, "xHeight", |e| font_metric(e, 0.529)),
-    ("UIFont", false, "leading", |e| font_metric(e, 0.0)),
+    ("UIFont", false, "lineHeight", |e| font_metric_of(e, 1.193, |f| (f.ascender() - f.descender() + f.line_gap()) as f64)),
+    ("UIFont", false, "ascender", |e| font_metric_of(e, 0.952, |f| f.ascender() as f64)),
+    ("UIFont", false, "descender", |e| font_metric_of(e, -0.241, |f| f.descender() as f64)),
+    ("UIFont", false, "capHeight", |e| font_metric_of(e, 0.705, |f| f.capital_height().unwrap_or(0) as f64)),
+    ("UIFont", false, "xHeight", |e| font_metric_of(e, 0.529, |f| f.x_height().unwrap_or(0) as f64)),
+    ("UIFont", false, "leading", |e| font_metric_of(e, 0.0, |f| f.line_gap() as f64)),
+    // Its descriptor: what it is (name, family, size) and its traits.
+    ("UIFont", false, "fontDescriptor", |e| {
+        let cls = host_class(e, "UIFontDescriptor")?;
+        let d = objc::create_instance(e, cls, 0)?;
+        objc::bag_set(e, d, "font", e.arg(0));
+        e.ret(d);
+        Ok(())
+    }),
+    ("UIFontDescriptor", false, "objectForKey:", font_descriptor_value),
+    ("UIFontDescriptor", false, "symbolicTraits", |e| {
+        let font = objc::bag_get(e, e.arg(0), "font").unwrap_or(0);
+        let t = font_symbolic_traits(e, font)?;
+        e.ret(t as u64);
+        Ok(())
+    }),
+    ("UIFontDescriptor", false, "postscriptName", |e| {
+        let font = objc::bag_get(e, e.arg(0), "font").unwrap_or(0);
+        let n = if font == 0 { 0 } else { e.read_u64(font + 8)? };
+        e.ret(n);
+        Ok(())
+    }),
+    ("UIFontDescriptor", false, "pointSize", |e| {
+        let font = objc::bag_get(e, e.arg(0), "font").unwrap_or(0);
+        let s = if font == 0 { 0.0 } else { font_size(e, font)? };
+        ret_f64(e, s);
+        Ok(())
+    }),
     ("UIView", false, "safeAreaInsets", safe_area_insets),
     ("UIView", false, "safeAreaInsetsDidChange", noop),
     ("UIView", false, "init", view_init),
