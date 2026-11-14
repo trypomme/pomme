@@ -34,7 +34,7 @@ export default function ListScreen() {
         }}
         onMomentumScrollEnd={(e) => setOffset(e.nativeEvent.contentOffset.y)}
         renderItem={({ item, index }) => (
-          <Pressable onPress={() => setTapped(item)} style={[styles.row, index % 2 ? styles.odd : null]}>
+          <Pressable role="button" onPress={() => setTapped(item)} style={[styles.row, index % 2 ? styles.odd : null]}>
             <Text style={styles.label}>{item}</Text>
           </Pressable>
         )}

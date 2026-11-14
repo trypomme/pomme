@@ -34,7 +34,7 @@ function SwrStars() {
     <View style={styles.card}>
       <Text style={styles.cardTitle}>SWR</Text>
       <Text testID="swr-status" style={styles.cardText}>{describe(data, error)}</Text>
-      <Pressable testID="swr-refresh" onPress={() => mutate()} style={styles.refresh}>
+      <Pressable testID="swr-refresh" role="button" onPress={() => mutate()} style={styles.refresh}>
         <Text style={styles.refreshLabel}>{isValidating ? 'Refreshing…' : 'Refresh'}</Text>
       </Pressable>
     </View>
@@ -51,7 +51,7 @@ function QueryStars() {
       <Text style={styles.cardTitle}>TanStack Query</Text>
       <Text testID="query-status" style={styles.cardText}>{describe(data, error)}</Text>
       <View style={styles.row}>
-        <Pressable testID="query-refresh" onPress={() => refetch()} style={styles.refresh}>
+        <Pressable testID="query-refresh" role="button" onPress={() => refetch()} style={styles.refresh}>
           <Text style={styles.refreshLabel}>{isFetching ? 'Refreshing…' : 'Refresh'}</Text>
         </Pressable>
         <Link testID="query-details" href="/repo/TanStack/query" style={styles.refresh}>
@@ -167,6 +167,7 @@ export default function Home() {
       <Text>Hello from pomme 🍎</Text>
       <Pressable
         testID="tap-button"
+        role="button"
         onPress={() => setTaps((n) => n + 1)}
         style={({ pressed }) => [styles.button, pressed && styles.pressed]}
       >

@@ -120,13 +120,13 @@ export default function LockScreen() {
           </View>
           <View style={styles.pad}>
             {KEYS.map((k, i) => (
-              <Pressable key={i} onPress={() => press(k)} style={[styles.key, !k && styles.keyBlank]} disabled={!k}>
+              <Pressable key={i} role="button" aria-hidden={!k} aria-label={k === '⌫' ? 'Delete' : undefined} onPress={() => press(k)} style={[styles.key, !k && styles.keyBlank]} disabled={!k}>
                 <Text style={styles.keyLabel}>{k}</Text>
               </Pressable>
             ))}
           </View>
           {mode === 'locked' && biometricsOn && enrolled && (
-            <Pressable onPress={unlockWithBiometrics} style={styles.button}>
+            <Pressable role="button" onPress={unlockWithBiometrics} style={styles.button}>
               <Text style={styles.buttonLabel}>Unlock with {biometryName}</Text>
             </Pressable>
           )}
@@ -138,7 +138,7 @@ export default function LockScreen() {
             <Text style={styles.rowLabel}>Unlock with {biometryName}</Text>
             <Switch value={biometricsOn} onValueChange={toggleBiometrics} />
           </View>
-          <Pressable onPress={lock} style={styles.button}>
+          <Pressable role="button" onPress={lock} style={styles.button}>
             <Text style={styles.buttonLabel}>Lock</Text>
           </Pressable>
         </View>
