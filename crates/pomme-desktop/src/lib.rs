@@ -15,7 +15,11 @@
 //! closed with ⌘W / ⌘Q (Ctrl elsewhere). It runs wherever winit and wgpu
 //! do: macOS, Windows, Linux (X11 and Wayland); where windows can't be
 //! transparent the phone sits on a dark backdrop.
+//!
+//! The system's screen reader sees the app through the window
+//! (accessibility.rs): VoiceOver on a Mac reads its elements and activates them.
 
+mod accessibility;
 mod capture;
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), path = "menu_none.rs")]
 mod menu;
@@ -26,6 +30,7 @@ use pomme_hle::host::{Event, Frame, Host, Idle};
 use pomme_hle::keychain::Face;
 use pomme_hle::touch::{BEGAN, ENDED, Input, MOVED};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
@@ -117,6 +122,16 @@ enum ToWindow {
     Menu(Action),
     /// A Face ID prompt is waiting (true) or was answered (false).
     FaceId(bool),
+    /// The app's accessibility tree changed.
+    Tree(Vec<pomme_hle::accessibility::Node>),
+    /// The system's screen reader wants something (AccessKit).
+    ScreenReader(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for ToWindow {
+    fn from(e: accesskit_winit::Event) -> Self {
+        ToWindow::ScreenReader(e)
+    }
 }
 
 /// The latest frame from the emulator, waiting for the window.
@@ -143,11 +158,14 @@ pub struct DesktopHost {
     /// The phone's name, for capture files.
     device: &'static str,
     recording: Option<capture::Recording>,
+    /// A screen reader is listening on the window (AccessKit asked for the tree).
+    screen_reader: Arc<AtomicBool>,
+    /// Whether the emulator has heard so.
+    screen_reader_seen: bool,
 }
 
 impl Host for DesktopHost {
     fn idle(&mut self, now_ns: u64, next_ns: Option<u64>) -> Idle {
-        use std::sync::atomic::Ordering;
         let virt = Duration::from_nanos(now_ns);
         let base = *self.base.get_or_insert_with(|| Instant::now() - virt);
         loop {
@@ -155,6 +173,12 @@ impl Host for DesktopHost {
                 return Idle::Quit;
             }
             let wall_virt = Instant::now().saturating_duration_since(base);
+            // A screen reader came or went: look again (it wants the tree now).
+            let listening = self.screen_reader.load(Ordering::Relaxed);
+            if listening != self.screen_reader_seen {
+                self.screen_reader_seen = listening;
+                return Idle::Input { at_ns: wall_virt.max(virt).as_nanos() as u64, events: Vec::new() };
+            }
             let mut events: Vec<Event> = self.events.try_iter().collect();
             if !events.is_empty() {
                 // Input happens now: no earlier than the app's own clock.
@@ -228,6 +252,14 @@ impl Host for DesktopHost {
         }
     }
 
+    fn wants_accessibility(&mut self) -> bool {
+        self.screen_reader.load(Ordering::Relaxed)
+    }
+
+    fn accessibility(&mut self, tree: &[pomme_hle::accessibility::Node]) {
+        let _ = self.proxy.send_event(ToWindow::Tree(tree.to_vec()));
+    }
+
     fn frame(&mut self, f: Frame<'_>) {
         if let Some(s) = self.stats.as_mut() {
             s.frame(f.at_ns);
@@ -262,6 +294,10 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         shell: None,
         face_id: false,
         recording: false,
+        adapter: None,
+        screen_reader: Arc::new(AtomicBool::new(false)),
+        ax_nodes: Vec::new(),
+        ax_focus: None,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -299,6 +335,12 @@ struct App {
     recording: bool,
     /// The phone's body for the last (orientation, scale bits) a frame came in.
     shell: Option<((Orientation, u32), pomme_hle::render::Shell)>,
+    /// The window's accessibility, for the system's screen reader.
+    adapter: Option<accesskit_winit::Adapter>,
+    screen_reader: Arc<AtomicBool>,
+    /// The app's accessibility tree as last given, and the element the screen reader is on.
+    ax_nodes: Vec<pomme_hle::accessibility::Node>,
+    ax_focus: Option<u64>,
 }
 
 impl App {
@@ -360,6 +402,7 @@ impl App {
         self.phone = Some(Phone { pix, screen: rect, scale });
         if turned {
             self.size_window_to(self.phone.as_ref().unwrap());
+            self.update_accessibility();
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -412,6 +455,39 @@ impl App {
                 }
                 self.send(Event::Record(self.recording));
             }
+        }
+    }
+
+    /// Give the screen reader the tree, placed where the screen is in the window now.
+    fn update_accessibility(&mut self) {
+        let Some(phone) = self.phone.as_ref() else { return };
+        let Some((k, dx, dy)) = self.fit(phone) else { return };
+        let [sx, sy, ..] = phone.screen;
+        let place = accessibility::Place { x: (dx + sx * k) as f64, y: (dy + sy * k) as f64, k: (phone.scale * k) as f64 };
+        let (title, nodes, focus) = (&self.config.title, &self.ax_nodes, self.ax_focus);
+        if let Some(a) = self.adapter.as_mut() {
+            a.update_if_active(|| accessibility::update(title, nodes, place, focus));
+        }
+    }
+
+    fn screen_reader(&mut self, e: accesskit_winit::WindowEvent) {
+        use accesskit_winit::WindowEvent as W;
+        match e {
+            W::InitialTreeRequested => {
+                // The emulator reads the tree for it; until then, the window alone.
+                self.screen_reader.store(true, Ordering::Relaxed);
+                self.update_accessibility();
+            }
+            W::ActionRequested(req) => {
+                if let Some((id, action)) = accessibility::action(&req) {
+                    if action == pomme_hle::accessibility::Action::Focus {
+                        self.ax_focus = Some(id);
+                        self.update_accessibility();
+                    }
+                    self.send(Event::Accessibility { id, action });
+                }
+            }
+            W::AccessibilityDeactivated => self.screen_reader.store(false, Ordering::Relaxed),
         }
     }
 
@@ -560,7 +636,8 @@ impl ApplicationHandler<ToWindow> for App {
         menus.install();
         self.menus = Some(menus);
         // The phone is the window: no frame, see-through around it.
-        let attrs = Window::default_attributes().with_title(&self.config.title).with_decorations(false).with_transparent(true).with_resizable(false);
+        // Hidden until the screen reader's adapter is on it (AccessKit needs that).
+        let attrs = Window::default_attributes().with_title(&self.config.title).with_decorations(false).with_transparent(true).with_resizable(false).with_visible(false);
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -569,6 +646,8 @@ impl ApplicationHandler<ToWindow> for App {
                 return;
             }
         };
+        self.adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
+        window.set_visible(true);
         let scale = window.scale_factor() as f32;
         self.window = Some(window.clone());
         match present::Presenter::new(window.clone()) {
@@ -593,7 +672,7 @@ impl ApplicationHandler<ToWindow> for App {
         let (tx, rx) = channel();
         self.events = Some(tx);
         let stats = self.config.frame_stats.then(FrameStats::default);
-        let host = DesktopHost { events: rx, frame: self.frame.clone(), proxy: self.proxy.clone(), base: None, closed: self.closed.clone(), stats, device: self.config.device.name, recording: None };
+        let host = DesktopHost { events: rx, frame: self.frame.clone(), proxy: self.proxy.clone(), base: None, closed: self.closed.clone(), stats, device: self.config.device.name, recording: None, screen_reader: self.screen_reader.clone(), screen_reader_seen: false };
         let app = self.app.take().unwrap();
         let proxy = self.proxy.clone();
         std::thread::Builder::new()
@@ -616,6 +695,11 @@ impl ApplicationHandler<ToWindow> for App {
                 }
             }
             ToWindow::Frame => self.take_frame(),
+            ToWindow::Tree(nodes) => {
+                self.ax_nodes = nodes;
+                self.update_accessibility();
+            }
+            ToWindow::ScreenReader(e) => self.screen_reader(e.window_event),
             ToWindow::Ended => {
                 self.ended = true;
                 if let Some(w) = &self.window {
@@ -626,6 +710,9 @@ impl ApplicationHandler<ToWindow> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if let (Some(a), Some(w)) = (self.adapter.as_mut(), self.window.as_ref()) {
+            a.process_event(w, &event);
+        }
         match event {
             WindowEvent::CloseRequested => self.close(event_loop),
             // Where there's no menu bar, the menus pop up from the bezel.
@@ -645,6 +732,8 @@ impl ApplicationHandler<ToWindow> for App {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
+                // The screen moved in the window: so did its elements.
+                self.update_accessibility();
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {

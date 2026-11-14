@@ -86,6 +86,21 @@ Debugging:
   snapshot, so one can't be taken while the app holds an open connection or pages in a live web
   engine. Part of a running app's state is on pomme's own stack (host functions that called into
   the app), so a snapshot restores only under the same frames: in a later turn of the same drive.
+- Screen readers: the app's UIAccessibility tree reaches the host's assistive technology, so
+  someone using VoiceOver, NVDA, Narrator or Orca can use an iOS app running in pomme. A host
+  that wants it (`Host::wants_accessibility`) gets the screen as VoiceOver presents it
+  (`accessibility::tree`) whenever it changes: windows, elements in reading order (a
+  container's top to bottom, then left to right, unless it gives `accessibilityElements`),
+  containers with an `accessibilityContainerType`, with roles from traits, labels, values,
+  hints and frames; a modal view hides its siblings, and the navigation bar gives its back
+  button and title. What the screen reader does comes back as `Event::Accessibility`: activate
+  (`accessibilityActivate`, else a tap at the activation point), increment and decrement
+  (`UISlider` moves a tenth), focus. In the browser (`web/accessibility.js`) the tree is an
+  invisible layer of ARIA elements over the screen at each element's frame (button, link,
+  switch, slider, textbox, heading, img, text); a screen reader's click or Enter/Space
+  activates, arrows adjust. In the desktop window it's published through AccessKit
+  (NSAccessibility, UI Automation, AT-SPI) once a screen reader connects; its default action
+  activates. `tests/accessibility.rs` checks the tree and actions a host gets.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the
