@@ -55,7 +55,7 @@ pub struct Props {
     pub activation_point: Option<[f64; 2]>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct State {
     pub props: HashMap<u64, Props>,
 }

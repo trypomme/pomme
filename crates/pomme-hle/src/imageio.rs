@@ -158,7 +158,7 @@ fn exif_orientation(o: image::metadata::Orientation) -> u8 {
 
 // ---- CGImageSource ----
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Source {
     bytes: Vec<u8>,
     /// Incremental sources: whether the last bytes have arrived.
@@ -167,6 +167,7 @@ struct Source {
 }
 
 /// A CGImageDestination: where the file goes, its type, and what's been added.
+#[derive(Clone)]
 struct Destination {
     /// A CFMutableData to append to, or a file URL.
     data: u64,
@@ -177,7 +178,7 @@ struct Destination {
     quality: Option<f64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     sources: HashMap<u64, Source>,
     destinations: HashMap<u64, Destination>,

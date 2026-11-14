@@ -11,7 +11,7 @@ use crate::foundation;
 use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result, Stop};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     queue: u64,
     observers: Vec<u64>,

@@ -91,7 +91,7 @@ pub struct Input {
     pub y: f64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     touches: HashMap<u64, Touch>,
     recognizers: HashMap<u64, Recognizer>,

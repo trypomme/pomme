@@ -81,9 +81,9 @@ pub trait Host {
     fn recording_stopped(&mut self, _at_ns: u64) {}
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
-    pub host: Option<Box<dyn Host>>,
+    pub host: crate::External<Box<dyn Host>>,
     /// Pixels per point for frames.
     pub scale: f32,
     /// Virtual time of the last frame (ns).
@@ -133,7 +133,7 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     }
     let Some(mut host) = emu.live.host.take() else { return Ok(false) };
     let r = host.idle(now, next_ns);
-    emu.live.host = Some(host);
+    *emu.live.host = Some(host);
     match r {
         Idle::Advance => Ok(false),
         Idle::Quit => Err(Stop::Exit(0)),
@@ -216,7 +216,7 @@ fn give_frame(emu: &mut Emu, pix: &tiny_skia::Pixmap, give: impl FnOnce(&mut dyn
     let at_ns = crate::threads::now_ns(emu);
     if let Some(mut host) = emu.live.host.take() {
         give(host.as_mut(), Frame { rgba: pix.data(), width: pix.width(), height: pix.height(), orientation, at_ns });
-        emu.live.host = Some(host);
+        *emu.live.host = Some(host);
     }
 }
 

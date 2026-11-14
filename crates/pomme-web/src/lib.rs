@@ -220,9 +220,9 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, 
         emu.system.os = ios.parse()?;
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
-    emu.net.client = Some(Box::new(XhrNet));
-    emu.webkit.engine = Some(Box::new(BrowserEngine::new(web_views)));
-    emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
+    *emu.net.client = Some(Box::new(XhrNet));
+    *emu.webkit.engine = Some(Box::new(BrowserEngine::new(web_views)));
+    *emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0 }));
     pomme_log("running");
     let r = emu.run_main();
     let steps = emu.cpu.steps;

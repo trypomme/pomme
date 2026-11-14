@@ -23,7 +23,7 @@ pub fn set_boot_time(emu: &mut Emu, secs: u64) {
 }
 pub const TICKS_PER_SEC: u64 = pomme_cpu::TICKS_PER_SEC;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     errno: u64,
     /// dispatch_data objects → (bytes in guest memory, length).
@@ -91,7 +91,7 @@ pub struct State {
 
 /// A dispatch queue the app made: work waits in order and runs on threads,
 /// `width` at a time (1: serial); a barrier runs alone.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct DQueue {
     width: usize,
     /// Its work runs on the main queue (its target is the main queue).
@@ -112,7 +112,7 @@ struct Work {
     turn: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Group {
     count: u64,
     /// (queue, function, context) to submit when the count reaches zero.
@@ -1297,7 +1297,7 @@ fn submit_work(emu: &mut Emu, queue: u64, work: Work) -> Result<()> {
         return pump(emu, queue);
     }
     if queue != 0 && queue == emu.sys.global_queue {
-        let tid = crate::threads::spawn(emu, f, ctx, "dispatch")?;
+        let tid = crate::threads::dispatch_worker(emu, f, ctx)?;
         emu.sys.current_queues.insert(tid, vec![queue]);
         if let Some(g) = group {
             emu.sys.groups.entry(g).or_default().count += 1;
@@ -1328,7 +1328,7 @@ fn pump(emu: &mut Emu, queue: u64) -> Result<()> {
             emu.p.memory.write_u32(next.turn, 1)?;
             continue;
         }
-        let tid = crate::threads::spawn(emu, next.f, next.ctx, "dispatch")?;
+        let tid = crate::threads::dispatch_worker(emu, next.f, next.ctx)?;
         emu.sys.current_queues.insert(tid, vec![queue]);
         emu.sys.queue_threads.insert(tid, (queue, next.barrier));
         if let Some(g) = next.group {

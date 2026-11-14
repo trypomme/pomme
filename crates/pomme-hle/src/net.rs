@@ -232,9 +232,9 @@ struct Task {
     result: Option<std::result::Result<Response, String>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
-    pub client: Option<Box<dyn Net>>,
+    pub client: crate::External<Box<dyn Net>>,
     /// Print each request and how it went (`--log-requests`).
     pub log_requests: bool,
     requests: HashMap<u64, UrlRequest>,

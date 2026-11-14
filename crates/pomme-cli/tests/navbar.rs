@@ -28,7 +28,7 @@ fn bar_follows_the_screens() {
     let Some(mut emu) = common::boot("navbar") else { return };
     emu.device = pomme_hle::device::find("iphone-17-pro").unwrap();
     let frames: Frames = Default::default();
-    emu.live.host = Some(Box::new(Recording(frames.clone())));
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
     common::views(&mut emu, 3.0);
     let frames = frames.lock().unwrap();

@@ -97,7 +97,7 @@ struct Monitor {
     prohibited: Vec<u64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub path: Path,
     /// Scripted changes: (virtual ns, the path then).

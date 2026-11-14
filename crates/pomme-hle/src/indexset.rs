@@ -127,7 +127,7 @@ impl Indexes {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     sets: HashMap<u64, Indexes>,
 }

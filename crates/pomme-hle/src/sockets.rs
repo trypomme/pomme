@@ -81,9 +81,14 @@ struct Sock {
     options: HashMap<(u64, u64), Vec<u8>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     socks: HashMap<u64, Sock>,
+}
+
+/// How many sockets are TCP connections the host holds (a snapshot can't hold them).
+pub(crate) fn host_connections(emu: &Emu) -> usize {
+    emu.sockets.socks.values().filter(|s| matches!(s.kind, Kind::Tcp(_))).count()
 }
 
 /// A socket call waiting for the network (see [`crate::threads::Wait::Socket`]).

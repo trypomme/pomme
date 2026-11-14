@@ -15,7 +15,7 @@ struct Fire {
     user_info: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     timers: HashMap<u64, Fire>,
 }

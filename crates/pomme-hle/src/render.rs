@@ -156,7 +156,7 @@ impl Default for GState {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Ctx {
     ops: Vec<Op>,
     gs: GState,
@@ -200,7 +200,7 @@ impl ImageLook {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub images: HashMap<u64, Image>,
     contexts: HashMap<u64, Ctx>,

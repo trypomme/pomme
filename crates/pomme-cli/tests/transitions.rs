@@ -80,7 +80,7 @@ fn top_edge(f: &(u64, u32, Vec<u8>), x: u32, rgb: [u8; 3]) -> Option<u32> {
 fn transitions_match_ios() {
     let Some(mut emu) = common::boot("transitions") else { return };
     let frames: Frames = Default::default();
-    emu.live.host = Some(Box::new(Recording(frames.clone())));
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
     let v = common::views(&mut emu, 20.5);
     let log = v.lines().find(|l| l.contains(" tag 1 ")).map(|l| l.trim().to_string()).unwrap_or_default();

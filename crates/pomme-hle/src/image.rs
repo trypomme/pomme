@@ -24,7 +24,7 @@ struct ImageView {
     highlighted: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     image_views: HashMap<u64, ImageView>,
     /// UIGraphicsImageRendererFormat → scale.

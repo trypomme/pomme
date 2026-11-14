@@ -12,6 +12,7 @@ use std::collections::HashMap;
 /// CFCharacterSetPredefinedSet's whitespace and newlines.
 const WHITESPACE_AND_NEWLINE: u64 = 3;
 
+#[derive(Clone)]
 pub struct Scanner {
     text: Vec<u16>,
     string: u64,
@@ -21,7 +22,7 @@ pub struct Scanner {
     case_sensitive: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     scanners: HashMap<u64, Scanner>,
 }

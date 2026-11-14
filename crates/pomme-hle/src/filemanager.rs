@@ -306,7 +306,7 @@ fn set_resource(emu: &mut Emu, url: u64, key: u64, value: u64) -> Result<()> {
 }
 
 /// Flags pomme keeps about files that aren't in their metadata.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Flags {
     excluded_from_backup: std::collections::HashSet<String>,
 }

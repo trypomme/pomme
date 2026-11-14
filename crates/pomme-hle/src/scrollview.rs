@@ -61,7 +61,7 @@ struct Glide {
     generation: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pan: Option<Pan>,
     glide: Option<Glide>,

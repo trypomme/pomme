@@ -46,7 +46,7 @@ struct Segment {
     label: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     segments: HashMap<u64, Vec<Segment>>,
 }

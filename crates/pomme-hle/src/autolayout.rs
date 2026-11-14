@@ -126,7 +126,7 @@ const REQUIRED: f32 = 1000.0;
 /// UIKit's standard spacing (`constraintEqualToSystemSpacingAfterAnchor:multiplier:`).
 const SYSTEM_SPACING: f64 = 8.0;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct State {
     constraints: HashMap<u64, Constraint>,
     /// Active constraints, in activation order.

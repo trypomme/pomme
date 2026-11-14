@@ -36,6 +36,7 @@ struct Handler {
     uses_context: bool,
 }
 
+#[derive(Clone)]
 struct Source {
     kind: Kind,
     handle: u64,
@@ -61,7 +62,7 @@ struct Source {
     generation: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     sources: HashMap<u64, Source>,
     /// dispatch_set_context values, by object.

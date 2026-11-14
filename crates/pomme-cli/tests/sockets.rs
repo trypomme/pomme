@@ -83,7 +83,7 @@ fn checks(emu: &mut pomme_hle::Emu) -> String {
 #[test]
 fn sockets_with_a_network() {
     let Some(mut emu) = common::boot("sockets") else { return };
-    emu.net.client = Some(Box::new(EchoNet { sockets: HostSockets::default(), server: echo_server() }));
+    *emu.net.client = Some(Box::new(EchoNet { sockets: HostSockets::default(), server: echo_server() }));
     let line = checks(&mut emu);
     let expected = "inet=1 numericName=1 loopback=1 echo=1 blockingRead=1 selectAndPeer=1 dnssd=1 cfstream=1 socketpair=1";
     assert!(line.ends_with(&format!("\"{expected}\"")), "{line}");
@@ -92,7 +92,7 @@ fn sockets_with_a_network() {
 #[test]
 fn sockets_offline() {
     let Some(mut emu) = common::boot("sockets") else { return };
-    emu.net.client = None;
+    *emu.net.client = None;
     let line = checks(&mut emu);
     let expected = "inet=1 numericName=1 loopback=1 offline=1 dnssdOffline=1 cfstreamOffline=1 socketpair=1";
     assert!(line.ends_with(&format!("\"{expected}\"")), "{line}");

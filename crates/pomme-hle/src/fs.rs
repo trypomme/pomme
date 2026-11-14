@@ -20,6 +20,7 @@ const EACCES: u64 = 13;
 const EEXIST: u64 = 17;
 const ENOTDIR: u64 = 20;
 
+#[derive(Clone)]
 pub struct OpenFile {
     data: Vec<u8>,
     pos: usize,
@@ -28,7 +29,7 @@ pub struct OpenFile {
     append: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     files: HashMap<u64, OpenFile>,
     next_fd: u64,
@@ -52,7 +53,7 @@ pub struct State {
     kqueues: HashMap<u64, Vec<KEvent>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Pipe {
     data: std::collections::VecDeque<u8>,
     readers: usize,
@@ -108,7 +109,7 @@ fn device(path: &str) -> Option<Device> {
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Container {
     files: HashMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
@@ -1428,6 +1429,7 @@ fn fileno(emu: &mut Emu) -> Result<()> {
 
 /// An open directory stream: its entries (`.` and `..` first), where
 /// readdir is, its descriptor, and the `struct dirent` readdir fills.
+#[derive(Clone)]
 pub struct DirStream {
     entries: Vec<(String, bool)>,
     pos: usize,

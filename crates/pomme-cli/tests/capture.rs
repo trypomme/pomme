@@ -64,7 +64,7 @@ fn save_and_record_the_screen() {
         (400_000_000, Event::Record(true)),
         (1_400_000_000, Event::Record(false)),
     ];
-    emu.live.host = Some(Box::new(Capturing {
+    *emu.live.host = Some(Box::new(Capturing {
         script,
         seen: seen.clone(),
     }));

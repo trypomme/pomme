@@ -73,6 +73,7 @@ impl Lcg48 {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct State {
     rand: i64,
     random: Random,

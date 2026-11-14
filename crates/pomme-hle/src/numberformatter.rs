@@ -19,7 +19,7 @@ struct Formatter {
     lenient: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     formatters: HashMap<u64, Formatter>,
 }

@@ -36,7 +36,7 @@ pub struct View {
     pub needs_display: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Views {
     pub views: HashMap<u64, View>,
     /// UIViewController → its view, and root view controllers of windows.

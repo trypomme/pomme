@@ -54,7 +54,7 @@ struct Item {
     large_title_mode: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     parent: HashMap<u64, u64>,
     pub(crate) children: HashMap<u64, Vec<u64>>,

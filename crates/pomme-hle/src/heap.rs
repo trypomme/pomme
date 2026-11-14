@@ -12,7 +12,7 @@ pub const HEAP_BASE: u64 = 0x4_0000_0000;
 const CHUNK: u64 = 64 << 20;
 const HEADER: u64 = 16;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Heap {
     /// Bump pointer and end of the current chunk.
     next: u64,

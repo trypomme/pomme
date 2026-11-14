@@ -39,6 +39,7 @@ pub(crate) enum HostFrame {
     Thunk(usize),
 }
 
+#[derive(Clone)]
 pub struct Profiler {
     /// Instructions between samples.
     pub every: u64,

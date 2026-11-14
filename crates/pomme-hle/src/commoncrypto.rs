@@ -17,6 +17,7 @@ enum Algorithm {
     Sha512,
 }
 
+#[derive(Clone)]
 enum Hasher {
     Md5(md5::Md5),
     Sha1(sha1::Sha1),
@@ -61,7 +62,7 @@ impl Hasher {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     contexts: HashMap<u64, Hasher>,
 }

@@ -105,3 +105,86 @@ fn swiftui_identifiers_button_toggle_field() {
         Ok(())
     });
 }
+
+// ---- Snapshots: boot once, start each case from the same point ----
+
+/// Type a name into hello-expo's keyboard screen; the screen and when.
+fn greet(app: &mut App, name: &str) -> Result<(Vec<u8>, f64), Error> {
+    app.tap(&id("name"))?;
+    app.type_text(name)?;
+    app.wait_for(&text(&format!("Hello, {name}!")))?;
+    Ok((app.screenshot_png(1.0)?, app.now()))
+}
+
+/// React Native: a checkpoint once the screen is up; each case starts from
+/// it, and the same steps from it give the same screen at the same time.
+#[test]
+fn react_native_checkpoint_and_restore() {
+    let Some(mut emu) = boot(EXPO, &[]) else { return };
+    emu.ui.launch_url = Some("pommehello:///keyboard".into());
+    drive(&mut emu, |app| {
+        app.wait_for(&text("Type your name below"))?;
+        let start = app.checkpoint()?;
+        let first = greet(app, "Ada")?;
+
+        // The same steps again from the checkpoint: the same screen, at the same
+        // virtual time. (Looking at the screen runs app code too, which takes
+        // virtual time, so nothing else happens in between.)
+        let wall = std::time::Instant::now();
+        app.restore(&start)?;
+        eprintln!("restored in {:?}", wall.elapsed());
+        assert_eq!(app.now(), start.at());
+        let again = greet(app, "Ada")?;
+        assert_eq!(again.1, first.1, "the same steps should take the same virtual time");
+        assert!(again.0 == first.0, "the same steps should draw the same screen");
+
+        // Back as it was: no name, no keyboard; then another case.
+        app.restore(&start)?;
+        app.wait_for(&text("Type your name below"))?;
+        assert_eq!(app.find(&id("name"))?.expect("the field").value, None);
+        assert!(app.find(&text("Hello, Ada!"))?.is_none());
+        app.restore(&start)?;
+        greet(app, "Grace")?;
+        Ok(())
+    });
+}
+
+/// Flutter, whose screen is drawn with Metal (textures on the GPU are
+/// copied into the snapshot): the counter goes back, and so do the pixels.
+#[test]
+fn flutter_checkpoint_and_restore() {
+    let Some(mut emu) = boot_flutter() else { return };
+    drive(&mut emu, |app| {
+        app.wait_for(&text("Tapped 0 times"))?;
+        app.settle()?;
+        let start = app.checkpoint()?;
+        let before = app.screenshot_png(1.0)?;
+        app.tap(&id("square"))?;
+        app.tap(&id("square"))?;
+        app.wait_for(&text("Tapped 2 times"))?;
+        app.restore(&start)?;
+        assert!(app.screenshot_png(1.0)? == before, "the restored screen should be the checkpoint's");
+        assert_eq!(app.find(&id("taps"))?.expect("the counter").label.as_deref(), Some("Tapped 0 times"));
+        app.tap(&id("square"))?;
+        app.wait_for(&text("Tapped 1 time"))?;
+        Ok(())
+    });
+}
+
+/// SwiftUI: state (@State) goes back with the rest of memory.
+#[test]
+fn swiftui_checkpoint_and_restore() {
+    let Some(mut emu) = common::boot("swiftuie2e") else { return };
+    drive(&mut emu, |app| {
+        app.wait_for(&text("Count: 0"))?;
+        let start = app.checkpoint()?;
+        app.tap(&id("add"))?;
+        app.tap(&id("add"))?;
+        app.wait_for(&text("Count: 2"))?;
+        app.restore(&start)?;
+        app.wait_for(&text("Count: 0"))?;
+        app.tap(&id("add"))?;
+        app.wait_for(&text("Count: 1"))?;
+        Ok(())
+    });
+}

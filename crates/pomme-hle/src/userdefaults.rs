@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// The global domain's name.
 const GLOBAL: &str = "NSGlobalDomain";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// Persistent domains by name: mutable CFDictionaries.
     domains: HashMap<String, u64>,

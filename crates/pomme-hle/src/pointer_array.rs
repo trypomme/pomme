@@ -8,7 +8,7 @@ use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// Array → (entries, strong).
     arrays: HashMap<u64, (Vec<u64>, bool)>,

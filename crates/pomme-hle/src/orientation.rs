@@ -169,7 +169,7 @@ pub fn schedule_script(emu: &mut Emu) -> Result<()> {
 }
 
 /// The state of a turn in progress: its coordinator's blocks.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Transition {
     coordinator: u64,
     alongside: Vec<u64>,

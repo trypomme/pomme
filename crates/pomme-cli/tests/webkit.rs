@@ -41,7 +41,7 @@ fn youtube_player_helper() {
         })
         .on_eval("player.getDuration();", |_, _| Ok(Some(json!(213.0))))
         .on_eval("player.getPlayerState();", |_, _| Ok(Some(json!(1))));
-    emu.webkit.engine = Some(Box::new(page.clone()));
+    *emu.webkit.engine = Some(Box::new(page.clone()));
     let views = common::views(&mut emu, 3.0);
     assert_eq!(events(&views), ["loading", "ready", "duration 213", "state buffering", "state playing", "asked: playing"], "{views}");
 
@@ -79,7 +79,7 @@ fn without_an_engine() {
 fn host_web_view() {
     let Some(mut emu) = common::boot("webview") else { return };
     let engine = pomme_webview::WebViewEngine::start(std::path::Path::new(env!("CARGO_BIN_EXE_pomme-webview"))).expect("start the helper");
-    emu.webkit.engine = Some(Box::new(engine));
+    *emu.webkit.engine = Some(Box::new(engine));
     // A tap on the page's button, then a drag up the page.
     pomme_hle::touch::tap(&mut emu.touch.script, 2_000_000_000, 195.0, 200.0);
     pomme_hle::touch::swipe(&mut emu.touch.script, 3_000_000_000, (195.0, 280.0), (195.0, 130.0), 300_000_000);
@@ -117,9 +117,9 @@ fn youtube_player_helper_online() {
         return;
     }
     let Some(mut emu) = common::boot("ytplayer") else { return };
-    emu.net.client = None;
+    *emu.net.client = None;
     let engine = pomme_webview::WebViewEngine::start(std::path::Path::new(env!("CARGO_BIN_EXE_pomme-webview"))).expect("start the helper");
-    emu.webkit.engine = Some(Box::new(engine));
+    *emu.webkit.engine = Some(Box::new(engine));
     let views = common::views(&mut emu, 15.0);
     let lines = events(&views);
     for want in ["ready", "duration 1344", "state playing", "asked: playing"] {

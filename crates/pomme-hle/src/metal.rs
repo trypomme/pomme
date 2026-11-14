@@ -172,7 +172,7 @@ pub enum Cmd {
     TextureToTexture { src: u64, src_origin: [u64; 2], size: [u64; 2], dst: u64, dst_origin: [u64; 2] },
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub objects: HashMap<u64, Obj>,
     /// CAMetalLayer → its settings.

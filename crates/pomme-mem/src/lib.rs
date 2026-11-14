@@ -38,7 +38,7 @@ pub fn page_align_up(x: u64) -> u64 {
     (x + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Region {
     pub base: u64,
     pub data: Vec<u8>,
@@ -85,6 +85,15 @@ pub struct Memory {
     generation: u32,
     /// Bumped whenever code the CPU may have cached is written (see [`Memory::mark_code`]).
     code_generation: u64,
+}
+
+/// A copy of the address space (a snapshot's): the regions and their
+/// contents, with the same generations, so code the CPU cached for one is
+/// valid for the other; the TLB starts empty.
+impl Clone for Memory {
+    fn clone(&self) -> Self {
+        Memory { regions: self.regions.clone(), ..Memory { generation: self.generation, code_generation: self.code_generation, ..Default::default() } }
+    }
 }
 
 impl Default for Memory {

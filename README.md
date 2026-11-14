@@ -77,6 +77,15 @@ Debugging:
   Flutter's `Semantics(identifier:)` all work: Flutter builds its semantics tree once
   something asks its view for elements, as on iOS. `tests/e2e.rs` drives hello-expo,
   hello-flutter and a SwiftUI form. `pomme run … --elements` prints what accessibility sees.
+- Snapshots: `emu.snapshot()` saves the whole phone (memory, CPU, threads, every system
+  library's state, GPU textures) and `emu.restore(&s)` puts it back exactly; in a test,
+  `app.checkpoint()` and `app.restore(&checkpoint)`. Boot once, then start each case from the
+  same point: restoring hello-expo takes ~0.15 s against ~4 s to boot it, hello-flutter
+  ~0.04 s against ~1.4 s, and the same steps from a checkpoint give the same screen at the same
+  virtual time. What's outside the phone (the window, the network, a web engine) isn't in a
+  snapshot, so one can't be taken while the app holds an open connection or pages in a live web
+  engine. Part of a running app's state is on pomme's own stack (host functions that called into
+  the app), so a snapshot restores only under the same frames: in a later turn of the same drive.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the

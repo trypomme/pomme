@@ -113,7 +113,7 @@ fn utc_name(emu: &mut Emu) -> Result<u64> {
     Ok(emu.time.utc_name)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     utc_name: u64,
     /// The `struct tm` that `gmtime` and `localtime` return.

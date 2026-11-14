@@ -93,6 +93,7 @@ enum Run {
     Done(u64),
 }
 
+#[derive(Clone)]
 pub struct Thread {
     /// Saved registers while another thread runs (the running thread's are in `emu.cpu`).
     cpu: Cpu,
@@ -109,6 +110,8 @@ pub struct Thread {
     stack_size: u64,
     /// `thread_suspend` count: it isn't scheduled while this is above zero.
     suspended: u32,
+    /// One of dispatch's worker threads: when its work is done it waits for more.
+    worker: bool,
 }
 
 /// A pthread_attr_t's stack: the caller's own (base, size), or the size to make.
@@ -118,7 +121,7 @@ struct Attr {
     size: Option<u64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Port {
     queue: VecDeque<Vec<u8>>,
     /// The port sets this port belongs to (a port can be in several, as on XNU:
@@ -129,9 +132,11 @@ struct Port {
     timer: Option<u64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub threads: Vec<Thread>,
+    /// Dispatch workers whose work is done, waiting for more.
+    idle_workers: Vec<usize>,
     pub current: usize,
     ports: BTreeMap<u32, Port>,
     next_port: u32,
@@ -160,6 +165,7 @@ pub(crate) fn init(emu: &mut Emu) {
         stack_top: crate::STACK_TOP,
         stack_size: crate::STACK_SIZE,
         suspended: 0,
+        worker: false,
     });
     emu.th.handles.insert(MAIN_THREAD, 0);
     emu.th.next_port = 0x1003;
@@ -212,6 +218,31 @@ pub fn spawn(emu: &mut Emu, pc: u64, arg: u64, name: &str) -> Result<usize> {
     spawn_with(emu, pc, arg, name, Attr::default())
 }
 
+/// A dispatch worker thread to run `pc(arg)`: one whose last work is done,
+/// as libdispatch keeps its workers (their stacks, TLS and thread-specific
+/// data with them), else a new one.
+pub(crate) fn dispatch_worker(emu: &mut Emu, pc: u64, arg: u64) -> Result<usize> {
+    let Some(tid) = emu.th.idle_workers.pop() else {
+        let tid = spawn(emu, pc, arg, "dispatch")?;
+        emu.th.threads[tid].worker = true;
+        return Ok(tid);
+    };
+    let t = &mut emu.th.threads[tid];
+    let tls = t.cpu.tpidrro_el0;
+    let mut cpu = Cpu::new();
+    cpu.pc = pc;
+    cpu.x[0] = arg;
+    cpu.x[30] = HOST_RETURN;
+    cpu.sp = t.stack_top;
+    cpu.tpidrro_el0 = tls;
+    t.cpu = cpu;
+    t.run = Run::Runnable;
+    if emu.trace {
+        println!("{:>10} thread {tid} takes new work at {}", emu.cpu.steps, emu.symbolize(pc));
+    }
+    Ok(tid)
+}
+
 /// `spawn`, on the stack an attribute describes.
 fn spawn_with(emu: &mut Emu, pc: u64, arg: u64, name: &str, attr: Attr) -> Result<usize> {
     let (stack, size) = match attr.stack {
@@ -242,6 +273,7 @@ fn spawn_with(emu: &mut Emu, pc: u64, arg: u64, name: &str, attr: Attr) -> Resul
         stack_top,
         stack_size: stack_top - stack,
         suspended: 0,
+        worker: false,
     });
     emu.th.handles.insert(handle, tid);
     if emu.trace {
@@ -266,7 +298,11 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
                 if emu.trace {
                     println!("{:>10} thread {tid} finished", emu.cpu.steps);
                 }
-                break crate::libsystem::thread_finished(emu, tid);
+                let r = crate::libsystem::thread_finished(emu, tid);
+                if emu.th.threads[tid].worker {
+                    emu.th.idle_workers.push(tid);
+                }
+                break r;
             }
             Exit::StepLimit if emu.cpu.steps >= emu.max_steps => break Err(Stop::Cpu { exit: Exit::StepLimit, pc: emu.cpu.pc }),
             Exit::StepLimit => break Ok(()), // preempted; still runnable
@@ -513,11 +549,20 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
         emu.th.threads[me].run = Run::Blocked(wait);
         return Err(Stop::Blocked);
     }
-    // Wait in place.
+    // Wait in place: this host frame stays on the stack until the wait completes.
     emu.th.threads[me].run = Run::Pinned;
-    let result = loop {
-        if let Some(r) = try_complete(emu, &wait)? {
-            break Ok(r);
+    let frame = emu.enter_frame();
+    let result = wait_in_place(emu, me, &wait);
+    emu.exit_frame(frame);
+    emu.th.threads[me].run = Run::Runnable;
+    result
+}
+
+/// Run the other threads, and let time pass, until `wait` completes.
+fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
+    loop {
+        if let Some(r) = try_complete(emu, wait)? {
+            return Ok(r);
         }
         if schedule_round(emu)? {
             // The main thread waiting while others work: time keeps up (live only),
@@ -530,7 +575,7 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
             continue;
         }
         // Waiting on the network: wait for it in real time.
-        let own = if let Wait::Socket(p) = &wait { Some(p.clone()) } else { None };
+        let own = if let Wait::Socket(p) = wait { Some(p.clone()) } else { None };
         let next = next_deadline(emu, wait.deadline());
         if crate::sockets::network_idle(emu, own.as_ref(), next)? {
             continue;
@@ -559,11 +604,9 @@ pub fn block(emu: &mut Emu, wait: Wait) -> Result<u64> {
             continue;
         }
         if !advance_time(emu, wait.deadline())? {
-            break Err(Stop::Idle(describe(emu, me, &wait)));
+            return Err(Stop::Idle(describe(emu, me, wait)));
         }
-    };
-    emu.th.threads[me].run = Run::Runnable;
-    result
+    }
 }
 
 /// Every other thread: what it waits on and where (a few frames of its fp chain).

@@ -224,7 +224,7 @@ struct Block {
     off: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// Layer → its animations, in the order they were added.
     pub layers: BTreeMap<u64, Vec<Anim>>,

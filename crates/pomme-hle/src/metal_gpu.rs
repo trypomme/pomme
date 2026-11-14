@@ -114,6 +114,54 @@ impl Gpu {
     }
 }
 
+/// A snapshot's GPU (see `Emu::snapshot`): the same device, with a copy of
+/// each texture, whose contents are the app's (images it uploaded, what it
+/// drew). Shader modules, pipelines and samplers never change, so they're
+/// shared. Multisampled and depth/stencil textures are recreated empty:
+/// they hold only what a render pass draws and resolves within itself, and
+/// wgpu can't copy them.
+impl Clone for Gpu {
+    fn clone(&self) -> Self {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("snapshot") });
+        let textures = self
+            .textures
+            .iter()
+            .map(|(&id, t)| {
+                let size = t.texture.size();
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size,
+                    mip_level_count: t.texture.mip_level_count(),
+                    sample_count: t.texture.sample_count(),
+                    dimension: t.texture.dimension(),
+                    format: t.format,
+                    usage: t.texture.usage(),
+                    view_formats: &[],
+                });
+                if t.texture.sample_count() == 1 && !t.format.is_depth_stencil_format() {
+                    encoder.copy_texture_to_texture(t.texture.as_image_copy(), texture.as_image_copy(), size);
+                }
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (id, Tex { texture, view, format: t.format })
+            })
+            .collect();
+        self.queue.submit([encoder.finish()]);
+        Gpu {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            adapter_name: self.adapter_name.clone(),
+            textures,
+            modules: self.modules.clone(),
+            pipelines: self.pipelines.clone(),
+            samplers: self.samplers.clone(),
+            blank: self.blank.clone(),
+            passes: self.passes,
+            reported: self.reported.clone(),
+            errors: self.errors.clone(),
+        }
+    }
+}
+
 /// The GPU, started on first use.
 fn gpu(emu: &mut Emu) -> R<Gpu> {
     if let Some(g) = emu.metal.gpu.take() {

@@ -28,7 +28,7 @@ enum Dynamic {
     Provider(u64),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub dark: bool,
     /// Scripted changes (`--appearance dark@3`): (virtual ns, dark).

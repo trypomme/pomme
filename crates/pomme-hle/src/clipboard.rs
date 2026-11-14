@@ -23,6 +23,15 @@ use std::collections::HashMap;
 pub trait Backend {
     fn read(&mut self) -> Option<String>;
     fn write(&mut self, text: Option<&str>);
+    /// For a snapshot: a clipboard of pomme's own is copied (it's the
+    /// phone's); one that's really the host's is the same clipboard.
+    fn duplicate(&self) -> Box<dyn Backend>;
+}
+
+impl Clone for Box<dyn Backend> {
+    fn clone(&self) -> Self {
+        self.duplicate()
+    }
 }
 
 /// A clipboard of pomme's own: starts with `0` (or nothing).
@@ -35,6 +44,9 @@ impl Backend for Memory {
     }
     fn write(&mut self, text: Option<&str>) {
         self.0 = text.map(str::to_string);
+    }
+    fn duplicate(&self) -> Box<dyn Backend> {
+        Box::new(Memory(self.0.clone()))
     }
 }
 
@@ -70,6 +82,7 @@ pub struct PasteInput {
 /// How long after a paste the user chose the app may read without a prompt.
 const USER_PASTE_GRANT_NS: u64 = 1_000_000_000;
 
+#[derive(Clone)]
 pub struct State {
     pub backend: Box<dyn Backend>,
     pub permission: Permission,

@@ -44,7 +44,7 @@ pub enum LoadError {
 
 pub type Result<T> = std::result::Result<T, LoadError>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LoadedImage {
     pub name: String,
     pub path: PathBuf,
@@ -107,7 +107,7 @@ pub struct Stub {
     pub symbol: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Stubs {
     list: Vec<Stub>,
     index: HashMap<Stub, usize>,
@@ -177,7 +177,7 @@ pub struct Unresolved {
     pub symbol: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Process {
     pub bundle_id: Option<String>,
     pub memory: Memory,

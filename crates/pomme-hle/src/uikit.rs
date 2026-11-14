@@ -12,7 +12,7 @@ use crate::{Emu, HostFn, Result, Stop, foundation, swift};
 
 /// The device we pretend to be: an iPhone with a 390×844 pt screen at 3×.
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub app: u64,
     /// Background tasks begun so far (each the next identifier).

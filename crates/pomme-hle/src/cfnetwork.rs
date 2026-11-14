@@ -52,6 +52,7 @@ const PUMP_FDS: u64 = 32;
 const READ_FD: u64 = 48;
 const WRITE_FD: u64 = 56;
 
+#[derive(Clone)]
 struct Pair {
     host: Option<String>,
     port: u16,
@@ -75,7 +76,7 @@ struct Pair {
     pump_running: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     pairs: HashMap<u64, Pair>,
     read_callbacks: u64,

@@ -31,7 +31,7 @@ struct Target {
     last: Option<u32>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// The CF type ID of SCNetworkReachability, once registered.
     type_id: u64,

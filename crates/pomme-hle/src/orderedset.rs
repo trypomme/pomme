@@ -14,7 +14,7 @@ const REVERSE: u64 = 1 << 1;
 const S: &str = "NSOrderedSet";
 const M: &str = "NSMutableOrderedSet";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     sets: HashMap<u64, Vec<u64>>,
 }

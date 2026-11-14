@@ -10,6 +10,7 @@
 
 pub mod accessibility;
 pub mod driver;
+pub mod snapshot;
 pub mod heap;
 pub mod profile;
 mod bundle;
@@ -196,6 +197,44 @@ impl fmt::Display for Stop {
 
 pub type Result<T> = std::result::Result<T, Stop>;
 
+/// Something outside the emulated phone that pomme talks to: a host window,
+/// the network, a web engine, a profiler, a test. It's not the phone's own
+/// state, so a snapshot leaves it out (a clone is empty) and restoring one
+/// keeps the one in use.
+pub struct External<T>(pub Option<T>);
+
+impl<T> External<T> {
+    pub fn new(v: Option<T>) -> Self {
+        External(v)
+    }
+}
+
+impl<T> Clone for External<T> {
+    fn clone(&self) -> Self {
+        External(None)
+    }
+}
+
+impl<T> Default for External<T> {
+    fn default() -> Self {
+        External(None)
+    }
+}
+
+impl<T> std::ops::Deref for External<T> {
+    type Target = Option<T>;
+    fn deref(&self) -> &Option<T> {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for External<T> {
+    fn deref_mut(&mut self) -> &mut Option<T> {
+        &mut self.0
+    }
+}
+
+#[derive(Clone)]
 pub struct Emu {
     pub cpu: Cpu,
     pub p: Process,
@@ -212,7 +251,7 @@ pub struct Emu {
     /// Print every system call and message send.
     pub trace: bool,
     /// The guest profiler, when profiling (see profile.rs).
-    pub profiler: Option<profile::Profiler>,
+    pub profiler: External<profile::Profiler>,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
     /// NSSetUncaughtExceptionHandler's function, or 0.
@@ -327,7 +366,12 @@ pub struct Emu {
     bundle: bundle::State,
     pub(crate) ax: accessibility::State,
     /// A test driving the app (see driver.rs).
-    pub(crate) driver: Option<driver::State>,
+    pub(crate) driver: External<driver::State>,
+    /// The host frames on pomme's own stack that the guest's state depends on
+    /// (calls into the guest, waits in place), innermost last, each by a
+    /// serial never used twice: a snapshot is restored only under the same frames.
+    pub(crate) frames: Vec<u64>,
+    frame_serial: u64,
 }
 
 impl Emu {
@@ -360,7 +404,7 @@ impl Emu {
             max_steps: u64::MAX,
             time_limit_ns: None,
             trace: false,
-            profiler: None,
+            profiler: External(None),
             calls: HashMap::new(),
             argc: 0,
             argv: 0,
@@ -439,7 +483,9 @@ impl Emu {
             coretext: Default::default(),
             bundle: Default::default(),
             ax: Default::default(),
-            driver: None,
+            driver: External(None),
+            frames: Vec::new(),
+            frame_serial: 0,
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
         for slot in thunks.data.chunks_exact_mut(4) {
@@ -488,6 +534,28 @@ impl Emu {
     /// The UIKit window hierarchy as indented text (for reports and tests).
     pub fn describe_views(&mut self) -> String {
         uiview::describe_tree(self).unwrap_or_else(|e| format!("(couldn't describe the views: {e})"))
+    }
+
+    /// Where a run stopped, for a report: the call or instruction, the
+    /// thread, its pc, lr and sp, and a backtrace (the frame-pointer chain).
+    pub fn describe_stop(&self, stop: &Stop) -> String {
+        let mut s = String::new();
+        match stop {
+            Stop::MissingFunction { caller, .. } | Stop::MissingMethod { caller, .. } => {
+                s += &format!("  called from {}\n", self.symbolize(caller.wrapping_sub(4)))
+            }
+            Stop::Cpu { pc, .. } => s += &format!("  at {}\n", self.symbolize(*pc)),
+            _ => {}
+        }
+        let (tid, tname) = threads::current_thread(self);
+        s += &format!("  on thread {tid} ({tname})\n");
+        let c = &self.cpu;
+        s += &format!("  pc {:#x}  lr {:#x} ({})  sp {:#x}\n", c.pc, c.x[30], self.symbolize(c.x[30]), c.sp);
+        s += "  backtrace:\n";
+        for call in self.backtrace(16) {
+            s += &format!("    {}\n", self.symbolize(call));
+        }
+        s
     }
 
     /// What accessibility sees on screen (see accessibility.rs), as indented text.
@@ -605,6 +673,20 @@ impl Emu {
         Ok(*sp)
     }
 
+    /// A host frame begins that the guest's state depends on (see `frames`).
+    pub(crate) fn enter_frame(&mut self) -> u64 {
+        self.frame_serial += 1;
+        self.frames.push(self.frame_serial);
+        self.frame_serial
+    }
+
+    /// That frame is over (returned, or unwound by a stop).
+    pub(crate) fn exit_frame(&mut self, frame: u64) {
+        if let Some(i) = self.frames.iter().rposition(|&f| f == frame) {
+            self.frames.truncate(i);
+        }
+    }
+
     /// Call guest code at `addr` with integer arguments, returning x0.
     ///
     /// The calling host function's registers are preserved: pc, lr, and the
@@ -624,7 +706,9 @@ impl Emu {
         self.cpu.x[30] = HOST_RETURN;
         self.cpu.pc = addr;
         self.depth += 1;
+        let frame = self.enter_frame();
         let r = self.run_until_return();
+        self.exit_frame(frame);
         self.depth -= 1;
         r?;
         let result = self.cpu.x[0];
@@ -664,7 +748,9 @@ impl Emu {
         self.cpu.x[30] = HOST_RETURN;
         self.cpu.pc = addr;
         self.depth += 1;
+        let frame = self.enter_frame();
         let r = self.run_until_return();
+        self.exit_frame(frame);
         self.depth -= 1;
         r?;
         self.last_x01 = [self.cpu.x[0], self.cpu.x[1]];
@@ -757,7 +843,7 @@ impl Emu {
     pub fn start_profiling(&mut self, every: u64) {
         let p = profile::Profiler::new(every);
         self.cpu.sample_at = self.cpu.steps + p.every;
-        self.profiler = Some(p);
+        *self.profiler = Some(p);
     }
 
     /// A guest function pointer that runs `f` (same calling convention as a stub).

@@ -10,7 +10,7 @@ use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     regexes: HashMap<u64, (regex::Regex, u64, u64)>, // compiled, pattern NSString, options
     /// NSTextCheckingResult → UTF-16 ranges of each group (None: didn't participate).

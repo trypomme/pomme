@@ -26,7 +26,7 @@ impl Host for Counting {
 fn draws_only_what_changed() {
     let Some(mut emu) = common::boot("display") else { return };
     let frames = Arc::new(AtomicU64::new(0));
-    emu.live.host = Some(Box::new(Counting(frames.clone())));
+    *emu.live.host = Some(Box::new(Counting(frames.clone())));
     emu.live.scale = 1.0;
     let v = common::views(&mut emu, 5.0);
     let line = v.lines().find(|l| l.contains(" tag 1 ")).unwrap_or_else(|| panic!("{v}"));

@@ -27,7 +27,7 @@ const S: u64 = 1_000_000_000;
 fn run(swipes: &[((f64, f64), (f64, f64), u64, u64)], secs: f64) -> Option<(String, Vec<(u64, u32, Vec<u8>)>)> {
     let mut emu = common::boot("swipeback")?;
     let frames: Frames = Default::default();
-    emu.live.host = Some(Box::new(Recording(frames.clone())));
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
     for &(from, to, at, duration) in swipes {
         pomme_hle::touch::swipe(&mut emu.touch.script, at, from, to, duration);

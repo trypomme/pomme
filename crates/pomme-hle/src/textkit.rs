@@ -29,7 +29,7 @@ const NOT_FOUND: u64 = i64::MAX as u64;
 
 // ---- fonts ----
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// System fonts by file name, once looked for (None: not in the sysroot).
     fonts: HashMap<&'static str, Option<std::rc::Rc<Vec<u8>>>>,

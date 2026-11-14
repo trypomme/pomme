@@ -69,7 +69,7 @@ pub struct Font {
     pub weight: f64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub faces: Vec<Face>,
     /// CTFont / CGFont objects.

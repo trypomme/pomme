@@ -211,7 +211,7 @@ fn cellular_label(name: &str) -> Option<&'static str> {
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub battery: Battery,
     /// Scripted changes (`--battery 15%@4`): (virtual ns, the change).

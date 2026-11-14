@@ -55,7 +55,7 @@ struct Queue {
     underlying: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     ops: HashMap<u64, Op>,
     queues: HashMap<u64, Queue>,

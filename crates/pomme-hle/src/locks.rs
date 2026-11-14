@@ -47,7 +47,7 @@ enum Kind {
     Recursive,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 struct Lock {
     kind: Kind,
     owner: Option<usize>,
@@ -65,7 +65,7 @@ pub enum Want {
     Write,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     locks: HashMap<u64, Lock>,
     /// Mutex attributes' types, by the attribute's address.

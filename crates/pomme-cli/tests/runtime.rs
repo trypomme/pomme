@@ -18,7 +18,7 @@ fn runtime() {
     // HTTP/2 sends header names in lowercase.
     let headers = vec![("content-type".into(), "text/plain".into()), ("x-pomme-id".into(), "7".into())];
     let hello = Response { status: 200, headers, body: b"hello".to_vec() };
-    emu.net.client = Some(Box::new(Fixtures(vec![("https://pomme.test/hello.txt".into(), hello)])));
+    *emu.net.client = Some(Box::new(Fixtures(vec![("https://pomme.test/hello.txt".into(), hello)])));
     let v = common::views(&mut emu, 2.0);
     let line = v.lines().find(|l| l.contains(" tag 1 ")).unwrap_or_else(|| panic!("{v}"));
     let checks = "atomics=1 sscanf=1 time=1 strftimeFits=1 strings=1 encodings=1 preferences=1 selfImage=1 orderedSet=1 threads=1 exceptionPorts=1 errors=1 tollFree=1 arguments=1 argumentDomain=1 environment=1";

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 const CONTAINER: &str = "/private/var/containers/Bundle/Application/pomme";
 
+#[derive(Clone)]
 struct Bundle {
     obj: u64,
     /// The bundle's directory on the host.
@@ -23,7 +24,7 @@ struct Bundle {
     info: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// The main bundle first, then others as they're asked for.
     bundles: Vec<Bundle>,

@@ -31,7 +31,7 @@ const NUMBER_FLOAT64: u64 = 6;
 /// The real object is made by its `-init...` method.
 const PLACEHOLDER: u64 = 0x504c_4143_4548_4c44; // "PLACEHLD"
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// The CoreFoundation image, once loaded.
     cf: Option<usize>,

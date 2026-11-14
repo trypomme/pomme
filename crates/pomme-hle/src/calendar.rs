@@ -491,7 +491,7 @@ impl Gregorian {
 
 // ---- the objects ----
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     calendars: HashMap<u64, Gregorian>,
     components: HashMap<u64, Components>,

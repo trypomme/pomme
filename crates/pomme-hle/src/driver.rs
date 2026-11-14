@@ -41,7 +41,9 @@ type Work = Box<dyn FnOnce(&mut Emu) -> Result<()> + Send>;
 enum Command {
     /// Run this on the main thread, with the app paused.
     Exec(Work),
-    /// Let the app run until this virtual time (ns), then take the next turn when it's idle.
+    /// Let the app run for this long (ns of virtual time, from now: looking
+    /// at the screen runs app code, which takes time too), then take the next
+    /// turn when it's idle.
     Resume(u64),
 }
 
@@ -56,6 +58,22 @@ pub(crate) struct State {
     signalled: bool,
     /// The test is taking its turn (waits inside it are the app's own).
     in_turn: bool,
+    /// Snapshots the test took ([`App::checkpoint`]).
+    checkpoints: Vec<std::rc::Rc<crate::snapshot::Snapshot>>,
+}
+
+/// The app at a moment of a drive, to come back to ([`App::checkpoint`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checkpoint {
+    index: usize,
+    at_ns: u64,
+}
+
+impl Checkpoint {
+    /// Virtual time when it was taken, in seconds.
+    pub fn at(&self) -> f64 {
+        self.at_ns as f64 / 1e9
+    }
 }
 
 /// Why a step failed.
@@ -170,15 +188,45 @@ impl App {
         rx.recv().map_err(|_| self.stopped())?
     }
 
-    /// Virtual time now, in seconds since the app started.
+    /// Virtual time when this turn began (or the checkpoint restored was
+    /// taken), in seconds since the app started.
     pub fn now(&self) -> f64 {
         self.now_ns as f64 / 1e9
     }
 
+    /// Save the whole phone as it is now: [`App::restore`] puts it back, in
+    /// any later step of this drive, exactly (memory, threads, screen,
+    /// virtual time). Boot and set up once, then start each case from here.
+    /// Refused while the app holds something outside the phone: an open
+    /// network connection, pages in a live web engine.
+    pub fn checkpoint(&mut self) -> std::result::Result<Checkpoint, Error> {
+        self.with(|emu| {
+            let snapshot = emu.snapshot().map(std::rc::Rc::new);
+            Ok(snapshot.map(|s| {
+                let d = emu.driver.as_mut().expect("driving");
+                d.checkpoints.push(s.clone());
+                Checkpoint { index: d.checkpoints.len() - 1, at_ns: s.at_ns() }
+            }))
+        })?
+        .map_err(|r| Error::Failed(format!("can't take a checkpoint: {r}")))
+    }
+
+    /// Put the phone back as it was at `checkpoint`; virtual time goes back too.
+    pub fn restore(&mut self, checkpoint: &Checkpoint) -> std::result::Result<(), Error> {
+        let index = checkpoint.index;
+        self.with(move |emu| {
+            let s = emu.driver.as_ref().expect("driving").checkpoints[index].clone();
+            Ok(emu.restore(&s))
+        })?
+        .map_err(|r| Error::Failed(format!("can't restore the checkpoint: {r}")))?;
+        self.now_ns = checkpoint.at_ns;
+        Ok(())
+    }
+
     /// Let the app run for `secs` of virtual time (then until it's next idle).
     pub fn run_for(&mut self, secs: f64) -> std::result::Result<(), Error> {
-        let until = self.now_ns + (secs.max(0.0) * 1e9) as u64;
-        self.commands.send(Command::Resume(until)).map_err(|_| self.stopped())?;
+        let ns = (secs.max(0.0) * 1e9) as u64;
+        self.commands.send(Command::Resume(ns)).map_err(|_| self.stopped())?;
         self.await_turn()
     }
 
@@ -321,7 +369,7 @@ pub fn drive<R: Send>(emu: &mut Emu, test: impl FnOnce(&mut App) -> std::result:
     let (commands_tx, commands) = channel();
     let (turns, turns_rx) = channel();
     let ended = Arc::new(Mutex::new(None));
-    emu.driver = Some(State { commands, turns, resume_at: 0, signalled: false, in_turn: false });
+    *emu.driver = Some(State { commands, turns, resume_at: 0, signalled: false, in_turn: false, checkpoints: Vec::new() });
     std::thread::scope(|s| {
         let ended_t = ended.clone();
         let tester = s.spawn(move || {
@@ -333,12 +381,13 @@ pub fn drive<R: Send>(emu: &mut Emu, test: impl FnOnce(&mut App) -> std::result:
         // The test finishing ends the run as exit(0) does; anything else is why the app stopped.
         *ended.lock().unwrap() = Some(match &run {
             Ok(code) => format!("it exited ({code})"),
-            Err(e) => e.to_string(),
+            Err(Stop::Exit(code)) => format!("it exited ({code})"),
+            Err(e) => format!("{e}\n{}", emu.describe_stop(e)),
         });
         if let Some(d) = emu.driver.as_mut() {
             d.in_turn = false;
         }
-        emu.driver = None;
+        *emu.driver = None;
         match tester.join() {
             Ok(r) => r,
             Err(panic) => std::panic::resume_unwind(panic),
@@ -388,7 +437,8 @@ pub(crate) fn turn(emu: &mut Emu) -> Result<()> {
         let next = emu.driver.as_ref().map(|d| d.commands.recv());
         match next {
             Some(Ok(Command::Exec(work))) => work(emu)?,
-            Some(Ok(Command::Resume(until))) => {
+            Some(Ok(Command::Resume(ns))) => {
+                let until = crate::threads::now_ns(emu) + ns;
                 let d = emu.driver.as_mut().unwrap();
                 d.resume_at = until;
                 d.in_turn = false;

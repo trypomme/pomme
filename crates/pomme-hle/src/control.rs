@@ -62,7 +62,7 @@ enum Handler {
     Action(u64),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// Control → what it does and for which events, in the order added.
     targets: HashMap<u64, Vec<(Handler, u64)>>,

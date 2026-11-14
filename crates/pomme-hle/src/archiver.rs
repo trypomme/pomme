@@ -18,7 +18,7 @@ use plist::{Dictionary, Uid, Value};
 use std::collections::HashMap;
 
 /// An archive being written.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Writing {
     objects: Vec<Value>,
     /// Objects already archived → their UID.
@@ -31,6 +31,7 @@ struct Writing {
 }
 
 /// An archive being read.
+#[derive(Clone)]
 struct Reading {
     objects: Vec<Value>,
     /// Objects already made → the object.
@@ -39,7 +40,7 @@ struct Reading {
     stack: Vec<Dictionary>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     writers: HashMap<u64, Writing>,
     readers: HashMap<u64, Reading>,

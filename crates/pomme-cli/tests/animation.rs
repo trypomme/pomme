@@ -35,7 +35,7 @@ fn span(width: u32, rgba: &[u8], y: u32, is: impl Fn(&[u8]) -> bool) -> Option<(
 fn views_and_layers_animate() {
     let Some(mut emu) = common::boot("animation") else { return };
     let frames: Frames = Default::default();
-    emu.live.host = Some(Box::new(Recording(frames.clone())));
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
     let v = common::views(&mut emu, 2.5);
     let label = |tag: &str| v.lines().find(|l| l.contains(&format!(" tag {tag} "))).map(|l| l.trim().to_string()).unwrap_or_default();

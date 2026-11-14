@@ -39,7 +39,7 @@ fn top(f: &(u64, u32, Vec<u8>), is: impl Fn([u8; 3]) -> bool) -> Option<u32> {
 fn sheets_follow_drags() {
     let Some(mut emu) = common::boot("sheetdrag") else { return };
     let frames: Frames = Default::default();
-    emu.live.host = Some(Box::new(Recording(frames.clone())));
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
     emu.live.scale = 1.0;
     let script = &mut emu.touch.script;
     // The green (large) sheet: flicked down from 300 to 700 in 0.15 s.

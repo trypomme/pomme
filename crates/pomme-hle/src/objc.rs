@@ -25,6 +25,7 @@ pub enum Imp {
     Host(HostFn),
 }
 
+#[derive(Clone)]
 pub struct Class {
     pub name: String,
     pub meta: bool,
@@ -44,7 +45,7 @@ pub struct Class {
     pub swift_init: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Objc {
     pub classes: HashMap<u64, Class>,
     pub by_name: HashMap<String, u64>,

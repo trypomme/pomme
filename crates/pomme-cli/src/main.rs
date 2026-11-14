@@ -360,6 +360,13 @@ impl pomme_hle::clipboard::Backend for HostClipboard {
             None => self.0.clear(),
         };
     }
+    /// The same clipboard: it's this machine's, not the phone's.
+    fn duplicate(&self) -> Box<dyn pomme_hle::clipboard::Backend> {
+        match arboard::Clipboard::new() {
+            Ok(c) => Box::new(HostClipboard(c)),
+            Err(_) => Box::new(pomme_hle::clipboard::Memory(None)),
+        }
+    }
 }
 
 impl ClipboardArgs {
@@ -864,18 +871,18 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
     // Live in a window: until it closes.
     if let Some((host, scale)) = live {
-        emu.live.host = Some(host);
+        *emu.live.host = Some(host);
         emu.live.scale = scale;
         emu.time_limit_ns = None;
         emu.max_steps = u64::MAX;
     }
-    emu.net.client = net;
+    *emu.net.client = net;
     // Web views' pages: in the host's web view (the pomme-webview helper beside pomme).
     if cfg!(target_os = "macos")
         && let Some(helper) = pomme_webview::WebViewEngine::find_helper()
     {
         match pomme_webview::WebViewEngine::start(&helper) {
-            Ok(engine) => emu.webkit.engine = Some(Box::new(engine)),
+            Ok(engine) => *emu.webkit.engine = Some(Box::new(engine)),
             Err(e) => eprintln!("web views: couldn't start {}: {e}", helper.display()),
         }
     }
@@ -936,22 +943,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         Err(stop) => {
             println!("\nstopped after {steps} instructions in {elapsed:.2?} ({mips:.1} MIPS)");
             println!("reason: {stop}");
-            match &stop {
-                Stop::MissingFunction { caller, .. } | Stop::MissingMethod { caller, .. } => {
-                    println!("  called from {}", emu.symbolize(caller.wrapping_sub(4)))
-                }
-                Stop::Cpu { pc, .. } => println!("  at {}", emu.symbolize(*pc)),
-                _ => {}
-            }
-            let (tid, tname) = pomme_hle::threads::current_thread(&emu);
-            println!("  on thread {tid} ({tname})");
+            print!("{}", emu.describe_stop(&stop));
             let c = &emu.cpu;
-            println!("  pc {:#x}  lr {:#x} ({})  sp {:#x}", c.pc, c.x[30], emu.symbolize(c.x[30]), c.sp);
-            // Backtrace: arm64 Darwin code keeps a frame-pointer chain of (fp, lr) pairs.
-            println!("  backtrace:");
-            for call in emu.backtrace(16) {
-                println!("    {}", emu.symbolize(call));
-            }
             let shown = if trace || std::env::var_os("POMME_THREADS").is_some() { 28 } else { 8 };
             for r in (0..shown).step_by(4) {
                 println!(

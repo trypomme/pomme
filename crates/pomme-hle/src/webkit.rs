@@ -252,10 +252,10 @@ struct Page {
     placed_flags: (bool, bool),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// The front end's engine (None: pages don't load).
-    pub engine: Option<Box<dyn WebEngine>>,
+    pub engine: crate::External<Box<dyn WebEngine>>,
     pages: HashMap<u64, Page>,
     next_id: u64,
     /// Navigation id → WKNavigation object.
@@ -271,6 +271,11 @@ pub struct State {
     user_scripts: HashMap<u64, Vec<u64>>,
     /// `+[WKWebsiteDataStore defaultDataStore]`.
     default_store: u64,
+}
+
+/// How many pages there are in the front end's engine (a snapshot can't hold them).
+pub(crate) fn engine_pages(emu: &Emu) -> usize {
+    if emu.webkit.engine.is_some() { emu.webkit.pages.len() } else { 0 }
 }
 
 fn ret(emu: &mut Emu, v: u64) -> Result<()> {

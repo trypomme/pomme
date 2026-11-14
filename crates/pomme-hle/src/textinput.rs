@@ -53,7 +53,7 @@ pub struct KeyInput {
     pub text: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     pub first_responder: u64,
     fields: HashMap<u64, Field>,

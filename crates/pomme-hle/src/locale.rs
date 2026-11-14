@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub const PREFERRED_LANGUAGES: &[&str] = &["en-US"];
 pub const CURRENT: &str = "en_US";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     /// NSLocale → its identifier.
     locales: HashMap<u64, String>,

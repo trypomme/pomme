@@ -35,6 +35,7 @@ const TIMED_OUT: i32 = -65568;
 const TTL: u64 = 60;
 
 /// A request, from `DNSServiceGetAddrInfo` to `DNSServiceRefDeallocate`.
+#[derive(Clone)]
 struct Request {
     /// Unique across requests (a freed DNSServiceRef's address may be reused).
     id: u64,
@@ -59,7 +60,7 @@ struct Reply {
     address: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct State {
     requests: HashMap<u64, Request>,
     replies: Vec<Option<Reply>>,

@@ -69,7 +69,7 @@ impl Net for Recording {
 #[test]
 fn renders_and_counts_taps() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     tap(&mut emu, TAP_BUTTON, 3.0);
     tap(&mut emu, TAP_BUTTON, 4.0);
     let views = run_for(&mut emu, 6.0);
@@ -95,7 +95,7 @@ fn renders_and_counts_taps() {
 fn fetches_with_swr_query_and_promise_all() {
     let Some(mut emu) = boot() else { return };
     let log = Rc::new(RefCell::new(Vec::new()));
-    emu.net.client = Some(Box::new(Recording(repos(), log.clone())));
+    *emu.net.client = Some(Box::new(Recording(repos(), log.clone())));
     // Refresh both cards once their first fetch has landed.
     tap(&mut emu, SWR_REFRESH, 5.0);
     tap(&mut emu, QUERY_REFRESH, 5.5);
@@ -116,7 +116,7 @@ fn fetches_with_swr_query_and_promise_all() {
 #[test]
 fn expo_sdk_and_msw() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     let views = run_for(&mut emu, 8.0);
     assert!(views.contains("\"Expo SDK: 11/11 passed\""), "{views}");
     // MSW mocks https://pomme.test in JS: no request reaches the network for it.
@@ -138,7 +138,7 @@ fn offline_fetch_shows_the_error() {
 #[test]
 fn expo_router_pushes_and_goes_back() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     tap(&mut emu, TAP_BUTTON, 3.0);
     tap(&mut emu, DETAILS, 5.0);
     tap(&mut emu, BACK, 6.5);
@@ -147,7 +147,7 @@ fn expo_router_pushes_and_goes_back() {
     assert!(!views.contains("stars"), "still on the details screen: {views}");
     // React Navigation saw the native pop, so the link works again.
     let mut emu2 = boot().unwrap();
-    emu2.net.client = Some(Box::new(repos()));
+    *emu2.net.client = Some(Box::new(repos()));
     tap(&mut emu2, DETAILS, 5.0);
     tap(&mut emu2, BACK, 6.5);
     tap(&mut emu2, DETAILS, 8.0);
@@ -174,7 +174,7 @@ fn ios_18_has_the_pre_26_navigation_bar() {
     let Some(mut emu) = boot() else { return };
     emu.system.os = "18.6".parse().unwrap();
     assert!(!emu.system.liquid_glass());
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     // Below the 91-pt bar, the content is re-centered in 753 pt: Details sits lower.
     tap(&mut emu, (240.0, 554.0), 5.0);
     let views = run_for(&mut emu, 6.5);
@@ -202,7 +202,7 @@ fn ios_18_has_the_pre_26_navigation_bar() {
     // Back, by the label.
     let mut emu = boot().unwrap();
     emu.system.os = "18.6".parse().unwrap();
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     tap(&mut emu, (240.0, 554.0), 5.0);
     tap(&mut emu, (40.0, 69.0), 6.5);
     let views = run_for(&mut emu, 7.5);
@@ -223,7 +223,7 @@ fn count_hit(emu: &mut Emu) -> pomme_hle::Result<()> {
 #[test]
 fn breakpoints_on_local_swift_functions() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     let main = &emu.p.images[0];
     let targets: Vec<u64> = main
         .symbols
@@ -280,15 +280,15 @@ impl pomme_hle::host::Host for ScriptedHost {
 #[test]
 fn live_host_gets_frames_and_delivers_input() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     let frames = Rc::new(RefCell::new((0, Vec::new())));
     emu.live.scale = 1.0;
-    emu.live.host = Some(Box::new(ScriptedHost { taps: vec![(3_000_000_000, TAP_BUTTON.0, TAP_BUTTON.1)], frames: frames.clone(), end_ns: 5_000_000_000 }));
+    *emu.live.host = Some(Box::new(ScriptedHost { taps: vec![(3_000_000_000, TAP_BUTTON.0, TAP_BUTTON.1)], frames: frames.clone(), end_ns: 5_000_000_000 }));
     match emu.run_main() {
         Ok(0) => {} // the host quit
         other => panic!("expected the host to quit, got {other:?}"),
     }
-    emu.live.host = None;
+    *emu.live.host = None;
     let views = emu.describe_views();
     assert!(views.contains("\"Tapped 1 time\""), "{views}");
     let (n, last) = &*frames.borrow();
@@ -302,14 +302,14 @@ fn live_host_gets_frames_and_delivers_input() {
 #[test]
 fn live_frames_lay_out_before_they_draw() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     let frames = Rc::new(RefCell::new((0, Vec::new())));
     emu.live.scale = 2.0;
-    emu.live.host = Some(Box::new(ScriptedHost { taps: vec![], frames: frames.clone(), end_ns: 4_000_000_000 }));
+    *emu.live.host = Some(Box::new(ScriptedHost { taps: vec![], frames: frames.clone(), end_ns: 4_000_000_000 }));
     let _ = emu.run_main();
     // The same screen, drawn once at the end by an app that ran without frames.
     let Some(mut still) = boot() else { return };
-    still.net.client = Some(Box::new(repos()));
+    *still.net.client = Some(Box::new(repos()));
     run_for(&mut still, 4.0);
     let still = pomme_hle::render::render(&mut still, 2.0).unwrap();
     let (_, live) = &*frames.borrow();
@@ -606,7 +606,7 @@ fn rotation_and_back() {
 fn expo_image() {
     let Some(mut emu) = boot() else { return };
     let jpeg = std::fs::read("tests/fixtures/wide.jpg").unwrap();
-    emu.net.client = Some(Box::new(Fixtures::default().file("https://images.pomme.test/wide.jpg", "image/jpeg", jpeg)));
+    *emu.net.client = Some(Box::new(Fixtures::default().file("https://images.pomme.test/wide.jpg", "image/jpeg", jpeg)));
     emu.ui.launch_url = Some("pommehello:///image".into());
     let v = run_for(&mut emu, 6.0);
     assert!(v.contains("\"contain 300x100 · cover 300x100 · local 200x200\""), "{v}");
@@ -670,7 +670,7 @@ fn expo_network_follows_changes() {
 #[test]
 fn offline_network_fails_requests() {
     let Some(mut emu) = boot() else { return };
-    emu.net.client = Some(Box::new(repos()));
+    *emu.net.client = Some(Box::new(repos()));
     emu.network.path = pomme_hle::network::Path::Offline;
     let views = run_for(&mut emu, 6.0);
     assert!(views.contains("Couldn't load"), "{views}");

@@ -87,7 +87,7 @@ struct Item {
     needs_auth: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     items: Vec<Item>,
     pub biometry: Biometry,
