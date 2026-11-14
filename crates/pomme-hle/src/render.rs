@@ -528,7 +528,7 @@ pub(crate) fn draw_font_glyphs(emu: &mut Emu, c: u64, face: &crate::coretext::Fa
     let s = (font.size / parsed.units_per_em() as f64) as f32;
     let m = font.matrix.map(|v| v as f32);
     let vars = if face.variable_weight {
-        vec![(*b"wght", crate::textkit::font_weight(&parsed, font.weight) as f32), (*b"opsz", crate::textkit::optical_size(&parsed, font.size))]
+        vec![(*b"wght", crate::textkit::ot_weight(font.weight) as f32), (*b"opsz", font.size.clamp(14.0, 32.0) as f32)]
     } else {
         Vec::new()
     };
@@ -828,8 +828,8 @@ impl Painter<'_> {
         let upem = face.units_per_em() as f32;
         let mut current: Option<(u16, u16)> = None;
         for g in glyphs {
-            let wght = crate::textkit::font_weight(&face, g.weight).round() as u16;
-            let opsz = crate::textkit::optical_size(&face, g.size).round() as u16;
+            let wght = crate::textkit::ot_weight(g.weight).round() as u16;
+            let opsz = g.size.clamp(14.0, 32.0).round() as u16;
             if current != Some((wght, opsz)) {
                 face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), wght as f32);
                 face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
