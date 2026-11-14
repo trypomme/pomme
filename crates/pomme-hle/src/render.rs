@@ -1604,10 +1604,164 @@ pub fn render(emu: &mut Emu, scale: f32) -> Result<Pixmap> {
     if visible > 0.0 {
         draw_keyboard(&mut p, screen, emu.input.keyboard_height, visible, &t);
     }
+    draw_status_bar(emu, &mut p, scale)?;
     // The housing is fixed to the hardware: draw it in the native frame.
     let native = crate::orientation::from_portrait(emu).map(|v| v as f32);
     draw_cutout(&mut p, emu.device, &concat(&native, &t));
     Ok(p.pix)
+}
+
+// ---- the status bar (see statusbar.rs) ----
+
+/// Sampled from the simulator: unlit bars and Wi-Fi bands, the battery's
+/// outline and cap, and a charging bolt are the content's colour at these opacities.
+const STATUS_UNLIT: f32 = 0.2;
+const STATUS_OUTLINE: f32 = 0.4;
+const STATUS_BOLT: f32 = 0.3;
+const STATUS_WEIGHT: f64 = 0.3; // semibold
+
+/// The status bar over the app, where it shows (portrait, not hidden by the
+/// app): the time, the signal, Wi-Fi or the data network's name, and the
+/// battery, in the places measured for this phone.
+fn draw_status_bar(emu: &mut Emu, p: &mut Painter, scale: f32) -> Result<()> {
+    if crate::orientation::status_bar_frame(emu)[3] <= 0.0 {
+        return Ok(());
+    }
+    let (hidden, light) = crate::statusbar::appearance(emu)?;
+    if hidden {
+        return Ok(());
+    }
+    let layout = crate::statusbar::layout_for(emu.device);
+    let shown = crate::statusbar::shown(emu, &layout);
+    let fg: [f32; 4] = if light { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] };
+    let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
+    // Text sized so its digits are as tall as measured.
+    let cap = p.font.and_then(|f| ttf_parser::Face::parse(f, 0).ok()).and_then(|f| f.capital_height().map(|c| c as f64 / f.units_per_em() as f64)).unwrap_or(0.727);
+    let text = |emu: &mut Emu, p: &mut Painter, s: &str, cx: f64, baseline: f64, height: f64| {
+        let (glyphs, width) = crate::textkit::line_glyphs(emu, s, height / cap, STATUS_WEIGHT, fg.map(|v| v as f64), 0.0, baseline);
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + cx - width / 2.0, ..g }).collect();
+        p.glyphs(&placed, 1.0, &t, None);
+    };
+    let (cx, baseline, digits) = layout.time;
+    {
+        // The time's colon sits between the digits' top and bottom (SF's
+        // time colon: measured 1.67 pt above the baseline's on 11-pt digits);
+        // a day period ("AM") is smaller (6.5 pt caps by 8.5-pt digits).
+        let color = fg.map(|v| v as f64);
+        let (clock, period) = shown.time.split_once(' ').map_or((shown.time.as_str(), None), |(c, p)| (c, Some(p)));
+        let (mut glyphs, mut width) = crate::textkit::line_glyphs(emu, clock, digits / cap, STATUS_WEIGHT, color, 0.0, baseline);
+        if let Some(period) = period {
+            let size = digits * 6.5 / 8.5 / cap;
+            let (more, w) = crate::textkit::line_glyphs(emu, &format!(" {period}"), size, STATUS_WEIGHT, color, width, baseline);
+            glyphs.extend(more);
+            width += w;
+        }
+        let lift = digits * 1.67 / 11.0;
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + cx - width / 2.0, y: if g.ch == ':' { g.y - lift } else { g.y }, ..g }).collect();
+        p.glyphs(&placed, 1.0, &t, None);
+    }
+
+    let (x0, bottom, w, pitch, heights) = layout.bars;
+    for (i, h) in heights.iter().enumerate() {
+        let bar = transform_els(&rounded_rect(w as f32, *h as f32, w as f32 * 0.4), &[1.0, 0.0, 0.0, 1.0, (x0 + i as f64 * pitch) as f32, (bottom - h) as f32]);
+        p.fill(&bar, fg, if (i as u8) < shown.cellular_bars { 1.0 } else { STATUS_UNLIT }, false, &t, None);
+    }
+    match &shown.data {
+        crate::statusbar::Data::Wifi(lit) => draw_wifi(p, layout.wifi, *lit, fg, &t),
+        crate::statusbar::Data::Cellular(label) => {
+            // Centred where the Wi-Fi fan goes, 78% of its height (measured "5G", "LTE").
+            let [wx0, _, wx1, wy1] = layout.wifi;
+            text(emu, p, label, (wx0 + wx1) / 2.0, wy1 - 0.33, (layout.wifi[3] - layout.wifi[1]) * 0.78);
+        }
+        crate::statusbar::Data::Hidden => {}
+    }
+    draw_battery(p, &layout, shown.battery, light, fg, scale);
+    Ok(())
+}
+
+/// The Wi-Fi fan in its box: two bands and a wedge spreading up from the
+/// bottom's middle, `lit` of them (from the inside) in full.
+fn draw_wifi(p: &mut Painter, b: [f64; 4], lit: u8, fg: [f32; 4], t: &[f32; 6]) {
+    use std::f32::consts::FRAC_PI_2;
+    // Measured on a 12-pt fan: bands 2.67 thick, their outer radii 12 and
+    // 7.67, the wedge's 3.67; round-ended, 37.5° either side of upright.
+    let s = (b[3] - b[1]) as f32 / 12.0;
+    let (cx, apex) = (((b[0] + b[2]) / 2.0) as f32, b[3] as f32);
+    let half = 37.5f32.to_radians();
+    for (band, outer) in [(3u8, 12.0f32), (2, 7.67)] {
+        let thick = 2.67 * s;
+        let mut arc = Vec::new();
+        arc_els(&mut arc, cx, apex, outer * s - thick / 2.0, -FRAC_PI_2 - half, -FRAC_PI_2 + half, false);
+        let alpha = if lit >= band { 1.0 } else { STATUS_UNLIT };
+        if let (Some(path), Some(paint)) = (build(&arc), paint(fg, alpha)) {
+            let stroke = Stroke { width: thick, line_cap: tiny_skia::LineCap::Round, ..Default::default() };
+            p.pix.stroke_path(&path, &paint, &stroke, ts(t), None);
+        }
+    }
+    let r = 3.67 * s;
+    let a = 42f32.to_radians();
+    let mut wedge = vec![El::Move(cx, apex)];
+    arc_els(&mut wedge, cx, apex, r, -FRAC_PI_2 - a, -FRAC_PI_2 + a, false);
+    wedge.push(El::Close);
+    p.fill(&wedge, fg, if lit >= 1 { 1.0 } else { STATUS_UNLIT }, false, t, None);
+}
+
+/// The battery: its outline and cap, filled to its level (red at 20% and
+/// below, green while plugged in), with a bolt over it while plugged in,
+/// cut out of what's under it by a 1-pt gap. Drawn on a layer of its own so
+/// the gap shows the app beneath.
+fn draw_battery(p: &mut Painter, l: &crate::statusbar::Layout, b: crate::statusbar::Battery, light: bool, fg: [f32; 4], scale: f32) {
+    use crate::statusbar::Charge;
+    let [x0, y0, x1, y1] = l.battery.map(|v| v as f32);
+    let [cx0, cy0, cx1, cy1] = l.cap.map(|v| v as f32);
+    let s = (y1 - y0) / 12.0;
+    // The layer, on whole pixels.
+    let (px, py) = (((x0 - 4.0 * s) * scale).floor(), ((y0 - 4.0 * s) * scale).floor());
+    let (pw, ph) = (((cx1 + 4.0 * s) * scale - px).ceil() as u32, ((y1 + 4.0 * s) * scale - py).ceil() as u32);
+    let Some(pix) = Pixmap::new(pw.max(1), ph.max(1)) else { return };
+    let mut layer = Painter { pix, font: None, emoji: None };
+    let t = [scale, 0.0, 0.0, scale, -px, -py];
+    let at = |x: f32, y: f32| [1.0, 0.0, 0.0, 1.0, x, y];
+    // A 1-pt outline inside the body's edge (its corners 4 pt), and the cap.
+    let body = transform_els(&rounded_rect(x1 - x0 - s, y1 - y0 - s, 4.0 * s - s / 2.0), &at(x0 + s / 2.0, y0 + s / 2.0));
+    layer.stroke(&body, fg, STATUS_OUTLINE, s, &t, None);
+    layer.fill(&transform_els(&rounded_rect(cx1 - cx0, cy1 - cy0, cx1 - cx0), &at(cx0, cy0)), fg, STATUS_OUTLINE, false, &t, None);
+    // The level, 2 pt in.
+    let plugged = b.charge != Charge::Unplugged;
+    let low = b.level <= 0.2;
+    let color = if low {
+        if light { [1.0, 0.259, 0.271, 1.0] } else { [1.0, 0.220, 0.235, 1.0] }
+    } else if plugged {
+        if light { [0.188, 0.820, 0.345, 1.0] } else { [0.204, 0.780, 0.349, 1.0] }
+    } else {
+        fg
+    };
+    let inner = (x1 - x0 - 4.0 * s) * b.level.clamp(0.0, 1.0) as f32;
+    if inner > 0.0 {
+        let fill = transform_els(&rounded_rect(inner, y1 - y0 - 4.0 * s, 2.0 * s), &at(x0 + 2.0 * s, y0 + 2.0 * s));
+        layer.fill(&fill, color, 1.0, false, &t, None);
+    }
+    if plugged {
+        // A bolt as tall as the body, a little right of its middle (measured: 6 × 12.33 pt).
+        let (bw, bh) = (6.0 * s, 12.33 * s);
+        let (bx, by) = ((x0 + x1) / 2.0 + 1.33 * s - bw / 2.0, (y0 + y1) / 2.0 - bh / 2.0);
+        let pts = [(0.72, 0.0), (0.0, 0.58), (0.44, 0.58), (0.28, 1.0), (1.0, 0.40), (0.56, 0.40)];
+        let mut bolt: Vec<El> = pts.iter().enumerate().map(|(i, &(u, v))| {
+            let (x, y) = (bx + u * bw, by + v * bh);
+            if i == 0 { El::Move(x, y) } else { El::Line(x, y) }
+        }).collect();
+        bolt.push(El::Close);
+        if let Some(path) = build(&bolt) {
+            let mut gap = Paint { blend_mode: tiny_skia::BlendMode::Clear, ..Default::default() };
+            gap.anti_alias = true;
+            let stroke = Stroke { width: 2.0 * s, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+            layer.pix.stroke_path(&path, &gap, &stroke, ts(&t), None);
+            layer.pix.fill_path(&path, &gap, FillRule::Winding, ts(&t), None);
+        }
+        // Over a red (low) level it's the content's colour; otherwise dimmed.
+        layer.fill(&bolt, fg, if low { 1.0 } else { STATUS_BOLT }, false, &t, None);
+    }
+    p.pix.draw_pixmap(px as i32, py as i32, layer.pix.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), None);
 }
 
 /// The sensor housing over the screen, as the Simulator draws it into its

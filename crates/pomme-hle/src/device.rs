@@ -282,7 +282,8 @@ pub const DEVICES: &[Device] = &[
     phone("iphone-17-pro", "iPhone 17 Pro", (402.0, 874.0), 3.0, (62.0, 34.0), island(14.0), 62.0),
     phone("iphone-17-pro-max", "iPhone 17 Pro Max", (440.0, 956.0), 3.0, (62.0, 34.0), island(14.0), 62.0),
     phone("iphone-17e", "iPhone 17e", (390.0, 844.0), 3.0, (47.0, 34.0), NOTCH_12, 47.33),
-    phone("iphone-air", "iPhone Air", (420.0, 912.0), 3.0, (68.0, 34.0), island(14.0), 62.0),
+    // (Its island sits lower: measured on its iOS 26 simulator, 19.67 pt down.)
+    phone("iphone-air", "iPhone Air", (420.0, 912.0), 3.0, (68.0, 34.0), island(19.67), 62.0),
 ];
 
 /// The device pomme presents unless told otherwise: the 390×844 iPhone 16e.

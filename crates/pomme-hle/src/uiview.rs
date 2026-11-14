@@ -1255,7 +1255,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "viewDidLoad", noop),
     ("UIViewController", false, "prefersStatusBarHidden", ret_zero),
     ("UIViewController", false, "preferredStatusBarStyle", ret_zero),
-    ("UIViewController", false, "setNeedsStatusBarAppearanceUpdate", noop),
+    // The status bar asks the controllers again when it's next drawn.
+    ("UIViewController", false, "setNeedsStatusBarAppearanceUpdate", |e| {
+        crate::host::frame_changed(e);
+        Ok(())
+    }),
     ("UIViewController", false, "childViewControllerForStatusBarStyle", ret_zero),
     ("UIViewController", false, "childViewControllerForStatusBarHidden", ret_zero),
     ("UIViewController", false, "viewWillAppear:", noop),

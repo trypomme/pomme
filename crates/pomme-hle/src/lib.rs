@@ -86,6 +86,7 @@ mod orderedset;
 mod rand;
 pub mod uttype;
 pub mod network;
+pub mod statusbar;
 pub mod keychain;
 pub mod animation;
 mod spinner;
@@ -279,6 +280,8 @@ pub struct Emu {
     pub(crate) crypto: commoncrypto::State,
     pub(crate) ops: operation::State,
     pub network: network::State,
+    /// The status bar's battery and overrides.
+    pub status_bar: statusbar::State,
     pub keychain: keychain::State,
     /// Core Animation: animations running on layers.
     pub anim: animation::State,
@@ -393,6 +396,7 @@ impl Emu {
             crypto: Default::default(),
             ops: Default::default(),
             network: Default::default(),
+            status_bar: Default::default(),
             keychain: Default::default(),
             anim: Default::default(),
             spinner_frames: Default::default(),

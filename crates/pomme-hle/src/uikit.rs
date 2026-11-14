@@ -283,6 +283,7 @@ fn run_loop(emu: &mut Emu) -> Result<()> {
     crate::clipboard::schedule_script(emu)?;
     crate::orientation::schedule_script(emu)?;
     crate::network::schedule_script(emu)?;
+    crate::statusbar::schedule_script(emu)?;
     crate::host::install(emu)?;
     loop {
         emu.cpu.q[0] = 1.0e10f64.to_bits() as u128; // seconds
@@ -903,7 +904,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIDevice", false, "model", |e| device_string(e, "iPhone")),
     ("UIDevice", false, "name", |e| device_string(e, "pomme")),
     ("UIDevice", false, "userInterfaceIdiom", ret_zero), // phone
-    ("UIDevice", false, "isBatteryMonitoringEnabled", ret_zero),
     ("UIDevice", false, "identifierForVendor", ret_zero),
     ("UIDevice", false, "self", ret_self),
 ];

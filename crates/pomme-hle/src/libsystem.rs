@@ -938,7 +938,7 @@ fn mach_timebase_info(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn realtime_ns(emu: &Emu) -> u64 {
+pub(crate) fn realtime_ns(emu: &Emu) -> u64 {
     boot_time(emu) * 1_000_000_000 + now_ns(emu)
 }
 

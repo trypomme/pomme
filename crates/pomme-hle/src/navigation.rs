@@ -1160,6 +1160,31 @@ fn large_title_offset(emu: &Emu, vc: u64) -> f64 {
     emu.nav.large_title_offsets.get(&vc).copied().unwrap_or(0.0)
 }
 
+// ---- the status bar ----
+
+/// The controller that decides the status bar for the window whose root is
+/// `root`: the last one presented full screen (or one that captures the status
+/// bar's appearance), else the root.
+pub(crate) fn status_bar_root(emu: &mut Emu, root: u64) -> u64 {
+    let presented: Vec<(u64, bool)> = emu.nav.presentations.iter().map(|p| (p.presented, p.sheet == 0)).collect();
+    for (vc, full_screen) in presented.into_iter().rev() {
+        let captures = emu.nav.props.get(&(vc, "modalPresentationCapturesStatusBarAppearance")).is_some_and(|&v| v & 0xff != 0);
+        if full_screen || captures {
+            return vc;
+        }
+    }
+    root
+}
+
+/// The child a navigation controller defers the status bar to (None: `vc`
+/// isn't one): its top controller for whether it's hidden, and for its style
+/// while the navigation bar is hidden (else the bar's own, the default).
+pub(crate) fn status_bar_child(emu: &mut Emu, vc: u64, for_style: bool) -> Option<u64> {
+    let n = emu.nav.navs.get(&vc)?.clone();
+    let top = n.stack.last().copied().unwrap_or(0);
+    Some(if for_style && !n.bar_hidden { 0 } else { top })
+}
+
 // ---- large titles and the content under them ----
 //
 // A large title belongs to its screen's content (measured on the iOS 26

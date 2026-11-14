@@ -97,6 +97,8 @@ pub struct State {
     pending: Vec<Event>,
     /// Recording the screen (File ▸ Record Screen).
     recording: bool,
+    /// The minute the status bar's clock showed in the last frame.
+    clock_minute: Option<i64>,
 }
 
 const FRAME_NS: u64 = 1_000_000_000 / 30;
@@ -110,6 +112,12 @@ pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     // frame interval has passed (and wake for it then).
     let now = crate::threads::now_ns(emu);
     let mut next_ns = next_ns;
+    // The status bar's clock: draw it again when its minute turns over.
+    let (minute, next_minute) = crate::statusbar::minute(emu);
+    if emu.live.clock_minute.is_some_and(|m| m != minute) {
+        emu.live.dirty = true;
+    }
+    next_ns = Some(next_ns.map_or(next_minute, |n| n.min(next_minute)));
     if emu.live.dirty || crate::animation::animating(emu) {
         let due = emu.live.last_frame.map_or(now, |t| t + FRAME_NS);
         if now >= due {
@@ -287,6 +295,7 @@ pub(crate) fn maybe_frame(emu: &mut Emu) -> Result<()> {
 fn draw(emu: &mut Emu) -> Result<()> {
     emu.live.last_frame = Some(crate::threads::now_ns(emu));
     emu.live.dirty = false;
+    emu.live.clock_minute = Some(crate::statusbar::minute(emu).0);
     let pix = crate::render::render(emu, emu.live.scale)?;
     give_frame(emu, &pix, |h, f| h.frame(f));
     if emu.live.recording {

@@ -133,6 +133,18 @@ struct DeviceStateArgs {
     /// through the Network framework (NWPathMonitor, expo-network …); offline, requests fail.
     #[arg(long, value_parser = parse_network)]
     network: Vec<(pomme_hle::network::Path, Option<f64>)>,
+    /// The battery: a level, `charging`, `full` or `unplugged` (the default: full,
+    /// unplugged), or both (`--battery 20%,charging`), and changes while it runs:
+    /// `--battery 15%@3`. The status bar shows it; apps read it through UIDevice
+    /// (batteryLevel, batteryState and their notifications, once they monitor it).
+    #[arg(long, value_parser = parse_battery)]
+    battery: Vec<(pomme_hle::statusbar::BatteryChange, Option<f64>)>,
+    /// Pin what the status bar shows, as `simctl status_bar override` does, for
+    /// screenshots: `--status-bar time=9:41,battery=100,cellular-bars=4,wifi-bars=3`
+    /// (also `battery-state=charging|charged|discharging` and
+    /// `data-network=wifi|hide|lte|5g|…`). Apps don't see it.
+    #[arg(long = "status-bar")]
+    status_bar: Option<pomme_hle::statusbar::Overrides>,
     /// Face ID / Touch ID, as the Simulator's Features menu sets it: `off` (not enrolled,
     /// the default) or `enrolled` (each prompt waits for a face: from `--face`, or ⌥⌘M /
     /// ⌥⌘N in the window). `match` and `no-match` are enrolled with every prompt
@@ -235,6 +247,18 @@ impl DeviceStateArgs {
                 Some(t) => emu.network.changes.push(((t * 1e9) as u64, p)),
             }
         }
+        for &(c, at) in &self.battery {
+            match at {
+                None => {
+                    let b = &mut emu.status_bar.battery;
+                    *b = pomme_hle::statusbar::Battery { level: c.level.unwrap_or(b.level), charge: c.charge.unwrap_or(b.charge) };
+                }
+                Some(t) => emu.status_bar.battery_changes.push(((t * 1e9) as u64, c)),
+            }
+        }
+        if let Some(o) = &self.status_bar {
+            emu.status_bar.overrides = o.clone();
+        }
     }
 }
 
@@ -242,6 +266,13 @@ impl DeviceStateArgs {
 fn parse_network(s: &str) -> std::result::Result<(pomme_hle::network::Path, Option<f64>), String> {
     match s.rsplit_once('@') {
         Some((p, t)) => Ok((p.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
+        None => Ok((s.parse()?, None)),
+    }
+}
+
+fn parse_battery(s: &str) -> std::result::Result<(pomme_hle::statusbar::BatteryChange, Option<f64>), String> {
+    match s.rsplit_once('@') {
+        Some((c, t)) => Ok((c.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
         None => Ok((s.parse()?, None)),
     }
 }
