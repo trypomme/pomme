@@ -18,6 +18,13 @@
   #layer { position: relative; border-radius: 44px; overflow: hidden; background: #000; touch-action: none; cursor: pointer; }
   #screen { position: relative; display: block; width: min(390px, calc(100vw - 56px)); aspect-ratio: 390 / 844;
             background: transparent; pointer-events: none; }
+  /* The app's accessibility elements over the screen (accessibility.js): unseen, but where they are,
+     so a screen reader's cursor sits on what it reads. The mouse goes through to the screen. */
+  #accessibility, #accessibility div { position: absolute; margin: 0; padding: 0; overflow: hidden;
+            color: transparent; background: transparent; pointer-events: none; font-size: 12px; white-space: nowrap; }
+  #accessibility { inset: 0; z-index: 2; }
+  #accessibility [tabindex]:focus { outline: none; }
+  #accessibility [tabindex]:focus-visible { outline: 3px solid #0a84ff; outline-offset: 1px; border-radius: 6px; }
   #status { color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; max-width: 520px; min-height: 2.8em; }
 </style>
 </head>
@@ -26,6 +33,7 @@
   <div id="device"><div id="layer"><canvas id="screen" width="780" height="1688"></canvas></div></div>
   <div id="status">Loading…</div>
   <script src="webview.js"></script>
+  <script src="accessibility.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

@@ -1,9 +1,11 @@
-// The page: shows the worker's frames, sends it touches, and hosts its web views (webview.js).
-// Touches go into a SharedArrayBuffer ring (see crates/pomme-web/src/lib.rs).
+// The page: shows the worker's frames, sends it touches, hosts its web views (webview.js) and
+// shows its accessibility tree to the browser's screen reader (accessibility.js).
+// Input goes into a SharedArrayBuffer ring (see crates/pomme-web/src/lib.rs).
 'use strict';
 
 const SCALE = 2; // pixels per point
 const HEADER = 8, RING = 256;
+const AX_EVENT = 16; // + the action: a screen reader's, on an element
 const params = new URLSearchParams(location.search);
 const bundle = params.get('app') || 'helloexpo.pfs';
 const ios = params.get('ios') || ''; // e.g. ?ios=18.6
@@ -20,6 +22,9 @@ if (!self.crossOriginIsolated) {
 const input = new Int32Array(new SharedArrayBuffer((HEADER + RING * 4) * 4));
 const worker = new Worker('worker.js');
 WebViews.attach(document.getElementById('layer'), canvas, 390, () => Atomics.notify(input, 0));
+Accessibility.attach(document.getElementById('layer'), (action, id) => {
+  push(AX_EVENT + action, id % 2 ** 32, Math.floor(id / 2 ** 32));
+}, () => [canvas.width / SCALE, canvas.height / SCALE]);
 const started = performance.now();
 let frames = 0;
 
@@ -32,6 +37,8 @@ worker.onmessage = (e) => {
     }
     ctx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
     if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.`;
+  } else if (m.type === 'accessibility') {
+    Accessibility.update(JSON.parse(m.json));
   } else if (m.type === 'webview') {
     WebViews.command(JSON.parse(m.json));
   } else if (m.type === 'log') {
@@ -49,11 +56,16 @@ function send(phase, ev) {
   const r = canvas.getBoundingClientRect();
   const x = (ev.clientX - r.left) * 390 / r.width;
   const y = (ev.clientY - r.top) * 844 / r.height;
+  push(phase, Math.round(x * 100), Math.round(y * 100));
+}
+// An event into the ring: four ints, the first saying what it is.
+function push(kind, a, b) {
   const n = Atomics.load(input, 0);
   const at = HEADER + (n % RING) * 4;
-  input[at] = phase;
-  input[at + 1] = Math.round(x * 100);
-  input[at + 2] = Math.round(y * 100);
+  input[at] = kind;
+  input[at + 1] = a;
+  input[at + 2] = b;
+  input[at + 3] = 0;
   Atomics.store(input, 0, n + 1);
   Atomics.notify(input, 0);
 }

@@ -11,6 +11,7 @@ self.pommeFrame = (rgba, width, height) => {
 };
 self.pommeLog = (text) => self.postMessage({ type: 'log', text });
 self.pommeWebView = (json) => self.postMessage({ type: 'webview', json });
+self.pommeAccessibility = (json) => self.postMessage({ type: 'accessibility', json });
 
 self.onmessage = async (e) => {
   const { bundle, input, scale, ios, webViews } = e.data;

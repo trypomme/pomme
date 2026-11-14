@@ -39,6 +39,9 @@ pub const TRAIT_HEADER: u64 = 1 << 16;
 /// it on iOS, and VoiceOver says "text field" for it).
 pub const TRAIT_TEXT_ENTRY: u64 = 1 << 18;
 
+/// `UIAccessibilityContainerTypeList`.
+const CONTAINER_LIST: u64 = 2;
+
 /// What an object has been told about itself (nothing told: UIKit's defaults).
 #[derive(Debug, Default, Clone)]
 pub struct Props {
@@ -65,6 +68,15 @@ pub struct Props {
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub props: HashMap<u64, Props>,
+    /// A navigation bar's elements (its back button, its title), kept so they
+    /// stay the same objects while the bar shows them.
+    bars: HashMap<(u64, BarPart), u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BarPart {
+    Back,
+    Title,
 }
 
 fn props(emu: &Emu, o: u64) -> Props {
@@ -483,6 +495,9 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (O, false, "accessibilityElementCount", element_count),
     (O, false, "accessibilityElementAtIndex:", element_at_index),
     (O, false, "indexOfAccessibilityElement:", index_of_element),
+    ("UINavigationBar", false, "accessibilityElementCount", bar_element_count),
+    ("UINavigationBar", false, "accessibilityElementAtIndex:", bar_element_at_index),
+    ("UINavigationBar", false, "indexOfAccessibilityElement:", bar_index_of_element),
     (E, false, "initWithAccessibilityContainer:", element_init_with_container),
     (E, false, "accessibilityContainer", container),
     (E, false, "setAccessibilityContainer:", set_container),
@@ -500,6 +515,98 @@ fn convert_frame_to_screen(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[("_UIAccessibilityConvertFrameToScreenCoordinates", convert_frame_to_screen)];
+
+// ---- UINavigationBar ----
+
+/// What a navigation bar shows accessibility, as UIKit's bar views do: its
+/// back button and its title (a header). pomme draws the bar itself, so these
+/// are UIAccessibilityElements in the bar, at what's drawn.
+fn bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
+    let Some(look) = crate::navigation::bar_look(emu, bar)? else { return Ok(Vec::new()) };
+    let [_, _, w, h] = view(emu, bar).bounds;
+    let mut parts = Vec::new();
+    if let Some(b) = &look.back {
+        // The chevron alone reads as "Back", as on iOS.
+        let label = b.label.clone().unwrap_or_else(|| "Back".into());
+        parts.push((BarPart::Back, label, TRAIT_BUTTON, [b.hit.0, 0.0, b.hit.1, look.row]));
+    }
+    if !look.title.is_empty() {
+        let frame = if look.large {
+            let x = look.leading + 16.0;
+            [x, look.row, (w - x - 16.0).max(0.0), (h - look.row).max(0.0)]
+        } else {
+            let tw = crate::navigation::text_width(emu, &look.title, crate::navigation::TITLE_WEIGHT).min(w);
+            [(w - tw) / 2.0, 0.0, tw, look.row]
+        };
+        parts.push((BarPart::Title, look.title.clone(), TRAIT_HEADER, frame));
+    }
+    let mut out = Vec::new();
+    for (part, label, traits, frame) in parts {
+        let el = match emu.ax.bars.get(&(bar, part)) {
+            Some(&el) => el,
+            None => {
+                let cls = objc::host_class(emu, E)?;
+                let el = objc::create_instance(emu, cls, 0)?;
+                emu.ax.bars.insert((bar, part), el);
+                el
+            }
+        };
+        let old = props(emu, el).label;
+        let same = old != 0 && foundation::nsstring(emu, old).is_ok_and(|s| s == label);
+        if !same {
+            let s = foundation::new_nsstring(emu, &label)?;
+            if old != 0 {
+                objc::objc_release_obj(emu, old)?;
+            }
+            props_mut(emu, el).label = s;
+        }
+        let p = props(emu, el);
+        if p.traits != Some(traits) || p.container != bar || p.frame_in_container != Some(frame) || p.is_element != Some(true) {
+            let p = props_mut(emu, el);
+            p.traits = Some(traits);
+            p.container = bar;
+            p.frame_in_container = Some(frame);
+            p.is_element = Some(true);
+        }
+        out.push(el);
+    }
+    Ok(out)
+}
+
+/// The bar's own elements, unless the app gave it some.
+fn bar_children(emu: &mut Emu, bar: u64) -> Result<Option<Vec<u64>>> {
+    if props(emu, bar).elements != 0 || !emu.nav.bars.contains_key(&bar) {
+        return Ok(None);
+    }
+    Ok(Some(bar_elements(emu, bar)?))
+}
+
+fn bar_element_count(emu: &mut Emu) -> Result<()> {
+    let bar = emu.arg(0);
+    let n = match bar_children(emu, bar)? {
+        Some(els) => els.len() as u64,
+        None => return element_count(emu),
+    };
+    ret(emu, n)
+}
+
+fn bar_element_at_index(emu: &mut Emu) -> Result<()> {
+    let (bar, i) = (emu.arg(0), emu.arg(2));
+    let e = match bar_children(emu, bar)? {
+        Some(els) => els.get(i as usize).copied().unwrap_or(0),
+        None => return element_at_index(emu),
+    };
+    ret(emu, e)
+}
+
+fn bar_index_of_element(emu: &mut Emu) -> Result<()> {
+    let (bar, e) = (emu.arg(0), emu.arg(2));
+    let i = match bar_children(emu, bar)? {
+        Some(els) => els.iter().position(|&x| x == e).map_or(NOT_FOUND, |i| i as u64),
+        None => return index_of_element(emu),
+    };
+    ret(emu, i)
+}
 
 // ---- Reading the tree ----
 
@@ -523,6 +630,11 @@ pub struct Element {
     pub is_element: bool,
     /// Whether it's modal (`accessibilityViewIsModal`): VoiceOver ignores its siblings.
     pub modal: bool,
+    /// `accessibilityContainerType`: a container VoiceOver announces (a group, a list…), or 0.
+    pub container_type: u64,
+    /// Whether the elements in it are in the order it gave them
+    /// (`accessibilityElements`, a container's own count); otherwise they're its subviews.
+    pub ordered: bool,
     /// Where it is on screen, in points: x, y, width, height.
     pub frame: [f64; 4],
     /// Where VoiceOver taps to activate it, in screen points (its frame's center by default).
@@ -575,19 +687,20 @@ fn string_of(emu: &mut Emu, o: u64, sel: &str) -> Result<Option<String>> {
     Ok(foundation::nsstring(emu, s).ok().filter(|s| !s.is_empty()))
 }
 
-/// The objects accessibility finds inside `o`: the elements it provides, or a view's subviews.
-fn children(emu: &mut Emu, o: u64) -> Result<Vec<u64>> {
+/// The objects accessibility finds inside `o`: the elements it provides (in
+/// its order: true), or a view's subviews.
+fn children(emu: &mut Emu, o: u64) -> Result<(Vec<u64>, bool)> {
     let elements = send(emu, o, "accessibilityElements", &[])?;
     if elements != 0 {
         let n = send(emu, elements, "count", &[])?;
-        return (0..n).map(|i| send(emu, elements, "objectAtIndex:", &[i])).collect();
+        return Ok(((0..n).map(|i| send(emu, elements, "objectAtIndex:", &[i])).collect::<Result<_>>()?, true));
     }
     // A container that counts its own elements (UIAccessibilityContainer).
     let n = send(emu, o, "accessibilityElementCount", &[])?;
     if n != 0 && n != NOT_FOUND {
-        return (0..n.min(10_000)).map(|i| send(emu, o, "accessibilityElementAtIndex:", &[i])).collect();
+        return Ok(((0..n.min(10_000)).map(|i| send(emu, o, "accessibilityElementAtIndex:", &[i])).collect::<Result<_>>()?, true));
     }
-    Ok(if is_view(emu, o) { view(emu, o).subviews } else { Vec::new() })
+    Ok((if is_view(emu, o) { view(emu, o).subviews } else { Vec::new() }, false))
 }
 
 fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element>) -> Result<()> {
@@ -619,6 +732,8 @@ fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element
         traits: send(emu, o, "accessibilityTraits", &[])?,
         is_element: send(emu, o, "isAccessibilityElement", &[])? & 0xff != 0,
         modal: send(emu, o, "accessibilityViewIsModal", &[])? & 0xff != 0,
+        container_type: send(emu, o, "accessibilityContainerType", &[])?,
+        ordered: false,
         frame: r,
         activation_point: {
             let p = send_fp(emu, o, "accessibilityActivationPoint", &[], &[])?;
@@ -626,8 +741,11 @@ fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element
         },
     };
     let in_view = element.view;
+    let at = out.len();
     out.push(element);
-    for c in children(emu, o)? {
+    let (children, ordered) = children(emu, o)?;
+    out[at].ordered = ordered;
+    for c in children {
         if c != o {
             walk(emu, c, in_view, depth + 1, out)?;
         }
@@ -689,8 +807,11 @@ pub fn hittable(emu: &mut Emu, e: &Element) -> Result<bool> {
 pub enum Role {
     /// A window: the root of what's on screen in it.
     Window,
-    /// A container that names the elements in it (it has a label or an identifier).
+    /// A container VoiceOver announces on the way in (`accessibilityContainerType`:
+    /// a semantic group, a landmark, a data table), by its label.
     Group,
+    /// A list (`UIAccessibilityContainerTypeList`).
+    List,
     Button,
     Link,
     /// A `UISwitch`: its value is "1" when on.
@@ -715,6 +836,8 @@ impl Role {
                 Role::Window
             } else if t & TRAIT_TAB_BAR != 0 {
                 Role::TabBar
+            } else if e.container_type == CONTAINER_LIST {
+                Role::List
             } else {
                 Role::Group
             }
@@ -769,7 +892,7 @@ pub struct Node {
 impl Node {
     /// An accessibility element: a screen reader stops on it (windows and groups only hold them).
     pub fn is_element(&self) -> bool {
-        !matches!(self.role, Role::Window | Role::Group | Role::TabBar)
+        !matches!(self.role, Role::Window | Role::Group | Role::List | Role::TabBar)
     }
 
     pub fn enabled(&self) -> bool {
@@ -800,10 +923,11 @@ pub enum Action {
 }
 
 /// The screen as VoiceOver would present it, for a host's screen reader:
-/// windows, the accessibility elements in them, and the containers that
-/// name groups of them. VoiceOver doesn't look inside an element, nor at
-/// what's beside a modal view; containers that say nothing about themselves
-/// are left out (their elements belong to the nearest one that does).
+/// windows, the accessibility elements in them, and the containers it
+/// announces (those with an `accessibilityContainerType`, and tab bars).
+/// VoiceOver doesn't look inside an element, nor at what's beside a modal
+/// view; other containers are left out (their elements belong to the nearest
+/// one that's kept).
 pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
     let elements = snapshot(emu)?;
     let ends: Vec<usize> = (0..elements.len()).map(|i| subtree_end(&elements, i)).collect();
@@ -817,22 +941,43 @@ pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
             modal.insert(w, i);
         }
     }
-    // Beside the modal view in its window: neither in it nor one of its ancestors.
-    let beside_modal = |i: usize| modal.get(&window_of[i]).is_some_and(|&m| !(m <= i && i < ends[m]) && !(i <= m && m < ends[i]));
+    // Each element's parent in the snapshot.
+    let mut parent_of = vec![None; elements.len()];
+    for i in 0..elements.len() {
+        let mut j = i + 1;
+        while j < ends[i] {
+            parent_of[j] = Some(i);
+            j = ends[j];
+        }
+    }
+    // In what the modal view's siblings hold (VoiceOver ignores the modal view's siblings).
+    let beside_modal = |i: usize| {
+        modal.get(&window_of[i]).is_some_and(|&m| {
+            let Some(p) = parent_of[m] else { return false };
+            p < i && i < ends[p] && !(m <= i && i < ends[m])
+        })
+    };
     let mut out: Vec<Node> = Vec::new();
+    // Where each node goes among its parent's: see the sort below.
+    let mut keys: Vec<(f64, f64, usize)> = Vec::new();
     // The kept ancestors of the current element: (depth, id).
     let mut path: Vec<(usize, u64)> = Vec::new();
+    // The containers above it that keep their own order: (depth, index).
+    let mut ordered: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < elements.len() {
         let e = &elements[i];
         while path.last().is_some_and(|&(d, _)| d >= e.depth) {
             path.pop();
         }
+        while ordered.last().is_some_and(|&(d, _)| d >= e.depth) {
+            ordered.pop();
+        }
         if beside_modal(i) {
             i = ends[i]; // not this, nor anything in it
             continue;
         }
-        let keep = e.depth == 0 || e.is_element || e.label.is_some() || e.identifier.is_some();
+        let keep = e.depth == 0 || e.is_element || e.container_type != 0 || e.traits & TRAIT_TAB_BAR != 0;
         if keep {
             let switch = e.is_element && is_kind(emu, e.object, "UISwitch")?;
             out.push(Node {
@@ -847,14 +992,29 @@ pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
                 frame: e.frame,
                 activation_point: e.activation_point,
             });
+            // UIKit reads the elements in a container top to bottom, then left
+            // to right, wherever they are among its subviews, unless something
+            // between gives its elements in its own order: they stay together
+            // in that order, where that container is.
+            let parent_depth = path.last().map(|&(d, _)| d);
+            let key = match ordered.iter().find(|&&(d, _)| parent_depth.is_some_and(|p| d >= p)) {
+                Some(&(d, _)) if Some(d) == parent_depth => (0.0, 0.0, i),
+                Some(&(_, c)) => (elements[c].frame[1], elements[c].frame[0], i),
+                None => (e.frame[1], e.frame[0], i),
+            };
+            keys.push(key);
             if e.is_element {
                 i = ends[i]; // VoiceOver doesn't look inside an element
                 continue;
             }
             path.push((e.depth, e.object));
         }
+        if e.ordered {
+            ordered.push((e.depth, i));
+        }
         i += 1;
     }
+    let mut out = in_reading_order(out, keys);
     // Groups with no elements in them say nothing a screen reader can visit.
     loop {
         let has_child: std::collections::HashSet<u64> = out.iter().filter_map(|n| n.parent).collect();
@@ -865,6 +1025,32 @@ pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
         }
     }
     Ok(out)
+}
+
+/// The nodes with each one's children sorted by their keys, parents before children.
+fn in_reading_order(nodes: Vec<Node>, keys: Vec<(f64, f64, usize)>) -> Vec<Node> {
+    let mut children: HashMap<Option<u64>, Vec<usize>> = HashMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        children.entry(n.parent).or_default().push(i);
+    }
+    for kids in children.values_mut() {
+        kids.sort_by(|&a, &b| {
+            let (ka, kb) = (keys[a], keys[b]);
+            ka.0.total_cmp(&kb.0).then(ka.1.total_cmp(&kb.1)).then(ka.2.cmp(&kb.2))
+        });
+    }
+    let mut order = Vec::with_capacity(nodes.len());
+    let mut stack: Vec<usize> = children.get(&None).map(|k| k.iter().rev().copied().collect()).unwrap_or_default();
+    // Windows stay in their order (back to front).
+    stack.sort_by_key(|&i| std::cmp::Reverse(keys[i].2));
+    while let Some(i) = stack.pop() {
+        order.push(i);
+        if let Some(kids) = children.get(&Some(nodes[i].id)) {
+            stack.extend(kids.iter().rev());
+        }
+    }
+    let mut slots: Vec<Option<Node>> = nodes.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
 /// The index just past `i`'s subtree in a pre-order snapshot.

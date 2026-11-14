@@ -2,12 +2,18 @@
 //! way it does natively, and the page talks to it through:
 //!
 //! - **input**: a SharedArrayBuffer viewed as an `Int32Array`. Slot 0 counts
-//!   events written; events are 4 ints each (phase, x×100, y×100, 0) in a
-//!   ring of [`RING`] starting at slot [`HEADER`]. The page writes an event,
+//!   events written; events are 4 ints each in a ring of [`RING`] starting at
+//!   slot [`HEADER`]: a touch is (phase, x×100, y×100, 0), and what the screen
+//!   reader did to an element (see below) is ([`AX_EVENT`] + action, the
+//!   element's id low 32 bits, high 32 bits, 0). The page writes an event,
 //!   bumps the count and `Atomics.notify`s; the worker reads them when the app
 //!   is idle, sleeping in `Atomics.wait` until the next deadline otherwise.
 //! - **frames**: the worker calls the global `pommeFrame(rgba, width, height)`
 //!   (defined by the worker script), which posts the pixels to the page.
+//! - **accessibility**: the screen's accessibility tree, whenever it changes,
+//!   goes to the global `pommeAccessibility(json)` (a list of
+//!   `pomme_hle::accessibility::Node`s); the page mirrors it in ARIA over the
+//!   screen (web/accessibility.js) for the browser's screen reader.
 //! - **web views**: pages run in the browser itself, in frames the page puts
 //!   under the screen (web/webview.js) where pomme leaves a hole. The worker's
 //!   commands go out through the global `pommeWebView(json)`; the page's events
@@ -17,6 +23,7 @@
 //! Virtual time follows the wall clock while the app is idle; when the guest
 //! is busy it simply falls behind and catches up, as a slow phone would.
 
+use pomme_hle::accessibility::{Action, Node};
 use pomme_hle::host::{Event, Frame, Host, Idle};
 use pomme_hle::touch::Input;
 use pomme_hle::{Emu, Stop};
@@ -25,6 +32,9 @@ use wasm_bindgen::prelude::*;
 
 const HEADER: u32 = 8;
 const RING: u32 = 256;
+/// The first input "phase" that's a screen reader's action: + 0 activate,
+/// 1 increment, 2 decrement, 3 focus (touch phases are 0–4).
+const AX_EVENT: i32 = 16;
 
 #[wasm_bindgen]
 extern "C" {
@@ -36,6 +46,8 @@ extern "C" {
     fn now_ms() -> f64;
     #[wasm_bindgen(js_name = pommeWebView)]
     fn pomme_web_view(json: &str);
+    #[wasm_bindgen(js_name = pommeAccessibility)]
+    fn pomme_accessibility(json: &str);
 }
 
 /// Bytes of the web view event ring (after its two-int header: bytes written, bytes read).
@@ -109,7 +121,18 @@ impl WebHost {
         while self.read < written {
             let at = HEADER + (self.read as u32 % RING) * 4;
             let get = |i: u32| self.input.get_index(at + i);
-            out.push(Event::Touch(Input { at_ns: 0, phase: get(0) as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 }));
+            let kind = get(0);
+            let action = match kind - AX_EVENT {
+                0 => Some(Action::Activate),
+                1 => Some(Action::Increment),
+                2 => Some(Action::Decrement),
+                3 => Some(Action::Focus),
+                _ => None,
+            };
+            out.push(match action {
+                Some(action) => Event::Accessibility { id: get(1) as u32 as u64 | (get(2) as u32 as u64) << 32, action },
+                None => Event::Touch(Input { at_ns: 0, phase: kind as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 }),
+            });
             self.read += 1;
         }
         out
@@ -149,6 +172,17 @@ impl Host for WebHost {
 
     fn frame(&mut self, f: Frame<'_>) {
         pomme_frame(f.rgba, f.width, f.height);
+    }
+
+    /// The page can't tell whether a screen reader is on, so it always has the tree.
+    fn wants_accessibility(&mut self) -> bool {
+        true
+    }
+
+    fn accessibility(&mut self, tree: &[Node]) {
+        if let Ok(json) = serde_json::to_string(tree) {
+            pomme_accessibility(&json);
+        }
     }
 }
 

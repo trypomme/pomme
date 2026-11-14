@@ -1,7 +1,8 @@
 // A small UIKit app for tests/accessibility.rs: what a host's screen reader
-// sees (UIKit's default elements, a container that names a group, an element
-// with its own activation, a hidden subtree) and what it can do (activate,
-// adjust), and a modal view that hides what's beside it.
+// sees (UIKit's default elements, the navigation bar's title, a group, an
+// element with its own activation, a hidden subtree), in VoiceOver's order
+// (top to bottom, then left to right), what it can do (activate, adjust),
+// and a modal view that hides its siblings.
 #import <UIKit/UIKit.h>
 
 // An element that handles VoiceOver's double-tap itself, as Flutter's semantics nodes do.
@@ -41,9 +42,12 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.whiteColor;
+    self.title = @"Home";
     UILabel *title = [self label:@"Accessibility" frame:CGRectMake(20, 60, 350, 40) in:self.view];
     title.accessibilityTraits = UIAccessibilityTraitHeader;
 
+    // Added before the button, but right of it: read after it.
+    self.count = [self label:@"Tapped 0 times" frame:CGRectMake(200, 110, 170, 44) in:self.view];
     UIButton *tap = [UIButton buttonWithType:UIButtonTypeSystem];
     tap.frame = CGRectMake(20, 110, 160, 44);
     [tap setTitle:@"Tap me" forState:UIControlStateNormal];
@@ -51,11 +55,11 @@
     tap.accessibilityHint = @"Counts taps";
     [tap addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:tap];
-    self.count = [self label:@"Tapped 0 times" frame:CGRectMake(200, 110, 170, 44) in:self.view];
 
-    // A container that names its elements: VoiceOver says "Settings" on the way in.
+    // A group VoiceOver announces on the way in ("Settings").
     UIView *settings = [[UIView alloc] initWithFrame:CGRectMake(0, 170, 390, 120)];
     settings.accessibilityLabel = @"Settings";
+    settings.accessibilityContainerType = UIAccessibilityContainerTypeSemanticGroup;
     [self.view addSubview:settings];
     UISwitch *wifi = [[UISwitch alloc] initWithFrame:CGRectMake(20, 10, 0, 0)];
     wifi.on = YES;
@@ -66,9 +70,13 @@
     volume.accessibilityLabel = @"Volume";
     [settings addSubview:volume];
 
-    UITextField *name = [[UITextField alloc] initWithFrame:CGRectMake(20, 300, 350, 40)];
+    // A labelled container that isn't a group: VoiceOver reads only the elements in it.
+    UIView *plain = [[UIView alloc] initWithFrame:CGRectMake(0, 300, 390, 40)];
+    plain.accessibilityLabel = @"Not announced";
+    [self.view addSubview:plain];
+    UITextField *name = [[UITextField alloc] initWithFrame:CGRectMake(20, 0, 350, 40)];
     name.placeholder = @"Your name";
-    [self.view addSubview:name];
+    [plain addSubview:name];
 
     Activatable *custom = [[Activatable alloc] initWithFrame:CGRectMake(20, 350, 350, 44)];
     custom.accessibilityIdentifier = @"custom";
@@ -113,7 +121,7 @@
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [ViewController new];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[ViewController new]];
     [self.window makeKeyAndVisible];
     return YES;
 }

@@ -62,7 +62,7 @@ pub struct State {
     /// Container view → its navigation controller.
     containers: HashMap<u64, u64>,
     /// Navigation bar → its navigation controller.
-    bars: HashMap<u64, u64>,
+    pub(crate) bars: HashMap<u64, u64>,
     items: HashMap<u64, u64>,
     item_state: HashMap<u64, Item>,
     titles: HashMap<u64, u64>,
@@ -917,7 +917,7 @@ fn bar_background(emu: &mut Emu, item: u64) -> (Option<[f64; 4]>, Option<[f64; 4
     (background, shadow)
 }
 
-fn text_width(emu: &mut Emu, text: &str, weight: f64) -> f64 {
+pub(crate) fn text_width(emu: &mut Emu, text: &str, weight: f64) -> f64 {
     crate::textkit::line_glyphs(emu, text, TITLE_SIZE, weight, [0.0; 4], 0.0, 0.0).1
 }
 

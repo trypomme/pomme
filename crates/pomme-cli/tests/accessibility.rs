@@ -95,7 +95,7 @@ fn the_host_reads_and_acts_on_the_screen() {
     let first = &trees[0];
     assert_eq!(
         outline(first),
-        "Window\n  Heading \"Accessibility\"\n  Button \"Tap me\"\n  StaticText \"Tapped 0 times\"\n  Group \"Settings\"\n    Switch \"Wi-Fi\" = \"1\"\n    Adjustable \"Volume\" = \"50%\"\n  TextField \"Your name\"\n  Button \"Activated 0 times\"\n  Button \"Show alert\"\n"
+        "Window\n  Heading \"Home\"\n  Heading \"Accessibility\"\n  Button \"Tap me\"\n  StaticText \"Tapped 0 times\"\n  Group \"Settings\"\n    Switch \"Wi-Fi\" = \"1\"\n    Adjustable \"Volume\" = \"50%\"\n  TextField \"Your name\"\n  Button \"Activated 0 times\"\n  Button \"Show alert\"\n"
     );
     let tap = find(first, "Tap me").unwrap();
     assert_eq!(tap.identifier.as_deref(), Some("tap"));
@@ -105,14 +105,17 @@ fn the_host_reads_and_acts_on_the_screen() {
     assert!(tap.is_element() && tap.enabled());
     assert!(find(first, "Wi-Fi").unwrap().on());
     assert!(find(first, "Decoration").is_none(), "hidden from accessibility");
+    assert!(find(first, "Not announced").is_none(), "not a group");
+    assert_eq!(find(first, "Your name").unwrap().frame, [20.0, 300.0, 350.0, 40.0]);
     let window = &first[0];
     assert_eq!((window.role, window.parent), (Role::Window, None));
 
     // Each action shows in a later tree: a tap at the button, the slider a
-    // tenth up, the element's own activation, then the modal view alone.
+    // tenth up, the element's own activation, then the modal view without
+    // its siblings (the navigation bar isn't one).
     let last = trees.last().unwrap();
     assert!(trees.iter().any(|t| find(t, "Tapped 1 times").is_some()), "the tap reached the button");
     assert!(trees.iter().any(|t| find(t, "Volume").and_then(|n| n.value.as_deref()) == Some("60%")), "the slider went up");
     assert!(trees.iter().any(|t| find(t, "Activated 1 times").is_some()), "accessibilityActivate handled it");
-    assert_eq!(outline(last), "Window\n  StaticText \"Are you sure?\"\n  Button \"OK\"\n");
+    assert_eq!(outline(last), "Window\n  Heading \"Home\"\n  StaticText \"Are you sure?\"\n  Button \"OK\"\n");
 }
