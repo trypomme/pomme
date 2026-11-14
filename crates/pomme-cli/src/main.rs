@@ -138,6 +138,11 @@ struct DeviceStateArgs {
     /// (`--battery 20%,charging`), and changes while it runs:
     /// `--battery 15%@3`. The status bar shows it; apps read it through UIDevice
     /// (batteryLevel, batteryState and their notifications, once they monitor it).
+    /// The text font: `auto` (the default) uses SF Pro, iOS's own, where it's installed
+    /// (macOS's system font, or SF Pro from developer.apple.com/fonts on macOS, Linux
+    /// or Windows), else Inter; `inter` always Inter; or a variable font file's path.
+    #[arg(long, default_value = "auto")]
+    font: String,
     /// Light (the default) or dark, as Settings ▸ Display sets it, and changes while
     /// it runs: `--appearance dark@3`. System colours follow, apps hear
     /// `traitCollectionDidChange:`, and the status bar's default style turns white.
@@ -279,6 +284,32 @@ fn parse_network(s: &str) -> std::result::Result<(pomme_hle::network::Path, Opti
         Some((p, t)) => Ok((p.parse()?, Some(t.trim().parse::<f64>().map_err(|e| format!("{t}: {e}"))?))),
         None => Ok((s.parse()?, None)),
     }
+}
+
+/// The text font, as `--font` says: SF Pro if it's here (else Inter), Inter, or a file.
+fn choose_font(emu: &mut pomme_hle::Emu, choice: &str) -> Result<()> {
+    let path = match choice {
+        "inter" | "Inter" => {
+            println!("text in Inter");
+            return Ok(());
+        }
+        "auto" => match pomme_hle::fonts::find_sf() {
+            Some(p) => p,
+            None => {
+                println!("text in Inter (SF Pro isn't installed: developer.apple.com/fonts)");
+                return Ok(());
+            }
+        },
+        file => PathBuf::from(file),
+    };
+    let bytes = std::fs::read(&path).with_context(|| format!("reading the font {}", path.display()))?;
+    match pomme_hle::set_text_font(emu, bytes) {
+        Ok(()) => println!("text in {}", path.display()),
+        // SF found but unusable: say so, and use Inter.
+        Err(e) if choice == "auto" => println!("text in Inter ({}: {e})", path.display()),
+        Err(e) => anyhow::bail!("{}: {e}", path.display()),
+    }
+    Ok(())
 }
 
 fn parse_appearance(s: &str) -> std::result::Result<(bool, Option<f64>), String> {
@@ -830,6 +861,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, taps: &[(f64, f64
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
     emu.device = device;
+    choose_font(&mut emu, &state.font)?;
     clipboard.apply(&mut emu)?;
     state.apply(&mut emu);
     emu.ui.launch_url = url;

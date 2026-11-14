@@ -45,6 +45,24 @@ fn ink_boxes(pix: &tiny_skia::Pixmap, scale: f64, band: f64) -> Vec<Box4> {
 
 #[test]
 fn layout_matches_ios() {
+    compare_layout(None, 0.5);
+}
+
+/// In SF Pro (where it's installed, as the CLI uses it): the same, the time
+/// to within 0.7 pt (macOS's SF isn't quite iOS's: the digits come out a
+/// third of a point wider). Skipped without SF.
+#[test]
+fn layout_in_sf_matches_ios() {
+    let Some(sf) = pomme_hle::fonts::find_sf() else {
+        eprintln!("skipping: SF Pro isn't installed");
+        return;
+    };
+    compare_layout(Some(std::fs::read(sf).unwrap()), 0.7);
+}
+
+/// Each recorded phone's status bar, pinned as on the simulator, against
+/// its ink there, in Inter or `font`.
+fn compare_layout(font: Option<Vec<u8>>, tolerance: f64) {
     let recorded = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/statusbar/ios26.txt")).unwrap();
     let mut phones: Vec<(String, Vec<Box4>)> = Vec::new();
     for line in recorded.lines().filter(|l| l.starts_with("BOX ")) {
@@ -62,13 +80,17 @@ fn layout_matches_ios() {
     let mut wrong = Vec::new();
     for (id, ios) in &phones {
         let Some(mut emu) = common::boot("largetitles") else { return };
+        if let Some(f) = &font {
+            pomme_hle::set_text_font(&mut emu, f.clone()).unwrap();
+        }
         emu.device = pomme_hle::device::find(id).unwrap();
         emu.status_bar.overrides = "time=9:41,battery=100".parse().unwrap();
         common::views(&mut emu, 2.0);
         let scale = emu.device.scale;
         let band = ios.iter().map(|b| b[3]).fold(0.0, f64::max) + 2.0;
         let ours = ink_boxes(&pomme_hle::render::render(&mut emu, scale as f32).unwrap(), scale, band);
-        // (The SE's "AM" is narrower in pomme's font than in SF: its time isn't compared.)
+        // (The SE's "AM" is narrower than iOS's in Inter, and in macOS's SF,
+        // whose optical sizes stop at 17 pt: its time isn't compared.)
         let compared = |b: &Box4| !(id == "iphone-se" && b[0] > 150.0 && b[1] < 230.0);
         let (ours, ios): (Vec<&Box4>, Vec<&Box4>) = (ours.iter().filter(|b| compared(b)).collect(), ios.iter().filter(|b| compared(b)).collect());
         if ours.len() != ios.len() {
@@ -76,7 +98,7 @@ fn layout_matches_ios() {
             continue;
         }
         for (o, i) in ours.iter().zip(&ios) {
-            if o.iter().zip(i.iter()).any(|(a, b)| (a - b).abs() > 0.5) {
+            if o.iter().zip(i.iter()).any(|(a, b)| (a - b).abs() > tolerance) {
                 wrong.push(format!("{id}: {o:?}, iOS {i:?}"));
             }
         }

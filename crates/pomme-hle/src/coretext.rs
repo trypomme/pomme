@@ -108,8 +108,9 @@ fn with_face<T>(emu: &mut Emu, font: &Font, f: impl FnOnce(&ttf_parser::Face) ->
     let face = faces(emu).get(font.face)?.clone();
     let mut parsed = ttf_parser::Face::parse(&face.bytes, face.index).ok()?;
     if face.variable_weight {
-        parsed.set_variation(ttf_parser::Tag::from_bytes(b"wght"), crate::textkit::ot_weight(font.weight) as f32);
-        parsed.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), font.size.clamp(14.0, 32.0) as f32);
+        parsed.set_variation(ttf_parser::Tag::from_bytes(b"wght"), crate::textkit::font_weight(&parsed, font.weight) as f32);
+        let opsz = crate::textkit::optical_size(&parsed, font.size);
+        parsed.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz);
     }
     Some(f(&parsed))
 }
@@ -371,8 +372,11 @@ fn advances(emu: &mut Emu) -> Result<()> {
     let Some(f) = font(emu, src) else { return ret_f64(emu, 0.0) };
     let s = scale(emu, &f);
     let ids: Vec<u16> = (0..n).map(|i| emu.p.memory.read_u16(glyphs + i as u64 * 2)).collect::<std::result::Result<_, _>>()?;
+    let size = f.size;
     let adv: Vec<f64> = with_face(emu, &f, |p| {
-        ids.iter().map(|&g| if vertical { p.glyph_ver_advance(ttf_parser::GlyphId(g)).unwrap_or(0) } else { p.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0) } as f64).collect()
+        // Across, with the font's tracking for the size (SF's `trak`).
+        let track = crate::textkit::tracking(p, size) * p.units_per_em() as f64;
+        ids.iter().map(|&g| if vertical { p.glyph_ver_advance(ttf_parser::GlyphId(g)).unwrap_or(0) as f64 } else { p.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0) as f64 + track }).collect()
     })
     .unwrap_or_default();
     let mut total = 0.0;

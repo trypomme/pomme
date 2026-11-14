@@ -88,6 +88,9 @@ pub mod uttype;
 pub mod network;
 pub mod statusbar;
 pub mod appearance;
+pub use textkit::set_text_font;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fonts;
 pub mod keychain;
 pub mod animation;
 mod spinner;

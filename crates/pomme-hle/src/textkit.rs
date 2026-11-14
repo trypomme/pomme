@@ -33,6 +33,15 @@ const NOT_FOUND: u64 = i64::MAX as u64;
 pub struct State {
     /// System fonts by file name, once looked for (None: not in the sysroot).
     fonts: HashMap<&'static str, Option<std::rc::Rc<Vec<u8>>>>,
+    /// The text font the host chose ([`set_text_font`]): SF Pro where it's
+    /// installed. None: the sysroot's Inter.
+    text_font: Option<std::rc::Rc<Vec<u8>>>,
+    /// The text font's optical-size range, once read.
+    opsz_range: Option<Option<(f32, f32)>>,
+    /// Whether its weights are SF's (its weight axis runs to 1000).
+    sf_weights: bool,
+    /// The text font's tracking (em) by point size (in hundredths), once read.
+    tracking: HashMap<u32, f64>,
     /// (char, weight, optical size) → advance in em.
     advances: HashMap<(char, u16, u16), f64>,
 }
@@ -53,9 +62,59 @@ pub(crate) fn system_font(emu: &mut Emu, file: &'static str) -> Option<std::rc::
     emu.text.fonts[file].clone()
 }
 
-/// The text font (Inter).
+/// The text font: the one the host chose (SF Pro, iOS's own, where it's
+/// installed), else the sysroot's Inter.
 pub(crate) fn font_bytes(emu: &mut Emu) -> Option<std::rc::Rc<Vec<u8>>> {
+    if let Some(f) = &emu.text.text_font {
+        return Some(f.clone());
+    }
     system_font(emu, "Inter.ttf")
+}
+
+/// Use `bytes` (a variable TrueType font with a weight axis, as SF Pro and
+/// Inter are) for text, in place of Inter. Set before the app runs.
+pub fn set_text_font(emu: &mut Emu, bytes: Vec<u8>) -> std::result::Result<(), String> {
+    let face = ttf_parser::Face::parse(&bytes, 0).map_err(|e| format!("not a font: {e}"))?;
+    if !face.variation_axes().into_iter().any(|a| a.tag == ttf_parser::Tag::from_bytes(b"wght")) {
+        return Err("not a variable font with a weight axis (use SF Pro's variable SF-Pro.ttf)".into());
+    }
+    if face.glyph_index('a').is_none() {
+        return Err("has no Latin letters".into());
+    }
+    emu.text.text_font = Some(std::rc::Rc::new(bytes));
+    emu.text.advances.clear();
+    emu.text.opsz_range = None;
+    emu.text.tracking.clear();
+    Ok(())
+}
+
+/// The tracking a font asks for at `size` points, in em: its `trak` table's
+/// normal track, between the sizes it gives (SF Pro tightens large text and
+/// loosens small, as Apple's text system applies it; Inter has none).
+pub(crate) fn tracking(face: &ttf_parser::Face, size: f64) -> f64 {
+    let Some(trak) = face.tables().trak else { return 0.0 };
+    let data = trak.horizontal;
+    let Some(track) = data.tracks.into_iter().find(|t| t.value == 0.0) else { return 0.0 };
+    let points: Vec<(f64, f64)> = data.sizes.into_iter().zip(track.values).map(|(s, v)| (s.0 as f64, v as f64)).collect();
+    let units = match points.iter().position(|&(s, _)| s >= size) {
+        _ if points.is_empty() => 0.0,
+        Some(0) => points[0].1,
+        None => points[points.len() - 1].1,
+        Some(i) => {
+            let ((s0, v0), (s1, v1)) = (points[i - 1], points[i]);
+            v0 + (v1 - v0) * (size - s0) / (s1 - s0)
+        }
+    };
+    units / face.units_per_em() as f64
+}
+
+/// The optical size to draw `size`-point text at: the size, within the
+/// font's own range (Inter's 14–32, SF's 17–96).
+pub(crate) fn optical_size(face: &ttf_parser::Face, size: f64) -> f32 {
+    match face.variation_axes().into_iter().find(|a| a.tag == ttf_parser::Tag::from_bytes(b"opsz")) {
+        Some(a) => (size as f32).clamp(a.min_value, a.max_value),
+        None => size as f32,
+    }
 }
 
 /// The emoji font (Noto Color Emoji), for characters the text font lacks.
@@ -66,16 +125,36 @@ pub(crate) fn emoji_bytes(emu: &mut Emu) -> Option<std::rc::Rc<Vec<u8>>> {
 /// UIFontWeight (-0.8 … 0.62) → OpenType `wght` (100 … 900).
 pub(crate) fn ot_weight(w: f64) -> f64 {
     const STOPS: [(f64, f64); 9] = [(-0.8, 100.0), (-0.6, 200.0), (-0.4, 300.0), (0.0, 400.0), (0.23, 500.0), (0.3, 600.0), (0.4, 700.0), (0.56, 800.0), (0.62, 900.0)];
-    if w <= STOPS[0].0 {
-        return STOPS[0].1;
+    between(&STOPS, w)
+}
+
+/// UIFontWeight → SF's `wght`: its own named weights (Ultralight 30.9 …
+/// Regular 400, Medium 510, Semibold 590, Bold 700 … Black 1000).
+fn sf_weight(w: f64) -> f64 {
+    const STOPS: [(f64, f64); 9] = [(-0.8, 30.925), (-0.6, 110.725), (-0.4, 274.315), (0.0, 400.0), (0.23, 510.0), (0.3, 590.0), (0.4, 700.0), (0.56, 860.0), (0.62, 1000.0)];
+    between(&STOPS, w)
+}
+
+fn between(stops: &[(f64, f64)], w: f64) -> f64 {
+    if w <= stops[0].0 {
+        return stops[0].1;
     }
-    for p in STOPS.windows(2) {
+    for p in stops.windows(2) {
         let ((a, wa), (b, wb)) = (p[0], p[1]);
         if w <= b {
             return wa + (wb - wa) * (w - a) / (b - a);
         }
     }
-    900.0
+    stops[stops.len() - 1].1
+}
+
+/// A UIFontWeight as `face`'s `wght`: SF's scale for SF, else the standard one.
+pub(crate) fn font_weight(face: &ttf_parser::Face, w: f64) -> f64 {
+    if has_sf_weights(face) { sf_weight(w) } else { ot_weight(w) }
+}
+
+fn has_sf_weights(face: &ttf_parser::Face) -> bool {
+    face.variation_axes().into_iter().any(|a| a.tag == ttf_parser::Tag::from_bytes(b"wght") && a.max_value >= 1000.0)
 }
 
 /// Advance of `ch` in the emoji font, in em.
@@ -99,11 +178,30 @@ pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, col
 
 /// Advance width of `ch` in points.
 pub(crate) fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
-    let wght = ot_weight(weight).round() as u16;
-    let opsz = size.clamp(14.0, 32.0).round() as u16;
+    if emu.text.opsz_range.is_none() {
+        let face = font_bytes(emu);
+        let face = face.as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok());
+        let range = face.as_ref().and_then(|f| {
+            f.variation_axes().into_iter().find(|a| a.tag == ttf_parser::Tag::from_bytes(b"opsz")).map(|a| (a.min_value, a.max_value))
+        });
+        emu.text.sf_weights = face.as_ref().is_some_and(has_sf_weights);
+        emu.text.opsz_range = Some(range);
+    }
+    let wght = if emu.text.sf_weights { sf_weight(weight) } else { ot_weight(weight) }.round() as u16;
+    let opsz = match emu.text.opsz_range.flatten() {
+        Some((lo, hi)) => (size as f32).clamp(lo, hi),
+        None => size as f32,
+    }
+    .round() as u16;
     let key = (ch, wght, opsz);
+    let tracked = (size * 100.0).round() as u32;
+    if !emu.text.tracking.contains_key(&tracked) {
+        let track = font_bytes(emu).as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok()).map_or(0.0, |f| tracking(&f, size));
+        emu.text.tracking.insert(tracked, track);
+    }
+    let track = emu.text.tracking[&tracked];
     if let Some(&em) = emu.text.advances.get(&key) {
-        return em * size;
+        return (em + track) * size;
     }
     let text = font_bytes(emu);
     let face = text.as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok());
@@ -124,7 +222,7 @@ pub(crate) fn advance(emu: &mut Emu, ch: char, size: f64, weight: f64) -> f64 {
         None => 0.55,
     };
     emu.text.advances.insert(key, em);
-    em * size
+    (em + track) * size
 }
 
 // ---- layout ----
