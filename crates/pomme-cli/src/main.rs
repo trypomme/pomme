@@ -696,7 +696,9 @@ fn print_call(emu: &mut pomme_hle::Emu) -> pomme_hle::Result<()> {
         let base = c.x[r];
         for i in 0..n.parse::<u64>().unwrap_or(0) {
             if let Ok(w) = emu.p.memory.read_u64(base + i * 8) {
-                println!("        [x{r}+{:#04x}] {w:#018x}  {}", i * 8, f64::from_bits(w));
+                // A word that points into an image: what it is (type metadata, a function …).
+                let what = if emu.p.image_at(w).is_some() { emu.symbolize(w) } else { f64::from_bits(w).to_string() };
+                println!("        [x{r}+{:#04x}] {w:#018x}  {what}", i * 8);
             }
         }
     }

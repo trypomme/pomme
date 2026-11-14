@@ -232,8 +232,9 @@ def read_markers(paths, processed_dir=None):
     `processed_dir` without those blocks, to be compiled from there.
 
     On an interface extension (`extension SwiftUICore.View`), the block goes
-    into the first one: an extension of a SwiftUICore type carries the type's
-    `@_originallyDefinedIn`, which its members' mangling depends on too."""
+    into the first one that carries the type's `@_originallyDefinedIn` (if
+    any does), which its members' mangling depends on too. Several files may
+    each have a block for the same declaration: they go in one after another."""
     owns, replaces, inside = {}, {}, {}
     for path in paths:
         lines = open(path).read().split('\n')
@@ -252,7 +253,12 @@ def read_markers(paths, processed_dir=None):
                     if depth > 0:
                         body.append(lines[j])
                     j += 1
-                inside[key(m.group(2))] = (body, where)
+                # (Several files may add to one declaration: each block in turn.)
+                k = key(m.group(2))
+                if k in inside:
+                    inside[k] = (inside[k][0] + [f'  // pomme ({where}):'] + body, inside[k][1])
+                else:
+                    inside[k] = (body, where)
                 for k, b in enumerate(body):
                     r = re.match(r'\s*// pomme: replaces (.+)$', b)
                     if r:
@@ -350,6 +356,16 @@ def generate(src, owns=None, replaces=None, inside=None):
     frozen_pending = False
     missing_inits = False
     dropped = set()  # top-level types left out (unavailable on iOS)
+    # Extensions some of whose blocks carry their type's `@_originallyDefinedIn`
+    # (as an `in` block's members' mangling needs): the block goes in one of those.
+    defined_in_ext, attrs = set(), []
+    for raw in src.split('\n'):
+        if raw.startswith('@'):
+            attrs.append(raw)
+            continue
+        if re.match(r'extension\b.*\{\s*$', raw) and any('@_originallyDefinedIn' in a for a in attrs):
+            defined_in_ext.add(key(raw.strip()))
+        attrs = []
     for raw in src.split('\n'):
         # (`@objc deinit`, as interfaces print it: implicit, and in source it
         # needs Foundation imported.)
@@ -529,7 +545,8 @@ def generate(src, owns=None, replaces=None, inside=None):
                 # ('type', key, owned, whether it gets hidden storage, qualified name)
                 stack.append(('protocol',) if re.search(r'\bprotocol\b', head) else ('type', hk, owned, m_storage_needed(head, frozen_pending), qualified_name(head, top, modules)))
                 stack.extend([('body',)] * (d - 1))
-                if hk in inside and not owned and hk not in used:
+                carries_defined_in = hk not in defined_in_ext or any('@_originallyDefinedIn' in out[i] for i in attr_lines)
+                if hk in inside and not owned and hk not in used and carries_defined_in:
                     # pomme's members of the declaration itself, first.
                     used.add(hk)
                     out.append(line)

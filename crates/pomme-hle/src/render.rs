@@ -45,12 +45,39 @@ type Clip = Vec<(Vec<El>, bool)>;
 #[derive(Clone, Debug)]
 pub(crate) enum Op {
     Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Clip },
-    Stroke { path: Vec<El>, color: [f32; 4], width: f32, clip: Clip },
+    Stroke { path: Vec<El>, color: [f32; 4], width: f32, line: Line, clip: Clip },
     Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Clip },
     /// CTFontDrawGlyphs: glyph ids, each with its font-units → context-base transform.
     FontGlyphs { font: FontRef, glyphs: Vec<(u16, [f32; 6])>, color: [f32; 4], clip: Clip },
     /// An image: its pixels through `m` (pixel space → context base).
     Image { pix: std::rc::Rc<Pixmap>, m: [f32; 6], alpha: f32, clip: Clip },
+}
+
+/// How a stroke's ends and corners are drawn: CGLineCap (butt 0, round 1,
+/// square 2) and CGLineJoin (miter 0, round 1, bevel 2).
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub(crate) struct Line {
+    pub cap: u8,
+    pub join: u8,
+}
+
+impl Line {
+    fn stroke(self, width: f32) -> Stroke {
+        Stroke {
+            width,
+            line_cap: match self.cap {
+                1 => tiny_skia::LineCap::Round,
+                2 => tiny_skia::LineCap::Square,
+                _ => tiny_skia::LineCap::Butt,
+            },
+            line_join: match self.join {
+                1 => tiny_skia::LineJoin::Round,
+                2 => tiny_skia::LineJoin::Bevel,
+                _ => tiny_skia::LineJoin::Miter,
+            },
+            ..Default::default()
+        }
+    }
 }
 
 /// A font file and the variation it's drawn at.
@@ -119,12 +146,13 @@ struct GState {
     fill: [f32; 4],
     stroke: [f32; 4],
     line_width: f32,
+    line: Line,
     clip: Clip,
 }
 
 impl Default for GState {
     fn default() -> Self {
-        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, clip: Vec::new() }
+        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, line: Line::default(), clip: Vec::new() }
     }
 }
 
@@ -221,12 +249,12 @@ pub(crate) fn transform_els(els: &[El], m: &[f32; 6]) -> Vec<El> {
         .collect()
 }
 
-fn rect_els(x: f32, y: f32, w: f32, h: f32) -> Vec<El> {
+pub(crate) fn rect_els(x: f32, y: f32, w: f32, h: f32) -> Vec<El> {
     vec![El::Move(x, y), El::Line(x + w, y), El::Line(x + w, y + h), El::Line(x, y + h), El::Close]
 }
 
 /// Circular arc as cubic Béziers (≤ 90° each), starting with a line or move to its start.
-fn arc_els(out: &mut Vec<El>, cx: f32, cy: f32, r: f32, start: f32, end: f32, clockwise: bool) {
+pub(crate) fn arc_els(out: &mut Vec<El>, cx: f32, cy: f32, r: f32, start: f32, end: f32, clockwise: bool) {
     let tau = std::f32::consts::TAU;
     let mut sweep = end - start;
     // In UIKit's flipped coordinates "clockwise" means decreasing angle in CG's terms.
@@ -588,7 +616,7 @@ fn path_apply(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn path_bounds(els: &[El]) -> [f64; 4] {
+pub(crate) fn path_bounds(els: &[El]) -> [f64; 4] {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let mut add = |x: f32, y: f32| {
         x0 = x0.min(x);
@@ -658,6 +686,47 @@ fn with_current(emu: &mut Emu, f: impl FnOnce(&mut Ctx)) -> Result<()> {
     flush_bitmap(emu, c)
 }
 
+/// An ellipse in a rectangle, as four cubics (from its right, through its bottom).
+pub(crate) fn ellipse_els(x: f32, y: f32, w: f32, h: f32) -> Vec<El> {
+    const K: f32 = 0.552_284_8;
+    let (rx, ry, cx, cy) = (w / 2.0, h / 2.0, x + w / 2.0, y + h / 2.0);
+    let (kx, ky) = (rx * K, ry * K);
+    vec![
+        El::Move(cx + rx, cy),
+        El::Cubic(cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry),
+        El::Cubic(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy),
+        El::Cubic(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry),
+        El::Cubic(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy),
+        El::Close,
+    ]
+}
+
+/// Stroke a path (in user space) in the current UIKit context, with its own
+/// width and line style and the context's stroke color (UIBezierPath's `stroke`).
+pub(crate) fn stroke_in_current(emu: &mut Emu, els: &[El], width: f32, line: Line) -> Result<()> {
+    with_current(emu, |c| {
+        let path = transform_els(els, &c.gs.ctm);
+        let width = width * c.gs.ctm[0].abs().max(c.gs.ctm[3].abs());
+        c.ops.push(Op::Stroke { path, color: c.gs.stroke, width, line, clip: c.gs.clip.clone() });
+    })
+}
+
+/// Fill a path (in user space) in the current UIKit context with its fill color.
+pub(crate) fn fill_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Result<()> {
+    with_current(emu, |c| {
+        let path = transform_els(els, &c.gs.ctm);
+        c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd, clip: c.gs.clip.clone() });
+    })
+}
+
+/// Intersect the current UIKit context's clip with a path (in user space).
+pub(crate) fn clip_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Result<()> {
+    with_current(emu, |c| {
+        let path = transform_els(els, &c.gs.ctm);
+        c.gs.clip.push((path, even_odd));
+    })
+}
+
 /// `UIRectFill(rect)`: fill with the current context's fill color.
 fn ui_rect_fill(emu: &mut Emu) -> Result<()> {
     let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
@@ -722,8 +791,13 @@ fn concat_ctm(emu: &mut Emu, m: [f32; 6]) -> Result<()> {
 
 // ---- CGPath (a list of elements per path object) ----
 
-fn path_els(emu: &Emu, p: u64) -> Vec<El> {
+pub(crate) fn path_els(emu: &Emu, p: u64) -> Vec<El> {
     emu.render.paths.get(&p).cloned().unwrap_or_default()
+}
+
+/// Replace a path's elements (a mutable path's, as UIBezierPath keeps one).
+pub(crate) fn set_path_els(emu: &mut Emu, p: u64, els: Vec<El>) {
+    emu.render.paths.insert(p, els);
 }
 
 pub(crate) fn new_path(emu: &mut Emu, els: Vec<El>) -> Result<u64> {
@@ -820,8 +894,13 @@ impl Painter<'_> {
     }
 
     fn stroke(&mut self, els: &[El], color: [f32; 4], alpha: f32, width: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        self.stroke_line(els, color, alpha, width, Line::default(), t, mask);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stroke_line(&mut self, els: &[El], color: [f32; 4], alpha: f32, width: f32, line: Line, t: &[f32; 6], mask: Option<&Mask>) {
         if let (Some(path), Some(p)) = (build(els), paint(color, alpha)) {
-            let s = Stroke { width, ..Default::default() };
+            let s = line.stroke(width);
             self.pix.stroke_path(&path, &p, &s, ts(t), mask);
         }
     }
@@ -941,7 +1020,7 @@ impl Painter<'_> {
             let m = if clip.is_empty() { mask } else { clipped.as_ref() };
             match op {
                 Op::Fill { path, color, even_odd, .. } => self.fill(path, *color, alpha, *even_odd, t, m),
-                Op::Stroke { path, color, width, .. } => self.stroke(path, *color, alpha, *width, t, m),
+                Op::Stroke { path, color, width, line, .. } => self.stroke_line(path, *color, alpha, *width, *line, t, m),
                 Op::Glyphs { glyphs, ctm, .. } => self.glyphs(glyphs, alpha, &concat(ctm, t), m),
                 Op::FontGlyphs { font, glyphs, color, .. } => self.font_glyphs(font, glyphs, *color, alpha, t, m),
                 Op::Image { pix, m: place, alpha: a, .. } => {
@@ -2016,8 +2095,14 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGContextSetShouldAntialias", nothing),
     ("_CGContextSetAllowsAntialiasing", nothing),
     ("_CGContextSetShouldSmoothFonts", nothing),
-    ("_CGContextSetLineCap", nothing),
-    ("_CGContextSetLineJoin", nothing),
+    ("_CGContextSetLineCap", |e| {
+        let cap = e.arg(1) as u8;
+        with_ctx(e, |c| c.gs.line.cap = cap)
+    }),
+    ("_CGContextSetLineJoin", |e| {
+        let join = e.arg(1) as u8;
+        with_ctx(e, |c| c.gs.line.join = join)
+    }),
     ("_CGContextSetLineDash", nothing),
     ("_CGContextSetLineWidth", |e| {
         let w = d(e, 0);
@@ -2092,7 +2177,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         with_ctx(e, |ctx| {
             let path = std::mem::take(&mut ctx.path);
             let width = ctx.gs.line_width * ctx.gs.ctm[0].abs().max(ctx.gs.ctm[3].abs());
-            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, clip: ctx.gs.clip.clone() });
+            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, line: ctx.gs.line, clip: ctx.gs.clip.clone() });
         })
     }),
     ("_CGContextFillRect", |e| {

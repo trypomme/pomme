@@ -36,14 +36,14 @@ final class KeyPathLocation<Root, Value>: AnyLocation<Value>, @unchecked Sendabl
 }
 
 /// A value that never changes (`.constant`).
-final class ConstantLocation<Value>: AnyLocation<Value>, @unchecked Sendable {
+package final class ConstantLocation<Value>: AnyLocation<Value>, @unchecked Sendable {
   private let constant: Value
 
-  init(_ value: Value) {
+  package init(_ value: Value) {
     constant = value
   }
 
-  override var value: Value {
+  package override var value: Value {
     get { constant }
     set {}
   }

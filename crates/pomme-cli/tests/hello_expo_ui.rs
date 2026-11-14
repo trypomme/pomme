@@ -82,3 +82,97 @@ fn controls_update_react_state() {
     let switch = views.lines().find(|l| l.contains("PommeSwitch")).unwrap();
     assert!(switch.ends_with(" off"), "{switch}");
 }
+
+/// The everyday set, laid out as on the iOS 26 simulator: text and secure
+/// fields (body height), a picker row (label, value, chevrons), a progress
+/// bar at its value (4 pt, 0.4 of the row filled in the tint), a spinner
+/// (20 pt), a Group's views as rows, and a Divider in a row (a vertical
+/// hairline, 22 pt). Then the modifiers: a 22 pt bold font (its line 26.3
+/// tall), and a padded badge clipped to its rounded rectangle, the separator
+/// below it starting at its text, as a row's separator does.
+#[test]
+fn shows_the_everyday_set() {
+    let Some(mut emu) = boot() else { return };
+    let views = run_for(&mut emu, 6.0);
+    let fields: Vec<&str> = views.lines().filter(|l| l.contains("PommeTextField")).collect();
+    assert_eq!(fields.len(), 2, "{views}");
+    assert!(fields.iter().all(|f| f.contains(", 326.0×20.3) \"\"")), "{fields:?}");
+    for text in ["\"Typed: \"", "\"Flavor\"", "\"Vanilla\"", "\"Grouped one\"", "\"Grouped two\"", "\"Modifiers\"", "\"Secondary\"", "\"Plain button\""] {
+        assert!(views.contains(text), "{text} missing\n{views}");
+    }
+    assert!(views.contains("UIImageView (331.7, 175.0, 9.0×14.0)"), "the picker's chevrons\n{views}");
+    assert!(views.contains("(16.0, 232.0, 326.0×4.0) bg #78788033 radius 2"), "the progress track\n{views}");
+    assert!(views.contains("(0.0, 0.0, 130.4×4.0) bg #0088ffff radius 2"), "the progress at 0.4\n{views}");
+    assert!(views.contains("UIActivityIndicatorView (16.0, 276.0, 20.0×20.0)"), "the spinner\n{views}");
+    assert!(views.contains("(16.0, 379.0, 0.3×22.0) bg #c6c6c8ff"), "the divider row\n{views}");
+    let bold = views.lines().find(|l| l.contains("\"Bold 22\"")).unwrap();
+    assert!(bold.contains("×26.3)"), "{bold}");
+    // The badge: clipped (radius 8); in it, the orange behind the label padded by 8.
+    let badge = views.lines().position(|l| l.contains("\"Badge\"")).unwrap();
+    let lines: Vec<&str> = views.lines().collect();
+    assert!(lines[badge - 4].contains("67.0×36.3) radius 8"), "{}", lines[badge - 4]);
+    assert!(lines[badge - 2].contains("(0.0, 0.0, 67.0×36.3) bg #ffa500ff"), "{}", lines[badge - 2]);
+    assert!(lines[badge].contains("(8.0, 8.0, 51.0×20.3)"), "{}", lines[badge]);
+    assert!(lines[badge + 1].contains("UIView (24.0, ") && lines[badge + 1].contains("318.0×1.0)"), "the separator below the badge\n{}", lines[badge + 1]);
+}
+
+/// The modifiers as drawn, scrolled to the end: the badge's corners rounded,
+/// the secondary text gray, and the plain button's label in the primary
+/// color rather than the tint.
+#[test]
+fn modifiers_draw_as_on_ios() {
+    let Some(mut emu) = boot() else { return };
+    // (Flung to the end, the list rests against its bottom.)
+    touch::swipe(&mut emu.touch.script, 3_000_000_000, (195.0, 700.0), (195.0, 100.0), 300_000_000);
+    touch::swipe(&mut emu.touch.script, 4_000_000_000, (195.0, 700.0), (195.0, 100.0), 300_000_000);
+    run_for(&mut emu, 7.0);
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let at = |x: f64, y: f64| pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
+    let orange = |x: f64, y: f64| {
+        let c = at(x, y);
+        c.red() > 240 && (150..180).contains(&c.green()) && c.blue() < 30
+    };
+    // The badge's box: its orange, found column by column at mid-height.
+    let ys: Vec<f64> = (0..844 * 3).map(|y| y as f64 / 3.0).filter(|&y| orange(60.0, y)).collect();
+    assert!(!ys.is_empty(), "no orange badge");
+    let (top, bottom) = (ys[0], *ys.last().unwrap());
+    assert!((bottom - top - 36.3).abs() < 1.0, "the badge is {} tall", bottom - top);
+    let mid = (top + bottom) / 2.0;
+    let xs: Vec<f64> = (0..390 * 3).map(|x| x as f64 / 3.0).filter(|&x| orange(x, mid)).collect();
+    let (left, right) = (xs[0], *xs.last().unwrap());
+    assert!((left - 32.0).abs() < 0.7 && (right - left - 67.0).abs() < 1.0, "the badge spans {left}–{right}");
+    assert!(!orange(left + 0.5, top + 0.5), "the badge's corner isn't rounded");
+    // Texts by their darkest pixel: the rows above and below the badge's.
+    let darkest = |y0: f64, y1: f64| {
+        let mut d = (255u8, 255u8, 255u8);
+        let mut y = y0;
+        while y < y1 {
+            for x in (32 * 3)..(150 * 3) {
+                let c = pix.pixel(x, (y * 3.0) as u32).unwrap();
+                if (c.red() as u32 + c.green() as u32 + c.blue() as u32) < (d.0 as u32 + d.1 as u32 + d.2 as u32) {
+                    d = (c.red(), c.green(), c.blue());
+                }
+            }
+            y += 1.0 / 3.0;
+        }
+        d
+    };
+    // (Secondary: its top 46.9 pt above the badge's; the plain button 67.2 below.)
+    let secondary = darkest(top - 46.9, top - 46.9 + 20.0);
+    assert!((110..170).contains(&secondary.0) && secondary.2.abs_diff(secondary.0) < 20, "the secondary text is {secondary:?}");
+    let plain = darkest(top + 67.2, top + 67.2 + 20.0);
+    assert!(plain.0 < 60 && plain.1 < 60 && plain.2 < 60, "the plain button's label is {plain:?}");
+}
+
+/// Typing into the TextField: the field's binding carries it to React, which
+/// echoes it.
+#[test]
+fn typing_reaches_react() {
+    let Some(mut emu) = boot() else { return };
+    tap(&mut emu, (100.0, 488.0), 3.0);
+    emu.input.script.push(pomme_hle::textinput::KeyInput { at_ns: 4_000_000_000, text: "Ada".into() });
+    let views = run_for(&mut emu, 6.0);
+    let field = views.lines().find(|l| l.contains("PommeTextField")).unwrap();
+    assert!(field.ends_with("\"Ada\""), "{field}");
+    assert!(views.contains("\"Typed: Ada\""), "{views}");
+}

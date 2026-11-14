@@ -122,6 +122,8 @@ final class ListNode: Node {
       }
       scroll.pommeAdopt(group)
       var rowY: CGFloat = 0
+      // Where the separator below the last row starts: at its first text.
+      var separatorX = Self.rowInset
       for (i, row) in section.rows.enumerated() {
         if i > 0 {
           let separator = renderer.view(for: row.path.appending("separator")) {
@@ -130,11 +132,14 @@ final class ListNode: Node {
             return v
           }
           // (A full point, at the bottom of the row above: iOS 26's, measured.)
-          separator.frame = CGRect(x: Self.rowInset, y: rowY - 1, width: width - 2 * Self.rowInset, height: 1)
+          separator.frame = CGRect(x: separatorX, y: rowY - 1, width: width - Self.rowInset - separatorX, height: 1)
           group.pommeAdopt(separator)
         }
-        // The row's content at its own size, at the leading edge.
-        let size = row.sizeThatFits(ProposedViewSize(width: contentWidth, height: nil))
+        // The row's content at its own size, at the leading edge: offered the
+        // row's width and its least height inside the padding (22 pt, which
+        // a divider fills: rows lay out as a horizontal stack does).
+        (row as? DividerNode)?.axis = .horizontal
+        let size = row.sizeThatFits(ProposedViewSize(width: contentWidth, height: Self.minRowHeight - 2 * Self.rowPadding))
         let height = max(Self.minRowHeight, size.height + 2 * Self.rowPadding)
         // A button's row is the button: a tap anywhere in it runs the action.
         if let action = row.rowAction {
@@ -144,6 +149,7 @@ final class ListNode: Node {
           group.pommeAdopt(control)
         }
         row.place(in: CGRect(x: Self.rowInset, y: rowY + (height - size.height) / 2, width: min(size.width, contentWidth), height: size.height), of: group, renderer)
+        separatorX = Self.rowInset + (row.firstTextLeading ?? 0)
         rowY += height
       }
       group.frame = CGRect(x: x, y: y, width: width, height: rowY)

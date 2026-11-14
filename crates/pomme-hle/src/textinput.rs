@@ -799,6 +799,38 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let r = rect_arg(e);
         ret_rect(e, r)
     }),
+    // The placeholder: a plain string (drawn in the field's font, in the
+    // placeholder color) or an attributed one. Each kept as a copy; setting one
+    // clears the other, as UIKit derives one from the other.
+    (TF, false, "placeholder", |e| {
+        let f = e.arg(0);
+        let mut s = objc::bag_get(e, f, "placeholder").unwrap_or(0);
+        if s == 0 {
+            let a = objc::bag_get(e, f, "attributedPlaceholder").unwrap_or(0);
+            if a != 0 {
+                s = send(e, a, "string", &[])?;
+            }
+        }
+        ret(e, s)
+    }),
+    (TF, false, "setPlaceholder:", |e| {
+        let (f, s) = (e.arg(0), e.arg(2));
+        let copy = if s == 0 { 0 } else { send(e, s, "copy", &[])? };
+        objc::bag_set(e, f, "placeholder", copy);
+        objc::bag_set(e, f, "attributedPlaceholder", 0);
+        Ok(())
+    }),
+    (TF, false, "attributedPlaceholder", |e| {
+        let a = objc::bag_get(e, e.arg(0), "attributedPlaceholder").unwrap_or(0);
+        ret(e, a)
+    }),
+    (TF, false, "setAttributedPlaceholder:", |e| {
+        let (f, a) = (e.arg(0), e.arg(2));
+        let copy = if a == 0 { 0 } else { send(e, a, "copy", &[])? };
+        objc::bag_set(e, f, "attributedPlaceholder", copy);
+        objc::bag_set(e, f, "placeholder", 0);
+        Ok(())
+    }),
     (TP, false, "isEqual:", |e| {
         let (a, b) = (e.arg(0), e.arg(2));
         let same = b != 0 && offset_of(e, a) == offset_of(e, b);
@@ -1029,17 +1061,24 @@ pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, crate::textki
     let mut text = tf_text(emu, f);
     let attrs;
     let mut color_default = crate::appearance::label(emu);
+    // (A plain placeholder takes the field's font, not its text color.)
+    let mut colored = true;
     if text.is_empty() {
+        // The placeholder: attributed, or a plain string in the field's font.
         let ph = send(emu, f, "attributedPlaceholder", &[])?;
-        if ph == 0 {
-            return Ok(None);
+        if ph != 0 {
+            let s = send(emu, ph, "string", &[])?;
+            text = nsstring(emu, s)?;
+            attrs = send(emu, ph, "attributesAtIndex:effectiveRange:", &[0, 0])?;
+        } else {
+            let s = objc::bag_get(emu, f, "placeholder").unwrap_or(0);
+            text = if s == 0 { String::new() } else { nsstring(emu, s)? };
+            attrs = send(emu, f, "defaultTextAttributes", &[])?;
+            colored = false;
         }
-        let s = send(emu, ph, "string", &[])?;
-        text = nsstring(emu, s)?;
         if text.is_empty() {
             return Ok(None);
         }
-        attrs = send(emu, ph, "attributesAtIndex:effectiveRange:", &[0, 0])?;
         color_default = [0.235, 0.235, 0.263, 0.3]; // placeholderTextColor
     } else {
         attrs = send(emu, f, "defaultTextAttributes", &[])?;
@@ -1050,7 +1089,7 @@ pub fn appearance(emu: &mut Emu, f: u64) -> Result<Option<(String, crate::textki
     let font = crate::textkit::font_in_attributes(emu, attrs)?;
     let font = crate::textkit::font_info(emu, font)?;
     let mut color = color_default;
-    if attrs != 0 {
+    if attrs != 0 && colored {
         let key = foundation::new_nsstring(emu, "NSColor")?;
         let mut c = send(emu, attrs, "objectForKey:", &[key])?;
         if c == 0 {

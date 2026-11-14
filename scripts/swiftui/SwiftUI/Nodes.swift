@@ -15,6 +15,11 @@ class Node: LayoutProxy {
   var layoutValues: [ObjectIdentifier: Any] = [:]
   /// Where its parent layout placed it, in the parent's coordinates.
   fileprivate(set) var placement: CGRect?
+  /// Its focus, if a FocusState follows it (`.focused`): whether it has it,
+  /// and taking or giving it up.
+  var focus: (get: () -> Bool, set: (Bool) -> Void)?
+  /// What it's known by (`.tag(_:)`): a picker's option.
+  var tag: AnyHashable?
 
   init(path: ViewPath) {
     self.path = path
@@ -36,6 +41,11 @@ class Node: LayoutProxy {
 
   /// Show it in `frame` of `parent`.
   func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {}
+
+  /// Where its first text starts, from its leading edge, once placed (a list
+  /// row's separator starts there: SwiftUI's `listRowSeparatorLeading`); nil
+  /// without text.
+  var firstTextLeading: CGFloat? { nil }
 
   // ---- LayoutProxy ----
 
@@ -158,6 +168,9 @@ final class LayoutNode: Node {
       for case let spacer as SpacerNode in children {
         spacer.axis = stack.pommeEngine.axis
       }
+      for case let divider as DividerNode in children {
+        divider.axis = stack.pommeEngine.axis
+      }
     }
   }
 
@@ -203,6 +216,10 @@ final class LayoutNode: Node {
       child.place(in: child.placement ?? .zero, of: container, renderer)
     }
   }
+
+  override var firstTextLeading: CGFloat? {
+    children.lazy.compactMap { child in child.firstTextLeading.map { (child.placement?.minX ?? 0) + $0 } }.first
+  }
 }
 
 // ---- Text ----
@@ -223,11 +240,35 @@ final class TextNode: Node {
     static let sectionFooter = Style(font: .preferredFont(forTextStyle: .footnote), color: .secondaryLabel)
   }
 
+  /// How text looks where it is (a list's section header, say).
   var style = Style.body
+
+  /// The font and weight the view gives it (its environment's, or its own
+  /// modifiers'), and its own color: over the style.
+  var font: Font?
+  var weight: Font.Weight?
+  var color: UIColor?
 
   init(path: ViewPath, string: String) {
     self.string = string
     super.init(path: path)
+  }
+
+  override var firstTextLeading: CGFloat? { 0 }
+
+  /// How it's drawn: the style, with what the view gives it.
+  var resolved: Style {
+    var s = style
+    if let font {
+      s.font = font.pommeUIFont
+    }
+    if let weight {
+      s.font = s.font.pommeWeighted(weight)
+    }
+    if let color {
+      s.color = color
+    }
+    return s
   }
 
   private var shown: String { style.uppercase ? string.uppercased() : string }
@@ -247,6 +288,7 @@ final class TextNode: Node {
   static func lineSpacing(_ font: UIFont) -> CGFloat { font.pointSize * (22.0 / 17) }
 
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
+    let style = resolved
     let label = Self.measurer
     label.font = style.font
     label.text = shown
@@ -262,6 +304,7 @@ final class TextNode: Node {
 
   /// Its baselines: the first line's and the last's.
   override func explicitGuide(_ key: AlignmentKey, size: CGSize) -> CGFloat? {
+    let style = resolved
     if key == VerticalAlignment.firstTextBaseline.key {
       return style.font.ascender
     }
@@ -277,6 +320,7 @@ final class TextNode: Node {
       l.numberOfLines = 0
       return l
     }
+    let style = resolved
     label.font = style.font
     label.textColor = style.color
     if label.text != shown {
@@ -307,6 +351,8 @@ final class GeometryNode: Node {
   override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize { child.sizeThatFits(proposal) }
 
   override func explicitGuide(_ key: AlignmentKey, size: CGSize) -> CGFloat? { child.explicitGuide(key, size: size) }
+
+  override var firstTextLeading: CGFloat? { child.firstTextLeading }
 
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     child.place(in: frame, of: parent, renderer)

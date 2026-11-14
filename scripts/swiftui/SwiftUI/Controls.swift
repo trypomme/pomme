@@ -297,11 +297,21 @@ extension ButtonRole {
 }
 
 extension Button: PrimitiveView {
-  /// Its label, in the tint color (red for a destructive one), that runs the action when tapped.
+  /// Its label, that runs the action when tapped: in its style's foreground
+  /// (red for a destructive one).
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
-    let label = graph.resolve(pommeLabel, at: path.appending("label"), preferences)
-    for case let text as TextNode in label {
-      text.style.color = pommeRole?.pommeName == "destructive" ? .systemRed : .tintColor
+    let destructive = pommeRole?.pommeName == "destructive"
+    let foreground: UIColor?
+    switch graph.environment.pommeButtonStyle {
+    case nil, is DefaultButtonStyle, is BorderlessButtonStyle:
+      foreground = destructive ? .systemRed : .tintColor
+    case is PlainButtonStyle:
+      foreground = destructive ? .systemRed : nil
+    case let style?:
+      fatalError("SwiftUI in pomme doesn't implement the button style \(type(of: style)) yet")
+    }
+    let label = graph.withEnvironment({ env in foreground.map { env.pommeForeground = $0 } }) {
+      graph.resolve(pommeLabel, at: path.appending("label"), preferences)
     }
     return [ButtonNode(path: path, label: label, action: pommeAction)]
   }
@@ -355,5 +365,65 @@ final class ButtonNode: Node {
     for node in label {
       node.place(in: CGRect(origin: .zero, size: frame.size), of: control, renderer)
     }
+  }
+}
+
+// ---- Button styles ----
+
+// The built-in styles pomme draws itself: automatic (and borderless, which it
+// is on iOS outside other containers), its label in the tint color; plain,
+// its label as it is.
+
+// pomme: in public struct PlainButtonStyle : SwiftUI.PrimitiveButtonStyle
+extension PlainButtonStyle {
+  // pomme: replaces public struct PlainButtonStyle : SwiftUI.PrimitiveButtonStyle :: public init()
+  public init() { _pommeStorage = () }
+}
+
+// pomme: in public struct BorderlessButtonStyle : SwiftUI.PrimitiveButtonStyle
+extension BorderlessButtonStyle {
+  // pomme: replaces public struct BorderlessButtonStyle : SwiftUI.PrimitiveButtonStyle :: public init()
+  public init() { _pommeStorage = () }
+}
+
+// pomme: in public struct DefaultButtonStyle : SwiftUI.PrimitiveButtonStyle
+extension DefaultButtonStyle {
+  // pomme: replaces public struct DefaultButtonStyle : SwiftUI.PrimitiveButtonStyle :: public init()
+  public init() { _pommeStorage = () }
+}
+
+extension PrimitiveButtonStyle where Self == PlainButtonStyle {
+  // pomme: replaces extension SwiftUI.PrimitiveButtonStyle where Self == SwiftUI.PlainButtonStyle :: public static var plain: SwiftUI.PlainButtonStyle
+  public static var plain: PlainButtonStyle { PlainButtonStyle() }
+}
+
+extension PrimitiveButtonStyle where Self == BorderlessButtonStyle {
+  // pomme: replaces extension SwiftUI.PrimitiveButtonStyle where Self == SwiftUI.BorderlessButtonStyle :: public static var borderless: SwiftUI.BorderlessButtonStyle
+  public static var borderless: BorderlessButtonStyle { BorderlessButtonStyle() }
+}
+
+extension PrimitiveButtonStyle where Self == DefaultButtonStyle {
+  // pomme: replaces extension SwiftUI.PrimitiveButtonStyle where Self == SwiftUI.DefaultButtonStyle :: public static var automatic: SwiftUI.DefaultButtonStyle
+  public static var automatic: DefaultButtonStyle { DefaultButtonStyle() }
+}
+
+extension EnvironmentValues {
+  /// The style of the buttons within (`buttonStyle`): a PrimitiveButtonStyle
+  /// or a ButtonStyle; automatic until set.
+  var pommeButtonStyle: Any? {
+    get { pommeByName["pommeButtonStyle"] }
+    set { pommeByName["pommeButtonStyle"] = newValue }
+  }
+}
+
+extension View {
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func buttonStyle<S>(_ style: S) -> some SwiftUICore.View where S : SwiftUI.PrimitiveButtonStyle
+  nonisolated public func buttonStyle<S>(_ style: S) -> some View where S: PrimitiveButtonStyle {
+    environment(\.pommeButtonStyle, style)
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func buttonStyle<S>(_ style: S) -> some SwiftUICore.View where S : SwiftUI.ButtonStyle
+  nonisolated public func buttonStyle<S>(_ style: S) -> some View where S: ButtonStyle {
+    environment(\.pommeButtonStyle, style)
   }
 }

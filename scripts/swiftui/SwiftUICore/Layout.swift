@@ -905,3 +905,51 @@ package protocol PommeLayoutTrait {
 extension _LayoutTrait: PommeLayoutTrait {
   package static var pommeLayoutKey: ObjectIdentifier { ObjectIdentifier(K.self) }
 }
+
+// ---- Padding ----
+
+// pomme: in extension SwiftUICore.EdgeInsets
+extension EdgeInsets {
+  // pomme: replaces extension SwiftUICore.EdgeInsets :: package init(_all: CoreFoundation.CGFloat)
+  @usableFromInline
+  package init(_all: CGFloat) {
+    self.init(top: _all, leading: _all, bottom: _all, trailing: _all)
+  }
+}
+
+/// `.padding`: the content inset by the insets; it's offered what's offered
+/// less them, and takes its size plus them.
+package struct PaddingLayout: Layout {
+  let insets: EdgeInsets
+
+  private func inner(_ p: ProposedViewSize) -> ProposedViewSize {
+    ProposedViewSize(
+      width: p.width.map { max(0, $0 - insets.leading - insets.trailing) },
+      height: p.height.map { max(0, $0 - insets.top - insets.bottom) })
+  }
+
+  package func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let child = subviews.first?.sizeThatFits(inner(proposal)) ?? .zero
+    return CGSize(width: child.width + insets.leading + insets.trailing, height: child.height + insets.top + insets.bottom)
+  }
+
+  package func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    for v in subviews {
+      v.place(at: CGPoint(x: bounds.minX + insets.leading, y: bounds.minY + insets.top), anchor: .topLeading, proposal: inner(ProposedViewSize(bounds.size)))
+    }
+  }
+}
+
+extension _PaddingLayout {
+  /// The system's padding where none is given: 16 pt (iOS, on an iPhone).
+  package static let pommeDefault: CGFloat = 16
+
+  package var pommePadding: PaddingLayout {
+    let all = insets ?? EdgeInsets(_all: Self.pommeDefault)
+    return PaddingLayout(insets: EdgeInsets(
+      top: edges.contains(.top) ? all.top : 0,
+      leading: edges.contains(.leading) ? all.leading : 0,
+      bottom: edges.contains(.bottom) ? all.bottom : 0,
+      trailing: edges.contains(.trailing) ? all.trailing : 0))
+  }
+}

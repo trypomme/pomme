@@ -12,6 +12,7 @@ pub mod heap;
 pub mod profile;
 mod bundle;
 pub use bundle::bundle_resource;
+mod bezierpath;
 mod calayer;
 mod cg;
 mod constants;

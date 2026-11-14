@@ -67,3 +67,10 @@ extension View {
     modifier(AccessibilityAttachmentModifier(pommeIdentifier: isEnabled ? identifier : nil))
   }
 }
+
+extension Group: PrimitiveView where Content: View {
+  /// Its content, as if it were there itself.
+  func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    graph.resolve(content, at: path.appending("content"), preferences)
+  }
+}

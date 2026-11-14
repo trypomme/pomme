@@ -142,9 +142,9 @@ final class ViewGraph {
     storages[key] = storage
     visited.insert(key)
     attachDynamicProperties(&modifier, to: storage, environment: environment)
-    // The content resolves in the environment around the modifier, as the modifier's own content would.
-    let around = environment
-    contents.append { [unowned self] in withEnvironment({ $0 = around }) { content() } }
+    // The content resolves where the body puts it: in the environment there,
+    // with what the body sets around it (`content.font(…)`).
+    contents.append(content)
     defer { contents.removeLast() }
     return resolve(modifier.body(content: _ViewModifier_Content<M>()), at: path.appending("body"), preferences)
   }
@@ -204,7 +204,18 @@ final class ViewGraph {
 
 extension Text: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
-    [TextNode(path: path, string: pommeString)]
+    let node = TextNode(path: path, string: pommeString)
+    node.font = graph.environment.font
+    node.color = graph.environment.pommeForeground
+    for modifier in modifiers {
+      switch modifier {
+      case .font(let font): node.font = font
+      case .weight(let weight): node.weight = weight
+      case .color(let color): node.color = color.map(UIColor.init)
+      default: break
+      }
+    }
+    return [node]
   }
 }
 

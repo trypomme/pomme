@@ -148,7 +148,7 @@ extension StringProtocol {
     }
 }
 
-// MARK: String searching with NSStringCompareOptions (no regular expressions)
+// MARK: String searching with NSStringCompareOptions
 
 extension String {
     public init(contentsOf url: __shared URL) throws {
@@ -163,33 +163,40 @@ extension String {
     }
 }
 
-/// Where `needle` occurs in `haystack[within]`, honouring case-insensitive,
-/// anchored and backwards search.
+/// Where `needle` occurs in `haystack[within]`: swift-foundation's own
+/// search, with the options NSString's has (case and diacritic folding,
+/// literal, anchored and backwards search, regular expressions).
 func _pommeFind(_ needle: String, in haystack: String, options: NSStringCompareOptions, within: Range<String.Index>?) -> Range<String.Index>? {
     let range = within ?? haystack.startIndex..<haystack.endIndex
-    if needle.isEmpty { return nil }
-    let fold = options.contains(.caseInsensitiveSearch)
-    let n = Array(fold ? needle.lowercased() : needle)
-    var starts: [String.Index] = []
-    var i = range.lowerBound
-    while i < range.upperBound {
-        starts.append(i)
-        i = haystack.index(after: i)
-    }
-    if options.contains(.backwardsSearch) { starts.reverse() }
-    for (k, start) in starts.enumerated() {
-        if options.contains(.anchoredSearch) && k > 0 { break }
-        var j = start
-        var matched = true
-        for c in n {
-            guard j < range.upperBound else { matched = false; break }
-            let h = haystack[j]
-            if (fold ? Character(h.lowercased()) : h) != c { matched = false; break }
-            j = haystack.index(after: j)
+    let options = String.CompareOptions(rawValue: UInt(options.rawValue))
+    // (A pattern that isn't a valid regular expression finds nothing.)
+    return try? haystack[range]._range(of: Substring(needle), options: options)
+}
+
+/// A replacement template filled in from a regular expression's match.
+func _pommeExpand(_ template: String, _ groups: AnyRegexOutput) -> String {
+    var out = ""
+    var chars = template.makeIterator()
+    while let c = chars.next() {
+        if c == "\\", let next = chars.next() {
+            out.append(next)
+        } else if c == "$" {
+            var digits = ""
+            var rest: Character?
+            while let d = chars.next() {
+                if d.isASCII && d.isNumber { digits.append(d) } else { rest = d; break }
+            }
+            if let n = Int(digits), n < groups.count, let sub = groups[n].substring {
+                out += sub
+            } else if digits.isEmpty {
+                out.append("$")
+            }
+            if let rest { out.append(rest) }
+        } else {
+            out.append(c)
         }
-        if matched { return start..<j }
     }
-    return nil
+    return out
 }
 
 extension StringProtocol {
@@ -201,20 +208,37 @@ extension StringProtocol {
         _pommeFind(String(other), in: String(self), options: [], within: nil) != nil
     }
 
+    /// As NSString replaces: each match in the range, in turn, without
+    /// overlapping (the first only, anchored). A regular expression's matches
+    /// may be empty (each is replaced, and the search moves on), and its
+    /// template's `$0`…`$9` stand for the match's groups (`\\$`, a dollar).
     public func replacingOccurrences<Target: StringProtocol, Replacement: StringProtocol>(of target: Target, with replacement: Replacement, options: NSStringCompareOptions = [], range searchRange: Range<String.Index>? = nil) -> String {
-        var s = String(self)
-        let t = String(target), r = String(replacement)
-        var from = searchRange?.lowerBound ?? s.startIndex
-        var end = searchRange.map { s.distance(from: s.startIndex, to: $0.upperBound) } ?? s.count
-        while let found = _pommeFind(t, in: s, options: options.subtracting(.backwardsSearch), within: from..<s.index(s.startIndex, offsetBy: end)) {
-            let offset = s.distance(from: s.startIndex, to: found.lowerBound)
-            let removed = s.distance(from: found.lowerBound, to: found.upperBound)
-            s.replaceSubrange(found, with: r)
-            end += r.count - removed
-            from = s.index(s.startIndex, offsetBy: offset + r.count)
-            if options.contains(.anchoredSearch) { break }
+        let s = String(self)
+        let t = String(target), template = String(replacement)
+        let range = searchRange ?? s.startIndex..<s.endIndex
+        var out = String(s[s.startIndex..<range.lowerBound])
+        var cursor = range.lowerBound
+        if options.contains(.regularExpressionSearch) {
+            guard let regex = try? RegexPatternCache.cache.regex(for: t, caseInsensitive: options.contains(.caseInsensitiveSearch)) else { return s }
+            for match in s[range].matches(of: regex) {
+                if options.contains(.anchoredSearch) && match.range.lowerBound != range.lowerBound { break }
+                out += s[cursor..<match.range.lowerBound]
+                out += _pommeExpand(template, match.output)
+                cursor = match.range.upperBound
+                if options.contains(.anchoredSearch) { break }
+            }
+        } else if !t.isEmpty {
+            var from = range.lowerBound
+            while from < range.upperBound, let found = _pommeFind(t, in: s, options: options.subtracting(.backwardsSearch), within: from..<range.upperBound) {
+                out += s[cursor..<found.lowerBound]
+                out += template
+                cursor = found.upperBound
+                from = found.upperBound
+                if options.contains(.anchoredSearch) { break }
+            }
         }
-        return s
+        out += s[cursor..<s.endIndex]
+        return out
     }
 }
 
