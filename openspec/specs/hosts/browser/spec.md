@@ -14,6 +14,9 @@ Words used here:
   needs **cross-origin isolation** (two HTTP headers).
 - **Bundle**: one `.pfs` file with the app and the sysroot files it loads,
   made by `pomme bundle`.
+- **JSPI** (WebAssembly JavaScript Promise Integration): a browser feature
+  that lets WebAssembly code pause, give the browser a break, and continue
+  from the same place. Chrome has it, and Safari since Safari 27.
 
 ## Requirements
 

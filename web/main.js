@@ -29,6 +29,7 @@ Accessibility.attach(document.getElementById('layer'), (action, id) => {
 }, () => [canvas.width / SCALE, canvas.height / SCALE]);
 const started = performance.now();
 let frames = 0;
+let notice = ''; // what this browser can't do, shown with the status
 
 worker.onmessage = (e) => {
   const m = e.data;
@@ -39,7 +40,7 @@ worker.onmessage = (e) => {
     }
     ctx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
     window.pommeFrames = frames + 1; // for tests (web/tests/run.mjs)
-    if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.`;
+    if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.${notice ? ' ' + notice : ''}`;
   } else if (m.type === 'display') {
     // The display's own shape clips the screen (its continuous corners, as transitions' cards have).
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${m.width} ${m.height}" preserveAspectRatio="none"><path d="${m.path}"/></svg>`;
@@ -52,6 +53,7 @@ worker.onmessage = (e) => {
   } else if (m.type === 'webview') {
     WebViews.command(JSON.parse(m.json));
   } else if (m.type === 'log') {
+    if (m.text.startsWith('JSPI: off')) notice = 'This browser has no JSPI, so Metal apps (such as Flutter apps) cannot draw.'; // stays on the page
     if (!frames) status.textContent = m.text;
     console.log('[pomme]', m.text);
   } else if (m.type === 'stopped') {

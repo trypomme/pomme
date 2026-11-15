@@ -1,5 +1,9 @@
-//! pomme in the browser. The emulator runs in a Web Worker: it blocks the
-//! way it does natively, and the page talks to it through:
+//! pomme in the browser. The emulator runs in a Web Worker, and `run` doesn't
+//! return while the app runs. With JSPI (WebAssembly JavaScript Promise
+//! Integration) it pauses in `pommePause` while the app is idle and after each
+//! frame, giving the browser a break (its GPU work is sent, its answers
+//! arrive); without JSPI it blocks there in `Atomics.wait`, as it always did.
+//! The page talks to it through:
 //!
 //! - **input**: a SharedArrayBuffer viewed as an `Int32Array`. Slot 0 counts
 //!   events written; events are 4 ints each in a ring of [`RING`] starting at
@@ -7,7 +11,7 @@
 //!   reader did to an element (see below) is ([`AX_EVENT`] + action, the
 //!   element's id low 32 bits, high 32 bits, 0). The page writes an event,
 //!   bumps the count and `Atomics.notify`s; the worker reads them when the app
-//!   is idle, sleeping in `Atomics.wait` until the next deadline otherwise.
+//!   is idle, pausing in `pommePause` until the next deadline otherwise.
 //! - **frames**: the worker calls the global `pommeFrame(rgba, width, height)`
 //!   (defined by the worker script), which posts the pixels to the page.
 //! - **accessibility**: the screen's accessibility tree, whenever it changes,

@@ -75,7 +75,7 @@ self.onmessage = async (e) => {
   input = e.data.input;
   const jspi = e.data.jspi !== false && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   try {
-    self.pommeLog(jspi ? 'JSPI: on' : 'JSPI: off. Apps run, but Metal apps (such as Flutter apps) cannot draw in this browser.');
+    self.pommeLog(jspi ? 'JSPI: on' : 'JSPI: off. Apps run, but Metal apps (such as Flutter apps) cannot draw.');
     useJspi(jspi);
     self.pommeLog('Downloading the app…');
     await wasm_bindgen('pkg/pomme_web_bg.wasm');

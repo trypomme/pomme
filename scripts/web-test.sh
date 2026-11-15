@@ -5,7 +5,7 @@
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
 #   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
-#   NO_BUILD=1 skips the build (reuse web/pkg and the bundle).
+#   NO_BUILD=1 skips the build (reuse web/pkg and the bundle); QUERY="stats&nojspi" adds page options.
 # Example: scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,265 --see "Tapped 1 time"
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,4 +32,4 @@ for _ in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; 
 
 STEPS=("$@")
 [ ${#STEPS[@]} -gt 0 ] || STEPS=(--wait "First frame" --out "$ROOT/web/tests/out/$APP.png")
-node "$ROOT/web/tests/run.mjs" --url "http://127.0.0.1:$PORT/?app=$BUNDLE" "${STEPS[@]}"
+node "$ROOT/web/tests/run.mjs" --url "http://127.0.0.1:$PORT/?app=$BUNDLE${QUERY:+&$QUERY}" "${STEPS[@]}"

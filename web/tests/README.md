@@ -33,3 +33,25 @@ Steps run in order: `--wait TEXT` (the page's status or log), `--see TEXT`
 points), `--sleep MS`. `--out FILE` saves the screen at the end. `--no-jspi`
 starts Chromium without JSPI. The page's log is printed at the end, and the
 script exits 1 when a step fails.
+
+## What JSPI costs
+
+With JSPI the emulator pauses after each frame and while the app is idle
+(see `openspec/changes/add-flutter-in-browser/design.md`). Measured on
+2026-11-15 with hello-expo in headless Chromium 141 on an M1 Mac mini, with
+`QUERY=stats` and `QUERY="stats&nojspi"`:
+
+| | JSPI | No JSPI (`?nojspi`) |
+| --- | --- | --- |
+| First frame | 1.4 s | 1.4 s |
+| The busy start-up frame (app time, render) | 344 ms, 22 ms | 347 ms, 22 ms |
+| Frames per second while tapping the counter | 3–4 | 4–5 |
+| Expo Router push (`Details`, deep calls) | works | works |
+
+The difference is within the noise between runs: a pause is one browser
+task, far shorter than a frame.
+
+hello-expo's home screen and its `repo/` screens load from GitHub's API,
+which allows 60 calls an hour without signing in. Many runs in an hour use
+them up, and those screens then stay on "Loading…": test with text that
+doesn't need the network (the counter, screen titles).
