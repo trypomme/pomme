@@ -26,7 +26,14 @@ the zip it names and unpack it yourself with `ditto -x -k <zip>
 scripts/web-test.sh hello-expo        # waits for the first frame, saves web/tests/out/hello-expo.png
 scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,265 --see "Tapped 1 time"
 NO_BUILD=1 scripts/web-test.sh …      # reuse the last build
+QUERY=stats scripts/web-test.sh …     # add page options (?stats, ?nojspi)
+scripts/web-test.sh hello-skia --compare   # the browser's frame against the command line's
 ```
+
+`--compare` takes the same app's screenshot with `pomme run` first (the
+reference, at 3 pixels per point) and checks the browser's screen against it
+at points where the app draws something (each channel within 12). The points
+for each app are in `scripts/web-test.sh`.
 
 Steps run in order: `--wait TEXT` (the page's status or log), `--see TEXT`
 (the app's accessibility tree, which the page mirrors as ARIA), `--tap X,Y` (in

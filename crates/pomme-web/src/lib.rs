@@ -281,6 +281,21 @@ impl pomme_hle::net::Net for XhrNet {
     }
 }
 
+thread_local! {
+    /// The page's input ring, for the GPU's pause hook (a plain `fn()`).
+    static INPUT: std::cell::RefCell<Option<js_sys::Int32Array>> = const { std::cell::RefCell::new(None) };
+}
+
+/// pomme-hle's pause hook: one browser task, so the GPU's work and answers get through.
+fn pause_once() {
+    let seen = INPUT.with(|i| i.borrow().as_ref().map_or(0, |a| js_sys::Atomics::load(a, 0).unwrap_or(0)));
+    pomme_pause(0.0, seen);
+}
+
+fn log_line(line: &str) {
+    pomme_log(line);
+}
+
 /// The `.app` directory inside a bundle (its first path under /app/).
 fn app_path(bytes: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into_owned();
@@ -291,11 +306,18 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 /// Mount `bundle` (from `pomme bundle`) and run its app until it stops,
 /// presenting iOS `ios` ("18.6", "26"; empty for the default); with
 /// `frame_stats`, how smoothly frames arrive goes to the console each second.
+/// `jspi`: whether the worker made `pommePause` pause (then Metal can use the
+/// GPU, waiting by pausing; without it, Metal draws nothing).
 /// Runs until the app stops, then tells the page why through `pommeStopped`.
 /// With JSPI the worker calls it through `WebAssembly.promising`, so it
 /// returns nothing (the glue can't read a value out of a promise).
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool) {
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool, jspi: bool) {
+    pomme_hle::host::set_log_hook(Some(log_line));
+    if jspi {
+        INPUT.with(|i| *i.borrow_mut() = Some(input.clone()));
+        pomme_hle::host::set_pause_hook(Some(pause_once));
+    }
     match run_inner(bundle, input, scale, &ios, &web_views, frame_stats) {
         Ok(s) | Err(s) => pomme_stopped(&s),
     }

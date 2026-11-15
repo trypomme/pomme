@@ -679,6 +679,15 @@ impl Tr {
 
     // ---- uniform loading at Metal offsets ----
 
+    /// Infinity in a function: WGSL rejects it as a constant expression
+    /// (Chrome's Tint does; naga lets it through), so it comes from a variable.
+    /// Module-scope constants can't call functions, so they keep `float_lit`'s
+    /// bitcast, which only naga accepts.
+    fn infinity(&mut self, negative: bool) -> String {
+        self.helpers.entry("inf".into()).or_insert_with(|| "fn _inf() -> f32 {\n    var bits = 0x7f800000u;\n    return bitcast<f32>(bits);\n}\n".into());
+        if negative { "(-_inf())".into() } else { "_inf()".into() }
+    }
+
     fn word_helper(&mut self, index: u32) {
         // IEEE half → f32 without the shader-f16 capability.
         self.helpers.entry("f16".into()).or_insert_with(|| {
@@ -689,7 +698,10 @@ impl Tr {
     if (e == 0u) {
         v = f32(m) * 5.9604644775390625e-8;
     } else if (e == 31u) {
-        v = select(bitcast<f32>(0x7f800000u), bitcast<f32>(0x7fc00000u), m != 0u);
+        // From variables: infinity and NaN can't be constant expressions (Tint rejects them).
+        var inf = 0x7f800000u;
+        var nan = 0x7fc00000u;
+        v = select(bitcast<f32>(inf), bitcast<f32>(nan), m != 0u);
     } else {
         v = bitcast<f32>(((e + 112u) << 23u) | (m << 13u));
     }
@@ -1041,11 +1053,12 @@ impl Tr {
                     (format!("{v}i"), Ty::Scalar(Scalar::I))
                 }
             }
+            Expr::Float(v) if (*v as f32).is_infinite() => (self.infinity(*v < 0.0), Ty::Scalar(Scalar::F)),
             Expr::Float(v) => (float_lit(*v), Ty::Scalar(Scalar::F)),
             Expr::Bool(b) => (b.to_string(), Ty::Scalar(Scalar::B)),
             Expr::Ident(n) => {
                 if n == "INFINITY" || n == "HUGE_VALF" {
-                    return Ok(("bitcast<f32>(0x7f800000u)".into(), Ty::Scalar(Scalar::F)));
+                    return Ok((self.infinity(false), Ty::Scalar(Scalar::F)));
                 }
                 let v = self.lookup(n).ok_or_else(|| format!("unknown name {n}"))?;
                 if v.pointer { (format!("(*{})", ident(n)), v.ty) } else { (ident(n), v.ty) }

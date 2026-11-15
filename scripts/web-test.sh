@@ -5,6 +5,7 @@
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
 #   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
+#   --compare (alone): compare with the same app's frame on the command line (hello-skia).
 #   NO_BUILD=1 skips the build (reuse web/pkg and the bundle); QUERY="stats&nojspi" adds page options.
 # Example: scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,265 --see "Tapped 1 time"
 set -euo pipefail
@@ -31,5 +32,19 @@ trap 'kill $SERVER 2>/dev/null' EXIT
 for _ in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 0.1; done
 
 STEPS=("$@")
+if [ "${STEPS[0]:-}" = "--compare" ]; then
+  # The same app on the command line is the reference: its screenshot (3 px per
+  # point), sampled at points where the app draws something that must match.
+  REF="$ROOT/web/tests/out/$APP-cli.png"
+  case "$APP" in
+    # hello-skia's canvas at (45, 290.3) pt: the rect, outside its corner, the
+    # gradient's ends, the chevron's stroke, and the rect under the chevron
+    # (the points crates/pomme-cli/tests/hello_skia.rs checks).
+    hello-skia) POINTS="85,440.3 66,311.3 155,375.3 235,455.3 165,515.3 225,515.3 195,530.3"; WAIT="[metal] running on"; SECONDS_CLI=6 ;;
+    *) echo "no comparison points for $APP" >&2; exit 1 ;;
+  esac
+  "$ROOT/target/release/pomme" run "$PATH_APP" --steps 4000000000 --seconds "$SECONDS_CLI" --screenshot "$REF" >/dev/null
+  STEPS=(--timeout 180 --wait "$WAIT" --sleep $((SECONDS_CLI * 1000)) --out "$ROOT/web/tests/out/$APP.png" --compare "$REF" --points "$POINTS")
+fi
 [ ${#STEPS[@]} -gt 0 ] || STEPS=(--wait "First frame" --out "$ROOT/web/tests/out/$APP.png")
 node "$ROOT/web/tests/run.mjs" --url "http://127.0.0.1:$PORT/?app=$BUNDLE${QUERY:+&$QUERY}" "${STEPS[@]}"

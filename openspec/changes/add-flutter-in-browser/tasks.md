@@ -11,9 +11,9 @@
 ## 2. Metal on the browser's GPU
 
 - [x] 2.1 Add `block_on` to `crates/pomme-hle/src/host.rs` (design, decision 3): `pollster::block_on` on native hosts; on WebAssembly, poll the future and call a pause hook between polls. Add `set_pause_hook`. Check: a unit test runs a future that is ready after three polls, with a hook that counts calls.
-- [ ] 2.2 In `crates/pomme-hle/Cargo.toml`, turn on wgpu's `webgpu` feature for WebAssembly and keep `pollster` for native only. In `crates/pomme-web/Cargo.toml`, turn on `pomme-hle`'s `gpu` feature. Check: `scripts/build-web.sh` builds, and `cargo test -p pomme-hle` still passes on the Mac.
-- [ ] 2.3 In `crates/pomme-hle/src/metal_gpu.rs`, use `block_on` for `request_adapter`, `request_device` and the pixels coming back (`read_texture`), and `Backends::BROWSER_WEBGPU` on WebAssembly. The page sets the pause hook to `pommePause(0)` at start, and logs the adapter's name. Build with `debug_assertions` on for this check. Check: `scripts/web-test.sh` with hello-skia shows its rounded rectangle, gradient circle and chevron, and the log names the GPU adapter.
-- [ ] 2.4 Add hello-skia's browser frame to `web/tests/run.mjs` as a test: compare it with the command-line frame (`pomme run … --screenshot`) at a few sample points. Check: `scripts/web-test.sh hello-skia --compare` passes.
+- [x] 2.2 In `crates/pomme-hle/Cargo.toml`, turn on wgpu's `webgpu` feature for WebAssembly and keep `pollster` for native only. In `crates/pomme-web/Cargo.toml`, turn on `pomme-hle`'s `gpu` feature. Check: `scripts/build-web.sh` builds, and `cargo test -p pomme-hle` still passes on the Mac.
+- [x] 2.3 In `crates/pomme-hle/src/metal_gpu.rs`, use `block_on` for `request_adapter`, `request_device` and the pixels coming back (`read_texture`), and `Backends::BROWSER_WEBGPU` on WebAssembly. The page sets the pause hook to `pommePause(0)` at start, and logs the adapter's name. Build with `debug_assertions` on for this check. Check: `scripts/web-test.sh` with hello-skia shows its rounded rectangle, gradient circle and chevron, and the log names the GPU adapter.
+- [x] 2.4 Add hello-skia's browser frame to `web/tests/run.mjs` as a test: compare it with the command-line frame (`pomme run … --screenshot`) at a few sample points. Check: `scripts/web-test.sh hello-skia --compare` passes.
 
 ## 3. Flutter
 

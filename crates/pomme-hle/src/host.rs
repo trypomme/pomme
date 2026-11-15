@@ -612,6 +612,33 @@ fn draw(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+// ---- Lines for the person running pomme ----
+
+thread_local! {
+    /// Where [`log`] sends a line, when the host has its own console (the
+    /// browser: `println!` goes nowhere in WebAssembly).
+    static LOG: std::cell::Cell<Option<fn(&str)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set (or clear) where [`log`] sends lines; with none, they're printed.
+pub fn set_log_hook(hook: Option<fn(&str)>) {
+    LOG.with(|l| l.set(hook));
+}
+
+/// A line for the person running pomme: printed, or to the host's console.
+pub fn log(line: &str) {
+    match LOG.with(|l| l.get()) {
+        Some(hook) => hook(line),
+        None => println!("{line}"),
+    }
+}
+
+/// `println!` for pomme's own messages, so they reach a browser host too.
+#[macro_export]
+macro_rules! say {
+    ($($arg:tt)*) => { $crate::host::log(&format!($($arg)*)) };
+}
+
 // ---- Waiting for the host's asynchronous work (the GPU) ----
 
 thread_local! {

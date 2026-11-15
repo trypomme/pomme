@@ -73,24 +73,30 @@ const UNIFORM_ALIGN: usize = 256;
 
 impl Gpu {
     fn new() -> R<Gpu> {
+        // Setting the GPU up is asynchronous; in the browser, waiting means pausing.
+        if !crate::host::can_wait() {
+            return Err("can't use the GPU: this browser has no JSPI, so pomme can't wait for it".into());
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let software = std::env::var("POMME_SOFTWARE_GPU").is_ok();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter = crate::host::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: software,
             compatible_surface: None,
             apply_limit_buckets: false,
-        }))
+        }))?
         .map_err(|e| format!("no GPU adapter: {e}"))?;
-        let adapter_name = adapter.get_info().name;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let info = adapter.get_info();
+        // Browsers may hide the GPU's name from pages: then say what we know.
+        let adapter_name = if info.name.is_empty() { format!("{:?} (the browser hides the GPU's name)", info.backend) } else { info.name };
+        let (device, queue) = crate::host::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("pomme metal"),
             required_features: adapter.features() & wgpu::Features::DEPTH32FLOAT_STENCIL8,
             required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
-        }))
+        }))?
         .map_err(|e| format!("no GPU device: {e}"))?;
         let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = errors.clone();
@@ -171,8 +177,9 @@ fn gpu(emu: &mut Emu) -> R<Gpu> {
         return Err(e.clone());
     }
     let g = Gpu::new()?;
-    if emu.trace || std::env::var("POMME_TRACE_METAL").is_ok() {
-        println!("[metal] running on {}", g.adapter_name);
+    // In the browser always: which GPU the page got is worth knowing.
+    if emu.trace || std::env::var("POMME_TRACE_METAL").is_ok() || cfg!(target_arch = "wasm32") {
+        crate::say!("[metal] running on {}", g.adapter_name);
     }
     Ok(g)
 }
@@ -365,7 +372,7 @@ fn texture<'a>(g: &'a mut Gpu, emu: &Emu, t: u64) -> R<&'a Tex> {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         if std::env::var("POMME_TRACE_METAL").is_ok() {
-            println!("[metal]  gpu texture {t:#x}: {}×{} {format:?} ×{}", desc.width, desc.height, desc.samples);
+            crate::say!("[metal]  gpu texture {t:#x}: {}×{} {format:?} ×{}", desc.width, desc.height, desc.samples);
         }
         g.textures.insert(t, Tex { texture, view, format });
     }
@@ -630,14 +637,14 @@ fn run_pass(g: &mut Gpu, emu: &Emu, encoder: &mut wgpu::CommandEncoder, pass: &P
             Ok(pl) => pl,
             Err(e) => {
                 if g.reported.insert(e.clone()) {
-                    println!("[metal] draw skipped: {e}");
+                    crate::say!("[metal] draw skipped: {e}");
                 }
                 prepared.push(None);
                 continue;
             }
         };
         if std::env::var("POMME_TRACE_METAL").is_ok() {
-            println!("[metal]   draw {:?} prim {} slots {:?} scissor {:?} viewport {:?} colors {:?}", d.call, d.primitive, pl.vertex_slots, d.state.scissor, d.state.viewport, match emu.metal.objects.get(&d.state.pipeline) { Some(Obj::Pipeline(p)) => format!("{:?} attrs {:?} layouts {:?}", p.colors, p.attributes, p.layouts), _ => String::new() });
+            crate::say!("[metal]   draw {:?} prim {} slots {:?} scissor {:?} viewport {:?} colors {:?}", d.call, d.primitive, pl.vertex_slots, d.state.scissor, d.state.viewport, match emu.metal.objects.get(&d.state.pipeline) { Some(Obj::Pipeline(p)) => format!("{:?} attrs {:?} layouts {:?}", p.colors, p.attributes, p.layouts), _ => String::new() });
         }
         let mut prep = Prepared { pipeline: p.clone(), uniforms: [Vec::new(), Vec::new()], vertex: Vec::new(), index: None };
         for (stage, ep) in pl.entries.iter().enumerate() {
@@ -651,7 +658,7 @@ fn run_pass(g: &mut Gpu, emu: &Emu, encoder: &mut wgpu::CommandEncoder, pass: &P
                 upload.resize(at + size as usize, 0);
                 if std::env::var("POMME_TRACE_METAL").is_ok() {
                     let f: Vec<f32> = upload[at..at + (size as usize).min(48)].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-                    println!("[metal]     stage {stage} buffer {}: {f:?}…", b.index);
+                    crate::say!("[metal]     stage {stage} buffer {}: {f:?}…", b.index);
                 }
                 prep.uniforms[stage].push((b.binding, at as u64, size));
             }
@@ -848,8 +855,21 @@ fn read_texture(g: &mut Gpu, emu: &Emu, t: u64) -> R<(Vec<u8>, u32, u32)> {
     );
     g.queue.submit(Some(enc.finish()));
     let slice = staging.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    g.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| e.to_string())?;
+    // The copy finishes on the GPU; wgpu calls back once the buffer can be read.
+    // (Arc and Mutex: native wgpu wants a callback it can send to another thread.)
+    let mapped = Arc::new(std::sync::Mutex::new(None));
+    let done = mapped.clone();
+    slice.map_async(wgpu::MapMode::Read, move |r| *done.lock().unwrap() = Some(r.map_err(|e| e.to_string())));
+    if cfg!(target_arch = "wasm32") {
+        // The browser calls back only when it gets a break: pause until then.
+        crate::host::block_on(std::future::poll_fn(|_| match mapped.lock().unwrap().take() {
+            Some(r) => std::task::Poll::Ready(r),
+            None => std::task::Poll::Pending,
+        }))??;
+    } else {
+        g.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| e.to_string())?;
+        mapped.lock().unwrap().take().unwrap_or(Ok(()))?;
+    }
     let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity((w * h * bpp) as usize);
     for y in 0..h {
@@ -879,17 +899,17 @@ fn run(g: &mut Gpu, emu: &mut Emu, cmds: &[Cmd], present: &[u64]) -> R<()> {
         if std::env::var("POMME_TRACE_METAL").is_ok() {
             match c {
                 Cmd::Pass(p) => {
-                    println!("[metal]  cmd: pass, {} draws", p.draws.len());
+                    crate::say!("[metal]  cmd: pass, {} draws", p.draws.len());
                     for d in &p.draws {
                         let name = match emu.metal.objects.get(&d.state.pipeline) {
                             Some(Obj::Pipeline(pd)) => format!("{} / {}", pd.vertex.as_ref().map_or("-", |v| v.1.as_str()), pd.fragment.as_ref().map_or("-", |f| f.1.as_str())),
                             _ => "?".into(),
                         };
-                        println!("[metal]    draw {name}: {:?} textures {:?}", d.call, d.state.textures[1]);
+                        crate::say!("[metal]    draw {name}: {:?} textures {:?}", d.call, d.state.textures[1]);
                     }
                 }
-                Cmd::CopyBuffer { src, src_offset, dst, dst_offset, size } => println!("[metal]  cmd: copy {size} bytes {src:#x}+{src_offset} → {dst:#x}+{dst_offset}"),
-                other => println!("[metal]  cmd: {other:?}"),
+                Cmd::CopyBuffer { src, src_offset, dst, dst_offset, size } => crate::say!("[metal]  cmd: copy {size} bytes {src:#x}+{src_offset} → {dst:#x}+{dst_offset}"),
+                other => crate::say!("[metal]  cmd: {other:?}"),
             }
         }
         match c {
@@ -904,7 +924,7 @@ fn run(g: &mut Gpu, emu: &mut Emu, cmds: &[Cmd], present: &[u64]) -> R<()> {
                 if std::env::var("POMME_TRACE_METAL").is_ok() {
                     let _ = g.device.poll(wgpu::PollType::wait_indefinitely());
                     for e in g.errors.lock().unwrap().iter() {
-                        println!("[metal]  error after pass {}: {e}", g.passes);
+                        crate::say!("[metal]  error after pass {}: {e}", g.passes);
                     }
                 }
                 // Debugging aid: POMME_DUMP_PASSES=dir writes every pass's color attachments.

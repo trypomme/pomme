@@ -253,7 +253,7 @@ fn count(emu: &mut Emu, sel: &str) {
 
 fn trace(emu: &Emu, what: impl FnOnce() -> String) {
     if emu.trace || std::env::var("POMME_TRACE_METAL").is_ok() {
-        println!("[metal] {}", what());
+        crate::say!("[metal] {}", what());
     }
 }
 
@@ -373,7 +373,7 @@ pub(crate) fn contents_set(emu: &mut Emu, layer: u64, contents: u64) -> Result<(
     #[cfg(feature = "gpu")]
     match crate::metal_gpu::texture_pixmap(emu, texture) {
         Ok(pix) => show_frame(emu, layer, pix)?,
-        Err(e) => println!("[metal] can't show IOSurface: {e}"),
+        Err(e) => crate::say!("[metal] can't show IOSurface: {e}"),
     }
     #[cfg(not(feature = "gpu"))]
     let _ = layer;
@@ -459,7 +459,7 @@ fn new_library_with_data(emu: &mut Emu) -> Result<()> {
     }
     trace(emu, || format!("binary library: {} functions, {} with MSL", names.len(), functions.len()));
     if !missing.is_empty() && functions.is_empty() {
-        println!("[metal] a precompiled shader library ({} functions) has no substitute MSL (Flutter: run scripts/flutter/impeller-msl.sh)", names.len());
+        crate::say!("[metal] a precompiled shader library ({} functions) has no substitute MSL (Flutter: run scripts/flutter/impeller-msl.sh)", names.len());
     }
     let _ = error_out;
     let lib = new_obj(emu, "MTLPommeLibrary", Obj::BinaryLibrary { functions })?;
@@ -802,7 +802,7 @@ fn execute(emu: &mut Emu, cmds: Vec<Cmd>, present: &[u64]) -> Result<()> {
         if let Err(e) = crate::metal_gpu::execute(emu, &cmds, present)
             && emu.metal.gpu_error.as_deref() != Some(e.as_str())
         {
-            println!("[metal] {e}");
+            crate::say!("[metal] {e}");
             emu.metal.gpu_error = Some(e);
         }
     }
@@ -927,7 +927,7 @@ fn replace_region(emu: &mut Emu) -> Result<()> {
     let data = emu.p.memory.read(bytes, (bpr * sz[1]) as usize)?.to_vec();
     #[cfg(feature = "gpu")]
     if let Err(e) = crate::metal_gpu::write_texture(emu, t, [o[0], o[1]], [sz[0], sz[1]], bpr, &data) {
-        println!("[metal] replaceRegion: {e}");
+        crate::say!("[metal] replaceRegion: {e}");
     }
     #[cfg(not(feature = "gpu"))]
     let _ = (t, o, data);
@@ -1305,7 +1305,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
             33 => e.p.memory.read_u32(p)? as f64,
             53 => e.p.memory.read_u8(p)? as f64,
             other => {
-                println!("[metal] function constant {i}: unsupported MTLDataType {other}");
+                crate::say!("[metal] function constant {i}: unsupported MTLDataType {other}");
                 0.0
             }
         };

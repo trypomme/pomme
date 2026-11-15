@@ -12,19 +12,27 @@
 //   --out FILE       save the screen (the canvas) as a PNG at the end
 //   --timeout S      seconds for each wait (default 60)
 //   --no-jspi        start the browser without JSPI
+//   --compare REF    at the end, compare the screen with REF (a PNG, e.g. from
+//                    `pomme run --screenshot`) at --points "x,y x,y…" (in points),
+//                    each channel within --tolerance (default 12); REF is at
+//                    --ref-scale pixels per point (default 3)
 // It exits 1 when a step fails, after printing the page's log.
 import { chromium } from 'playwright';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const args = process.argv.slice(2);
-const opt = { url: null, out: null, timeout: 60, jspi: true, steps: [] };
+const opt = { url: null, out: null, timeout: 60, jspi: true, steps: [], compare: null, points: [], tolerance: 12, refScale: 3 };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--url') opt.url = args[++i];
   else if (a === '--out') opt.out = args[++i];
   else if (a === '--timeout') opt.timeout = Number(args[++i]);
   else if (a === '--no-jspi') opt.jspi = false;
+  else if (a === '--compare') opt.compare = args[++i];
+  else if (a === '--points') opt.points = args[++i].trim().split(/\s+/).map((p) => p.split(',').map(Number));
+  else if (a === '--tolerance') opt.tolerance = Number(args[++i]);
+  else if (a === '--ref-scale') opt.refScale = Number(args[++i]);
   else if (['--wait', '--see', '--tap', '--sleep'].includes(a)) opt.steps.push([a.slice(2), args[++i]]);
   else throw new Error(`unknown argument: ${a}`);
 }
@@ -87,6 +95,32 @@ if (opt.out) {
   mkdirSync(dirname(opt.out), { recursive: true });
   writeFileSync(opt.out, Buffer.from(png, 'base64'));
   log.push(`${stamp()} saved the screen to ${opt.out}`);
+}
+if (opt.compare && !failed) {
+  // The page reads both pictures: the screen's canvas and the reference.
+  const ref = readFileSync(opt.compare).toString('base64');
+  const rows = await page.evaluate(async ({ ref, points, refScale }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${ref}`;
+    await img.decode();
+    const c = new OffscreenCanvas(img.width, img.height);
+    const rc = c.getContext('2d');
+    rc.drawImage(img, 0, 0);
+    const screen = document.getElementById('screen');
+    const sc = screen.getContext('2d');
+    const scale = screen.width / 390;
+    return points.map(([x, y]) => ({
+      at: [x, y],
+      browser: [...sc.getImageData(Math.round(x * scale), Math.round(y * scale), 1, 1).data.slice(0, 3)],
+      ref: [...rc.getImageData(Math.round(x * refScale), Math.round(y * refScale), 1, 1).data.slice(0, 3)],
+    }));
+  }, { ref, points: opt.points, refScale: opt.refScale });
+  for (const r of rows) {
+    const diff = Math.max(...r.browser.map((v, i) => Math.abs(v - r.ref[i])));
+    const ok = diff <= opt.tolerance;
+    log.push(`${stamp()} compare (${r.at}): browser rgb(${r.browser}) reference rgb(${r.ref}) ${ok ? 'ok' : `off by ${diff}`}`);
+    if (!ok && !failed) failed = `the screen differs from ${opt.compare} at (${r.at}) by ${diff}`;
+  }
 }
 const status = await page.$eval('#status', (e) => e.textContent).catch(() => '?');
 await browser.close();

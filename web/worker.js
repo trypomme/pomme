@@ -83,7 +83,7 @@ self.onmessage = async (e) => {
     if (!res.ok) throw new Error(`${bundle}: ${res.status} ${res.statusText}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     self.pommeLog(`Booting (${(bytes.length / 1e6).toFixed(0)} MB)…`);
-    wasm_bindgen.run(bytes, input, scale, ios || '', webViews, !!frameStats); // reports through pommeStopped
+    wasm_bindgen.run(bytes, input, scale, ios || '', webViews, !!frameStats, jspi); // reports through pommeStopped
   } catch (err) {
     self.pommeStopped(String((err && err.stack) || err));
   }
