@@ -43,6 +43,8 @@ pub struct State {
     /// The orientation the app asked for (`requestGeometryUpdate`): kept while
     /// it's supported, until the phone is turned.
     pub requested_orientation: Option<crate::device::Orientation>,
+    /// iOS 17's trait change registrations (orientation.rs), as their tokens.
+    pub trait_registrations: Vec<u64>,
     /// Scripted turns of the phone: (virtual ns, how it's then held).
     pub rotations: Vec<(u64, crate::device::Orientation)>,
     /// The interface turn in progress, if any.

@@ -15,7 +15,8 @@
 // `dark`: the dark appearance. `landscape`: the phone turned left.
 // `appearance`: colours from the bar's appearance. `uitab`: tabs through iOS 18's
 // UITab API (as React Native's native tabs on iOS 26.1+), a search tab among them;
-// the search tab selected (`uitab,two`, `uitab,four`: two or four other tabs). Variants combine: `landscape,more`.
+// the search tab selected (`uitab,two`, `uitab,four`: two or four other tabs).
+// `accessory`: iOS 26's bottom accessory (a label) above the bar. Variants combine: `landscape,more`.
 // Without one, the lens is followed as the selection moves.
 
 import Darwin
@@ -154,9 +155,27 @@ final class Tabs: UITabBarController {
     super.viewDidAppear(animated)
     guard !reported else { return }
     reported = true
+    if variant.contains("accessory"), #available(iOS 26.0, *) {
+      let label = UILabel()
+      label.text = "Now playing"
+      label.textAlignment = .center
+      setBottomAccessory(UITabAccessory(contentView: label), animated: false)
+    }
     after(1) { [self] in
       describe("first")
       switch true {
+      case variant.contains("accessory"):
+        if #available(iOS 26.0, *), let content = bottomAccessory?.contentView {
+          let child = selectedViewController!.view!
+          report("accessory.content", content.convert(content.bounds, to: view))
+          var v: UIView? = content
+          while let c = v, c !== view {
+            say("ACCESSORY \(type(of: c)) \(f(c.convert(c.bounds, to: view).minX)) \(f(c.convert(c.bounds, to: view).minY)) \(f(c.bounds.width))×\(f(c.bounds.height)) corner \(f(c.layer.cornerRadius)) bg \(rgba(c.backgroundColor, c))")
+            v = c.superview
+          }
+          report("accessory.insets", CGRect(x: child.safeAreaInsets.left, y: child.safeAreaInsets.top, width: child.safeAreaInsets.right, height: child.safeAreaInsets.bottom))
+          say("ACCESSORY environment \(content.traitCollection.tabAccessoryEnvironment.rawValue)")
+        }
       case variant.contains("uitab"):
         if #available(iOS 18.0, *) {
           say("UITAB controllers \(viewControllers?.count ?? -1) selected \(selectedTab?.identifier ?? "-") vc \(selectedViewController?.title ?? "-") vctab \(selectedViewController?.tab?.identifier ?? "-") search \(tabs.last is UISearchTab) id \(tabs.last?.identifier ?? "-")")

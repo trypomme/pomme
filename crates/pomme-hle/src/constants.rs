@@ -43,6 +43,12 @@ const STRING_PREFIXES: &[&str] = &[
 
 /// String constants whose values aren't their names: (name, value).
 const STRINGS: &[(&str, &str)] = &[
+    // Key-value observing's change dictionary keys (kvo.rs uses these).
+    ("NSKeyValueChangeKindKey", "kind"),
+    ("NSKeyValueChangeNewKey", "new"),
+    ("NSKeyValueChangeOldKey", "old"),
+    ("NSKeyValueChangeIndexesKey", "indexes"),
+    ("NSKeyValueChangeNotificationIsPriorKey", "notificationIsPrior"),
     // Core Animation's names, as its functions and properties compare them.
     ("kCAFillModeForwards", "forwards"),
     ("kCAFillModeBackwards", "backwards"),

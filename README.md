@@ -121,9 +121,28 @@ Debugging:
   label colour whatever the appearance says. SwiftUI also takes `ForEach` and `Group` among
   its `Tab`s, `Tab`'s roles and `LocalizedStringResource` titles, `.badge` on a tab or a
   `.tabItem`, and the automatic, tab-bar-only and sidebar-adaptable styles (pages aren't
-  yet). React Native's native tabs (react-native-screens) take their pre-iOS 26.1 path,
-  `viewControllers` and appearances, which this covers. `tests/tab_bar.rs` and
-  `tests/swiftui_tabs.rs`.
+  yet). iOS 18's `UITab`s too (`tabs`, `selectedTab`, the delegate told of each new tab):
+  a `UISearchTab` (SwiftUI's `Tab(role: .search)`) sits on a glass circle of its own at
+  the right under Liquid Glass, the other tabs' capsule beside it. iOS 26's bottom
+  accessory (`UITabAccessory`) floats on a glass capsule 8 pt above the bar, insetting the
+  tabs' content; it isn't shown before iOS 26. Expo Router's native tabs
+  (`expo-router/native-tabs`, react-native-screens' Tabs) run on both paths
+  react-native-screens takes: view controllers on iOS 26.0, `UITab`s from 26.1
+  (`pomme run --ios 26.2`), badges, SF Symbols, the search tab,
+  `NativeTabs.BottomAccessory` (hello-expo's pommehello:///tabs) and More with more than
+  five tabs (pommehello:///moretabs).
+  `tests/tab_bar.rs`, `tests/swiftui_tabs.rs` and `tests/hello_expo.rs`.
+- Liquid Glass views: `UIVisualEffectView` with a `UIGlassEffect` (regular or clear,
+  tinted, interactive) or a `UIGlassContainerEffect`, shaped by the layer's corner radius
+  or iOS 26's `cornerConfiguration` (`UICornerConfiguration`, `UICornerRadius`: fixed,
+  concentric, capsules), drawn as measured on the iOS 26 Simulator in both appearances
+  (tests/fixtures/glass): the backdrop blurred and lightened (regular: 70% toward white and
+  more saturated; clear: barely), a tint over it, a soft shadow below. What Expo's
+  `expo-glass-effect` and Callstack's `@callstack/liquid-glass` build on, made the way each
+  makes it (hello-expo's pommehello:///glass uses Expo's). The Swift corner types come from
+  pomme's own Swift half of UIKit (scripts/sysroot/overlays/UIKit, built into the sysroot).
+  Not yet: glass in a container merging into one shape, and the bending at glass's edges.
+  `tests/glass.rs`.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the

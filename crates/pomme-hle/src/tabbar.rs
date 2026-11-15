@@ -52,6 +52,9 @@ struct Tabs {
     /// The tabs as iOS 18's `UITab`s, when they were given that way (`tabs`),
     /// each standing for the controller at its index.
     uitabs: Vec<u64>,
+    /// iOS 26's bottom accessory (a UITabAccessory), and the glass it's shown on.
+    accessory: u64,
+    accessory_view: u64,
 }
 
 /// A tab bar shows at most five buttons; with more tabs, four and More.
@@ -147,6 +150,94 @@ fn bar_mut(emu: &mut Emu, b: u64) -> &mut Bar {
 pub fn container_bar(emu: &Emu, v: u64) -> Option<u64> {
     let tbc = emu.tabs.containers.get(&v)?;
     emu.tabs.tabs.get(tbc).map(|t| t.bar)
+}
+
+/// How much of a tab bar controller's container (`v`) the bar covers at the
+/// bottom for what's in its subview `below`, with a bottom accessory too
+/// (its 48 pt and 8 above the bar, measured); nothing for the bar and the
+/// accessory themselves, or while the bar's hidden. None: not a container.
+pub fn bottom_cover(emu: &Emu, v: u64, below: u64) -> Option<f64> {
+    let t = emu.tabs.tabs.get(emu.tabs.containers.get(&v)?)?;
+    let hidden = emu.ui.views.views.get(&t.bar).is_none_or(|b| b.hidden);
+    if below == t.bar || (below != 0 && below == t.accessory_view) || hidden {
+        return Some(0.0);
+    }
+    let accessory = if t.accessory_view != 0 && accessory_shown(emu) { ACCESSORY_HEIGHT + ACCESSORY_GAP } else { 0.0 };
+    Some(bar_height(emu) + accessory)
+}
+
+/// The bottom accessory: a capsule of glass 48 pt tall, 8 pt above the bar
+/// (both measured), as wide as the bar's capsule; only under Liquid Glass,
+/// and upright (on its side it's inline in the bar, which pomme doesn't draw).
+const ACCESSORY_HEIGHT: f64 = 48.0;
+const ACCESSORY_GAP: f64 = 8.0;
+
+fn accessory_shown(emu: &Emu) -> bool {
+    emu.system.liquid_glass() && !compact(emu)
+}
+
+/// Set (or clear) the bottom accessory: its content view on a capsule of glass above the bar.
+fn set_accessory(emu: &mut Emu, tbc: u64, accessory: u64) -> Result<()> {
+    let old = tabs(emu, tbc);
+    if old.accessory_view != 0 {
+        send(emu, old.accessory_view, "removeFromSuperview", &[])?;
+    }
+    if accessory != 0 {
+        send(emu, accessory, "retain", &[])?;
+    }
+    if old.accessory != 0 {
+        objc::objc_release_obj(emu, old.accessory)?;
+    }
+    let mut glass = 0;
+    let content = if accessory == 0 { 0 } else { bag_get(emu, accessory, "contentView").unwrap_or(0) };
+    // (Before iOS 26's design there's none to show: the content isn't put anywhere, as measured.)
+    if content != 0 && emu.system.liquid_glass() {
+        let glass_class = objc::host_class(emu, "UIGlassEffect")?;
+        let effect = send(emu, glass_class, "effectWithStyle:", &[crate::glass::REGULAR])?;
+        glass = new_object(emu, "_UITabAccessoryContainer")?;
+        glass = send(emu, glass, "initWithEffect:", &[effect])?;
+        let corners = objc::host_class(emu, "UICornerConfiguration")?;
+        let capsule = send(emu, corners, "capsuleConfiguration", &[])?;
+        send(emu, glass, "setCornerConfiguration:", &[capsule])?;
+        send(emu, content, "removeFromSuperview", &[])?;
+        send(emu, glass, "addSubview:", &[content])?;
+        send(emu, content, "setAutoresizingMask:", &[2 | 16])?;
+        bag_set(emu, glass, "pommeAccessoryContent", content);
+    }
+    let tm = tabs_mut(emu, tbc);
+    tm.accessory = accessory;
+    tm.accessory_view = glass;
+    let container = tm.container;
+    if container != 0 {
+        if glass != 0 {
+            let bar = tabs(emu, tbc).bar;
+            send(emu, container, "insertSubview:belowSubview:", &[glass, bar])?;
+        }
+        layout_container(emu, container)?;
+        // (What's in the tabs is inset again.)
+        let shown = tabs(emu, tbc).shown;
+        if shown != 0 {
+            let v = send(emu, shown, "view", &[])?;
+            send(emu, v, "setNeedsLayout", &[])?;
+        }
+    }
+    crate::host::changed(emu);
+    Ok(())
+}
+
+/// The accessory environment of a view in a bottom accessory (UITabAccessoryEnvironment:
+/// regular, 2, as measured), if it's in one.
+pub fn accessory_environment(emu: &Emu, mut v: u64) -> Option<u64> {
+    for _ in 0..64 {
+        if v == 0 {
+            return None;
+        }
+        if bag_get(emu, v, "pommeAccessoryContent").is_some() {
+            return Some(2);
+        }
+        v = emu.ui.views.views.get(&v).map_or(0, |vw| vw.superview);
+    }
+    None
 }
 
 /// Every tab bar there is (for tests and tools).
@@ -332,6 +423,19 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
         crate::uiview::view_mut(emu, t.bar).hidden = hidden;
         crate::host::changed(emu);
     }
+    if t.accessory_view != 0 {
+        let shown = accessory_shown(emu) && !hidden;
+        let frame = [21.0, h - bar_h - ACCESSORY_GAP - ACCESSORY_HEIGHT, (w - 42.0).max(0.0), ACCESSORY_HEIGHT];
+        set_frame_of(emu, t.accessory_view, frame);
+        let content = bag_get(emu, t.accessory_view, "pommeAccessoryContent").unwrap_or(0);
+        if content != 0 {
+            set_frame_of(emu, content, [0.0, 0.0, frame[2], frame[3]]);
+        }
+        if view(emu, t.accessory_view).hidden == shown {
+            crate::uiview::view_mut(emu, t.accessory_view).hidden = !shown;
+            crate::host::changed(emu);
+        }
+    }
     if t.shown != 0 {
         let v = send(emu, t.shown, "view", &[])?;
         set_frame_of(emu, v, [0.0, 0.0, w, h]);
@@ -427,11 +531,15 @@ fn show_selected(emu: &mut Emu, tbc: u64) -> Result<()> {
         {
             stack.push(vc);
         }
-        if crate::navigation::stack_of(emu, nav).as_deref() != Some(&stack[..]) {
-            let a = foundation::new_array_of(emu, &stack)?;
-            // (Chosen from the list, it's pushed as a row's screen is; otherwise it's just there.)
-            let animated = t.shown == nav && stack.len() == 2;
-            send(emu, nav, "setViewControllers:animated:", &[a, animated as u64])?;
+        let now = crate::navigation::stack_of(emu, nav);
+        if now.as_deref() != Some(&stack[..]) {
+            if t.shown == nav && stack.len() == 2 && now.as_deref() == Some(&stack[..1]) {
+                // Chosen from the list: pushed, as UIKit pushes a row's screen.
+                send(emu, nav, "pushViewController:animated:", &[stack[1], 1])?;
+            } else {
+                let a = foundation::new_array_of(emu, &stack)?;
+                send(emu, nav, "setViewControllers:animated:", &[a, 0])?;
+            }
         }
         nav
     } else {
@@ -454,8 +562,10 @@ fn show_selected(emu: &mut Emu, tbc: u64) -> Result<()> {
     }
     tabs_mut(emu, tbc).shown = new;
     if new != 0 {
+        // (Under the bar, and under its accessory if there's one.)
         let v = send(emu, new, "view", &[])?;
-        send(emu, t.container, "insertSubview:belowSubview:", &[v, t.bar])?;
+        let above = if t.accessory_view != 0 { t.accessory_view } else { t.bar };
+        send(emu, t.container, "insertSubview:belowSubview:", &[v, above])?;
     }
     layout_container(emu, t.container)?;
     if on_screen && t.shown != 0 {
@@ -741,6 +851,30 @@ const TAB_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "tab", |e| {
         let v = bag_get(e, e.arg(0), "pommeTab").unwrap_or(0);
         ret(e, v)
+    }),
+    ("UITabAccessory", false, "initWithContentView:", |e| {
+        let (a, c) = (e.arg(0), e.arg(2));
+        if c != 0 {
+            send(e, c, "retain", &[])?;
+        }
+        bag_set(e, a, "contentView", c);
+        ret(e, a)
+    }),
+    ("UITabAccessory", false, "contentView", |e| {
+        let c = bag_get(e, e.arg(0), "contentView").unwrap_or(0);
+        ret(e, c)
+    }),
+    (TBC, false, "bottomAccessory", |e| {
+        let a = tabs(e, e.arg(0)).accessory;
+        ret(e, a)
+    }),
+    (TBC, false, "setBottomAccessory:", |e| {
+        let (t, a) = (e.arg(0), e.arg(2));
+        set_accessory(e, t, a)
+    }),
+    (TBC, false, "setBottomAccessory:animated:", |e| {
+        let (t, a) = (e.arg(0), e.arg(2));
+        set_accessory(e, t, a)
     }),
     (TBC, false, "tabs", |e| {
         let list = tabs(e, e.arg(0)).uitabs;

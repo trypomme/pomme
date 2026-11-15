@@ -352,3 +352,23 @@ fn uitabs_and_a_search_tab() {
         }
     }
 }
+
+/// iOS 26's bottom accessory: under Liquid Glass its content on a capsule of
+/// glass 8 pt above the bar's, as wide, 48 pt tall, the tabs' content inset
+/// by it too, and a view in it in the regular accessory environment; before
+/// iOS 26 (the design kept) it isn't shown.
+#[test]
+fn bottom_accessory() {
+    for compat in [false, true] {
+        let Some((_, console)) = run_variant("accessory", compat) else { return };
+        let wrong = reports_match(&console, &recording("accessory", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {wrong:#?}");
+        let ours = common::parse_metrics(&console);
+        let want = common::parse_metrics(&std::fs::read_to_string(format!("{}/tests/fixtures/tabbar/{}", env!("CARGO_MANIFEST_DIR"), recording("accessory", compat))).unwrap());
+        for name in ["accessory.content", "accessory.insets"] {
+            let (got, want) = (ours[name], want[name]);
+            assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 0.5), "compat {compat}: {name} {got:?}, iOS {want:?}");
+        }
+        assert_eq!(line(&console, "ACCESSORY environment"), measured_line("accessory", compat, "ACCESSORY environment"));
+    }
+}

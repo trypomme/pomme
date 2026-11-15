@@ -1113,14 +1113,12 @@ fn vc_next_responder(emu: &mut Emu) -> Result<()> {
 pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
     let (w, h) = crate::orientation::screen(emu);
     let [mut top, left, bottom, right] = crate::orientation::safe_area(emu);
-    // Inside a tab bar controller (not its bar), a visible tab bar covers the bottom.
+    // Inside a tab bar controller (not its bar), a visible tab bar (and its accessory) covers the bottom.
     let mut bottom = bottom;
     let (mut cur, mut below) = (v, 0);
     while cur != 0 {
-        if let Some(bar) = crate::tabbar::container_bar(emu, cur) {
-            if bar != below && !view(emu, bar).hidden {
-                bottom += crate::tabbar::bar_height(emu);
-            }
+        if let Some(cover) = crate::tabbar::bottom_cover(emu, cur, below) {
+            bottom += cover;
             break;
         }
         below = cur;

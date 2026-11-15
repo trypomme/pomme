@@ -379,6 +379,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UIImageView", "UIView"),
     ("UIActivityIndicatorView", "UIView"),
     ("UIVisualEffectView", "UIView"),
+    ("_UIVisualEffectContentView", "UIView"),
     ("UIStackView", "UIView"),
     ("UINavigationBar", "UIView"),
     ("UITabBar", "UIView"),
@@ -400,11 +401,17 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UITabBarItemStateAppearance", "NSObject"),
     ("UITab", "NSObject"),
     ("UISearchTab", "UITab"),
+    ("UITabAccessory", "NSObject"),
+    ("_UITabAccessoryContainer", "UIVisualEffectView"),
     ("UIBarItem", "NSObject"),
     ("UIBarButtonItem", "UIBarItem"),
     ("UIBarButtonItemAppearance", "NSObject"),
     ("UIVisualEffect", "NSObject"),
     ("UIBlurEffect", "UIVisualEffect"),
+    ("UIGlassEffect", "UIVisualEffect"),
+    ("UIGlassContainerEffect", "UIVisualEffect"),
+    ("UICornerRadius", "NSObject"),
+    ("UICornerConfiguration", "NSObject"),
     ("UIToolbar", "UIView"),
     ("UIInputView", "UIView"),
     ("UIGestureRecognizer", "NSObject"),
@@ -488,8 +495,9 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let anchors: Vec<_> = crate::autolayout::ANCHOR_METHODS.iter().flatten().copied().collect();
     let accessibility = crate::accessibility::methods();
     let tab_bars = crate::tabbar::methods();
+    let glass = crate::glass::methods();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::symbols::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::statusbar::METHODS, crate::appearance::METHODS, crate::indexset::METHODS, crate::orderedset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::bezierpath::METHODS, crate::animation::METHODS, crate::spinner::METHODS, crate::webkit::METHODS, &webkit_flags[..], &accessibility[..], &tab_bars[..], EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::symbols::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::statusbar::METHODS, crate::appearance::METHODS, crate::indexset::METHODS, crate::orderedset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::bezierpath::METHODS, crate::animation::METHODS, crate::spinner::METHODS, crate::webkit::METHODS, &webkit_flags[..], &accessibility[..], &tab_bars[..], &glass[..], crate::kvo::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -1391,6 +1399,19 @@ fn msg_send_super2(emu: &mut Emu) -> Result<()> {
     dispatch(emu, start)
 }
 
+/// `objc_msgSendSuper(struct objc_super *, SEL, ...)`: super = {receiver,
+/// the class to look the method up from} (Super2 names the current class instead).
+fn msg_send_super(emu: &mut Emu) -> Result<()> {
+    let sup = emu.cpu.x[0];
+    let recv = emu.read_u64(sup)?;
+    let start = emu.read_u64(sup + 8)?;
+    if !emu.objc.classes.contains_key(&start) {
+        guest_class(emu, start)?;
+    }
+    emu.cpu.x[0] = recv;
+    dispatch(emu, start)
+}
+
 fn ret_self(_: &mut Emu) -> Result<()> {
     Ok(()) // x0 already holds the object
 }
@@ -1831,6 +1852,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_NSSetUncaughtExceptionHandler", set_uncaught_handler),
     ("_NSGetUncaughtExceptionHandler", get_uncaught_handler),
     ("_objc_msgSend", msg_send),
+    ("_objc_msgSendSuper", msg_send_super),
     ("_objc_msgSendSuper2", msg_send_super2),
     ("_objc_opt_self", ret_self),
     ("_objc_opt_class", objc_opt_class),
@@ -2095,12 +2117,7 @@ fn nsobject_method_for_selector(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
-    // Key-value observing: registrations are accepted, but no change notifications are sent yet.
-    ("NSObject", false, "addObserver:forKeyPath:options:context:", noop),
-    ("NSObject", false, "removeObserver:forKeyPath:", noop),
-    ("NSObject", false, "removeObserver:forKeyPath:context:", noop),
-    ("NSObject", false, "willChangeValueForKey:", noop),
-    ("NSObject", false, "didChangeValueForKey:", noop),
+    // (Key-value observing: kvo.rs.)
     ("NSObject", true, "instanceMethodForSelector:", instance_method_for_selector),
     ("NSObject", false, "methodForSelector:", nsobject_method_for_selector),
     ("NSObject", false, "valueForKey:", nsobject_value_for_key),

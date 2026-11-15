@@ -33,6 +33,11 @@ const PLACEHOLDER: u64 = 0x504c_4143_4548_4c44; // "PLACEHLD"
 
 #[derive(Clone, Default)]
 pub struct State {
+    /// Key-value observing (kvo.rs): registrations, changes begun
+    /// (`willChangeValueForKey:`), and views pomme changed to tell of.
+    pub(crate) kvo: Vec<crate::kvo::Observation>,
+    pub(crate) kvo_pending: Vec<(u64, String, Vec<(crate::kvo::Observation, Option<u64>)>)>,
+    pub(crate) kvo_later: Vec<(u64, &'static str)>,
     /// The CoreFoundation image, once loaded.
     cf: Option<usize>,
     syms: HashMap<&'static str, u64>,

@@ -1,8 +1,9 @@
+import { Text } from 'react-native';
 import { NativeTabs } from 'expo-router/native-tabs';
 
 // Expo Router's native tabs (react-native-screens' Tabs: the system's own
-// UITabBarController, Liquid Glass on iOS 26). Reached with the
-// pommehello:///tabs link.
+// UITabBarController, Liquid Glass on iOS 26), with a bottom accessory
+// above the bar. Reached with the pommehello:///tabs link.
 export default function TabsLayout() {
   return (
     <NativeTabs minimizeBehavior="onScrollDown">
@@ -22,6 +23,19 @@ export default function TabsLayout() {
       <NativeTabs.Trigger name="search" role="search">
         <NativeTabs.Trigger.Label>Search</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
+      <NativeTabs.BottomAccessory>
+        <NowPlaying />
+      </NativeTabs.BottomAccessory>
     </NativeTabs>
+  );
+}
+
+/** The bottom accessory: where it's placed (regular above the bar, or inline in it). */
+function NowPlaying() {
+  const placement = NativeTabs.BottomAccessory.usePlacement();
+  return (
+    <Text testID="accessory" style={{ fontSize: 17, textAlign: 'center', padding: 14 }}>
+      Now playing · {placement}
+    </Text>
   );
 }

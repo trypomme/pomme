@@ -1,0 +1,17 @@
+# The glass fixture on the iOS 26.2 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+METRIC clear.content 20.0 240.0 350.0 80.0
+METRIC clear.frame 20.0 240.0 350.0 80.0
+METRIC container.0.content 80.0 600.0 80.0 80.0
+METRIC container.0.frame 80.0 600.0 80.0 80.0
+METRIC container.1.content 180.0 600.0 80.0 80.0
+METRIC container.1.frame 180.0 600.0 80.0 80.0
+METRIC container.content 20.0 600.0 350.0 80.0
+METRIC container.frame 20.0 600.0 350.0 80.0
+METRIC corners.content 20.0 480.0 350.0 80.0
+METRIC corners.frame 20.0 480.0 350.0 80.0
+METRIC label.content 20.0 720.0 350.0 80.0
+METRIC label.frame 20.0 720.0 350.0 80.0
+METRIC regular.content 20.0 120.0 350.0 80.0
+METRIC regular.frame 20.0 120.0 350.0 80.0
+METRIC tinted.content 20.0 360.0 350.0 80.0
+METRIC tinted.frame 20.0 360.0 350.0 80.0

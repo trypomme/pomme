@@ -837,8 +837,8 @@ fn lock_screen_face_id_refused() {
 
 /// Expo Router's native tabs (react-native-screens' Tabs, pommehello:///tabs):
 /// the system's tab bar with the tabs' titles, symbols and badge, the first
-/// tab's screen, and tapping a tab (as VoiceOver would, by its name) shows
-/// its screen. On iOS 26.0 they're given as view controllers; from 26.1 as
+/// tab's screen, its bottom accessory above the bar, and tapping a tab (as
+/// VoiceOver would, by its name) shows its screen. On iOS 26.0 they're given as view controllers; from 26.1 as
 /// `UITab`s, the search tab on a circle of its own (Liquid Glass).
 #[test]
 fn native_tabs() {
@@ -849,6 +849,9 @@ fn native_tabs() {
         emu.ui.launch_url = Some("pommehello:///tabs".into());
         let run = driver::drive(&mut emu, move |app| {
             app.wait_for(&text("Home tab"))?;
+            // The bottom accessory, laid out on its glass above the bar (Liquid Glass: regular).
+            let accessory = app.wait_for(&text("Now playing · regular"))?;
+            assert!((accessory.frame[1] - 705.0).abs() < 1.0 && (accessory.frame[3] - 48.0).abs() < 1.0, "26.{minor}: {accessory}");
             let look = app.with(|emu| {
                 let bar = pomme_hle::tabbar::bars(emu)[0];
                 Ok(pomme_hle::tabbar::look(emu, bar)?.unwrap())
@@ -861,6 +864,66 @@ fn native_tabs() {
             assert_eq!(look.search_platter.is_some(), detached);
             app.tap(&text("Messages"))?;
             app.wait_for(&text("Messages tab"))?;
+            Ok(())
+        });
+        if let Err(e) = run {
+            panic!("26.{minor}: {e}");
+        }
+    }
+}
+
+/// Liquid Glass through Expo's expo-glass-effect (pommehello:///glass): it
+/// finds the glass API (isLiquidGlassAvailable), and its GlassViews are
+/// glass as iOS draws it (tests/glass.rs): over a black stripe regular glass
+/// reads grey, over white near white; tinted glass is the tint.
+#[test]
+fn liquid_glass() {
+    use pomme_hle::driver::{self, text};
+    let Some(mut emu) = boot() else { return };
+    if !Path::new(SYSROOT).join("System/Library/Frameworks/UIKit.framework/UIKit").exists() {
+        eprintln!("skipping: build the sysroot's UIKit overlay first");
+        return;
+    }
+    emu.ui.launch_url = Some("pommehello:///glass".into());
+    let run = driver::drive(&mut emu, |app| {
+        app.wait_for(&text("Liquid Glass available"))?;
+        app.wait_for(&text("Tinted"))?;
+        Ok(())
+    });
+    if let Err(e) = run {
+        panic!("{e}");
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    let at = |x: f64, y: f64| {
+        let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap().demultiply();
+        [c.red() as i32, c.green() as i32, c.blue() as i32]
+    };
+    let near = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 10);
+    // Regular glass (from y 160.3), over the first black stripe and over white.
+    assert!(near(at(32.0, 225.0), [175, 175, 174]), "over black: {:?}", at(32.0, 225.0));
+    assert!(near(at(280.0, 225.0), [251, 251, 251]), "over white: {:?}", at(280.0, 225.0));
+    // Tinted (#007aff, from y 360.3), over white.
+    assert!(near(at(280.0, 425.0), [0, 121, 252]), "tinted: {:?}", at(280.0, 425.0));
+}
+
+/// Seven native tabs (pommehello:///moretabs): four on the bar and More,
+/// whose list has the rest; choosing one there pushes its screen as UIKit
+/// does (react-native-screens hooks the More navigation controller's
+/// pushes, calling the original with objc_msgSendSuper). Both paths: view
+/// controllers (26.0) and `UITab`s (26.2).
+#[test]
+fn native_tabs_more() {
+    use pomme_hle::driver::{self, text};
+    for minor in [0, 2] {
+        let Some(mut emu) = boot() else { return };
+        emu.system.os = pomme_hle::system::Version::new(26, minor, 0);
+        emu.ui.launch_url = Some("pommehello:///moretabs".into());
+        let run = driver::drive(&mut emu, |app| {
+            app.wait_for(&text("One tab"))?;
+            app.tap(&text("More"))?;
+            app.wait_for(&text("Seven"))?;
+            app.tap(&text("Five"))?;
+            app.wait_for(&text("Five tab"))?;
             Ok(())
         });
         if let Err(e) = run {

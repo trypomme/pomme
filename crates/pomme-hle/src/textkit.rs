@@ -450,8 +450,39 @@ fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, rang
 /// An attributed string laid out at `width` (wrapping; infinite: only at newlines).
 fn attributed_lines(emu: &mut Emu, s: u64, width: f64, height: f64, max_lines: usize) -> Result<(Vec<u16>, Styles, Vec<Line>)> {
     let (text, runs, styles) = attributed_runs(emu, s)?;
-    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    let mut lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    align_lines(emu, s, &mut lines, width)?;
     Ok((text, styles, lines))
+}
+
+/// Each line where its paragraph style puts it in `width` (NSTextAlignment:
+/// centred 1, right 2; left, justified and natural stay at the leading edge).
+fn align_lines(emu: &mut Emu, s: u64, lines: &mut [Line], width: f64) -> Result<()> {
+    if !width.is_finite() || lines.is_empty() {
+        return Ok(());
+    }
+    let key = foundation::new_nsstring(emu, "NSParagraphStyleAttributeName")?;
+    let range = emu.alloc(16)?;
+    for line in lines.iter_mut() {
+        let attrs = cf(emu, "_CFAttributedStringGetAttributes", &[s, line.start as u64, range])?;
+        let style = if attrs == 0 { 0 } else { cf(emu, "_CFDictionaryGetValue", &[attrs, key])? };
+        if style == 0 {
+            continue;
+        }
+        // (NSParagraphStyle is a property bag in pomme: `setAlignment:`'s value; unset, natural.)
+        let offset = match objc::bag_get(emu, style, "alignment").unwrap_or(4) {
+            1 => (width - line.width) / 2.0,
+            2 => width - line.width,
+            _ => 0.0,
+        };
+        if offset > 0.0 {
+            for x in &mut line.xs {
+                *x += offset;
+            }
+        }
+    }
+    emu.heap.free(&emu.p.memory, range)?;
+    Ok(())
 }
 
 fn lines_size(lines: &[Line]) -> (f64, f64) {
@@ -535,7 +566,8 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
         cache.push((ch, *f, a));
         a
     };
-    let lines = layout(&text, &runs, &mut measure, width, h, max_lines);
+    let mut lines = layout(&text, &runs, &mut measure, width, h, max_lines);
+    align_lines(emu, s, &mut lines, width)?;
     Ok(Laid { lines, padding, len: text.len(), styles, text })
 }
 

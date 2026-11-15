@@ -101,9 +101,14 @@ pub(crate) fn view(emu: &mut Emu, v: u64) -> View {
 pub(crate) fn set_frame_of(emu: &mut Emu, v: u64, r: [f64; 4]) {
     use crate::animation::{Prop, after, before};
     let (pos, size) = (before(emu, v, Prop::Position), before(emu, v, Prop::Bounds));
+    let was = (view_entry(emu, v).center, view_entry(emu, v).bounds);
     set_frame_now(emu, v, r);
     after(emu, v, Prop::Position, pos);
     after(emu, v, Prop::Bounds, size);
+    // (Observers of its geometry hear of a change on the main run loop.)
+    if (view_entry(emu, v).center, view_entry(emu, v).bounds) != was {
+        let _ = crate::kvo::view_changed_later(emu, v, &["frame", "center", "bounds"]);
+    }
 }
 
 fn set_frame_now(emu: &mut Emu, v: u64, r: [f64; 4]) {
@@ -185,8 +190,13 @@ fn view_frame(emu: &mut Emu) -> Result<()> {
 
 fn view_set_frame(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
-    set_frame_of(emu, v, r);
-    Ok(())
+    let pending = crate::kvo::view_will_change(emu, v, &["frame", "center", "bounds"])?;
+    use crate::animation::{Prop, after, before};
+    let (pos, size) = (before(emu, v, Prop::Position), before(emu, v, Prop::Bounds));
+    set_frame_now(emu, v, r);
+    after(emu, v, Prop::Position, pos);
+    after(emu, v, Prop::Bounds, size);
+    crate::kvo::did_change(emu, pending)
 }
 
 fn view_bounds(emu: &mut Emu) -> Result<()> {
@@ -197,10 +207,11 @@ fn view_bounds(emu: &mut Emu) -> Result<()> {
 
 fn view_set_bounds(emu: &mut Emu) -> Result<()> {
     let (v, r) = (emu.arg(0), rect_arg(emu));
+    let pending = crate::kvo::view_will_change(emu, v, &["bounds", "frame"])?;
     let old = crate::animation::before(emu, v, crate::animation::Prop::Bounds);
     set_bounds_now(emu, v, r);
     crate::animation::after(emu, v, crate::animation::Prop::Bounds, old);
-    Ok(())
+    crate::kvo::did_change(emu, pending)
 }
 
 fn set_bounds_now(emu: &mut Emu, v: u64, r: [f64; 4]) {
@@ -222,10 +233,11 @@ fn view_center(emu: &mut Emu) -> Result<()> {
 
 fn view_set_center(emu: &mut Emu) -> Result<()> {
     let (v, x, y) = (emu.arg(0), f(emu, 0), f(emu, 1));
+    let pending = crate::kvo::view_will_change(emu, v, &["center", "frame"])?;
     let old = crate::animation::before(emu, v, crate::animation::Prop::Position);
     view_mut(emu, v).center = [x, y];
     crate::animation::after(emu, v, crate::animation::Prop::Position, old);
-    Ok(())
+    crate::kvo::did_change(emu, pending)
 }
 
 fn detach(emu: &mut Emu, v: u64) {
@@ -382,8 +394,9 @@ fn is_hidden(emu: &mut Emu) -> Result<()> {
 
 fn set_hidden(emu: &mut Emu) -> Result<()> {
     let (v, h) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    let pending = crate::kvo::view_will_change(emu, v, &["hidden"])?;
     view_mut(emu, v).hidden = h;
-    Ok(())
+    crate::kvo::did_change(emu, pending)
 }
 
 fn alpha(emu: &mut Emu) -> Result<()> {
@@ -578,7 +591,17 @@ fn intrinsic_size(emu: &mut Emu) -> Result<()> {
 }
 
 fn trait_collection(emu: &mut Emu) -> Result<()> {
+    let o = emu.arg(0);
     let t = current_traits(emu)?;
+    // A view's own: its appearance (an override up its chain), and in a tab
+    // bar's bottom accessory, the accessory's environment.
+    if emu.ui.views.views.contains_key(&o) {
+        let style = if crate::glass::is_dark(emu, o) { 2 } else { 1 };
+        objc::bag_set(emu, t, "userInterfaceStyle", style);
+        if let Some(env) = crate::tabbar::accessory_environment(emu, o) {
+            objc::bag_set(emu, t, "tabAccessoryEnvironment", env);
+        }
+    }
     emu.ret(t);
     Ok(())
 }

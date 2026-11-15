@@ -321,6 +321,9 @@ pub(crate) fn corner_shape(w: f32, h: f32, r: f32, mask: u64, continuous: bool) 
 /// As [`corner_shape`], each corner with its own radius (top-left, top-right,
 /// bottom-left, bottom-right; 0: square).
 pub(crate) fn corner_shape_radii(w: f32, h: f32, radii: [f32; 4], continuous: bool) -> Vec<El> {
+    // Continuous corners too big for their curve to fit are round, as Core
+    // Animation draws them: a radius of half the side is a circle's.
+    let continuous = continuous && radii.iter().all(|&r| r * CONTINUOUS_REACH <= w.min(h) / 2.0);
     let (radii, reach) = clamp_radii(w, h, radii, continuous);
     if radii.iter().all(|&r| r == 0.0) {
         return rect_els(0.0, 0.0, w, h);
@@ -1622,6 +1625,97 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
     p.pix.draw_pixmap(0, 0, sh.as_ref(), &paint, Transform::from_translate(x0 + dx, y0 + dy), mask);
 }
 
+/// Liquid Glass (glass.rs) over what's drawn so far, in `shape`; as measured
+/// on the iOS 26 Simulator (tests/fixtures/glass, light appearance). The
+/// backdrop blurred (σ 2.5 pt; clear glass 1.75); regular glass mixes it 70%
+/// toward white (0.977) and makes it 1.8× as saturated (black reads 175, white
+/// 251, orange peach); clear glass mixes 7.5% and lifts it a little; a tint is
+/// the tint's colour, darker over darker backdrops (×0.855 over black to ×0.99
+/// over white). Regular and tinted glass cast a soft shadow: the shape 6 pt
+/// lower, blurred by 16 pt, at 11%. In the dark appearance regular glass
+/// mixes 78% toward 0.175 and is 2.6× as saturated (black reads 35, white
+/// 90), a tint is itself (a little lighter over light), the shadow 7.3%.
+#[allow(clippy::too_many_arguments)]
+fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let k = (t[0] * t[0] + t[1] * t[1]).sqrt();
+    let clear = g.style == crate::glass::CLEAR;
+    let sigma = if clear { 1.75 } else { 2.5 } * k;
+    let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(t, x, y));
+    let margin = (3.0 * sigma).ceil() + 1.0;
+    let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor() as i32;
+    let y0 = (pts.iter().map(|q| q.1).fold(f32::MAX, f32::min) - margin).floor() as i32;
+    let x1 = (pts.iter().map(|q| q.0).fold(f32::MIN, f32::max) + margin).ceil() as i32;
+    let y1 = (pts.iter().map(|q| q.1).fold(f32::MIN, f32::max) + margin).ceil() as i32;
+    let (pw, ph) = (p.pix.width() as i32, p.pix.height() as i32);
+    let (bw, bh) = (x1 - x0, y1 - y0);
+    if bw <= 0 || bh <= 0 || x1 <= 0 || y1 <= 0 || x0 >= pw || y0 >= ph {
+        return;
+    }
+    // The backdrop (beyond the screen's edges, its edge pixels), as colour.
+    let n = (bw * bh) as usize;
+    let mut ch = [vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]];
+    for y in 0..bh {
+        for x in 0..bw {
+            let (sx, sy) = ((x0 + x).clamp(0, pw - 1) as u32, (y0 + y).clamp(0, ph - 1) as u32);
+            let c = p.pix.pixel(sx, sy).map(|c| c.demultiply());
+            let i = (y * bw + x) as usize;
+            // (Nothing drawn there: white, as an empty window shows.)
+            let (r, gg, b) = match c {
+                Some(c) if c.alpha() > 0 => (c.red() as f32 / 255.0, c.green() as f32 / 255.0, c.blue() as f32 / 255.0),
+                _ => (1.0, 1.0, 1.0),
+            };
+            ch[0][i] = r;
+            ch[1][i] = gg;
+            ch[2][i] = b;
+        }
+    }
+    for c in &mut ch {
+        gaussian_blur(c, bw as usize, bh as usize, sigma);
+    }
+    if !clear {
+        let off_y = 6.0 * k;
+        let ssigma = 16.0 * k;
+        let sm = (3.0 * ssigma).ceil() + 1.0;
+        let (sx0, sy0) = ((x0 as f32 - sm).floor(), (y0 as f32 - sm).floor());
+        let (sw, sh) = ((bw as f32 + 2.0 * sm) as u32, (bh as f32 + 2.0 * sm + off_y) as u32);
+        if let Some(pix) = Pixmap::new(sw, sh) {
+            let mut off = Painter { pix, font: p.font, emoji: p.emoji, faces: p.faces.clone() };
+            off.fill(shape, [0.0, 0.0, 0.0, 1.0], 1.0, false, &concat(t, &[1.0, 0.0, 0.0, 1.0, -sx0, -sy0 + off_y]), None);
+            let strength = if g.dark { 0.073 } else { 0.11 };
+            if let Some(sh) = blurred_shadow(&off.pix, ssigma, [0.0, 0.0, 0.0, 1.0], strength * alpha) {
+                p.pix.draw_pixmap(sx0 as i32, sy0 as i32, sh.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), mask);
+            }
+        }
+    }
+    let Some(mut out) = Pixmap::new(bw as u32, bh as u32) else { return };
+    let tint = g.tint.map(|c| c.map(|v| v as f32));
+    for (i, px) in out.pixels_mut().iter_mut().enumerate() {
+        let c = [ch[0][i], ch[1][i], ch[2][i]];
+        let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let mut o = if clear {
+            c.map(|v| 1.0 - (1.0 - (0.925 * v + 0.075)).max(0.0).powf(1.15))
+        } else {
+            // (Dark: 78% toward 0.175, 2.6× as saturated.)
+            let (mix, toward, sat) = if g.dark { (0.784, 0.175, 2.6) } else { (0.7, 0.977, 1.8) };
+            let m = c.map(|v| (1.0 - mix) * v + mix * toward);
+            let l = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
+            m.map(|v| l + sat * (v - l))
+        };
+        if let Some(tc) = tint {
+            for j in 0..3 {
+                // (Dark: the tint, a little lighter over lighter backdrops.)
+                let t = if g.dark { tc[j] + 0.043 * luma * (1.0 - tc[j]) } else { tc[j] * (0.855 + 0.135 * luma) };
+                o[j] = o[j] * (1.0 - tc[3]) + t * tc[3];
+            }
+        }
+        let u = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        *px = tiny_skia::PremultipliedColorU8::from_rgba(u(o[0]), u(o[1]), u(o[2]), 255).unwrap_or(*px);
+    }
+    let Some(clip) = p.intersect(mask, shape, t) else { return };
+    let paint = tiny_skia::PixmapPaint { opacity: alpha, ..Default::default() };
+    p.pix.draw_pixmap(x0, y0, out.as_ref(), &paint, Transform::identity(), Some(&clip));
+}
+
 /// A shadow from a source's alpha: blurred by `sigma` pixels, in `color` at `strength`.
 fn blurred_shadow(source: &Pixmap, sigma: f32, color: [f64; 4], strength: f32) -> Option<Pixmap> {
     let (bw, bh) = (source.width(), source.height());
@@ -1705,11 +1799,20 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     let frame = [vw.center[0] - vw.bounds[2] / 2.0, vw.center[1] - vw.bounds[3] / 2.0, vw.bounds[2], vw.bounds[3]];
     let vt = concat(&placement(frame, &ly), t);
     let (w, h) = (frame[2] as f32, frame[3] as f32);
+    // iOS 26's corner configuration (glass.rs): each corner's radius, continuous
+    // (a capsule's ends round).
+    if let Some(r) = crate::glass::corner_radii(emu, v, frame[2], frame[3]) {
+        ly.corner_radii = Some(r);
+        ly.continuous_corners = !crate::glass::is_capsule(emu, v);
+    }
     let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&vw.background).copied());
     if cast && casts_shadow(&ly) {
         shadow(emu, p, &ly, w, h, &vt, alpha, mask, |emu, off, t2| draw_view_cast(emu, off, v, 1.0, t2, None, false), t);
     }
     draw_layer_box(p, &ly, bg, w, h, a, &vt, mask);
+    if let Some(g) = crate::glass::glass(emu, v) {
+        draw_glass(p, &g, &layer_shape(&ly, w, h), w, h, a, &vt, mask);
+    }
     // A web page its engine shows itself, under the screen: a hole, through what's below.
     if crate::webkit::is_hole(emu, v) {
         p.clear(w, h, &vt, mask);

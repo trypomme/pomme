@@ -127,6 +127,21 @@ xcrun --sdk macosx swiftc -target "$TARGET" -sdk "$SDK" -O -wmo -parse-as-librar
   -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
   "$HERE/overlays/Symbols/Symbols.swift"
 
+# UIKit: the parts of UIKit that are Swift types of its own (iOS 26's
+# corners, which glass views are shaped with), ours, at UIKit's own install
+# name; everything else of UIKit's pomme implements on the host. For iOS:
+# UIKit has no macOS SDK.
+UIK="$VENDOR/sysroot/System/Library/Frameworks/UIKit.framework"
+mkdir -p "$UIK"
+echo "overlay UIKit → UIKit.framework"
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -O -wmo -parse-as-library \
+  -module-name UIKit -enable-library-evolution -import-underlying-module \
+  -emit-module -emit-module-path "$OUT/UIKit.swiftmodule" \
+  -emit-library -o "$UIK/UIKit" \
+  -Xlinker -install_name -Xlinker /System/Library/Frameworks/UIKit.framework/UIKit \
+  -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
+  "$HERE/overlays/UIKit/UIKit.swift"
+
 # Network: the Swift API for watching the network (NWPathMonitor, NWPath,
 # NWInterface), ours, on the nw_* C API that pomme implements. Apps link it
 # as libswiftNetwork, as the SDK lays it out.

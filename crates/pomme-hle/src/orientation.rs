@@ -303,6 +303,58 @@ pub(crate) fn traits_did_change(emu: &mut Emu, previous: u64) -> Result<()> {
         }
         todo.extend(crate::uiview::view(emu, v).subviews.iter().rev());
     }
+    notify_trait_registrations(emu, previous)
+}
+
+/// iOS 17's trait change registrations: a view's or controller's handler
+/// (or target and action) for the traits it named, called with it and the
+/// traits before when one of them changes: the appearance
+/// (UITraitUserInterfaceStyle) or a size class (the phone turned). A
+/// registration's token is what `unregisterForTraitChanges:` takes.
+fn register_for_trait_changes(emu: &mut Emu, handler: u64, target: u64, action: u64) -> Result<()> {
+    let (env, traits) = (emu.arg(0), emu.arg(2));
+    let object = objc::host_class(emu, "NSObject")?;
+    let token = objc::create_instance(emu, object, 0)?;
+    objc::bag_set(emu, token, "pommeEnvironment", env);
+    let traits = if traits == 0 { 0 } else { send(emu, traits, "copy", &[])? };
+    objc::bag_set(emu, token, "pommeTraits", traits);
+    let handler = if handler == 0 { 0 } else { send(emu, handler, "copy", &[])? };
+    objc::bag_set(emu, token, "pommeHandler", handler);
+    objc::bag_set(emu, token, "pommeTarget", target);
+    objc::bag_set(emu, token, "pommeAction", action);
+    emu.ui.trait_registrations.push(token);
+    emu.ret(token);
+    Ok(())
+}
+
+/// Call the registrations for traits that differ between `previous` and now.
+fn notify_trait_registrations(emu: &mut Emu, previous: u64) -> Result<()> {
+    let now = crate::uiview::current_traits(emu)?;
+    let get = |emu: &Emu, t: u64, k: &str| objc::bag_get(emu, t, k);
+    let mut changed = Vec::new();
+    for (key, trait_class) in [("userInterfaceStyle", "UITraitUserInterfaceStyle"), ("horizontalSizeClass", "UITraitHorizontalSizeClass"), ("verticalSizeClass", "UITraitVerticalSizeClass")] {
+        if get(emu, previous, key) != get(emu, now, key) {
+            changed.push(trait_class);
+        }
+    }
+    if changed.is_empty() {
+        return Ok(());
+    }
+    for token in emu.ui.trait_registrations.clone() {
+        let traits = objc::bag_get(emu, token, "pommeTraits").unwrap_or(0);
+        let named = if traits == 0 { Vec::new() } else { foundation::array_values(emu, traits)? };
+        if !named.iter().any(|&c| changed.contains(&emu.objc.class_name(c).as_str())) {
+            continue;
+        }
+        let env = objc::bag_get(emu, token, "pommeEnvironment").unwrap_or(0);
+        let handler = objc::bag_get(emu, token, "pommeHandler").unwrap_or(0);
+        if handler != 0 {
+            crate::libsystem::call_block(emu, handler, &[env, previous])?;
+        } else if let (Some(target), Some(action)) = (objc::bag_get(emu, token, "pommeTarget").filter(|&t| t != 0), objc::bag_get(emu, token, "pommeAction").filter(|&a| a != 0)) {
+            let name = objc::sel_name(emu, action);
+            send(emu, target, &name, &[env, previous])?;
+        }
+    }
     Ok(())
 }
 
@@ -430,6 +482,40 @@ const VC: &str = "UIViewController";
 const T: &str = COORDINATOR;
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("UIView", false, "registerForTraitChanges:withHandler:", |e| {
+        let h = e.arg(3);
+        register_for_trait_changes(e, h, 0, 0)
+    }),
+    ("UIView", false, "registerForTraitChanges:withTarget:action:", |e| {
+        let (t, a) = (e.arg(3), e.arg(4));
+        register_for_trait_changes(e, 0, t, a)
+    }),
+    ("UIView", false, "registerForTraitChanges:withAction:", |e| {
+        let (env, a) = (e.arg(0), e.arg(3));
+        register_for_trait_changes(e, 0, env, a)
+    }),
+    ("UIView", false, "unregisterForTraitChanges:", |e| {
+        let token = e.arg(2);
+        e.ui.trait_registrations.retain(|&t| t != token);
+        Ok(())
+    }),
+    (VC, false, "registerForTraitChanges:withHandler:", |e| {
+        let h = e.arg(3);
+        register_for_trait_changes(e, h, 0, 0)
+    }),
+    (VC, false, "registerForTraitChanges:withTarget:action:", |e| {
+        let (t, a) = (e.arg(3), e.arg(4));
+        register_for_trait_changes(e, 0, t, a)
+    }),
+    (VC, false, "registerForTraitChanges:withAction:", |e| {
+        let (env, a) = (e.arg(0), e.arg(3));
+        register_for_trait_changes(e, 0, env, a)
+    }),
+    (VC, false, "unregisterForTraitChanges:", |e| {
+        let token = e.arg(2);
+        e.ui.trait_registrations.retain(|&t| t != token);
+        Ok(())
+    }),
     ("UIApplication", false, "supportedInterfaceOrientationsForWindow:", |e| {
         let (delegate, window) = (e.ui.delegate, e.arg(2));
         let sel = objc::intern(e, "application:supportedInterfaceOrientationsForWindow:")?;

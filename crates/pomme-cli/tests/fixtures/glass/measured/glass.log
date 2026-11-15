@@ -1,0 +1,50 @@
+METRIC regular.frame 20.0 120.0 350.0 80.0
+METRIC regular.content 20.0 120.0 350.0 80.0
+EFFECT regular UIGlassEffect corner 0.0 clips false style 1
+VIEW regular UIVisualEffectView 20.0 120.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW regular   _UIVisualEffectContentView 20.0 120.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC clear.frame 20.0 240.0 350.0 80.0
+METRIC clear.content 20.0 240.0 350.0 80.0
+EFFECT clear UIGlassEffect corner 20.0 clips false style 1
+VIEW clear LaidOutGlass 20.0 240.0 350.0×80.0 bg - alpha 1.0 corner 20.0 hidden false
+VIEW clear   _UIVisualEffectContentView 20.0 240.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC tinted.frame 20.0 360.0 350.0 80.0
+METRIC tinted.content 20.0 360.0 350.0 80.0
+EFFECT tinted UIGlassEffect corner 0.0 clips false style 1
+VIEW tinted UIVisualEffectView 20.0 360.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW tinted   _UIVisualEffectContentView 20.0 360.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC corners.frame 20.0 480.0 350.0 80.0
+METRIC corners.content 20.0 480.0 350.0 80.0
+EFFECT corners UIGlassEffect corner 0.0 clips false style 1
+VIEW corners UIVisualEffectView 20.0 480.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW corners   _UIVisualEffectContentView 20.0 480.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC container.frame 20.0 600.0 350.0 80.0
+METRIC container.content 20.0 600.0 350.0 80.0
+EFFECT container UIGlassContainerEffect corner 0.0 clips false style 1
+VIEW container UIVisualEffectView 20.0 600.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW container   _UIVisualEffectContentView 20.0 600.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW container     UIVisualEffectView 80.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW container     UIVisualEffectView 180.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC container.0.frame 80.0 600.0 80.0 80.0
+METRIC container.0.content 80.0 600.0 80.0 80.0
+EFFECT container.0 UIGlassEffect corner 0.0 clips false style 1
+VIEW container.0 UIVisualEffectView 80.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW container.0   _UIVisualEffectContentView 80.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC container.1.frame 180.0 600.0 80.0 80.0
+METRIC container.1.content 180.0 600.0 80.0 80.0
+EFFECT container.1 UIGlassEffect corner 0.0 clips false style 1
+VIEW container.1 UIVisualEffectView 180.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW container.1   _UIVisualEffectContentView 180.0 600.0 80.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+METRIC label.frame 20.0 720.0 350.0 80.0
+METRIC label.content 20.0 720.0 350.0 80.0
+EFFECT label UIGlassEffect corner 0.0 clips false style 1
+VIEW label UIVisualEffectView 20.0 720.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW label   _UIVisualEffectContentView 20.0 720.0 350.0×80.0 bg - alpha 1.0 corner 0.0 hidden false
+VIEW label     UILabel 44.0 748.0 300.0×24.0 bg 0,0,0,0 alpha 1.0 corner 0.0 hidden false
+ROW regular 120.0
+ROW clear 240.0
+ROW tinted 360.0
+ROW corners 480.0
+ROW container 600.0
+ROW label 720.0
+dev.pomme.glass: 7829
