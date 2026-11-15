@@ -436,3 +436,26 @@ fn turns_while_running() {
     assert!(near(at(150.0, 200.0), (255, 255, 255)), "page: {:?}", at(150.0, 200.0));
     assert_eq!(at(839.0, 195.0), (0, 0, 0), "the notch, on the right");
 }
+
+/// The browser's bundle (`pomme bundle`) carries the engine's Impeller MSL,
+/// so the app runs from the bundle alone: Flutter's render passes run and no
+/// precompiled library goes without its substitute MSL.
+#[test]
+fn runs_from_a_bundle_with_its_impeller_msl() {
+    let Some(_) = boot() else { return };
+    let pomme = env!("CARGO_BIN_EXE_pomme");
+    let out = std::env::temp_dir().join(format!("hello-flutter-{}.pfs", std::process::id()));
+    let made = std::process::Command::new(pomme).args(["bundle", APP, "--sysroot", SYSROOT, "-o"]).arg(&out).output().unwrap();
+    assert!(made.status.success(), "pomme bundle: {}", String::from_utf8_lossy(&made.stderr));
+    let run = std::process::Command::new(pomme)
+        .args(["run", APP, "--bundle"]) // (the path is required, but the bundle's app runs)
+        .arg(&out)
+        .args(["--steps", "4000000000", "--seconds", "3"])
+        .env("POMME_TRACE_METAL", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&out);
+    let text = String::from_utf8_lossy(&run.stdout);
+    assert!(!text.contains("has no substitute MSL"), "the bundle lacks Impeller's MSL:\n{}", &text[..text.len().min(4000)]);
+    assert!(text.contains("cmd: pass"), "no render pass ran:\n{}", &text[text.len().saturating_sub(4000)..]);
+}

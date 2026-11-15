@@ -605,9 +605,15 @@ fn make_bundle(path: &Path, sysroot: &Path, out: &Path) -> Result<()> {
     let mut sys_files = Vec::new();
     walk(&sysroot, &mut sys_files)?;
     let fonts = sysroot.join("System/Library/Fonts");
+    // A Flutter app's engine reads its shaders' MSL from the sysroot (made by
+    // scripts/flutter/impeller-msl.sh for the engine revision it was built with).
+    let impeller = flutter_engine_revision(&app_dir).map(|rev| sysroot.join("pomme/impeller").join(rev));
+    if let Some(dir) = impeller.as_ref().filter(|d| !d.is_dir()) {
+        eprintln!("warning: no Impeller MSL at {} (run scripts/flutter/impeller-msl.sh): Flutter won't draw", dir.display());
+    }
     for f in sys_files {
         let real = f.canonicalize()?;
-        let wanted = loaded.contains(&real) || f.starts_with(&fonts);
+        let wanted = loaded.contains(&real) || f.starts_with(&fonts) || impeller.as_ref().is_some_and(|d| f.starts_with(d));
         if !wanted {
             continue;
         }
@@ -622,6 +628,13 @@ fn make_bundle(path: &Path, sysroot: &Path, out: &Path) -> Result<()> {
     std::fs::write(out, &bytes)?;
     println!("{}: {} files, {:.1} MB ({} as {app_root})", out.display(), entries.len(), bytes.len() as f64 / 1e6, app_dir.display());
     Ok(())
+}
+
+/// The engine revision of the app's Flutter.framework (its Info.plist's
+/// `FlutterEngine`), if it has one: as pomme's Metal finds it at run time.
+fn flutter_engine_revision(app_dir: &Path) -> Option<String> {
+    let plist = plist::Value::from_file(app_dir.join("Frameworks/Flutter.framework/Info.plist")).ok()?;
+    plist.as_dictionary()?.get("FlutterEngine")?.as_string().map(str::to_string)
 }
 
 fn bundle_images(path: &Path) -> Result<(Option<String>, Vec<PathBuf>)> {

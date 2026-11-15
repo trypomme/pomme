@@ -17,11 +17,11 @@
 
 ## 3. Flutter
 
-- [ ] 3.1 In `crates/pomme-cli/src/main.rs` (`make_bundle`), when the app has `Flutter.framework`, also pack `pomme/impeller/<FlutterEngine revision>/` from the sysroot (design, decision 6). Check: a test in `crates/pomme-cli/tests/hello_flutter.rs` bundles hello-flutter, runs it from the bundle with `pomme run --bundle`, and the Impeller pipelines are built (as in `engine_boots_and_builds_impeller_pipelines`).
-- [ ] 3.2 Let `scripts/build-web.sh` take hello-flutter's `Runner.app`, and add the command to `README.md` next to the hello-expo one. Check: `scripts/build-web.sh apps/hello-flutter/build/ios/iphoneos/Runner.app` writes `web/Runner.pfs`.
-- [ ] 3.3 Run hello-flutter in the browser for 3 s and compare its frame with the same sample points that `crates/pomme-cli/tests/hello_flutter.rs` checks against the Simulator. Check: `scripts/web-test.sh hello-flutter --compare` passes within the tolerance of "Frames reach the screen".
-- [ ] 3.4 Script the taps from "Count taps" in the browser test (the circle, then the square's corner). Check: the counter changes after each tap in the saved frames.
-- [ ] 3.5 Add Flutter in the browser to `README.md`'s framework table and browser notes, with the browsers it needs. Check: the README is updated.
+- [x] 3.1 In `crates/pomme-cli/src/main.rs` (`make_bundle`), when the app has `Flutter.framework`, also pack `pomme/impeller/<FlutterEngine revision>/` from the sysroot (design, decision 6). Check: a test in `crates/pomme-cli/tests/hello_flutter.rs` bundles hello-flutter, runs it from the bundle with `pomme run --bundle`, and the Impeller pipelines are built (as in `engine_boots_and_builds_impeller_pipelines`).
+- [x] 3.2 Let `scripts/build-web.sh` take hello-flutter's `Runner.app`, and add the command to `README.md` next to the hello-expo one. Check: `scripts/build-web.sh apps/hello-flutter/build/ios/iphoneos/Runner.app` writes `web/Runner.pfs`.
+- [x] 3.3 Run hello-flutter in the browser for 3 s and compare its frame with the same sample points that `crates/pomme-cli/tests/hello_flutter.rs` checks against the Simulator. Check: `scripts/web-test.sh hello-flutter --compare` passes within the tolerance of "Frames reach the screen".
+- [x] 3.4 Script the taps from "Count taps" in the browser test (the circle, then the square's corner). Check: the counter changes after each tap in the saved frames.
+- [x] 3.5 Add Flutter in the browser to `README.md`'s framework table and browser notes, with the browsers it needs. Check: the README is updated.
 
 ## 4. Integration checks
 

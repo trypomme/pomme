@@ -27,6 +27,8 @@ cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/h
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --tap 195,438@3 --views --screenshot hello.png
 scripts/build-web.sh && scripts/serve-web.py   # the same app in the browser: http://127.0.0.1:8787
+scripts/build-web.sh apps/hello-flutter/build/ios/iphoneos/Runner.app   # a Flutter app: open ?app=Runner.pfs
+scripts/web-test.sh hello-flutter --compare     # it, in headless Chromium, against the command line (web/tests/)
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
 
@@ -251,7 +253,7 @@ What pomme aims to run, and the iOS graphics path each one takes.
 |---|---|---|---|
 | Expo / React Native | UIKit views + Core Animation (pomme's compositor) | `apps/hello-expo` | ✅ runs, taps, scrolls (FlatList), Expo Router, TextInput (multiline too) + KeyboardAvoidingView, gesture handler, Reanimated + keyboard controller |
 | React Native Skia | Skia Ganesh → Metal (→ wgpu) | `apps/hello-skia` | ✅ renders like the simulator |
-| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders, counts taps, TextField with the keyboard inset; matches the iOS Simulator to 3/255 except the font |
+| Flutter (Impeller, 3.27+) | Impeller → Metal; text via CoreText | `apps/hello-flutter` | ✅ renders, counts taps, TextField with the keyboard inset; matches the iOS Simulator to 3/255 except the font. Also in the browser (Chrome, Safari 27+: needs JSPI and WebGPU) |
 | Flutter (Skia era, older) | Skia → Metal | — | planned |
 | Defold | Vulkan → MoltenVK → Metal (older builds: OpenGL ES) | — | planned: needs MoltenVK's runtime MSL, maybe GLES |
 | Native UIKit / SwiftUI | UIKit, Core Animation, Metal | — | later |
@@ -315,6 +317,11 @@ draws it with Inter because SF Pro can't be redistributed.
      http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps. The
      screen is clipped to the device's own display shape (continuous corners, as screens'
      cards are in a transition). Built with WebAssembly SIMD, which doubles drawing speed.
+     Metal runs on the browser's GPU (WebGPU) where the browser has JSPI (WebAssembly JavaScript
+     Promise Integration: Chrome, Safari 27+): the emulator pauses after each frame and while
+     the app idles, so the browser can send its GPU work and answer. So Flutter (Impeller) and
+     React Native Skia draw in the browser too, matching the command line pixel for pixel at
+     the tests' sample points. Without JSPI apps still run, and Metal draws nothing.
    - Frame timing: `pomme run … --window --frame-stats` and the browser's `?stats` report, each
      second, the frame rate, how far the app's time kept up with the wall clock, the longest
      stall, and where each frame of motion went: the app (its instructions), rendering,
