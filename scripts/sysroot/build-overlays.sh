@@ -23,7 +23,7 @@ if [ ! -d "$VENDOR/swift-5.2" ]; then
   git clone --depth 1 --branch swift-5.2.5-RELEASE --filter=blob:none --sparse \
     https://github.com/swiftlang/swift.git "$VENDOR/swift-5.2"
   git -C "$VENDOR/swift-5.2" sparse-checkout set stdlib/public/Darwin/ObjectiveC stdlib/public/Darwin/Dispatch \
-    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os stdlib/public/Platform
+    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os stdlib/public/Platform stdlib/public/SwiftShims
 fi
 
 # Shim modules Apple's overlays import (ours, plus the old Dispatch one).

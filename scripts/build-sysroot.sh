@@ -43,9 +43,9 @@ fi
 
 CACHES="$VENDOR/swift/Runtimes/Core/cmake/caches/Vendors/Apple"
 cmake -G Ninja -S "$VENDOR/swift/Runtimes/Core" -B "$VENDOR/build/swift-core" \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
   -C "$CACHES/arm64-iPhoneOS.cmake" \
   -DCMAKE_TOOLCHAIN_FILE="$CACHES/Darwin.toolchain.cmake" \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
   -DCMAKE_C_COMPILER_TARGET="$TARGET" -DCMAKE_CXX_COMPILER_TARGET="$TARGET" -DCMAKE_Swift_COMPILER_TARGET="$TARGET" \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DCMAKE_INSTALL_PREFIX="$VENDOR/sysroot/usr" \
@@ -63,7 +63,7 @@ ninja -C "$VENDOR/build/swift-core" install
 if [ ! -d "$VENDOR/llvm-project" ]; then
   git clone --depth 1 --branch "$TAG" --filter=blob:none --sparse \
     https://github.com/swiftlang/llvm-project.git "$VENDOR/llvm-project"
-  git -C "$VENDOR/llvm-project" sparse-checkout set runtimes libcxx libcxxabi libunwind cmake llvm/cmake llvm/utils/llvm-lit third-party
+  git -C "$VENDOR/llvm-project" sparse-checkout set runtimes libcxx libcxxabi libunwind libc cmake llvm/cmake llvm/utils/llvm-lit third-party
 fi
 cmake -G Ninja -S "$VENDOR/llvm-project/runtimes" -B "$VENDOR/build/libcxx" \
   -C "$VENDOR/llvm-project/libcxx/cmake/caches/Apple.cmake" \
@@ -106,7 +106,7 @@ ninja -C "$VENDOR/build/icu-macos"
 if [ ! -d "$VENDOR/swift-corelibs-foundation" ]; then
   git clone --depth 1 --branch "$TAG" --filter=blob:none --sparse \
     https://github.com/swiftlang/swift-corelibs-foundation.git "$VENDOR/swift-corelibs-foundation"
-  git -C "$VENDOR/swift-corelibs-foundation" sparse-checkout set Sources/CoreFoundation
+  git -C "$VENDOR/swift-corelibs-foundation" sparse-checkout set Sources/CoreFoundation cmake
   git -C "$VENDOR/swift-corelibs-foundation" apply "$ROOT/scripts/sysroot/corefoundation.patch"
 fi
 CF_SRC="$VENDOR/swift-corelibs-foundation/Sources/CoreFoundation"
