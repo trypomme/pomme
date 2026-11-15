@@ -464,6 +464,10 @@ fn run_command(args: RunArgs, coverage: Option<CoverageArgs>) -> Result<()> {
         None => (path, sysroot),
     };
     if window {
+        // The window shows the screen the app sees: an iPad's compatibility
+        // screen for an iPhone-only app (drawn in iPadOS's window: not yet).
+        let info = pomme_loader::vfs::read(&path.join("Info.plist")).ok().and_then(|b| plist::Value::from_reader(std::io::Cursor::new(b)).ok());
+        let device = device.for_app(&pomme_hle::device::app_families(info.as_ref()));
         let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled, frame_stats };
         let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
         let out = result.clone();
@@ -483,7 +487,7 @@ fn run_command(args: RunArgs, coverage: Option<CoverageArgs>) -> Result<()> {
 /// `--device`: an id or name from pomme's device table; `list` prints the table.
 fn parse_device(s: &str) -> Result<&'static pomme_hle::device::Device, String> {
     use pomme_hle::device::{find, DEVICES};
-    let table = || DEVICES.iter().map(|d| format!("  {:<20} {} ({}×{} pt, @{}x)", d.id, d.name, d.width, d.height, d.scale)).collect::<Vec<_>>().join("\n");
+    let table = || DEVICES.iter().map(|d| format!("  {:<20} {:<28} {}×{} pt, @{}x", d.id, d.name, d.width, d.height, d.scale)).collect::<Vec<_>>().join("\n");
     if s == "list" {
         println!("{}", table());
         std::process::exit(0);
@@ -878,7 +882,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
-    emu.device = device;
+    emu.present(device);
     clipboard.apply(&mut emu)?;
     state.apply(&mut emu);
     emu.ui.launch_url = url;

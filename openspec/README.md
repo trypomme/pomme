@@ -93,6 +93,13 @@ on a tested base.
 | A2 | `add-accessibility-announcements` | Announcements and screen-change focus reach the host's screen reader; `isVoiceOverRunning` tells the truth; custom actions can be performed. | A1 |
 | A3 | `add-dynamic-type-and-reduce-motion` | The text size setting (12 categories, measured text styles, `UIFontMetrics`, live changes) and Reduce Motion. | A1, and `add-visual-oracles` |
 
+### Devices
+
+| # | Change | What it adds | Needs first |
+| --- | --- | --- | --- |
+| D1 | `add-ipad-devices` | The iPad Pro and iPad Air in both sizes (11-inch and 13-inch): the pad idiom, iPad safe areas, status bar, keyboards and size classes, and iPhone-only apps in iPadOS's compatibility mode. Measured (`fixtures/devices/ios26.txt`). | — |
+| D2 | `add-iphone-duo` | The folding iPhone Duo: its outer and inner screens, and folding and unfolding while the app runs. | D1, and a Duo Simulator (Xcode 27) |
+
 ### Liquid Glass
 
 Suggested order. A change lower in the list may need one above it.
@@ -158,7 +165,7 @@ and copy the layout of an existing change.
   `withAnimation`, transitions and gesture modifiers are stubs; no
   `@Observable`, `@StateObject`, `@EnvironmentObject` or `@AppStorage`;
   shapes cannot be filled or stroked as views; no page tab style.
-- **system:** no iPad profiles.
+- **system:** iPads and the iPhone Duo are planned above.
 - **hosts / testing:** no menus in the Linux window; no hardware keyboard
   events in the browser; no CI; some `POMME_*` debug variables have no user
   docs.

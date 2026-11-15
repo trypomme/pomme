@@ -184,6 +184,12 @@ Debugging:
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the
   screenshot inside a plain phone body: rounded screen corners, bezel, buttons, home button.
   The iPhone 17's frame matches the iOS 26 Simulator's, island included.
+  iPads too, in both sizes: `--device ipad-pro-11-m5`, `ipad-pro-13-m5`, `ipad-air-11-m4`,
+  `ipad-air-13-m4`. Apps get the iPad's idiom, `iPadOS`, regular size classes, its status bar,
+  safe area and keyboards, as measured (`tests/devices.rs`). An iPhone-only app (no 2 in
+  `UIDeviceFamily`) gets iPadOS's compatibility screen instead (375×667 or 390×844 pt).
+  Not yet: the iPad's status bar contents, its body in `--shell`, and iPadOS's window around
+  an iPhone-only app.
   Native apps get Auto Layout against the device: anchors and `NSLayoutConstraint`,
   `safeAreaLayoutGuide`, `layoutMarginsGuide`, `keyboardLayoutGuide` and their own guides,
   with `safeAreaInsetsDidChange` / `viewSafeAreaInsetsDidChange` when insets change

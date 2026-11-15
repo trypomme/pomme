@@ -39,7 +39,7 @@ pub fn screen(emu: &Emu) -> (f64, f64) {
 
 /// The screen's safe-area insets (top, left, bottom, right) as the interface is turned.
 pub fn safe_area(emu: &Emu) -> [f64; 4] {
-    emu.device.safe_area(current(emu))
+    emu.device.safe_area_for(current(emu), emu.full_screen)
 }
 
 /// The status bar's frame (0-high when hidden, as in landscape).
@@ -67,16 +67,23 @@ pub fn from_portrait(emu: &Emu) -> [f64; 6] {
 
 // ---- which orientations are allowed ----
 
-/// Info.plist's `UISupportedInterfaceOrientations` (the `~iphone` variant
-/// first), as a mask; all but upside down when it doesn't say.
+/// Info.plist's `UISupportedInterfaceOrientations` (the `~iphone` or, for
+/// an iPad app, `~ipad` variant first), as a mask; when it doesn't say, all
+/// but upside down on a phone, all four on an iPad.
 pub fn info_plist_mask(emu: &Emu) -> u64 {
     let info = crate::bundle::host_info_plist(emu);
     let dict = info.as_ref().and_then(|v| v.as_dictionary());
-    let list = dict.and_then(|d| d.get("UISupportedInterfaceOrientations~iphone").or_else(|| d.get("UISupportedInterfaceOrientations")));
+    let pad = emu.device.idiom == crate::device::Idiom::Pad;
+    let variant = if pad { "UISupportedInterfaceOrientations~ipad" } else { "UISupportedInterfaceOrientations~iphone" };
+    let list = dict.and_then(|d| d.get(variant).or_else(|| d.get("UISupportedInterfaceOrientations")));
     let mask = list.and_then(|v| v.as_array()).map_or(0, |a| {
         a.iter().filter_map(|v| v.as_string()).filter_map(by_name).fold(0, |m, o| m | o.mask())
     });
-    if mask == 0 { ALL_BUT_UPSIDE_DOWN } else { mask }
+    match mask {
+        0 if pad => ALL_BUT_UPSIDE_DOWN | Orientation::PortraitUpsideDown.mask(),
+        0 => ALL_BUT_UPSIDE_DOWN,
+        m => m,
+    }
 }
 
 fn by_name(s: &str) -> Option<Orientation> {
@@ -98,7 +105,7 @@ pub fn supported(emu: &mut Emu) -> Result<u64> {
     let app = if emu.ui.app == 0 { info_plist_mask(emu) } else { app };
     let root = emu.ui.views.root_vc.get(&window).copied().unwrap_or(0);
     let vc = if root != 0 { send(emu, root, "supportedInterfaceOrientations", &[])? } else { u64::MAX };
-    Ok(app & vc & emu.device.orientations())
+    Ok(app & vc & emu.hardware.orientations())
 }
 
 /// Where the interface should be given `allowed`: where the app asked for
@@ -128,7 +135,7 @@ fn choose(emu: &Emu, allowed: u64) -> Option<Orientation> {
 /// have their say once they exist: see `settle`).
 pub fn launch(emu: &mut Emu, device: Orientation) {
     emu.ui.device_orientation = device;
-    let allowed = info_plist_mask(emu) & emu.device.orientations();
+    let allowed = info_plist_mask(emu) & emu.hardware.orientations();
     emu.ui.orientation = choose(emu, allowed).unwrap_or(Orientation::Portrait);
 }
 

@@ -388,9 +388,14 @@ const HOME_375: Layout = Layout {
 };
 
 /// The status bar layout for a phone (by the screen it shares with the phone
-/// it was measured on).
-pub fn layout_for(d: &Device) -> Layout {
-    match d.id {
+/// it was measured on). None where none was measured: iPads (their status
+/// bar has the date by the time, left-aligned) and the screens iPadOS gives
+/// iPhone apps. Apps still see the measured status bar frame there.
+pub fn layout_for(d: &Device) -> Option<Layout> {
+    if d.idiom == crate::device::Idiom::Pad || d.id.starts_with("ipad-") {
+        return None;
+    }
+    Some(match d.id {
         "iphone-se" | "iphone-8" => HOME_375,
         // Not measured (no iOS 26 simulator): the SE's, on its wider screen.
         "iphone-8-plus" => HOME_375.wider(d.width - 375.0),
@@ -405,7 +410,7 @@ pub fn layout_for(d: &Device) -> Layout {
         "iphone-16-pro-max" | "iphone-17-pro-max" => ISLAND_440,
         "iphone-air" => ISLAND_420,
         _ => NOTCH_390,
-    }
+    })
 }
 
 // ---- the battery, as apps see it ----
@@ -575,8 +580,8 @@ mod tests {
 
     #[test]
     fn every_phone_has_a_measured_layout() {
-        for d in crate::device::DEVICES {
-            let l = layout_for(d);
+        for d in crate::device::DEVICES.iter().filter(|d| d.idiom == crate::device::Idiom::Phone) {
+            let l = layout_for(d).unwrap();
             assert!(l.cap[2] < d.width && l.time.0 > 0.0, "{}", d.id);
             if d.id != "iphone-16e" && d.id != "iphone-17e" && !d.id.starts_with("iphone-12") && !d.id.starts_with("iphone-13") && !d.id.starts_with("iphone-14") {
                 assert_ne!(l, NOTCH_390, "{} falls back to the 16e's layout", d.id);

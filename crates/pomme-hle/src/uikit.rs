@@ -566,6 +566,16 @@ fn screen_scale(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `_displayCornerRadius`: a CGFloat in d0 for a direct call; and in x0 the
+/// NSNumber that `valueForKey:` (which returns x0 of a host getter) hands back.
+fn screen_corner_radius(emu: &mut Emu) -> Result<()> {
+    let r = emu.device.corner_radius;
+    let boxed = foundation::new_number_f64(emu, r)?;
+    emu.ret(boxed);
+    emu.cpu.q[0] = r.to_bits() as u128;
+    Ok(())
+}
+
 fn screen_fps(emu: &mut Emu) -> Result<()> {
     emu.ret(60);
     Ok(())
@@ -912,15 +922,23 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIScreen", false, "scale", screen_scale),
     ("UIScreen", false, "nativeScale", screen_scale),
     ("UIScreen", false, "maximumFramesPerSecond", screen_fps),
+    // Private, but read by libraries that round views with the display
+    // (react-native-screen-corner-radius): the screen the app sees.
+    ("UIScreen", false, "_displayCornerRadius", screen_corner_radius),
     ("UIDevice", true, "currentDevice", current_device),
-    ("UIDevice", false, "systemName", |e| device_string(e, "iOS")),
+    ("UIDevice", false, "systemName", |e| device_string(e, e.hardware.system_name())),
     ("UIDevice", false, "systemVersion", |e| {
         let v = e.system.os.short();
         device_string(e, &v)
     }),
-    ("UIDevice", false, "model", |e| device_string(e, "iPhone")),
+    ("UIDevice", false, "model", |e| device_string(e, e.hardware.kind())),
+    ("UIDevice", false, "localizedModel", |e| device_string(e, e.hardware.kind())),
     ("UIDevice", false, "name", |e| device_string(e, "pomme")),
-    ("UIDevice", false, "userInterfaceIdiom", ret_zero), // phone
+    // The app's idiom: phone for an iPhone app on an iPad (measured).
+    ("UIDevice", false, "userInterfaceIdiom", |e| {
+        e.ret(e.device.idiom as u64);
+        Ok(())
+    }),
     ("UIDevice", false, "identifierForVendor", ret_zero),
     ("UIDevice", false, "self", ret_self),
 ];

@@ -563,7 +563,7 @@ fn uname(emu: &mut Emu) -> Result<()> {
     let buf = emu.arg(0);
     let release = format!("{}.0.0", emu.system.os.darwin_major());
     let version = format!("Darwin Kernel Version {release}: pomme");
-    let model = emu.device.model();
+    let model = emu.hardware.model();
     for (i, v) in ["Darwin", "pomme", release.as_str(), version.as_str(), model].iter().enumerate() {
         let at = buf + i as u64 * 256;
         emu.p.memory.write(at, &[0u8; 256])?;

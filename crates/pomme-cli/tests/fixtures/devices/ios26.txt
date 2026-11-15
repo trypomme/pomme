@@ -1,0 +1,319 @@
+# The devices fixture on the iOS 26.5 Simulator (scripts/measure/devices/run.sh): METRIC <device>.<native|compat>.<portrait|landscape>.<name> <values>, in points.
+# screen/window/statusbar/kb.*: x y w h; native: x y w h (pixels) scale nativeScale; safe: top left bottom right;
+# sizeclasses: horizontal vertical (1 compact, 2 regular); idiom: UIDevice's and the traits' (0 phone, 1 pad); device: systemName|model|localizedModel|model id.
+METRIC ipad-air-11-m4.compat.landscape.corner 0
+METRIC ipad-air-11-m4.compat.landscape.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.compat.landscape.idiom 0 0
+METRIC ipad-air-11-m4.compat.landscape.kb.plain 0 213 667 162
+METRIC ipad-air-11-m4.compat.landscape.kb.predictive 0 169 667 206
+METRIC ipad-air-11-m4.compat.landscape.native 0 0 750 1334 2 2
+METRIC ipad-air-11-m4.compat.landscape.orientation 3
+METRIC ipad-air-11-m4.compat.landscape.safe 0 25 20 25
+METRIC ipad-air-11-m4.compat.landscape.screen 0 0 667 375
+METRIC ipad-air-11-m4.compat.landscape.sizeclasses 1 1
+METRIC ipad-air-11-m4.compat.landscape.statusbar 0 0 0 0
+METRIC ipad-air-11-m4.compat.landscape.window 0 0 667 375
+METRIC ipad-air-11-m4.compat.portrait.corner 0
+METRIC ipad-air-11-m4.compat.portrait.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.compat.portrait.idiom 0 0
+METRIC ipad-air-11-m4.compat.portrait.kb.plain 0 434 375 233
+METRIC ipad-air-11-m4.compat.portrait.kb.predictive 0 407 375 260
+METRIC ipad-air-11-m4.compat.portrait.native 0 0 750 1334 2 2
+METRIC ipad-air-11-m4.compat.portrait.orientation 1
+METRIC ipad-air-11-m4.compat.portrait.safe 20 0 25 0
+METRIC ipad-air-11-m4.compat.portrait.screen 0 0 375 667
+METRIC ipad-air-11-m4.compat.portrait.sizeclasses 1 2
+METRIC ipad-air-11-m4.compat.portrait.statusbar 0 0 375 20
+METRIC ipad-air-11-m4.compat.portrait.window 0 0 375 667
+METRIC ipad-air-11-m4.fullscreen.landscape.corner 18
+METRIC ipad-air-11-m4.fullscreen.landscape.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.fullscreen.landscape.idiom 1 1
+METRIC ipad-air-11-m4.fullscreen.landscape.kb.plain 0 398 1180 422
+METRIC ipad-air-11-m4.fullscreen.landscape.kb.predictive 0 398 1180 422
+METRIC ipad-air-11-m4.fullscreen.landscape.native 0 0 1640 2360 2 2
+METRIC ipad-air-11-m4.fullscreen.landscape.orientation 3
+METRIC ipad-air-11-m4.fullscreen.landscape.safe 32 0 25 0
+METRIC ipad-air-11-m4.fullscreen.landscape.screen 0 0 1180 820
+METRIC ipad-air-11-m4.fullscreen.landscape.sizeclasses 2 2
+METRIC ipad-air-11-m4.fullscreen.landscape.statusbar 0 0 1180 32
+METRIC ipad-air-11-m4.fullscreen.landscape.window 0 0 1180 820
+METRIC ipad-air-11-m4.fullscreen.portrait.corner 18
+METRIC ipad-air-11-m4.fullscreen.portrait.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.fullscreen.portrait.idiom 1 1
+METRIC ipad-air-11-m4.fullscreen.portrait.kb.plain 0 843 820 337
+METRIC ipad-air-11-m4.fullscreen.portrait.kb.predictive 0 843 820 337
+METRIC ipad-air-11-m4.fullscreen.portrait.native 0 0 1640 2360 2 2
+METRIC ipad-air-11-m4.fullscreen.portrait.orientation 1
+METRIC ipad-air-11-m4.fullscreen.portrait.safe 32 0 25 0
+METRIC ipad-air-11-m4.fullscreen.portrait.screen 0 0 820 1180
+METRIC ipad-air-11-m4.fullscreen.portrait.sizeclasses 2 2
+METRIC ipad-air-11-m4.fullscreen.portrait.statusbar 0 0 820 32
+METRIC ipad-air-11-m4.fullscreen.portrait.window 0 0 820 1180
+METRIC ipad-air-11-m4.native.landscape.corner 18
+METRIC ipad-air-11-m4.native.landscape.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.native.landscape.idiom 1 1
+METRIC ipad-air-11-m4.native.landscape.kb.plain 0 843 820 337
+METRIC ipad-air-11-m4.native.landscape.kb.predictive 0 843 820 337
+METRIC ipad-air-11-m4.native.landscape.native 0 0 1640 2360 2 2
+METRIC ipad-air-11-m4.native.landscape.orientation 1
+METRIC ipad-air-11-m4.native.landscape.rotate-error The current windowing mode does not allow for programmatic changes to interface orientation.
+METRIC ipad-air-11-m4.native.landscape.safe 32 0 20 0
+METRIC ipad-air-11-m4.native.landscape.screen 0 0 820 1180
+METRIC ipad-air-11-m4.native.landscape.sizeclasses 2 2
+METRIC ipad-air-11-m4.native.landscape.statusbar 0 0 820 32
+METRIC ipad-air-11-m4.native.landscape.window 0 0 820 1180
+METRIC ipad-air-11-m4.native.portrait.corner 18
+METRIC ipad-air-11-m4.native.portrait.device iPadOS|iPad|iPad|iPad16,9
+METRIC ipad-air-11-m4.native.portrait.idiom 1 1
+METRIC ipad-air-11-m4.native.portrait.kb.plain 0 843 820 337
+METRIC ipad-air-11-m4.native.portrait.kb.predictive 0 843 820 337
+METRIC ipad-air-11-m4.native.portrait.native 0 0 1640 2360 2 2
+METRIC ipad-air-11-m4.native.portrait.orientation 1
+METRIC ipad-air-11-m4.native.portrait.safe 32 0 20 0
+METRIC ipad-air-11-m4.native.portrait.screen 0 0 820 1180
+METRIC ipad-air-11-m4.native.portrait.sizeclasses 2 2
+METRIC ipad-air-11-m4.native.portrait.statusbar 0 0 820 32
+METRIC ipad-air-11-m4.native.portrait.window 0 0 820 1180
+METRIC ipad-air-13-m4.compat.landscape.corner 47.33
+METRIC ipad-air-13-m4.compat.landscape.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.compat.landscape.idiom 0 0
+METRIC ipad-air-13-m4.compat.landscape.kb.plain 0 226 844 164
+METRIC ipad-air-13-m4.compat.landscape.kb.predictive 0 182 844 208
+METRIC ipad-air-13-m4.compat.landscape.native 0 0 780 1688 2 2
+METRIC ipad-air-13-m4.compat.landscape.orientation 3
+METRIC ipad-air-13-m4.compat.landscape.safe 0 25 20 25
+METRIC ipad-air-13-m4.compat.landscape.screen 0 0 844 390
+METRIC ipad-air-13-m4.compat.landscape.sizeclasses 1 1
+METRIC ipad-air-13-m4.compat.landscape.statusbar 0 0 0 0
+METRIC ipad-air-13-m4.compat.landscape.window 0 0 844 390
+METRIC ipad-air-13-m4.compat.portrait.corner 47.33
+METRIC ipad-air-13-m4.compat.portrait.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.compat.portrait.idiom 0 0
+METRIC ipad-air-13-m4.compat.portrait.kb.plain 0 536 390 308
+METRIC ipad-air-13-m4.compat.portrait.kb.predictive 0 509 390 335
+METRIC ipad-air-13-m4.compat.portrait.native 0 0 780 1688 2 2
+METRIC ipad-air-13-m4.compat.portrait.orientation 1
+METRIC ipad-air-13-m4.compat.portrait.safe 20 0 25 0
+METRIC ipad-air-13-m4.compat.portrait.screen 0 0 390 844
+METRIC ipad-air-13-m4.compat.portrait.sizeclasses 1 2
+METRIC ipad-air-13-m4.compat.portrait.statusbar 0 0 390 44
+METRIC ipad-air-13-m4.compat.portrait.window 0 0 390 844
+METRIC ipad-air-13-m4.fullscreen.landscape.corner 18
+METRIC ipad-air-13-m4.fullscreen.landscape.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.fullscreen.landscape.idiom 1 1
+METRIC ipad-air-13-m4.fullscreen.landscape.kb.plain 0 526 1366 498
+METRIC ipad-air-13-m4.fullscreen.landscape.kb.predictive 0 526 1366 498
+METRIC ipad-air-13-m4.fullscreen.landscape.native 0 0 2048 2732 2 2
+METRIC ipad-air-13-m4.fullscreen.landscape.orientation 3
+METRIC ipad-air-13-m4.fullscreen.landscape.safe 32 0 25 0
+METRIC ipad-air-13-m4.fullscreen.landscape.screen 0 0 1366 1024
+METRIC ipad-air-13-m4.fullscreen.landscape.sizeclasses 2 2
+METRIC ipad-air-13-m4.fullscreen.landscape.statusbar 0 0 1366 32
+METRIC ipad-air-13-m4.fullscreen.landscape.window 0 0 1366 1024
+METRIC ipad-air-13-m4.fullscreen.portrait.corner 18
+METRIC ipad-air-13-m4.fullscreen.portrait.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.fullscreen.portrait.idiom 1 1
+METRIC ipad-air-13-m4.fullscreen.portrait.kb.plain 0 963 1024 403
+METRIC ipad-air-13-m4.fullscreen.portrait.kb.predictive 0 963 1024 403
+METRIC ipad-air-13-m4.fullscreen.portrait.native 0 0 2048 2732 2 2
+METRIC ipad-air-13-m4.fullscreen.portrait.orientation 1
+METRIC ipad-air-13-m4.fullscreen.portrait.safe 32 0 25 0
+METRIC ipad-air-13-m4.fullscreen.portrait.screen 0 0 1024 1366
+METRIC ipad-air-13-m4.fullscreen.portrait.sizeclasses 2 2
+METRIC ipad-air-13-m4.fullscreen.portrait.statusbar 0 0 1024 32
+METRIC ipad-air-13-m4.fullscreen.portrait.window 0 0 1024 1366
+METRIC ipad-air-13-m4.native.landscape.corner 18
+METRIC ipad-air-13-m4.native.landscape.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.native.landscape.idiom 1 1
+METRIC ipad-air-13-m4.native.landscape.kb.plain 0 963 1024 403
+METRIC ipad-air-13-m4.native.landscape.kb.predictive 0 963 1024 403
+METRIC ipad-air-13-m4.native.landscape.native 0 0 2048 2732 2 2
+METRIC ipad-air-13-m4.native.landscape.orientation 1
+METRIC ipad-air-13-m4.native.landscape.rotate-error The current windowing mode does not allow for programmatic changes to interface orientation.
+METRIC ipad-air-13-m4.native.landscape.safe 32 0 20 0
+METRIC ipad-air-13-m4.native.landscape.screen 0 0 1024 1366
+METRIC ipad-air-13-m4.native.landscape.sizeclasses 2 2
+METRIC ipad-air-13-m4.native.landscape.statusbar 0 0 1024 32
+METRIC ipad-air-13-m4.native.landscape.window 0 0 1024 1366
+METRIC ipad-air-13-m4.native.portrait.corner 18
+METRIC ipad-air-13-m4.native.portrait.device iPadOS|iPad|iPad|iPad16,11
+METRIC ipad-air-13-m4.native.portrait.idiom 1 1
+METRIC ipad-air-13-m4.native.portrait.kb.plain 0 963 1024 403
+METRIC ipad-air-13-m4.native.portrait.kb.predictive 0 963 1024 403
+METRIC ipad-air-13-m4.native.portrait.native 0 0 2048 2732 2 2
+METRIC ipad-air-13-m4.native.portrait.orientation 1
+METRIC ipad-air-13-m4.native.portrait.safe 32 0 20 0
+METRIC ipad-air-13-m4.native.portrait.screen 0 0 1024 1366
+METRIC ipad-air-13-m4.native.portrait.sizeclasses 2 2
+METRIC ipad-air-13-m4.native.portrait.statusbar 0 0 1024 32
+METRIC ipad-air-13-m4.native.portrait.window 0 0 1024 1366
+METRIC ipad-pro-11-m5.compat.landscape.corner 0
+METRIC ipad-pro-11-m5.compat.landscape.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.compat.landscape.idiom 0 0
+METRIC ipad-pro-11-m5.compat.landscape.kb.plain 0 213 667 162
+METRIC ipad-pro-11-m5.compat.landscape.kb.predictive 0 169 667 206
+METRIC ipad-pro-11-m5.compat.landscape.native 0 0 750 1334 2 2
+METRIC ipad-pro-11-m5.compat.landscape.orientation 3
+METRIC ipad-pro-11-m5.compat.landscape.safe 0 25 20 25
+METRIC ipad-pro-11-m5.compat.landscape.screen 0 0 667 375
+METRIC ipad-pro-11-m5.compat.landscape.sizeclasses 1 1
+METRIC ipad-pro-11-m5.compat.landscape.statusbar 0 0 0 0
+METRIC ipad-pro-11-m5.compat.landscape.window 0 0 667 375
+METRIC ipad-pro-11-m5.compat.portrait.corner 0
+METRIC ipad-pro-11-m5.compat.portrait.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.compat.portrait.idiom 0 0
+METRIC ipad-pro-11-m5.compat.portrait.kb.plain 0 434 375 233
+METRIC ipad-pro-11-m5.compat.portrait.kb.predictive 0 407 375 260
+METRIC ipad-pro-11-m5.compat.portrait.native 0 0 750 1334 2 2
+METRIC ipad-pro-11-m5.compat.portrait.orientation 1
+METRIC ipad-pro-11-m5.compat.portrait.safe 20 0 25 0
+METRIC ipad-pro-11-m5.compat.portrait.screen 0 0 375 667
+METRIC ipad-pro-11-m5.compat.portrait.sizeclasses 1 2
+METRIC ipad-pro-11-m5.compat.portrait.statusbar 0 0 375 20
+METRIC ipad-pro-11-m5.compat.portrait.window 0 0 375 667
+METRIC ipad-pro-11-m5.fullscreen.landscape.corner 30
+METRIC ipad-pro-11-m5.fullscreen.landscape.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.fullscreen.landscape.idiom 1 1
+METRIC ipad-pro-11-m5.fullscreen.landscape.kb.plain 0 406 1210 428
+METRIC ipad-pro-11-m5.fullscreen.landscape.kb.predictive 0 406 1210 428
+METRIC ipad-pro-11-m5.fullscreen.landscape.native 0 0 1668 2420 2 2
+METRIC ipad-pro-11-m5.fullscreen.landscape.orientation 3
+METRIC ipad-pro-11-m5.fullscreen.landscape.safe 32 0 25 0
+METRIC ipad-pro-11-m5.fullscreen.landscape.screen 0 0 1210 834
+METRIC ipad-pro-11-m5.fullscreen.landscape.sizeclasses 2 2
+METRIC ipad-pro-11-m5.fullscreen.landscape.statusbar 0 0 1210 32
+METRIC ipad-pro-11-m5.fullscreen.landscape.window 0 0 1210 834
+METRIC ipad-pro-11-m5.fullscreen.portrait.corner 30
+METRIC ipad-pro-11-m5.fullscreen.portrait.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.fullscreen.portrait.idiom 1 1
+METRIC ipad-pro-11-m5.fullscreen.portrait.kb.plain 0 870 834 340
+METRIC ipad-pro-11-m5.fullscreen.portrait.kb.predictive 0 870 834 340
+METRIC ipad-pro-11-m5.fullscreen.portrait.native 0 0 1668 2420 2 2
+METRIC ipad-pro-11-m5.fullscreen.portrait.orientation 1
+METRIC ipad-pro-11-m5.fullscreen.portrait.safe 32 0 25 0
+METRIC ipad-pro-11-m5.fullscreen.portrait.screen 0 0 834 1210
+METRIC ipad-pro-11-m5.fullscreen.portrait.sizeclasses 2 2
+METRIC ipad-pro-11-m5.fullscreen.portrait.statusbar 0 0 834 32
+METRIC ipad-pro-11-m5.fullscreen.portrait.window 0 0 834 1210
+METRIC ipad-pro-11-m5.native.landscape.corner 30
+METRIC ipad-pro-11-m5.native.landscape.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.native.landscape.idiom 1 1
+METRIC ipad-pro-11-m5.native.landscape.kb.plain 0 870 834 340
+METRIC ipad-pro-11-m5.native.landscape.kb.predictive 0 870 834 340
+METRIC ipad-pro-11-m5.native.landscape.native 0 0 1668 2420 2 2
+METRIC ipad-pro-11-m5.native.landscape.orientation 1
+METRIC ipad-pro-11-m5.native.landscape.rotate-error The current windowing mode does not allow for programmatic changes to interface orientation.
+METRIC ipad-pro-11-m5.native.landscape.safe 32 0 20 0
+METRIC ipad-pro-11-m5.native.landscape.screen 0 0 834 1210
+METRIC ipad-pro-11-m5.native.landscape.sizeclasses 2 2
+METRIC ipad-pro-11-m5.native.landscape.statusbar 0 0 834 32
+METRIC ipad-pro-11-m5.native.landscape.window 0 0 834 1210
+METRIC ipad-pro-11-m5.native.portrait.corner 30
+METRIC ipad-pro-11-m5.native.portrait.device iPadOS|iPad|iPad|iPad17,2
+METRIC ipad-pro-11-m5.native.portrait.idiom 1 1
+METRIC ipad-pro-11-m5.native.portrait.kb.plain 0 870 834 340
+METRIC ipad-pro-11-m5.native.portrait.kb.predictive 0 870 834 340
+METRIC ipad-pro-11-m5.native.portrait.native 0 0 1668 2420 2 2
+METRIC ipad-pro-11-m5.native.portrait.orientation 1
+METRIC ipad-pro-11-m5.native.portrait.safe 32 0 20 0
+METRIC ipad-pro-11-m5.native.portrait.screen 0 0 834 1210
+METRIC ipad-pro-11-m5.native.portrait.sizeclasses 2 2
+METRIC ipad-pro-11-m5.native.portrait.statusbar 0 0 834 32
+METRIC ipad-pro-11-m5.native.portrait.window 0 0 834 1210
+METRIC ipad-pro-13-m5.compat.landscape.corner 47.33
+METRIC ipad-pro-13-m5.compat.landscape.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.compat.landscape.idiom 0 0
+METRIC ipad-pro-13-m5.compat.landscape.kb.plain 0 226 844 164
+METRIC ipad-pro-13-m5.compat.landscape.kb.predictive 0 182 844 208
+METRIC ipad-pro-13-m5.compat.landscape.native 0 0 780 1688 2 2
+METRIC ipad-pro-13-m5.compat.landscape.orientation 3
+METRIC ipad-pro-13-m5.compat.landscape.safe 0 25 20 25
+METRIC ipad-pro-13-m5.compat.landscape.screen 0 0 844 390
+METRIC ipad-pro-13-m5.compat.landscape.sizeclasses 1 1
+METRIC ipad-pro-13-m5.compat.landscape.statusbar 0 0 0 0
+METRIC ipad-pro-13-m5.compat.landscape.window 0 0 844 390
+METRIC ipad-pro-13-m5.compat.portrait.corner 47.33
+METRIC ipad-pro-13-m5.compat.portrait.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.compat.portrait.idiom 0 0
+METRIC ipad-pro-13-m5.compat.portrait.kb.plain 0 536 390 308
+METRIC ipad-pro-13-m5.compat.portrait.kb.predictive 0 509 390 335
+METRIC ipad-pro-13-m5.compat.portrait.native 0 0 780 1688 2 2
+METRIC ipad-pro-13-m5.compat.portrait.orientation 1
+METRIC ipad-pro-13-m5.compat.portrait.safe 20 0 25 0
+METRIC ipad-pro-13-m5.compat.portrait.screen 0 0 390 844
+METRIC ipad-pro-13-m5.compat.portrait.sizeclasses 1 2
+METRIC ipad-pro-13-m5.compat.portrait.statusbar 0 0 390 44
+METRIC ipad-pro-13-m5.compat.portrait.window 0 0 390 844
+METRIC ipad-pro-13-m5.fullscreen.landscape.corner 30
+METRIC ipad-pro-13-m5.fullscreen.landscape.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.fullscreen.landscape.idiom 1 1
+METRIC ipad-pro-13-m5.fullscreen.landscape.kb.plain 0 534 1376 498
+METRIC ipad-pro-13-m5.fullscreen.landscape.kb.predictive 0 534 1376 498
+METRIC ipad-pro-13-m5.fullscreen.landscape.native 0 0 2064 2752 2 2
+METRIC ipad-pro-13-m5.fullscreen.landscape.orientation 3
+METRIC ipad-pro-13-m5.fullscreen.landscape.safe 32 0 25 0
+METRIC ipad-pro-13-m5.fullscreen.landscape.screen 0 0 1376 1032
+METRIC ipad-pro-13-m5.fullscreen.landscape.sizeclasses 2 2
+METRIC ipad-pro-13-m5.fullscreen.landscape.statusbar 0 0 1376 32
+METRIC ipad-pro-13-m5.fullscreen.landscape.window 0 0 1376 1032
+METRIC ipad-pro-13-m5.fullscreen.portrait.corner 30
+METRIC ipad-pro-13-m5.fullscreen.portrait.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.fullscreen.portrait.idiom 1 1
+METRIC ipad-pro-13-m5.fullscreen.portrait.kb.plain 0 973 1032 403
+METRIC ipad-pro-13-m5.fullscreen.portrait.kb.predictive 0 973 1032 403
+METRIC ipad-pro-13-m5.fullscreen.portrait.native 0 0 2064 2752 2 2
+METRIC ipad-pro-13-m5.fullscreen.portrait.orientation 1
+METRIC ipad-pro-13-m5.fullscreen.portrait.safe 32 0 25 0
+METRIC ipad-pro-13-m5.fullscreen.portrait.screen 0 0 1032 1376
+METRIC ipad-pro-13-m5.fullscreen.portrait.sizeclasses 2 2
+METRIC ipad-pro-13-m5.fullscreen.portrait.statusbar 0 0 1032 32
+METRIC ipad-pro-13-m5.fullscreen.portrait.window 0 0 1032 1376
+METRIC ipad-pro-13-m5.native.landscape.corner 30
+METRIC ipad-pro-13-m5.native.landscape.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.native.landscape.idiom 1 1
+METRIC ipad-pro-13-m5.native.landscape.kb.plain 0 973 1032 403
+METRIC ipad-pro-13-m5.native.landscape.kb.predictive 0 973 1032 403
+METRIC ipad-pro-13-m5.native.landscape.native 0 0 2064 2752 2 2
+METRIC ipad-pro-13-m5.native.landscape.orientation 1
+METRIC ipad-pro-13-m5.native.landscape.rotate-error The current windowing mode does not allow for programmatic changes to interface orientation.
+METRIC ipad-pro-13-m5.native.landscape.safe 32 0 20 0
+METRIC ipad-pro-13-m5.native.landscape.screen 0 0 1032 1376
+METRIC ipad-pro-13-m5.native.landscape.sizeclasses 2 2
+METRIC ipad-pro-13-m5.native.landscape.statusbar 0 0 1032 32
+METRIC ipad-pro-13-m5.native.landscape.window 0 0 1032 1376
+METRIC ipad-pro-13-m5.native.portrait.corner 30
+METRIC ipad-pro-13-m5.native.portrait.device iPadOS|iPad|iPad|iPad17,4
+METRIC ipad-pro-13-m5.native.portrait.idiom 1 1
+METRIC ipad-pro-13-m5.native.portrait.kb.plain 0 973 1032 403
+METRIC ipad-pro-13-m5.native.portrait.kb.predictive 0 973 1032 403
+METRIC ipad-pro-13-m5.native.portrait.native 0 0 2064 2752 2 2
+METRIC ipad-pro-13-m5.native.portrait.orientation 1
+METRIC ipad-pro-13-m5.native.portrait.safe 32 0 20 0
+METRIC ipad-pro-13-m5.native.portrait.screen 0 0 1032 1376
+METRIC ipad-pro-13-m5.native.portrait.sizeclasses 2 2
+METRIC ipad-pro-13-m5.native.portrait.statusbar 0 0 1032 32
+METRIC ipad-pro-13-m5.native.portrait.window 0 0 1032 1376
+METRIC iphone-16e.native.landscape.corner 47.33
+METRIC iphone-16e.native.landscape.device iOS|iPhone|iPhone|iPhone17,5
+METRIC iphone-16e.native.landscape.idiom 0 0
+METRIC iphone-16e.native.landscape.kb.plain 0 226 844 164
+METRIC iphone-16e.native.landscape.kb.predictive 0 182 844 208
+METRIC iphone-16e.native.landscape.native 0 0 1170 2532 3 3
+METRIC iphone-16e.native.landscape.orientation 3
+METRIC iphone-16e.native.landscape.safe 0 47 20 47
+METRIC iphone-16e.native.landscape.screen 0 0 844 390
+METRIC iphone-16e.native.landscape.sizeclasses 1 1
+METRIC iphone-16e.native.landscape.statusbar 0 0 0 0
+METRIC iphone-16e.native.landscape.window 0 0 844 390
+METRIC iphone-16e.native.portrait.corner 47.33
+METRIC iphone-16e.native.portrait.device iOS|iPhone|iPhone|iPhone17,5
+METRIC iphone-16e.native.portrait.idiom 0 0
+METRIC iphone-16e.native.portrait.kb.plain 0 536 390 308
+METRIC iphone-16e.native.portrait.kb.predictive 0 509 390 335
+METRIC iphone-16e.native.portrait.native 0 0 1170 2532 3 3
+METRIC iphone-16e.native.portrait.orientation 1
+METRIC iphone-16e.native.portrait.safe 47 0 34 0
+METRIC iphone-16e.native.portrait.screen 0 0 390 844
+METRIC iphone-16e.native.portrait.sizeclasses 1 2
+METRIC iphone-16e.native.portrait.statusbar 0 0 390 47
+METRIC iphone-16e.native.portrait.window 0 0 390 844

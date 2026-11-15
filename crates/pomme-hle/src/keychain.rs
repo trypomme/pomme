@@ -483,7 +483,7 @@ const DEVICE_PASSCODE: u64 = 1 << 4;
 
 fn biometry_type(emu: &Emu) -> u64 {
     // LABiometryType: 1 Touch ID, 2 Face ID.
-    if emu.device.home_button { 1 } else { 2 }
+    if emu.hardware.touch_id { 1 } else { 2 }
 }
 
 /// An NSError in LAErrorDomain.

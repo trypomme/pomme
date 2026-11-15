@@ -313,8 +313,14 @@ pub struct Emu {
     pub scroll: scrollview::State,
     /// Auto Layout: constraints, anchors and layout guides.
     pub(crate) layout: autolayout::State,
-    /// The iPhone model pomme presents (`--device`).
+    /// The screen the app sees: the device pomme presents (`--device`), or
+    /// an iPad's compatibility screen for an iPhone-only app (see `present`).
     pub device: &'static device::Device,
+    /// The hardware: what `UIDevice`, `uname` and `hw.machine` name.
+    pub hardware: &'static device::Device,
+    /// The app takes the whole screen (`UIRequiresFullScreen`): an iPad's
+    /// bottom inset is larger than a windowed app's.
+    pub full_screen: bool,
     /// A live host (browser, window) and its frames and input.
     pub live: host::State,
     /// The network (see net.rs) and URL-loading objects.
@@ -382,6 +388,18 @@ pub struct Emu {
 }
 
 impl Emu {
+    /// Present `hardware` to the app: on an iPad, an app that doesn't list
+    /// the iPad in `UIDeviceFamily` sees the iPad's compatibility screen;
+    /// `UIRequiresFullScreen` decides the iPad's bottom inset.
+    pub fn present(&mut self, hardware: &'static device::Device) {
+        let info = bundle::host_info_plist(self);
+        let dict = info.as_ref().and_then(|v| v.as_dictionary());
+        let families = device::app_families(info.as_ref());
+        self.hardware = hardware;
+        self.device = hardware.for_app(&families);
+        self.full_screen = dict.and_then(|d| d.get("UIRequiresFullScreen")).and_then(|v| v.as_boolean()).unwrap_or(false);
+    }
+
     /// Set up a loaded process: stack, TLS, heap and the Objective-C runtime.
     pub fn new(mut p: Process) -> Result<Self> {
         p.memory.map(STACK_TOP - STACK_SIZE, STACK_SIZE, Prot::RW, "[stack]")?;
@@ -448,6 +466,8 @@ impl Emu {
             scroll: Default::default(),
             layout: Default::default(),
             device: device::default(),
+            hardware: device::default(),
+            full_screen: false,
             live: Default::default(),
             net: Default::default(),
             webkit: Default::default(),

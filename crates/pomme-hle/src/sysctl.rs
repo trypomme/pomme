@@ -55,7 +55,7 @@ fn value(emu: &Emu, name: &str) -> Option<Vec<u8>> {
     let os = emu.system.os;
     let release = format!("{}.0.0", os.darwin_major());
     Some(match name {
-        "hw.machine" => cstr(emu.device.model()),
+        "hw.machine" => cstr(emu.hardware.model()),
         "hw.ncpu" | "hw.activecpu" | "hw.availcpu" | "hw.logicalcpu" | "hw.physicalcpu" | "hw.logicalcpu_max" | "hw.physicalcpu_max" => CPUS.to_le_bytes().to_vec(),
         "hw.memsize" | "hw.physmem" => MEMORY.to_le_bytes().to_vec(),
         "hw.pagesize" => PAGE_SIZE.to_le_bytes().to_vec(),

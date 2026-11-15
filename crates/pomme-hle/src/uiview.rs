@@ -1533,6 +1533,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UITraitCollection", false, "layoutDirection", ret_zero),
+    // Phone (0) or pad (1): the screen the app sees (phone for an iPhone app on an iPad, measured).
+    ("UITraitCollection", false, "userInterfaceIdiom", |e| {
+        e.ret(e.device.idiom as u64);
+        Ok(())
+    }),
 ];
 
 // ---- inspection ----

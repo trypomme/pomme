@@ -2628,7 +2628,9 @@ fn draw_status_bar(emu: &mut Emu, p: &mut Painter, scale: f32) -> Result<()> {
     if hidden {
         return Ok(());
     }
-    let layout = crate::statusbar::layout_for(emu.device);
+    let Some(layout) = crate::statusbar::layout_for(emu.device) else {
+        return Ok(());
+    };
     let shown = crate::statusbar::shown(emu, &layout);
     let fg: [f32; 4] = if light { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] };
     let t = [scale, 0.0, 0.0, scale, 0.0, 0.0];
