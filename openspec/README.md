@@ -119,10 +119,11 @@ and copy the layout of an existing change.
   name does not resolve the name.
 - **graphics / frameworks:** no GPU in the browser, so Metal apps (Skia,
   Flutter) draw nothing there; Skia-era Flutter and Defold are planned only.
-- **uikit:** no gradients (`CAGradientLayer`, CG gradients) and no group
-  opacity; coordinate conversion ignores transforms; storyboards do not
-  restore archived properties; one scene only; no kerning or ligatures,
-  and text uses Inter instead of SF Pro; the Auto Layout solver is not
+- **uikit:** no Core Graphics gradients (`CGContextDrawLinearGradient`;
+  `CAGradientLayer` works) and no group opacity except for masked and
+  blended layers; 3D perspective is flattened; coordinate conversion
+  ignores transforms; storyboards do not restore archived properties; one
+  scene only; no ligatures, and text uses Inter instead of SF Pro; the Auto Layout solver is not
   Cassowary (conflicts settle differently); only pan gestures have built-in
   logic (no tap, long-press, swipe, pinch or rotation recognizers);
   `requireGestureRecognizerToFail:` is ignored; no hardware keyboard and no

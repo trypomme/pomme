@@ -37,7 +37,24 @@ pub struct Glyph {
     /// The face it's in (coretext's; 0: the system font).
     pub face: usize,
     pub color: [f64; 4],
+    /// A synthetic oblique (italic where the face has none): how far the
+    /// glyph leans right per unit of height; 0 upright.
+    pub skew: f32,
+    /// A shadow under it (NSShadow).
+    pub shadow: Option<TextShadow>,
 }
+
+/// A text shadow (NSShadow): moved by `offset` points (y down), blurred by
+/// `blur` (Core Graphics' blur, a Gaussian of half that deviation), in `color`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextShadow {
+    pub offset: [f64; 2],
+    pub blur: f64,
+    pub color: [f64; 4],
+}
+
+/// Synthetic italic's lean: iOS slants the system font 12° where it draws it oblique.
+pub const ITALIC_SKEW: f32 = 0.2126;
 
 /// Clip paths in force (in the context's base coordinates; even-odd flag), all intersected.
 type Clip = Vec<(Vec<El>, bool)>;
@@ -59,11 +76,29 @@ pub(crate) enum Op {
 pub(crate) struct Line {
     pub cap: u8,
     pub join: u8,
+    /// CGContextSetLineDash: the on/off lengths (up to 8; none: solid) and
+    /// where in them the line starts, in the units the stroke is drawn in.
+    pub dash: [f32; 8],
+    pub dash_len: u8,
+    pub dash_phase: f32,
 }
 
 impl Line {
+    /// The same style with its dash lengths scaled by `k` (user space to the context's base).
+    fn scaled(self, k: f32) -> Line {
+        Line { dash: self.dash.map(|v| v * k), dash_phase: self.dash_phase * k, ..self }
+    }
+
     fn stroke(self, width: f32) -> Stroke {
+        // An odd number of lengths repeats, as Core Graphics reads them.
+        let n = self.dash_len as usize;
+        let mut lengths: Vec<f32> = self.dash[..n].to_vec();
+        if n % 2 == 1 {
+            lengths.extend_from_within(..);
+        }
+        let dash = if lengths.iter().sum::<f32>() > 0.0 { tiny_skia::StrokeDash::new(lengths, self.dash_phase) } else { None };
         Stroke {
+            dash,
             width,
             line_cap: match self.cap {
                 1 => tiny_skia::LineCap::Round,
@@ -793,6 +828,21 @@ pub(crate) fn fill_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Resu
     })
 }
 
+/// Fill rectangles (x, y, width, height in user space) in `color` in the
+/// current UIKit context: text decorations (underlines, strikethroughs).
+pub(crate) fn fill_rects_in_current(emu: &mut Emu, rects: &[[f64; 4]], color: [f64; 4]) -> Result<()> {
+    if rects.is_empty() {
+        return Ok(());
+    }
+    with_current(emu, |c| {
+        let mut path = Vec::new();
+        for r in rects {
+            path.extend(transform_els(&rect_els(r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32), &c.gs.ctm));
+        }
+        c.ops.push(Op::Fill { path, color: color.map(|v| v as f32), even_odd: false, clip: c.gs.clip.clone() });
+    })
+}
+
 /// Intersect the current UIKit context's clip with a path (in user space).
 pub(crate) fn clip_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Result<()> {
     with_current(emu, |c| {
@@ -1063,6 +1113,17 @@ impl Painter<'_> {
     }
 
     fn glyphs(&mut self, glyphs: &[Glyph], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        // Text shadows first, under the text.
+        let mut shadows: Vec<TextShadow> = Vec::new();
+        for s in glyphs.iter().filter_map(|g| g.shadow) {
+            if !shadows.contains(&s) {
+                shadows.push(s);
+            }
+        }
+        for s in shadows {
+            let these: Vec<Glyph> = glyphs.iter().filter(|g| g.shadow == Some(s)).map(|g| Glyph { shadow: None, color: [0.0, 0.0, 0.0, 1.0], ..g.clone() }).collect();
+            self.glyph_shadow(&these, s, alpha, t, mask);
+        }
         let Some(data) = self.font else { return };
         let Ok(mut face) = ttf_parser::Face::parse(data, 0) else { return };
         let upem = face.units_per_em() as f32;
@@ -1109,6 +1170,38 @@ impl Painter<'_> {
         let _ = upem;
     }
 
+    /// A text shadow: the glyphs drawn (in black) into a buffer around them,
+    /// moved by the shadow's offset, their alpha blurred and painted in the
+    /// shadow's color under the text.
+    fn glyph_shadow(&mut self, glyphs: &[Glyph], s: TextShadow, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+        let k = (t[0] * t[0] + t[1] * t[1]).sqrt();
+        let sigma = (s.blur / 2.0) as f32 * k;
+        let moved: Vec<Glyph> = glyphs.iter().map(|g| Glyph { x: g.x + s.offset[0], y: g.y + s.offset[1], ..g.clone() }).collect();
+        // The glyphs' boxes on screen (an em wide, from an em above the baseline to a third below), with room for the blur.
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for g in &moved {
+            let (x, y, e) = (g.x as f32, g.y as f32, g.size as f32);
+            for (px, py) in [(x - e * 0.3, y - e * 1.2), (x + e * 1.3, y + e * 0.4)] {
+                let (sx, sy) = apply(t, px, py);
+                b = [b[0].min(sx), b[1].min(sy), b[2].max(sx), b[3].max(sy)];
+            }
+        }
+        let margin = (3.0 * sigma).ceil() + 2.0;
+        let (pw, ph) = (self.pix.width() as f32, self.pix.height() as f32);
+        let x0 = (b[0] - margin).floor().max(0.0);
+        let y0 = (b[1] - margin).floor().max(0.0);
+        let x1 = (b[2] + margin).ceil().min(pw);
+        let y1 = (b[3] + margin).ceil().min(ph);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let Some(pix) = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32) else { return };
+        let mut off = Painter { pix, font: self.font, emoji: self.emoji, faces: self.faces.clone() };
+        off.glyphs(&moved, 1.0, &concat(t, &[1.0, 0.0, 0.0, 1.0, -x0, -y0]), None);
+        let Some(sh) = blurred_shadow(&off.pix, sigma, s.color, alpha * s.color[3] as f32) else { return };
+        self.pix.draw_pixmap(x0 as i32, y0 as i32, sh.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), mask);
+    }
+
     /// An outline glyph in its color: from the glyph cache when the
     /// transform allows, else rasterised in place. `font` names the face and
     /// its variation (for the cache).
@@ -1116,7 +1209,17 @@ impl Painter<'_> {
     fn outline_glyph(&mut self, face: &ttf_parser::Face, font: (usize, usize), gid: ttf_parser::GlyphId, g: &Glyph, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         let color = g.color.map(|v| v as f32);
         let s = g.size as f32 / face.units_per_em() as f32;
-        let place = [s, 0.0, 0.0, -s, g.x as f32, g.y as f32];
+        let place = [s, 0.0, s * g.skew, -s, g.x as f32, g.y as f32];
+        // (A slanted glyph isn't in the glyph cache: drawn in place.)
+        if g.skew != 0.0 {
+            let mut b = Outline(PathBuilder::new());
+            if face.outline_glyph(gid, &mut b).is_some()
+                && let (Some(path), Some(p)) = (b.0.finish(), paint(color, alpha))
+            {
+                self.pix.fill_path(&path, &p, FillRule::Winding, ts(&concat(&place, t)), mask);
+            }
+            return;
+        }
         let outline = || {
             let mut b = Outline(PathBuilder::new());
             face.outline_glyph(gid, &mut b)?;
@@ -1517,16 +1620,238 @@ fn draw_border(p: &mut Painter, ly: &Layer, colors: &HashMap<u64, [f64; 4]>, w: 
 }
 
 fn draw_sublayers(emu: &mut Emu, p: &mut Painter, layer: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    for s in calayer::layer(emu, layer).sublayers {
-        if calayer::backing_view(emu, s).is_some() {
-            continue;
+    let ly = calayer::layer(emu, layer);
+    // A CAReplicatorLayer draws its sublayers `instanceCount` times, each copy
+    // moved by `instanceTransform` from the one before.
+    let copies = ly.instance_count.clamp(1, 1024);
+    let step = calayer::affine_of(&ly.instance_transform).map(|v| v as f32);
+    let mut each = *t;
+    for _ in 0..copies {
+        for &s in &ly.sublayers {
+            if calayer::backing_view(emu, s).is_some() {
+                continue;
+            }
+            draw_layer(emu, p, s, alpha, &each, mask, true);
         }
-        draw_layer(emu, p, s, alpha, t, mask, true);
+        each = concat(&step, &each);
     }
 }
 
-/// A standalone layer and its sublayers; `cast`: its shadow too.
+/// A layer's `compositingFilter` (React Native's `mixBlendMode`, and its
+/// `brightness` filter): Core Animation's blend filter names, as a blend mode.
+fn blend_of(emu: &mut Emu, l: u64) -> Option<tiny_skia::BlendMode> {
+    use tiny_skia::BlendMode::*;
+    let f = objc::bag_get(emu, l, "compositingFilter").filter(|&f| f != 0)?;
+    let name = crate::foundation::nsstring(emu, f).ok()?;
+    Some(match name.as_str() {
+        "multiplyBlendMode" => Multiply,
+        "screenBlendMode" => Screen,
+        "overlayBlendMode" => Overlay,
+        "darkenBlendMode" => Darken,
+        "lightenBlendMode" => Lighten,
+        "colorDodgeBlendMode" => ColorDodge,
+        "colorBurnBlendMode" => ColorBurn,
+        "hardLightBlendMode" => HardLight,
+        "softLightBlendMode" => SoftLight,
+        "differenceBlendMode" => Difference,
+        "exclusionBlendMode" => Exclusion,
+        "hueBlendMode" => Hue,
+        "saturationBlendMode" => Saturation,
+        "colorBlendMode" => Color,
+        "luminosityBlendMode" => Luminosity,
+        "linearDodgeBlendMode" | "plusL" => Plus,
+        _ => return None,
+    })
+}
+
+/// A rectangle (x, y, width, height) through `t`, as the device box around it (x0, y0, x1, y1).
+fn device_box(t: &[f32; 6], r: [f32; 4]) -> [f32; 4] {
+    let pts = [(r[0], r[1]), (r[0] + r[2], r[1]), (r[0], r[1] + r[3]), (r[0] + r[2], r[1] + r[3])].map(|(x, y)| apply(t, x, y));
+    let xs = pts.map(|q| q.0);
+    let ys = pts.map(|q| q.1);
+    [xs.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max), ys.iter().copied().fold(f32::MIN, f32::max)]
+}
+
+/// Where a mask layer can let anything through, on the device: its frame,
+/// and a shape layer's path (a shape layer draws outside its bounds).
+fn mask_box(emu: &mut Emu, m: u64, inner: &[f32; 6]) -> [f32; 4] {
+    let ml = calayer::layer(emu, m);
+    let frame = [(ml.position[0] - ml.anchor[0] * ml.bounds[2]) as f32, (ml.position[1] - ml.anchor[1] * ml.bounds[3]) as f32, ml.bounds[2] as f32, ml.bounds[3] as f32];
+    let mut b = device_box(inner, frame);
+    if let Some(els) = shape_path(emu, m) {
+        let mt = concat(&[1.0, 0.0, 0.0, 1.0, frame[0], frame[1]], inner);
+        for el in transform_els(&els, &mt) {
+            let pts: &[(f32, f32)] = &match el {
+                El::Move(x, y) | El::Line(x, y) => vec![(x, y)],
+                El::Cubic(a, b2, c, d, x, y) => vec![(a, b2), (c, d), (x, y)],
+                El::Close => vec![],
+            };
+            for &(x, y) in pts {
+                b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+            }
+        }
+    }
+    b
+}
+
+/// Draw something as one group (offscreen, then composited), as Core
+/// Animation draws a layer with a mask or a compositing filter: `draw` paints
+/// it (given the transform from device space to the group's buffer); then
+/// the mask layer's alpha (drawn through `mask_layer`'s transform) cuts it,
+/// and it's blended onto what's below at `alpha`. `region`: the device box
+/// it can cover (x0, y0, x1, y1).
+#[allow(clippy::too_many_arguments)]
+fn draw_group(emu: &mut Emu, p: &mut Painter, region: [f32; 4], mask_layer: Option<(u64, [f32; 6])>, blend: Option<tiny_skia::BlendMode>, alpha: f32, clip: Option<&Mask>, draw: impl FnOnce(&mut Emu, &mut Painter, &[f32; 6])) {
+    let (pw, ph) = (p.pix.width() as f32, p.pix.height() as f32);
+    let (x0, y0) = (region[0].floor().max(0.0), region[1].floor().max(0.0));
+    let (x1, y1) = (region[2].ceil().min(pw), region[3].ceil().min(ph));
+    if x1 <= x0 || y1 <= y0 || alpha <= 0.0 {
+        return;
+    }
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let Some(pix) = Pixmap::new(w, h) else { return };
+    let mut off = Painter { pix, font: p.font, emoji: p.emoji, faces: p.faces.clone() };
+    let shift = [1.0, 0.0, 0.0, 1.0, -x0, -y0];
+    draw(emu, &mut off, &shift);
+    if let Some((m, mt)) = mask_layer {
+        let Some(mpix) = Pixmap::new(w, h) else { return };
+        let mut mp = Painter { pix: mpix, font: p.font, emoji: p.emoji, faces: p.faces.clone() };
+        draw_layer(emu, &mut mp, m, 1.0, &concat(&mt, &shift), None, false);
+        for (px, mpx) in off.pix.pixels_mut().iter_mut().zip(mp.pix.pixels()) {
+            let a = mpx.alpha() as u32;
+            if a == 255 {
+                continue;
+            }
+            let k = |v: u8| ((v as u32 * a + 127) / 255) as u8;
+            *px = tiny_skia::PremultipliedColorU8::from_rgba(k(px.red()), k(px.green()), k(px.blue()), k(px.alpha())).unwrap_or(*px);
+        }
+    }
+    let paint = tiny_skia::PixmapPaint { opacity: alpha, blend_mode: blend.unwrap_or(tiny_skia::BlendMode::SourceOver), ..Default::default() };
+    p.pix.draw_pixmap(x0 as i32, y0 as i32, off.pix.as_ref(), &paint, Transform::identity(), clip);
+}
+
+/// A CAShapeLayer's path (in its own coordinates), if it's a shape layer with one.
+fn shape_path(emu: &mut Emu, l: u64) -> Option<Vec<El>> {
+    let path = objc::bag_get(emu, l, "path").filter(|&p| p != 0)?;
+    emu.render.paths.get(&path).cloned()
+}
+
+/// What a CAShapeLayer draws: its path filled (`fillColor`, opaque black
+/// unless set; nil: none; `fillRule` even-odd or non-zero) and stroked
+/// (`strokeColor`, nil unless set, `lineWidth` 1).
+fn draw_shape(emu: &mut Emu, p: &mut Painter, l: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let Some(els) = shape_path(emu, l) else { return };
+    let fill = match objc::bag_get(emu, l, "fillColor") {
+        None => Some([0.0, 0.0, 0.0, 1.0]),
+        Some(0) => None,
+        Some(c) => Some(emu.ui.views.colors.get(&c).copied().unwrap_or([0.0, 0.0, 0.0, 1.0])),
+    };
+    let even_odd = objc::bag_get(emu, l, "fillRule").filter(|&r| r != 0).and_then(|r| crate::foundation::nsstring(emu, r).ok()).is_some_and(|r| r == "even-odd");
+    if let Some(c) = fill {
+        p.fill(&els, c.map(|v| v as f32), alpha, even_odd, t, mask);
+    }
+    if let Some(c) = objc::bag_get(emu, l, "strokeColor").filter(|&c| c != 0).and_then(|c| emu.ui.views.colors.get(&c).copied()) {
+        let width = objc::bag_get_f64(emu, l, "lineWidth").unwrap_or(1.0) as f32;
+        p.stroke(&els, c.map(|v| v as f32), alpha, width, t, mask);
+    }
+}
+
+/// What a CAGradientLayer draws in its bounds (in its corner shape): its
+/// `colors` at `locations` (evenly spaced unless set), from `startPoint` to
+/// `endPoint` (unit square), axial, or radial (`type` radial: centered on
+/// the start point, out to the end point on each axis).
+#[allow(clippy::too_many_arguments)]
+fn draw_gradient(emu: &mut Emu, p: &mut Painter, l: u64, ly: &Layer, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let Some(colors) = objc::bag_get(emu, l, "colors").filter(|&c| c != 0) else { return };
+    let count = |emu: &mut Emu, a: u64| objc::send(emu, a, "count", &[]).unwrap_or(0);
+    let n = count(emu, colors);
+    if n == 0 {
+        return;
+    }
+    let locations = objc::bag_get(emu, l, "locations").filter(|&a| a != 0);
+    let mut stops = Vec::new();
+    for i in 0..n {
+        let c = objc::send(emu, colors, "objectAtIndex:", &[i]).unwrap_or(0);
+        let rgba = emu.ui.views.colors.get(&c).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        let at = match locations.filter(|&a| count(emu, a) == n) {
+            Some(a) => {
+                let num = objc::send(emu, a, "objectAtIndex:", &[i]).unwrap_or(0);
+                crate::foundation::number_value(emu, num).map(|(_, f)| f).unwrap_or(0.0)
+            }
+            None if n == 1 => 0.0,
+            None => i as f64 / (n - 1) as f64,
+        };
+        let c = tiny_skia::Color::from_rgba(rgba[0] as f32, rgba[1] as f32, rgba[2] as f32, rgba[3] as f32).unwrap_or(tiny_skia::Color::TRANSPARENT);
+        stops.push(tiny_skia::GradientStop::new(at as f32, c));
+    }
+    let [sp, ep] = ly.gradient_points.map(|q| tiny_skia::Point::from_xy(q[0] as f32 * w, q[1] as f32 * h));
+    let radial = objc::bag_get(emu, l, "type").filter(|&k| k != 0).and_then(|k| crate::foundation::nsstring(emu, k).ok()).is_some_and(|k| k == "radial");
+    let shader = if radial {
+        let (rx, ry) = ((ep.x - sp.x).abs().max(0.01), (ep.y - sp.y).abs().max(0.01));
+        // A circle of radius rx, squashed vertically to ry about the center.
+        let squash = Transform::from_row(1.0, 0.0, 0.0, ry / rx, 0.0, sp.y - sp.y * ry / rx);
+        tiny_skia::RadialGradient::new(sp, 0.0, sp, rx, stops, tiny_skia::SpreadMode::Pad, squash)
+    } else {
+        tiny_skia::LinearGradient::new(sp, ep, stops, tiny_skia::SpreadMode::Pad, Transform::identity())
+    };
+    let Some(shader) = shader else { return };
+    let Some(path) = build(&layer_shape(ly, w, h)) else { return };
+    let mut paint = Paint { shader, anti_alias: true, ..Default::default() };
+    paint.shader.apply_opacity(alpha);
+    p.pix.fill_path(&path, &paint, FillRule::Winding, ts(t), mask);
+}
+
+/// A standalone layer and its sublayers; `cast`: its shadow too. A layer
+/// with a mask or a compositing filter is drawn as a group.
 fn draw_layer(emu: &mut Emu, p: &mut Painter, s: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
+    let ly = calayer::layer(emu, s);
+    let blend = blend_of(emu, s);
+    // A plain color layer multiplied over what's below with a component over
+    // 1 (React Native's `brightness` above 100%: an extended-range color)
+    // brightens it, which 8-bit blending can't: scale the pixels beneath.
+    if !ly.hidden && blend == Some(tiny_skia::BlendMode::Multiply) && ly.mask == 0 && ly.sublayers.is_empty() && ly.contents == 0 {
+        let c = emu.ui.views.colors.get(&ly.background).copied();
+        if let Some(c) = c.filter(|c| c[..3].iter().any(|&v| v > 1.0)) {
+            let [_, _, lw, lh] = ly.bounds;
+            let frame = [ly.position[0] - ly.anchor[0] * lw, ly.position[1] - ly.anchor[1] * lh, lw, lh];
+            let lt = concat(&placement(frame, &ly), t);
+            if let Some(cover) = p.intersect(mask, &layer_shape(&ly, lw as f32, lh as f32), &lt) {
+                let k = (alpha * ly.opacity * c[3] as f32).clamp(0.0, 1.0);
+                for (px, &m) in p.pix.pixels_mut().iter_mut().zip(cover.data()) {
+                    if m == 0 {
+                        continue;
+                    }
+                    let f = |v: u8, ch: f64| {
+                        let scale = 1.0 + (ch as f32 - 1.0) * k * m as f32 / 255.0;
+                        ((v as f32 * scale).round() as u32).min(px.alpha() as u32) as u8
+                    };
+                    *px = tiny_skia::PremultipliedColorU8::from_rgba(f(px.red(), c[0]), f(px.green(), c[1]), f(px.blue(), c[2]), px.alpha()).unwrap_or(*px);
+                }
+            }
+            return;
+        }
+    }
+    if !ly.hidden && (ly.mask != 0 || blend.is_some()) {
+        let [_, _, lw, lh] = ly.bounds;
+        let frame = [ly.position[0] - ly.anchor[0] * lw, ly.position[1] - ly.anchor[1] * lh, lw, lh];
+        let lt = concat(&placement(frame, &ly), t);
+        let inner = concat(&[1.0, 0.0, 0.0, 1.0, -ly.bounds[0] as f32, -ly.bounds[1] as f32], &lt);
+        let region = if ly.mask != 0 {
+            mask_box(emu, ly.mask, &inner)
+        } else {
+            let b = device_box(&lt, [0.0, 0.0, lw as f32, lh as f32]);
+            [b[0] - 1.0, b[1] - 1.0, b[2] + 1.0, b[3] + 1.0]
+        };
+        let mask_layer = (ly.mask != 0).then_some((ly.mask, inner));
+        draw_group(emu, p, region, mask_layer, blend, alpha, mask, |emu, off, shift| draw_layer_body(emu, off, s, 1.0, &concat(t, shift), None, cast));
+        return;
+    }
+    draw_layer_body(emu, p, s, alpha, t, mask, cast)
+}
+
+/// A layer as it draws itself: shadow, background, shape or gradient,
+/// contents, sublayers, border.
+fn draw_layer_body(emu: &mut Emu, p: &mut Painter, s: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
     {
         let mut ly = calayer::layer(emu, s);
         // What's on screen now: the model with running animations applied.
@@ -1540,10 +1865,12 @@ fn draw_layer(emu: &mut Emu, p: &mut Painter, s: u64, alpha: f32, t: &[f32; 6], 
         let a = alpha * ly.opacity;
         let (w, h) = (frame[2] as f32, frame[3] as f32);
         if cast && casts_shadow(&ly) {
-            shadow(emu, p, &ly, w, h, &lt, alpha, mask, |emu, off, t2| draw_layer(emu, off, s, 1.0, t2, None, false), t);
+            shadow(emu, p, &ly, w, h, &lt, alpha, mask, |emu, off, t2| draw_layer_body(emu, off, s, 1.0, t2, None, false), t);
         }
         let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&ly.background).copied());
         draw_layer_box(p, &ly, bg, w, h, a, &lt, mask);
+        draw_gradient(emu, p, s, &ly, w, h, a, &lt, mask);
+        draw_shape(emu, p, s, a, &lt, mask);
         if let Some(img) = emu.render.images.get(&ly.contents).cloned() {
             let r = contents_rect(emu, &ly, &img, w, h);
             let clip = if ly.masks { p.intersect(mask, &layer_shape(&ly, w, h), &lt) } else { None };
@@ -1582,9 +1909,21 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
         let strength = ly.shadow_opacity * ly.opacity * alpha * color[3] as f32;
         let key: ShadowKey = (path_hash(&els), [w.to_bits(), h.to_bits()], [lt[0].to_bits(), lt[1].to_bits(), lt[2].to_bits(), lt[3].to_bits()], sigma.to_bits(), color.map(f64::to_bits), strength.to_bits());
         if !emu.render.shadows.contains_key(&key) {
-            // Around the shape at the origin (the layer's translation comes in when it's drawn).
+            // Around the shape at the origin (the layer's translation comes in when it's drawn):
+            // the layer's box and the path's (a path can reach past the bounds: a spread, an offset).
             let at0 = [lt[0], lt[1], lt[2], lt[3], 0.0, 0.0];
-            let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(&at0, x, y));
+            let mut pb = [0.0f32, 0.0, w, h];
+            for el in &els {
+                let pts: &[(f32, f32)] = &match *el {
+                    El::Move(x, y) | El::Line(x, y) => vec![(x, y)],
+                    El::Cubic(a, b2, c, d, x, y) => vec![(a, b2), (c, d), (x, y)],
+                    El::Close => vec![],
+                };
+                for &(x, y) in pts {
+                    pb = [pb[0].min(x), pb[1].min(y), pb[2].max(x), pb[3].max(y)];
+                }
+            }
+            let pts = [(pb[0], pb[1]), (pb[2], pb[1]), (pb[0], pb[3]), (pb[2], pb[3])].map(|(x, y)| apply(&at0, x, y));
             let margin = (3.0 * sigma).ceil() + 1.0;
             let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor();
             let y0 = (pts.iter().map(|q| q.1).fold(f32::MAX, f32::min) - margin).floor();
@@ -1782,8 +2121,36 @@ fn draw_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], m
     draw_view_cast(emu, p, v, alpha, t, mask, true)
 }
 
-/// A view and its subviews; `cast`: its shadow too.
+/// A view and its subviews; `cast`: its shadow too. A view whose layer has a
+/// mask or a compositing filter is drawn as a group.
 fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
+    let vw = view(emu, v);
+    if vw.layer != 0 && !vw.hidden {
+        let ly = calayer::layer(emu, vw.layer);
+        let blend = blend_of(emu, vw.layer);
+        if ly.mask != 0 || blend.is_some() {
+            let frame = [vw.center[0] - vw.bounds[2] / 2.0, vw.center[1] - vw.bounds[3] / 2.0, vw.bounds[2], vw.bounds[3]];
+            let vt = concat(&placement(frame, &ly), t);
+            let inner = concat(&[1.0, 0.0, 0.0, 1.0, -vw.bounds[0] as f32, -vw.bounds[1] as f32], &vt);
+            let region = if ly.mask != 0 {
+                mask_box(emu, ly.mask, &inner)
+            } else {
+                // (Room for its shadow.)
+                let b = device_box(&vt, [0.0, 0.0, frame[2] as f32, frame[3] as f32]);
+                let k = (vt[0] * vt[0] + vt[1] * vt[1]).sqrt();
+                let m = if casts_shadow(&ly) { (ly.shadow_radius.abs() * 3.0 + ly.shadow_offset[0].abs().max(ly.shadow_offset[1].abs())) as f32 * k } else { 0.0 } + 1.0;
+                [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
+            };
+            let mask_layer = (ly.mask != 0).then_some((ly.mask, inner));
+            draw_group(emu, p, region, mask_layer, blend, alpha, mask, |emu, off, shift| draw_view_body(emu, off, v, 1.0, &concat(t, shift), None, cast));
+            return;
+        }
+    }
+    draw_view_body(emu, p, v, alpha, t, mask, cast)
+}
+
+/// A view as it draws itself, and its subviews.
+fn draw_view_body(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, cast: bool) {
     let mut vw = view(emu, v);
     let mut ly = if vw.layer != 0 { calayer::layer(emu, vw.layer) } else { Layer::default() };
     // What's on screen now: the model with running animations applied.
@@ -1807,7 +2174,7 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     }
     let bg = animated_bg.or_else(|| emu.ui.views.colors.get(&vw.background).copied());
     if cast && casts_shadow(&ly) {
-        shadow(emu, p, &ly, w, h, &vt, alpha, mask, |emu, off, t2| draw_view_cast(emu, off, v, 1.0, t2, None, false), t);
+        shadow(emu, p, &ly, w, h, &vt, alpha, mask, |emu, off, t2| draw_view_body(emu, off, v, 1.0, t2, None, false), t);
     }
     draw_layer_box(p, &ly, bg, w, h, a, &vt, mask);
     if let Some(g) = crate::glass::glass(emu, v) {
@@ -2621,7 +2988,20 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         let join = e.arg(1) as u8;
         with_ctx(e, |c| c.gs.line.join = join)
     }),
-    ("_CGContextSetLineDash", nothing),
+    // (phase d0, lengths x1, count x2; no lengths: solid.)
+    ("_CGContextSetLineDash", |e| {
+        let (phase, lengths, count) = (d(e, 0), e.arg(1), (e.arg(2) as usize).min(8));
+        let mut dash = [0.0f32; 8];
+        for (i, v) in dash.iter_mut().enumerate().take(if lengths == 0 { 0 } else { count }) {
+            *v = f64::from_bits(e.read_u64(lengths + i as u64 * 8)?) as f32;
+        }
+        let len = if lengths == 0 { 0 } else { count as u8 };
+        with_ctx(e, |c| {
+            c.gs.line.dash = dash;
+            c.gs.line.dash_len = len;
+            c.gs.line.dash_phase = phase;
+        })
+    }),
     ("_CGContextSetLineWidth", |e| {
         let w = d(e, 0);
         with_ctx(e, |c| c.gs.line_width = w)
@@ -2694,8 +3074,9 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGContextStrokePath", |e| {
         with_ctx(e, |ctx| {
             let path = std::mem::take(&mut ctx.path);
-            let width = ctx.gs.line_width * ctx.gs.ctm[0].abs().max(ctx.gs.ctm[3].abs());
-            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, line: ctx.gs.line, clip: ctx.gs.clip.clone() });
+            let k = ctx.gs.ctm[0].abs().max(ctx.gs.ctm[3].abs());
+            let width = ctx.gs.line_width * k;
+            ctx.ops.push(Op::Stroke { path, color: ctx.gs.stroke, width, line: ctx.gs.line.scaled(k), clip: ctx.gs.clip.clone() });
         })
     }),
     ("_CGContextFillRect", |e| {

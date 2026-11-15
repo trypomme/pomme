@@ -53,6 +53,12 @@ pub struct Layer {
     pub mask: u64,
     pub name: u64,
     pub delegate: u64,
+    /// CAReplicatorLayer: how many copies of its sublayers, each moved by
+    /// `instance_transform` from the one before.
+    pub instance_count: u64,
+    pub instance_transform: [f64; 16],
+    /// CAGradientLayer: where the gradient starts and ends, in the unit square.
+    pub gradient_points: [[f64; 2]; 2],
 }
 
 impl Default for Layer {
@@ -88,6 +94,9 @@ impl Default for Layer {
             mask: 0,
             name: 0,
             delegate: 0,
+            instance_count: 1,
+            instance_transform: IDENTITY,
+            gradient_points: [[0.5, 0.0], [0.5, 1.0]],
         }
     }
 }
@@ -295,7 +304,35 @@ fn set_background(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn read_transform(emu: &Emu, p: u64) -> Result<[f64; 16]> {
+/// `a` then `b` (CATransform3DConcat: row vectors, so a × b).
+pub(crate) fn concat3d(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
+    let mut r = [0.0; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            r[i * 4 + j] = (0..4).map(|k| a[i * 4 + k] * b[k * 4 + j]).sum();
+        }
+    }
+    r
+}
+
+/// CATransform3DMakeRotation: `angle` radians about the axis (x, y, z) (identity for a zero axis).
+pub(crate) fn rotation3d(angle: f64, x: f64, y: f64, z: f64) -> [f64; 16] {
+    let n = (x * x + y * y + z * z).sqrt();
+    if n == 0.0 {
+        return IDENTITY;
+    }
+    let (x, y, z) = (x / n, y / n, z / n);
+    let (s, c) = angle.sin_cos();
+    let k = 1.0 - c;
+    [
+        c + k * x * x, k * x * y + s * z, k * x * z - s * y, 0.0,
+        k * x * y - s * z, c + k * y * y, k * y * z + s * x, 0.0,
+        k * x * z + s * y, k * y * z - s * x, c + k * z * z, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+pub(crate) fn read_transform(emu: &Emu, p: u64) -> Result<[f64; 16]> {
     let mut t = [0.0; 16];
     for (i, v) in t.iter_mut().enumerate() {
         *v = f64::from_bits(emu.read_u64(p + i as u64 * 8)?);
@@ -303,7 +340,7 @@ fn read_transform(emu: &Emu, p: u64) -> Result<[f64; 16]> {
     Ok(t)
 }
 
-fn write_transform(emu: &mut Emu, p: u64, t: &[f64; 16]) -> Result<()> {
+pub(crate) fn write_transform(emu: &mut Emu, p: u64, t: &[f64; 16]) -> Result<()> {
     for (i, v) in t.iter().enumerate() {
         emu.write_u64(p + i as u64 * 8, v.to_bits())?;
     }
@@ -611,6 +648,47 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (L, false, "contentsGravity", contents_gravity),
     (L, false, "setContentsGravity:", set_contents_gravity),
     (L, false, "mask", mask),
+    // CAReplicatorLayer: copies of its sublayers.
+    ("CAReplicatorLayer", false, "instanceCount", |e| {
+        let n = layer(e, e.arg(0)).instance_count;
+        e.ret(n);
+        Ok(())
+    }),
+    ("CAReplicatorLayer", false, "setInstanceCount:", |e| {
+        let (l, n) = (e.arg(0), e.arg(2));
+        layer_mut(e, l).instance_count = n;
+        Ok(())
+    }),
+    ("CAReplicatorLayer", false, "instanceTransform", |e| {
+        let t = layer(e, e.arg(0)).instance_transform;
+        let out = e.cpu.x[8];
+        write_transform(e, out, &t)
+    }),
+    ("CAReplicatorLayer", false, "setInstanceTransform:", |e| {
+        let (l, p) = (e.arg(0), e.arg(2));
+        let t = read_transform(e, p)?;
+        layer_mut(e, l).instance_transform = t;
+        Ok(())
+    }),
+    // CAGradientLayer's start and end points (CGPoints, in the unit square).
+    ("CAGradientLayer", false, "startPoint", |e| {
+        let p = layer(e, e.arg(0)).gradient_points[0];
+        ret_pair(e, p)
+    }),
+    ("CAGradientLayer", false, "setStartPoint:", |e| {
+        let (l, p) = (e.arg(0), [d(e, 0), d(e, 1)]);
+        layer_mut(e, l).gradient_points[0] = p;
+        Ok(())
+    }),
+    ("CAGradientLayer", false, "endPoint", |e| {
+        let p = layer(e, e.arg(0)).gradient_points[1];
+        ret_pair(e, p)
+    }),
+    ("CAGradientLayer", false, "setEndPoint:", |e| {
+        let (l, p) = (e.arg(0), [d(e, 0), d(e, 1)]);
+        layer_mut(e, l).gradient_points[1] = p;
+        Ok(())
+    }),
     (L, false, "setMask:", set_mask),
     (L, false, "name", name),
     (L, false, "setName:", set_name),

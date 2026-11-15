@@ -358,6 +358,62 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_CGColorRetain", |_| Ok(())),
     ("_CGColorRelease", |_| Ok(())),
     ("_CGAffineTransformMakeTranslation", make_translation),
+    // CATransform3D (16 doubles, returned through x8).
+    ("_CATransform3DMakeTranslation", |e| {
+        let mut t = crate::calayer::IDENTITY;
+        (t[12], t[13], t[14]) = (d(e, 0), d(e, 1), d(e, 2));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &t)
+    }),
+    // The CATransform3D functions: transforms by reference (x0, x1), numbers in d0…, the result through x8.
+    ("_CATransform3DMakeRotation", |e| {
+        let t = crate::calayer::rotation3d(d(e, 0), d(e, 1), d(e, 2), d(e, 3));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &t)
+    }),
+    ("_CATransform3DConcat", |e| {
+        let a = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        let b = crate::calayer::read_transform(e, e.cpu.x[1])?;
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &crate::calayer::concat3d(&a, &b))
+    }),
+    ("_CATransform3DTranslate", |e| {
+        let t = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        let mut m = crate::calayer::IDENTITY;
+        (m[12], m[13], m[14]) = (d(e, 0), d(e, 1), d(e, 2));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &crate::calayer::concat3d(&m, &t))
+    }),
+    ("_CATransform3DScale", |e| {
+        let t = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        let mut m = crate::calayer::IDENTITY;
+        (m[0], m[5], m[10]) = (d(e, 0), d(e, 1), d(e, 2));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &crate::calayer::concat3d(&m, &t))
+    }),
+    ("_CATransform3DRotate", |e| {
+        let t = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        let m = crate::calayer::rotation3d(d(e, 0), d(e, 1), d(e, 2), d(e, 3));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &crate::calayer::concat3d(&m, &t))
+    }),
+    ("_CATransform3DEqualToTransform", |e| {
+        let a = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        let b = crate::calayer::read_transform(e, e.cpu.x[1])?;
+        e.ret((a == b) as u64);
+        Ok(())
+    }),
+    ("_CATransform3DIsIdentity", |e| {
+        let a = crate::calayer::read_transform(e, e.cpu.x[0])?;
+        e.ret((a == crate::calayer::IDENTITY) as u64);
+        Ok(())
+    }),
+    ("_CATransform3DMakeScale", |e| {
+        let mut t = crate::calayer::IDENTITY;
+        (t[0], t[5], t[10]) = (d(e, 0), d(e, 1), d(e, 2));
+        let out = e.cpu.x[8];
+        crate::calayer::write_transform(e, out, &t)
+    }),
     ("_CGAffineTransformMakeScale", make_scale),
     ("_CGAffineTransformTranslate", translate),
     ("_CGAffineTransformScale", scale_by),

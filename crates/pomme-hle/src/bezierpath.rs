@@ -42,7 +42,7 @@ fn line_width(emu: &Emu, b: u64) -> f32 {
 }
 
 fn line(emu: &Emu, b: u64) -> Line {
-    Line { cap: bag_get(emu, b, "lineCap").unwrap_or(0) as u8, join: bag_get(emu, b, "lineJoin").unwrap_or(0) as u8 }
+    Line { cap: bag_get(emu, b, "lineCap").unwrap_or(0) as u8, join: bag_get(emu, b, "lineJoin").unwrap_or(0) as u8, ..Default::default() }
 }
 
 /// A new path with these elements (the class constructors).

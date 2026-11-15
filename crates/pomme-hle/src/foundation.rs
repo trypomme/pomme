@@ -527,6 +527,19 @@ fn ns_log(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    // NSRange (location, length) arithmetic: ranges in x0/x1 and x2/x3, the result in x0/x1.
+    ("_NSIntersectionRange", |e| {
+        let (a0, a1, b0, b1) = (e.cpu.x[0], e.cpu.x[0].saturating_add(e.cpu.x[1]), e.cpu.x[2], e.cpu.x[2].saturating_add(e.cpu.x[3]));
+        let (lo, hi) = (a0.max(b0), a1.min(b1));
+        (e.cpu.x[0], e.cpu.x[1]) = if lo < hi { (lo, hi - lo) } else { (0, 0) };
+        Ok(())
+    }),
+    ("_NSUnionRange", |e| {
+        let (a0, a1, b0, b1) = (e.cpu.x[0], e.cpu.x[0].saturating_add(e.cpu.x[1]), e.cpu.x[2], e.cpu.x[2].saturating_add(e.cpu.x[3]));
+        let (lo, hi) = (a0.min(b0), a1.max(b1));
+        (e.cpu.x[0], e.cpu.x[1]) = (lo, hi - lo);
+        Ok(())
+    }),
     ("_NSStringFromClass", ns_string_from_class),
     ("_NSClassFromString", ns_class_from_string),
     ("_NSStringFromSelector", ns_string_from_selector),

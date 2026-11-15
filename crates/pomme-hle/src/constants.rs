@@ -66,6 +66,20 @@ const STRINGS: &[(&str, &str)] = &[
     ("kCAAnimationCubicPaced", "cubicPaced"),
     ("kCACornerCurveCircular", "circular"),
     ("kCACornerCurveContinuous", "continuous"),
+    ("kCAFillRuleNonZero", "non-zero"),
+    ("kCAFillRuleEvenOdd", "even-odd"),
+    ("kCAGradientLayerAxial", "axial"),
+    ("kCAGradientLayerRadial", "radial"),
+    ("kCAGradientLayerConic", "conic"),
+    ("kCAFilterNearest", "nearest"),
+    ("kCAFilterLinear", "linear"),
+    ("kCAFilterTrilinear", "trilinear"),
+    ("kCALineCapButt", "butt"),
+    ("kCALineCapRound", "round"),
+    ("kCALineCapSquare", "square"),
+    ("kCALineJoinMiter", "miter"),
+    ("kCALineJoinRound", "round"),
+    ("kCALineJoinBevel", "bevel"),
     // Foundation's calendar identifiers.
     ("NSCalendarIdentifierGregorian", "gregorian"),
     ("NSCalendarIdentifierBuddhist", "buddhist"),
@@ -245,7 +259,7 @@ const INTEGERS: &[(&str, u64)] = &[
 ];
 
 /// Struct constants that are all zeros: (name, size).
-const ZEROS: &[(&str, u64)] = &[("UIEdgeInsetsZero", 32), ("CGRectZero", 32), ("CGPointZero", 16), ("CGSizeZero", 16), ("CGAffineTransformIdentity", 48)];
+const ZEROS: &[(&str, u64)] = &[("UIEdgeInsetsZero", 32), ("CGRectZero", 32), ("CGPointZero", 16), ("CGSizeZero", 16), ("CGAffineTransformIdentity", 48), ("CATransform3DIdentity", 128)];
 
 /// Rect constants that aren't zero: (name, {x, y, width, height}).
 const RECTS: &[(&str, [f64; 4])] = &[
@@ -318,6 +332,10 @@ pub(crate) fn bind(emu: &mut Emu) -> Result<()> {
                 // {a=1, b=0, c=0, d=1, tx=0, ty=0}
                 emu.write_u64(cell, 1f64.to_bits())?;
                 emu.write_u64(cell + 24, 1f64.to_bits())?;
+            }
+            if name == "CATransform3DIdentity" {
+                // m11, m22, m33, m44 = 1.
+                crate::calayer::write_transform(emu, cell, &crate::calayer::IDENTITY)?;
             }
             rebind_all(emu, stubs, cell)?;
         }

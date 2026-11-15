@@ -936,6 +936,27 @@ pub(crate) fn tint_color(emu: &mut Emu, mut v: u64) -> Result<u64> {
     objc::send(emu, cls, "tintColor", &[])
 }
 
+/// `font` with the symbolic traits asked for (italic 1, bold 2): the system
+/// font by name (`.SFUI-Italic`, `.SFUI-BoldItalic`), an app's face as it is
+/// (its family's other members aren't looked up).
+fn font_with_traits(emu: &mut Emu, font: u64, traits: u32) -> Result<u64> {
+    let name = foundation::nsstring(emu, emu.read_u64(font + 8)?)?;
+    let (size, weight) = (font_size(emu, font)?, f64::from_bits(emu.read_u64(font + 24)?));
+    let weight = if traits & 2 != 0 { weight.max(0.4) } else { weight };
+    if font_face(emu, font)? != 0 {
+        return new_font(emu, &name, size, weight);
+    }
+    let italic = traits & 1 != 0;
+    let base = if weight >= 0.4 { ".SFUI-Bold" } else { ".SFUI-Regular" };
+    let name = match (italic, weight >= 0.4) {
+        (true, true) => ".SFUI-BoldItalic".to_string(),
+        (true, false) => ".SFUI-Italic".to_string(),
+        (false, _) if name.contains("Italic") => base.to_string(),
+        _ => name,
+    };
+    new_font(emu, &name, size, weight)
+}
+
 /// UIFontDescriptorSymbolicTraits: italic (1), bold (2).
 fn font_symbolic_traits(emu: &mut Emu, font: u64) -> Result<u32> {
     if font == 0 {
@@ -943,7 +964,7 @@ fn font_symbolic_traits(emu: &mut Emu, font: u64) -> Result<u32> {
     }
     let face = font_face(emu, font)?;
     let weight = f64::from_bits(emu.read_u64(font + 24)?);
-    let italic = face != 0 && crate::coretext::face_italic(emu, face);
+    let italic = if face != 0 { crate::coretext::face_italic(emu, face) } else { foundation::nsstring(emu, emu.read_u64(font + 8)?)?.contains("Italic") };
     Ok(italic as u32 | ((weight >= 0.4) as u32) << 1)
 }
 
@@ -1290,6 +1311,30 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIFontDescriptor", false, "objectForKey:", font_descriptor_value),
+    // A descriptor with other traits (UIFontDescriptorSymbolicTraits: italic 1,
+    // bold 2): the same font, italic and bold as asked. (The system font's
+    // italic is its own name, `.SFUI-Italic`; drawn oblique.)
+    ("UIFontDescriptor", false, "fontDescriptorWithSymbolicTraits:", |e| {
+        let (d, traits) = (e.arg(0), e.arg(2) as u32);
+        let font = objc::bag_get(e, d, "font").unwrap_or(0);
+        let derived = if font == 0 { 0 } else { font_with_traits(e, font, traits)? };
+        let cls = host_class(e, "UIFontDescriptor")?;
+        let nd = objc::create_instance(e, cls, 0)?;
+        objc::bag_set(e, nd, "font", derived);
+        e.ret(nd);
+        Ok(())
+    }),
+    // A descriptor's font at a size (0: its own).
+    ("UIFont", true, "fontWithDescriptor:size:", |e| {
+        let (d, s) = (e.arg(2), f(e, 0));
+        let font = objc::bag_get(e, d, "font").unwrap_or(0);
+        if font == 0 {
+            return ret_font(e, ".SFUI-Regular", if s > 0.0 { s } else { 17.0 }, 0.0);
+        }
+        let name = foundation::nsstring(e, e.read_u64(font + 8)?)?;
+        let (size, w) = (font_size(e, font)?, f64::from_bits(e.read_u64(font + 24)?));
+        ret_font(e, &name, if s > 0.0 { s } else { size }, w)
+    }),
     ("UIFontDescriptor", false, "symbolicTraits", |e| {
         let font = objc::bag_get(e, e.arg(0), "font").unwrap_or(0);
         let t = font_symbolic_traits(e, font)?;

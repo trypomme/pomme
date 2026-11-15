@@ -1,0 +1,23 @@
+{
+  "name": "hello-uniwind",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~58.0.25",
+    "expo-status-bar": "~58.0.5",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "~5.11.1",
+    "tailwindcss": "^4.3.5",
+    "uniwind": "^1.13.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios"
+  },
+  "private": true
+}

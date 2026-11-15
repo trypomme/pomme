@@ -157,6 +157,17 @@ Debugging:
   `NativeTabs.BottomAccessory` (hello-expo's pommehello:///tabs) and More with more than
   five tabs (pommehello:///moretabs).
   `tests/tab_bar.rs`, `tests/swiftui_tabs.rs` and `tests/hello_expo.rs`.
+- React Native's styles as Tailwind writes them: `apps/hello-uniwind` is a catalog of the
+  classes [Uniwind](https://uniwind.dev) supports (Tailwind CSS for React Native, which
+  turns `className` into ordinary React Native styles at build time), a page per group,
+  held to the iOS 26 Simulator in light and dark (1104 samples, `tests/hello_uniwind.rs`;
+  `scripts/uniwind/` screenshots both and diffs them). For it pomme draws `CAShapeLayer`s,
+  layer masks and `compositingFilter` blend modes (as groups), `CAGradientLayer` and
+  `CAReplicatorLayer` (React Native's gradients), box shadows past the bounds, dashed lines,
+  and text with paragraph line heights, letter spacing, underline and strikethrough
+  styles, text shadows, italics and tail truncation. Radial and conic gradients and most
+  filters do nothing on iOS too (Uniwind drops the gradients; React Native draws the
+  filters only behind a canary flag).
 - Liquid Glass views: `UIVisualEffectView` with a `UIGlassEffect` (regular or clear,
   tinted, interactive) or a `UIGlassContainerEffect`, shaped by the layer's corner radius
   or iOS 26's `cornerConfiguration` (`UICornerConfiguration`, `UICornerRadius`: fixed,

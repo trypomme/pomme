@@ -441,6 +441,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("CALayer", "NSObject"),
     ("CAShapeLayer", "CALayer"),
     ("CAGradientLayer", "CALayer"),
+    ("CAReplicatorLayer", "CALayer"),
     ("CAMetalLayer", "CALayer"),
     ("MTLRenderPassAttachmentDescriptor", "NSObject"),
     ("MTLRenderPassColorAttachmentDescriptor", "MTLRenderPassAttachmentDescriptor"),
@@ -503,8 +504,9 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
     let accessibility = crate::accessibility::methods();
     let tab_bars = crate::tabbar::methods();
     let glass = crate::glass::methods();
+    let textkit = crate::textkit::methods();
     let text: Vec<_> = crate::textinput::TEXT_METHODS.iter().chain(&crate::clipboard::EDIT_ACTIONS).flat_map(|t| t.iter()).copied().collect();
-    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, crate::textkit::METHODS, crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::symbols::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::statusbar::METHODS, crate::appearance::METHODS, crate::indexset::METHODS, crate::orderedset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::bezierpath::METHODS, crate::animation::METHODS, crate::spinner::METHODS, crate::webkit::METHODS, &webkit_flags[..], &accessibility[..], &tab_bars[..], &glass[..], crate::kvo::METHODS, EXCEPTION_METHODS];
+    let tables = [&props[..], HOST_METHODS, crate::foundation::METHODS, crate::uikit::METHODS, crate::bundle::METHODS, crate::uiview::METHODS, crate::threads::METHODS, crate::invocation::METHODS, crate::attributed::METHODS, &textkit[..], crate::calayer::METHODS, crate::touch::METHODS, crate::net::METHODS, crate::nstimer::METHODS, crate::symbols::METHODS, crate::image::METHODS, crate::regex::METHODS, crate::json::METHODS, crate::plist::METHODS, crate::calendar::METHODS, crate::scanner::METHODS, crate::filemanager::METHODS, crate::uuid::METHODS, crate::storekit::METHODS, crate::userdefaults::METHODS, crate::numberformatter::METHODS, crate::archiver::METHODS, crate::dateformatter::METHODS, &components[..], crate::nsvalue::METHODS, crate::navigation::METHODS, crate::metal::METHODS, crate::pointer_array::METHODS, crate::storyboard::METHODS, crate::locale::METHODS, crate::textinput::METHODS, crate::control::METHODS, crate::valuecontrols::METHODS, crate::autolayout::METHODS, crate::clipboard::METHODS, &anchors[..], &text[..], crate::textview::METHODS, crate::label::METHODS, crate::scrollview::METHODS, crate::charset::METHODS, crate::orientation::METHODS, crate::statusbar::METHODS, crate::appearance::METHODS, crate::indexset::METHODS, crate::orderedset::METHODS, crate::operation::METHODS, crate::keychain::METHODS, crate::render::METHODS, crate::bezierpath::METHODS, crate::animation::METHODS, crate::spinner::METHODS, crate::webkit::METHODS, &webkit_flags[..], &accessibility[..], &tab_bars[..], &glass[..], crate::kvo::METHODS, EXCEPTION_METHODS];
     names.extend(tables.iter().flat_map(|t| t.iter()).map(|m| m.0.to_string()));
     names.sort();
     names.dedup();
@@ -1961,6 +1963,25 @@ fn nsobject_class(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `-classForCoder`: the class an archive records, its public class: the
+/// object's own, or for Foundation's private subclasses (`__NSCFString`,
+/// `__NSCFNumber`, `NSConstantIntegerNumber`, ...) the first public class up
+/// the chain (`NSMutableString`, `NSNumber`, ...), as React Native's
+/// `RCTJSONClean` expects of strings and numbers.
+fn nsobject_class_for_coder(emu: &mut Emu) -> Result<()> {
+    let mut c = instance_class(emu, emu.cpu.x[0])?;
+    for _ in 0..16 {
+        let Some(k) = emu.objc.classes.get(&c) else { break };
+        let private = k.name.starts_with('_') || k.name.starts_with("NSConstant");
+        if !(k.host && private) || k.superclass == 0 {
+            break;
+        }
+        c = k.superclass;
+    }
+    emu.ret(c);
+    Ok(())
+}
+
 fn nsobject_superclass(emu: &mut Emu) -> Result<()> {
     let c = instance_class(emu, emu.cpu.x[0])?;
     let s = emu.objc.classes.get(&c).map_or(0, |c| c.superclass);
@@ -2176,6 +2197,7 @@ pub(crate) const HOST_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSObject", false, "self", ret_self),
     ("NSObject", false, "class", nsobject_class),
     ("NSObject", false, "superclass", nsobject_superclass),
+    ("NSObject", false, "classForCoder", nsobject_class_for_coder),
     ("NSObject", false, "retain", nsobject_retain),
     ("NSObject", false, "release", nsobject_release),
     ("NSObject", false, "autorelease", ret_self),

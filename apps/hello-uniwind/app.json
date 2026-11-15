@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "hello-uniwind",
+    "slug": "hello-uniwind",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "pommeuniwind",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.pomme.hellouniwind"
+    }
+  }
+}
