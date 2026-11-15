@@ -1,0 +1,41 @@
+schema: spec-driven
+
+# Project context. These are rules an agent cannot learn by reading the code.
+context: |
+  pomme is an emulator. It runs real iOS apps on other platforms (the web
+  through WASM, the desktop). pomme writes its own copy of the iOS system
+  libraries (UIKit, Foundation, ...) in Rust, in crates/pomme-hle.
+
+  The goal is to look and behave exactly like iOS. We do not guess numbers.
+  Every size, color and timing comes from a measurement on the iOS
+  Simulator: a small probe app (crates/pomme-cli/tests/fixtures/<name>/)
+  prints what UIKit did, we save that output in the repository, and a test
+  in crates/pomme-cli/tests/ checks that pomme gives the same answer.
+
+  Readers of these documents are often junior developers, and English is
+  often not their first language.
+
+rules:
+  proposal:
+    - Write in plain, simple English. Use short sentences. One idea per sentence.
+    - Do not use idioms or slang (for example "under the hood", "out of the box").
+    - The first time you use a special word (backdrop, lens, capsule, ...), explain it.
+    - Always say what is out of scope.
+  specs:
+    - Write in plain, simple English. Use short sentences.
+    - Write each requirement as the behavior pomme must have ("pomme SHALL ...").
+      Do not describe the current state of the code ("today", "not yet",
+      "already"), and do not name source files or functions. Fixtures and
+      measured data may be named, because they are the reference, not the code.
+    - Every number in a scenario must come from a Simulator measurement. If it is
+      not measured yet, write "as measured on the iOS 26 Simulator" and add a
+      task to measure it. Never invent a number.
+  design:
+    - Write in plain, simple English. Explain why, not only what.
+    - Name the files a developer will change.
+  tasks:
+    - Each task is small (one session) and says how to check that it is done.
+    - Name the file to change and the test to run.
+    - Put "measure on the Simulator" tasks before "implement" tasks.
+    - A change that changes what is drawn adds visual oracles (stills, and
+      frames for motion) as described in the testing/visual-oracles spec.
