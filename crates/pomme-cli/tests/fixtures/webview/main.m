@@ -41,9 +41,11 @@
     self.events.tag = 100;
     [self.view addSubview:self.events];
     // A tall page (it scrolls) with a button over its first screen (a tap presses it).
+    // It says once that it scrolled down: the drag runs in virtual time and the
+    // page in real time, so a wait for scrolling to stop would split it unevenly.
     NSString *html = @"<html><body style='margin:0;height:2000px;background:#ff0000'>"
                       "<button style='position:absolute;left:0;top:0;width:100%;height:200px;opacity:0' onclick=\"window.webkit.messageHandlers.app.postMessage('tapped')\"></button>"
-                      "<script>var t; window.onscroll = function () { clearTimeout(t); t = setTimeout(function () { window.webkit.messageHandlers.app.postMessage('scrolled ' + (window.scrollY > 50 ? 'down' : 'a little')); }, 300); };</script>"
+                      "<script>var down = false; window.onscroll = function () { if (!down && window.scrollY > 50) { down = true; window.webkit.messageHandlers.app.postMessage('scrolled down'); } };</script>"
                       "<script>window.webkit.messageHandlers.app.postMessage({hello: 'pomme', n: 3});"
                       "setTimeout(function () { location.href = 'app://hello?from=' + location.host; }, 100);</script></body></html>";
     [self.web loadHTMLString:html baseURL:[NSURL URLWithString:@"https://example.com/"]];
