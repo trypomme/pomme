@@ -33,6 +33,10 @@ chat, not in the terminal:
 - `/openspec-propose <name>`: write a new change (proposal, specs, design,
   tasks).
 - `/openspec-apply-change`: do a change's tasks.
+- `/openspec-verify-change`: before you archive, check that the code does
+  what the change says: every task done, every requirement built, every
+  scenario tested, and the design followed. It reports problems; it does
+  not stop the archive.
 - `/openspec-update-change`, `/openspec-sync-specs`, `/openspec-archive-change`.
 
 The skills run the `openspec` command, so install it first:
