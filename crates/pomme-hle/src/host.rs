@@ -611,3 +611,70 @@ fn draw(emu: &mut Emu) -> Result<()> {
     }
     Ok(())
 }
+
+// ---- Waiting for the host's asynchronous work (the GPU) ----
+
+thread_local! {
+    /// What [`block_on`] does while a future isn't ready: set by a host that
+    /// can pause (the browser, with JSPI), so the work can finish meanwhile.
+    static PAUSE: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set (or clear) the pause hook. The browser host sets one that pauses the
+/// emulator for one browser task.
+pub fn set_pause_hook(hook: Option<fn()>) {
+    PAUSE.with(|p| p.set(hook));
+}
+
+/// Whether [`block_on`] can wait: always on native hosts; in the browser,
+/// only with a pause hook.
+pub fn can_wait() -> bool {
+    !cfg!(target_arch = "wasm32") || PAUSE.with(|p| p.get()).is_some()
+}
+
+/// Wait for `fut`. With a pause hook, poll it and pause between polls; with
+/// none, block the thread (native hosts: what they always did). In the
+/// browser, blocking would also block the browser that must do the work, so
+/// with no hook it's an error rather than a hang.
+pub fn block_on<F: std::future::Future>(fut: F) -> std::result::Result<F::Output, String> {
+    let Some(pause) = PAUSE.with(|p| p.get()) else {
+        #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+        return Ok(pollster::block_on(fut));
+        #[cfg(not(all(feature = "gpu", not(target_arch = "wasm32"))))]
+        return Err("can't wait here: the host can't pause (in a browser, it needs JSPI)".into());
+    };
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+            return Ok(v);
+        }
+        pause();
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::task::Poll;
+
+    thread_local! { static PAUSES: Cell<u32> = const { Cell::new(0) }; }
+    fn count() {
+        PAUSES.with(|p| p.set(p.get() + 1));
+    }
+
+    #[test]
+    fn block_on_pauses_until_ready() {
+        set_pause_hook(Some(count));
+        let mut polls = 0;
+        let r = block_on(std::future::poll_fn(|_| {
+            polls += 1;
+            if polls < 3 { Poll::Pending } else { Poll::Ready(42) }
+        }));
+        set_pause_hook(None);
+        assert_eq!(r, Ok(42));
+        assert_eq!(PAUSES.with(|p| p.get()), 2, "one pause between each poll that wasn't ready");
+        assert!(can_wait());
+    }
+}

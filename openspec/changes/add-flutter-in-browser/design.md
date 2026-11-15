@@ -116,8 +116,11 @@ loads. When the glue instantiates pomme, the wrapper replaces the
 with a `promising` one. `run` then returns nothing, and the result goes to
 the page through a new `pommeStopped(text)` function.
 
-Alternatives: a newer wasm-bindgen may support JSPI directly; task 1.1
-checks. Changing the glue file after the build is the last choice, because
+Result: this works with wasm-bindgen 0.2.130 (task 1.2). The glue's
+`pommePause` entry is replaced, not wrapped: the glue's own function would
+throw the promise away, and only numbers cross it, so it needs no glue.
+
+Alternatives: a newer wasm-bindgen may support JSPI directly. Changing the glue file after the build is the last choice, because
 it breaks when wasm-bindgen changes.
 
 ### 5. wgpu's WebGPU backend in the worker

@@ -10,6 +10,7 @@ const params = new URLSearchParams(location.search);
 const bundle = params.get('app') || 'helloexpo.pfs';
 const ios = params.get('ios') || ''; // e.g. ?ios=18.6
 const frameStats = params.has('stats'); // ?stats: frame rate and stutters in the console
+const jspi = !params.has('nojspi'); // ?nojspi: run as browsers without JSPI do
 
 const canvas = document.getElementById('screen');
 const status = document.getElementById('status');
@@ -37,6 +38,7 @@ worker.onmessage = (e) => {
       canvas.height = m.height;
     }
     ctx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
+    window.pommeFrames = frames + 1; // for tests (web/tests/run.mjs)
     if (frames++ === 0) status.textContent = `First frame after ${((performance.now() - started) / 1000).toFixed(1)} s. Tap away.`;
   } else if (m.type === 'display') {
     // The display's own shape clips the screen (its continuous corners, as transitions' cards have).
@@ -57,7 +59,7 @@ worker.onmessage = (e) => {
     console.warn('[pomme]', m.text);
   }
 };
-worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios, webViews: WebViews.sab, frameStats });
+worker.postMessage({ type: 'start', bundle, input, scale: SCALE, ios, webViews: WebViews.sab, frameStats, jspi });
 
 // Pointer → touch phases (UITouchPhase: began 0, moved 1, ended 3, cancelled 4), in points.
 function send(phase, ev) {

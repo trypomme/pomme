@@ -57,6 +57,16 @@ extern "C" {
     fn performance_measure(name: &str, options: &JsValue);
     #[wasm_bindgen(js_name = pommeDisplay)]
     fn pomme_display(width: f64, height: f64, path: &str);
+    /// Wait up to `ms`, or until the page has written past `seen` events.
+    /// With JSPI the emulator pauses here and the browser runs (its GPU work
+    /// is sent, its answers arrive); `ms` 0 gives it one task. Without JSPI
+    /// it blocks in `Atomics.wait`. The worker swaps in its own function for
+    /// this import (web/worker.js), so only numbers may cross it.
+    #[wasm_bindgen(js_name = pommePause)]
+    fn pomme_pause(ms: f64, seen: i32);
+    /// Why the app stopped (`run` returns nothing: with JSPI it's a promise).
+    #[wasm_bindgen(js_name = pommeStopped)]
+    fn pomme_stopped(why: &str);
 }
 
 /// Bytes of the web view event ring (after its two-int header: bytes written, bytes read).
@@ -180,7 +190,7 @@ impl Host for WebHost {
                 return Idle::Advance;
             }
             let seen = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
-            let _ = js_sys::Atomics::wait_with_timeout(&self.input, 0, seen, wait_ms.min(1000.0));
+            pomme_pause(wait_ms.min(1000.0), seen);
         }
     }
 
@@ -191,6 +201,8 @@ impl Host for WebHost {
             pomme_display(w, h, &pomme_hle::render::display_svg_path(self.device, f.orientation));
         }
         pomme_frame(f.rgba, f.width, f.height);
+        // A break for the browser after each frame (with JSPI): its GPU work goes out.
+        pomme_pause(0.0, js_sys::Atomics::load(&self.input, 0).unwrap_or(0));
         if let Some(stats) = self.stats.as_mut() {
             // In the browser's performance tools too (the worker's track).
             if let Some(t) = f.timing {
@@ -275,11 +287,13 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 /// Mount `bundle` (from `pomme bundle`) and run its app until it stops,
 /// presenting iOS `ios` ("18.6", "26"; empty for the default); with
 /// `frame_stats`, how smoothly frames arrive goes to the console each second.
-/// Never returns while the app runs; returns a description of why it stopped.
+/// Runs until the app stops, then tells the page why through `pommeStopped`.
+/// With JSPI the worker calls it through `WebAssembly.promising`, so it
+/// returns nothing (the glue can't read a value out of a promise).
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool) -> String {
+pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool) {
     match run_inner(bundle, input, scale, &ios, &web_views, frame_stats) {
-        Ok(s) | Err(s) => s,
+        Ok(s) | Err(s) => pomme_stopped(&s),
     }
 }
 
