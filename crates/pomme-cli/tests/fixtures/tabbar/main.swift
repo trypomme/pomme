@@ -63,6 +63,9 @@ final class Tabs: UITabBarController {
       if v.isHidden || v.alpha < 0.01 { return }
       let r = v.convert(v.bounds, to: bar)
       say("VIEW \(step) \(String(repeating: "  ", count: depth))\(type(of: v)) \(f(r.minX)) \(f(r.minY)) \(f(r.width))×\(f(r.height)) bg \(rgba(v.backgroundColor, v)) alpha \(f(v.alpha))")
+      if v.accessibilityLabel != nil || v.isAccessibilityElement {
+        say("AXV \(step) \(type(of: v)) element \(v.isAccessibilityElement) label \(v.accessibilityLabel ?? "-") | value \(v.accessibilityValue ?? "-") | traits \(v.accessibilityTraits.rawValue) | frame \(f(r.minX)) \(f(r.minY)) \(f(r.width)) \(f(r.height))")
+      }
       if v.isAccessibilityElement {
         let traits = v.accessibilityTraits.rawValue
         say("AX \(step).tab\(tab) label \(v.accessibilityLabel ?? "-") | value \(v.accessibilityValue ?? "-") | traits \(traits) | hint \(v.accessibilityHint ?? "-")")
@@ -105,10 +108,29 @@ final class Tabs: UITabBarController {
   }
 }
 
+/// UIKit answers accessibility fully only with its accessibility support
+/// on (iOS turns it on for VoiceOver or a UI test); on the Simulator, turn
+/// it on as Accessibility Inspector does, so the probe sees what VoiceOver
+/// would. (Not there under pomme, whose UIKit answers itself.)
+func loadAccessibility() {
+  guard let root = ProcessInfo.processInfo.environment["IPHONE_SIMULATOR_ROOT"] else { return }
+  if let lib = dlopen(root + "/usr/lib/libAccessibility.dylib", RTLD_NOW) {
+    for name in ["_AXSApplicationAccessibilitySetEnabled", "_AXSSetAutomationEnabled"] {
+      if let sym = dlsym(lib, name) {
+        unsafeBitCast(sym, to: (@convention(c) (Int32) -> Void).self)(1)
+      }
+    }
+  }
+  for path in ["/System/Library/PrivateFrameworks/AccessibilityUtilities.framework", "/System/Library/AccessibilityBundles/UIKit.axbundle"] {
+    _ = Bundle(path: root + path)?.load()
+  }
+}
+
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   var window: UIWindow?
 
   func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+    loadAccessibility()
     let window = UIWindow(windowScene: scene as! UIWindowScene)
     let tabs = Tabs()
     tabs.viewControllers = [Screen("Home", "house.fill"), Screen("Search", "magnifyingglass"), Screen("Settings", "gear", badge: "3")]

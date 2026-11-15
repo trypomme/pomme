@@ -19,6 +19,7 @@ class WrapperNode: Node {
     priority = child.priority
     layoutValues = child.layoutValues
     tag = child.tag
+    tabItem = child.tabItem
     focus = child.focus
   }
 

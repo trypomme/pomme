@@ -517,6 +517,7 @@ pub fn layout_tree(emu: &mut Emu, v: u64) -> Result<bool> {
             send(emu, vc, "viewWillLayoutSubviews", &[])?;
         }
         crate::navigation::layout_container(emu, v)?;
+        crate::tabbar::layout_container(emu, v)?;
         send(emu, v, "layoutSubviews", &[])?;
         if let Some(vc) = vc {
             send(emu, vc, "viewDidLayoutSubviews", &[])?;

@@ -36,6 +36,8 @@ final class ViewHost {
   private var appeared: [ViewPath: AppearanceActions] = [:]
   /// A navigation stack at the root: shown by a navigation controller.
   private var navigation: (controller: UINavigationController, content: ContentController)?
+  /// A tab view at the root: shown by a tab bar controller.
+  private var tabs: TabsController?
 
   init(root: AnyView) {
     self.root = root
@@ -62,6 +64,8 @@ final class ViewHost {
     self.nodes = nodes
     if nodes.count == 1, let stack = nodes[0] as? NavigationStackNode {
       showNavigationStack(stack, in: view)
+    } else if nodes.count == 1, let tabView = nodes[0] as? TabViewNode {
+      showTabs(tabView, in: view)
     }
     view.setNeedsLayout()
     if sizesToContent {
@@ -76,7 +80,7 @@ final class ViewHost {
   /// Lay the tree out in the hosting view.
   func layout() {
     guard let view else { return }
-    if navigation == nil {
+    if navigation == nil, tabs == nil {
       renderer.show(nodes, in: view, respectingSafeArea: safeAreaRegions.contains(.container))
     }
   }
@@ -103,6 +107,19 @@ final class ViewHost {
       navigation = (navigationController, content)
     }
     navigation!.content.show(stack.root, title: stack.title, displayMode: stack.displayMode)
+  }
+
+  private func showTabs(_ node: TabViewNode, in view: UIView) {
+    if tabs == nil {
+      let controller = TabsController()
+      self.controller?.addChild(controller)
+      controller.view.frame = view.bounds
+      controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      view.addSubview(controller.view)
+      controller.didMove(toParent: self.controller)
+      tabs = controller
+    }
+    tabs!.show(node)
   }
 
   /// Start the tasks of views that have appeared, cancel those of views that
@@ -256,5 +273,84 @@ final class ContentController: UIViewController {
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     renderer.show(nodes, in: view)
+  }
+}
+
+/// A tab view's tabs: a tab bar controller with a page per tab, each its
+/// tab's view, or a navigation controller for a tab that's a navigation stack.
+final class TabsController: UITabBarController, UITabBarControllerDelegate {
+  private var pages: [TabPageController] = []
+  private var select: (@MainActor (Int) -> Void)?
+
+  func show(_ node: TabViewNode) {
+    delegate = self
+    select = node.select
+    // A page per tab, kept while the tabs stay as many; each shown (a
+    // navigation stack's page becomes its navigation controller), then the
+    // controllers the bar's tabs are.
+    if pages.count != node.tabs.count {
+      pages = node.tabs.map { _ in TabPageController() }
+    }
+    for (page, tab) in zip(pages, node.tabs) {
+      page.show(tab)
+    }
+    let shown = pages.map(\.shown)
+    if viewControllers ?? [] != shown {
+      setViewControllers(shown, animated: false)
+    }
+    if let i = node.selected, i != selectedIndex {
+      selectedIndex = i
+    }
+  }
+
+  func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
+    if let i = viewControllers?.firstIndex(of: viewController) {
+      select?(i)
+    }
+  }
+}
+
+/// One tab: its view, or its navigation stack under a navigation bar.
+final class TabPageController: UIViewController {
+  private let renderer = Renderer()
+  private var nodes: [Node] = []
+  private var navigation: (controller: UINavigationController, content: ContentController)?
+
+  /// What the tab bar controller shows for this tab: this page, or its navigation controller.
+  var shown: UIViewController { navigation?.controller ?? self }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    view.backgroundColor = .systemBackground
+  }
+
+  func show(_ tab: Node) {
+    if let stack = tab as? NavigationStackNode {
+      if navigation == nil {
+        let content = ContentController()
+        let controller = UINavigationController(rootViewController: content)
+        controller.navigationBar.prefersLargeTitles = true
+        navigation = (controller, content)
+      }
+      navigation!.content.show(stack.root, title: stack.title, displayMode: stack.displayMode)
+    } else {
+      nodes = [tab]
+      if isViewLoaded { view.setNeedsLayout() }
+    }
+    let item = tab.tabItem
+    shown.tabBarItem.title = item?.title
+    shown.tabBarItem.image = item?.image
+  }
+
+  override func viewSafeAreaInsetsDidChange() {
+    super.viewSafeAreaInsetsDidChange()
+    view.setNeedsLayout()
+  }
+
+  override func viewDidLayoutSubviews() {
+    super.viewDidLayoutSubviews()
+    if navigation == nil {
+      renderer.show(nodes, in: view)
+    }
   }
 }

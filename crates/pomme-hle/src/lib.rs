@@ -58,6 +58,7 @@ mod sockets;
 mod plist;
 mod regex;
 pub mod navigation;
+pub mod tabbar;
 pub mod system;
 mod coretext;
 mod pointer_array;
@@ -336,6 +337,7 @@ pub struct Emu {
     /// Compiled NSRegularExpressions and match results.
     regex: regex::State,
     pub(crate) nav: navigation::State,
+    pub(crate) tabs: tabbar::State,
     /// The iOS version presented, and the app's linked SDK (see system.rs).
     pub system: system::System,
     pub metal: metal::State,
@@ -457,6 +459,7 @@ impl Emu {
             spinner_frames: Default::default(),
             regex: Default::default(),
             nav: Default::default(),
+            tabs: Default::default(),
             system: Default::default(),
             metal: Default::default(),
             pointer_arrays: Default::default(),

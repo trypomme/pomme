@@ -1756,6 +1756,9 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
             draw_bar(emu, p, &look, w, h, above, a, &inner, mm, dx as f32, back.map(|b| b as f32));
         }
     }
+    if let Ok(Some(look)) = crate::tabbar::look(emu, v) {
+        draw_tab_bar(emu, p, &look, w, h, a, &inner, m);
+    }
     for s in vw.subviews {
         draw_view(emu, p, s, a, &inner, m);
     }
@@ -1832,6 +1835,62 @@ fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64,
 /// its screen, during a push or pop), and its back button at `back_alpha`
 /// (None: just the title, for the screen leaving).
 #[allow(clippy::too_many_arguments)]
+/// A tab bar (tabbar.rs says where everything goes): under Liquid Glass, a
+/// floating capsule with a soft shadow and a lens under the selected tab;
+/// before, the bar's background (if its appearance has one) and hairline.
+/// Then each tab's image (a template, in the tab's color), title and badge.
+#[allow(clippy::too_many_arguments)]
+fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let dark = emu.appearance.dark;
+    let capsule = |r: [f64; 4], grow: f32, dy: f32| {
+        let [x, y, rw, rh] = r.map(|v| v as f32);
+        let (rw, rh) = (rw + 2.0 * grow, rh + 2.0 * grow);
+        transform_els(&rounded_rect(rw, rh, rh / 2.0), &[1.0, 0.0, 0.0, 1.0, x - grow, y - grow + dy])
+    };
+    if let Some(bg) = look.background {
+        p.fill_box(w, h, [0.0; 4], false, bg.map(|v| v as f32), alpha, t, mask);
+    }
+    if let Some(line) = look.hairline {
+        // One device pixel (1/3 pt) along the top edge, above the bar.
+        p.fill(&rect_els(0.0, -1.0 / 3.0, w, 1.0 / 3.0), line.map(|v| v as f32), alpha, false, t, mask);
+    }
+    if let Some(platter) = look.platter {
+        // The shadow, soft and mostly below: rings fading out (measured: about
+        // 4% darker just below the capsule, nothing 10 pt out).
+        for grow in [2.0f32, 4.0, 6.0, 8.0, 10.0] {
+            p.fill(&capsule(platter, grow, 3.0), [0.0, 0.0, 0.0, 0.009], alpha, false, t, mask);
+        }
+        let fill = if dark { [0.13, 0.13, 0.14, 1.0] } else { [0.992, 0.992, 0.992, 1.0] };
+        p.fill(&capsule(platter, 0.0, 0.0), fill, alpha, false, t, mask);
+        if let Some(sel) = look.buttons.iter().find(|b| b.selected) {
+            let lens = if dark { [0.25, 0.25, 0.26, 1.0] } else { [0.922, 0.922, 0.922, 1.0] };
+            p.fill(&capsule(sel.frame, 0.0, 0.0), lens, alpha, false, t, mask);
+        }
+    }
+    let _ = h;
+    for b in &look.buttons {
+        if let Some(mut img) = emu.render.images.get(&b.image).cloned() {
+            if img.look.is_template() {
+                img = tinted(&img, b.color.map(|v| v as f32));
+            }
+            let [x, y, iw, ih] = b.image_frame.map(|v| v as f32);
+            draw_contents(p, &img, [0.0, 0.0, 1.0, 1.0], iw, ih, alpha, &concat(&[1.0, 0.0, 0.0, 1.0, x, y], t), mask);
+        }
+        if !b.title.is_empty() {
+            let [x, y, _, _] = b.title_frame;
+            let (glyphs, _) = crate::textkit::line_glyphs(emu, &b.title, 10.0, b.title_weight, b.color, x, y + 9.6);
+            p.glyphs(&glyphs, alpha, t, mask);
+        }
+        if let Some(badge) = &b.badge {
+            p.fill(&capsule(badge.frame, 0.0, 0.0), badge.color.map(|v| v as f32), alpha, false, t, mask);
+            let (_, tw) = crate::textkit::line_glyphs(emu, &badge.text, badge.size, badge.weight, [1.0; 4], 0.0, 0.0);
+            let [bx, by, bw, bh] = badge.frame;
+            let (glyphs, _) = crate::textkit::line_glyphs(emu, &badge.text, badge.size, badge.weight, [1.0, 1.0, 1.0, 1.0], bx + (bw - tw) / 2.0, by + bh / 2.0 + badge.size * 0.35);
+            p.glyphs(&glyphs, alpha, t, mask);
+        }
+    }
+}
+
 fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w: f32, h: f32, above: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>, title_dx: f32, back_alpha: Option<f32>) {
     use crate::navigation::{BACK_LABEL_X, TITLE_SIZE, TITLE_WEIGHT};
     const TINT: [f64; 4] = [0.0, 0.478, 1.0, 1.0]; // systemBlue

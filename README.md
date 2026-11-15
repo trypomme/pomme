@@ -101,6 +101,18 @@ Debugging:
   activates, arrows adjust. In the desktop window it's published through AccessKit
   (NSAccessibility, UI Automation, AT-SPI) once a screen reader connects; its default action
   activates. `tests/accessibility.rs` checks the tree and actions a host gets.
+- Tab bars: `UITabBarController`, `UITabBar` and `UITabBarItem` (titles, images, selected
+  images, badges, system items, enabled, tint and unselected tint, the delegate's
+  should/did select, bar appearances), drawn by pomme in both designs and held to the iOS 26
+  Simulator's (tests/fixtures/tabbar, measured with 2 to 5 tabs): under Liquid Glass a
+  floating capsule with 94-pt buttons and a lens under the selected tab; before (iOS 18, or
+  `UIDesignRequiresCompatibility`) the full-width bar with grey unselected tabs. A tab's
+  content runs under the bar, which adds 49 pt to its bottom safe area. VoiceOver sees a tab
+  bar of tabs (selected or not; before iOS 26 a badge reads "3 items"), in the browser as a
+  `tablist` of `tab`s. SwiftUI's `TabView` shows its tabs the same way, both as views with
+  `.tabItem` and `.tag` and as iOS 18's `Tab`s by value, a tab able to hold a
+  `NavigationStack`; the selection binding follows the bar. `tests/tab_bar.rs` and
+  `tests/swiftui_tabs.rs`.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots
   (`--device list` lists them; the default is the iPhone 16e). `--shell` draws the

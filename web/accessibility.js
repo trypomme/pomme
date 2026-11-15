@@ -17,12 +17,12 @@ const Accessibility = (() => {
   const ACTIVATE = 0, INCREMENT = 1, DECREMENT = 2, FOCUS = 3;
   // Node roles → ARIA. Static text and plain elements are text, read as is.
   const ROLES = {
-    window: null, group: 'group', list: 'list', tabBar: 'toolbar', button: 'button', link: 'link', switch: 'switch',
+    window: null, group: 'group', list: 'list', tabBar: 'tablist', tab: 'tab', button: 'button', link: 'link', switch: 'switch',
     adjustable: 'slider', textField: 'textbox', searchField: 'searchbox', heading: 'heading', image: 'img',
     staticText: null, element: null,
   };
   // What a keyboard can reach with Tab, as on the web: what does something.
-  const ACTIONABLE = new Set(['button', 'link', 'switch', 'adjustable', 'textField', 'searchField']);
+  const ACTIONABLE = new Set(['button', 'tab', 'link', 'switch', 'adjustable', 'textField', 'searchField']);
   const TRAIT_NOT_ENABLED = 1 << 8, TRAIT_SELECTED = 1 << 3;
 
   let root = null;
@@ -112,7 +112,8 @@ const Accessibility = (() => {
     set(el, 'aria-level', n.role === 'heading' ? 2 : null);
     set(el, 'aria-checked', n.role === 'switch' ? String(n.value === '1') : null);
     set(el, 'aria-pressed', n.role === 'button' && n.traits & TRAIT_SELECTED ? 'true' : null);
-    set(el, 'aria-current', n.role !== 'button' && isElement && n.traits & TRAIT_SELECTED ? 'true' : null);
+    set(el, 'aria-selected', n.role === 'tab' ? String(!!(n.traits & TRAIT_SELECTED)) : null);
+    set(el, 'aria-current', n.role !== 'button' && n.role !== 'tab' && isElement && n.traits & TRAIT_SELECTED ? 'true' : null);
     set(el, 'aria-readonly', n.role === 'textField' || n.role === 'searchField' ? 'true' : null);
     if (n.role === 'adjustable') {
       // VoiceOver reads a slider's value as the app says it ("60%"); a number for the rest.
@@ -131,7 +132,7 @@ const Accessibility = (() => {
       text = n.value || '';
       set(el, 'aria-label', n.label);
     } else {
-      const extra = n.role === 'button' || n.role === 'link' || n.role === 'image' || n.role === 'heading' ? n.value : null;
+      const extra = n.role === 'button' || n.role === 'tab' || n.role === 'link' || n.role === 'image' || n.role === 'heading' ? n.value : null;
       set(el, 'aria-label', [n.label, extra].filter(Boolean).join(', ') || null);
     }
     if (text !== null) {

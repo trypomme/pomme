@@ -45,6 +45,13 @@ extension AnyView {
 
 // ---- if/else in a view builder ----
 
+extension _ConditionalContent {
+  /// One branch or the other, for SwiftUI's own conformances (tab content's).
+  package init(pommeStorage: Storage) {
+    self.storage = pommeStorage
+  }
+}
+
 // pomme: in extension SwiftUICore._ConditionalContent : SwiftUICore.View where TrueContent : SwiftUICore.View, FalseContent : SwiftUICore.View
 extension _ConditionalContent where TrueContent: View, FalseContent: View {
   // pomme: replaces extension SwiftUICore._ConditionalContent : SwiftUICore.View where TrueContent : SwiftUICore.View, FalseContent : SwiftUICore.View :: internal init(storage: SwiftUICore._ConditionalContent<TrueContent, FalseContent>.Storage)

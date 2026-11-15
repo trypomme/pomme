@@ -56,7 +56,7 @@ struct Item {
 
 #[derive(Clone, Default)]
 pub struct State {
-    parent: HashMap<u64, u64>,
+    pub(crate) parent: HashMap<u64, u64>,
     pub(crate) children: HashMap<u64, Vec<u64>>,
     navs: HashMap<u64, Nav>,
     /// Container view → its navigation controller.
@@ -242,19 +242,25 @@ fn nav_mut(emu: &mut Emu, nc: u64) -> &mut Nav {
 // ---- containment ----
 
 /// An appearance callback (`viewWillAppear:` …) on `vc` and, as UIKit forwards
-/// them, its visible children: a navigation controller's top, every child of
-/// other containers.
+/// them, its visible children: a navigation controller's top, a tab bar
+/// controller's selected tab, every child of other containers.
 pub fn appearance(emu: &mut Emu, vc: u64, sel: &str, animated: bool) -> Result<()> {
     send(emu, vc, sel, &[animated as u64])?;
     let children = emu.nav.children.get(&vc).cloned().unwrap_or_default();
-    let visible: Vec<u64> = if emu.nav.navs.contains_key(&vc) { emu.nav.navs[&vc].stack.last().copied().into_iter().collect() } else { children };
+    let visible: Vec<u64> = if emu.nav.navs.contains_key(&vc) {
+        emu.nav.navs[&vc].stack.last().copied().into_iter().collect()
+    } else if let Some(selected) = crate::tabbar::selected_child(emu, vc) {
+        selected.into_iter().collect()
+    } else {
+        children
+    };
     for c in visible {
         appearance(emu, c, sel, animated)?;
     }
     Ok(())
 }
 
-fn add_child(emu: &mut Emu, parent: u64, child: u64) -> Result<()> {
+pub(crate) fn add_child(emu: &mut Emu, parent: u64, child: u64) -> Result<()> {
     if child == 0 || emu.nav.parent.get(&child) == Some(&parent) {
         return Ok(());
     }
@@ -263,6 +269,11 @@ fn add_child(emu: &mut Emu, parent: u64, child: u64) -> Result<()> {
     emu.nav.parent.insert(child, parent);
     emu.nav.children.entry(parent).or_default().push(child);
     Ok(())
+}
+
+/// Take a child out of its parent's children.
+pub(crate) fn remove_child(emu: &mut Emu, child: u64) -> Result<()> {
+    remove_from_parent(emu, child)
 }
 
 fn remove_from_parent(emu: &mut Emu, child: u64) -> Result<()> {
@@ -1095,6 +1106,19 @@ fn vc_next_responder(emu: &mut Emu) -> Result<()> {
 pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
     let (w, h) = crate::orientation::screen(emu);
     let [mut top, left, bottom, right] = crate::orientation::safe_area(emu);
+    // Inside a tab bar controller (not its bar), a visible tab bar covers the bottom.
+    let mut bottom = bottom;
+    let (mut cur, mut below) = (v, 0);
+    while cur != 0 {
+        if let Some(bar) = crate::tabbar::container_bar(emu, cur) {
+            if bar != below && !view(emu, bar).hidden {
+                bottom += crate::tabbar::BAR_HEIGHT;
+            }
+            break;
+        }
+        below = cur;
+        cur = view(emu, cur).superview;
+    }
     // Inside a navigation controller with a visible bar, the bar covers more.
     let mut cur = v;
     while cur != 0 {
@@ -2031,7 +2055,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let p = e.nav.presentations.iter().find(|p| p.presented == root).map_or(0, |p| p.presenter);
         ret(e, p)
     }),
-    (VC, false, "tabBarController", |e| ret(e, 0)),
     (VC, false, "splitViewController", |e| ret(e, 0)),
     (VC, false, "beginAppearanceTransition:animated:", |_| Ok(())),
     (VC, false, "nibName", |e| ret(e, 0)),

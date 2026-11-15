@@ -38,6 +38,8 @@ pub const TRAIT_HEADER: u64 = 1 << 16;
 /// UIKit's private trait for text you can edit (`UITextField`'s traits carry
 /// it on iOS, and VoiceOver says "text field" for it).
 pub const TRAIT_TEXT_ENTRY: u64 = 1 << 18;
+/// UIKit's private trait for a tab bar's buttons (VoiceOver says "tab").
+pub const TRAIT_TAB: u64 = 1 << 28;
 
 /// `UIAccessibilityContainerTypeList`.
 const CONTAINER_LIST: u64 = 2;
@@ -68,15 +70,19 @@ pub struct Props {
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub props: HashMap<u64, Props>,
-    /// A navigation bar's elements (its back button, its title), kept so they
-    /// stay the same objects while the bar shows them.
-    bars: HashMap<(u64, BarPart), u64>,
+    /// Elements of what pomme draws itself (a navigation bar's back button and
+    /// title, a tab bar's buttons) by (container, part), kept so they stay the
+    /// same objects while they're shown.
+    drawn: HashMap<(u64, u32), u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum BarPart {
-    Back,
-    Title,
+/// An element of something pomme draws: its part (a key within its container), label, value, traits and frame there.
+struct Part {
+    key: u32,
+    label: String,
+    value: Option<String>,
+    traits: u64,
+    frame: [f64; 4],
 }
 
 fn props(emu: &Emu, o: u64) -> Props {
@@ -136,6 +142,9 @@ fn string_message(emu: &mut Emu, o: u64, sel: &str) -> Result<u64> {
 }
 
 fn default_label(emu: &mut Emu, o: u64) -> Result<u64> {
+    if is_kind(emu, o, "UITabBar")? {
+        return foundation::new_nsstring(emu, "Tab Bar");
+    }
     if is_kind(emu, o, "UILabel")? {
         return string_message(emu, o, "text");
     }
@@ -498,6 +507,9 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UINavigationBar", false, "accessibilityElementCount", bar_element_count),
     ("UINavigationBar", false, "accessibilityElementAtIndex:", bar_element_at_index),
     ("UINavigationBar", false, "indexOfAccessibilityElement:", bar_index_of_element),
+    ("UITabBar", false, "accessibilityElementCount", bar_element_count),
+    ("UITabBar", false, "accessibilityElementAtIndex:", bar_element_at_index),
+    ("UITabBar", false, "indexOfAccessibilityElement:", bar_index_of_element),
     (E, false, "initWithAccessibilityContainer:", element_init_with_container),
     (E, false, "accessibilityContainer", container),
     (E, false, "setAccessibilityContainer:", set_container),
@@ -528,7 +540,7 @@ fn bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
     if let Some(b) = &look.back {
         // The chevron alone reads as "Back", as on iOS.
         let label = b.label.clone().unwrap_or_else(|| "Back".into());
-        parts.push((BarPart::Back, label, TRAIT_BUTTON, [b.hit.0, 0.0, b.hit.1, look.row]));
+        parts.push(Part { key: 0, label, value: None, traits: TRAIT_BUTTON, frame: [b.hit.0, 0.0, b.hit.1, look.row] });
     }
     if !look.title.is_empty() {
         let frame = if look.large {
@@ -538,34 +550,33 @@ fn bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
             let tw = crate::navigation::text_width(emu, &look.title, crate::navigation::TITLE_WEIGHT).min(w);
             [(w - tw) / 2.0, 0.0, tw, look.row]
         };
-        parts.push((BarPart::Title, look.title.clone(), TRAIT_HEADER, frame));
+        parts.push(Part { key: 1, label: look.title.clone(), value: None, traits: TRAIT_HEADER, frame });
     }
+    drawn_elements(emu, bar, parts)
+}
+
+/// The UIAccessibilityElements for parts of something pomme draws in
+/// `container`, updated to say what they show now.
+fn drawn_elements(emu: &mut Emu, container: u64, parts: Vec<Part>) -> Result<Vec<u64>> {
     let mut out = Vec::new();
-    for (part, label, traits, frame) in parts {
-        let el = match emu.ax.bars.get(&(bar, part)) {
+    for part in parts {
+        let el = match emu.ax.drawn.get(&(container, part.key)) {
             Some(&el) => el,
             None => {
                 let cls = objc::host_class(emu, E)?;
                 let el = objc::create_instance(emu, cls, 0)?;
-                emu.ax.bars.insert((bar, part), el);
+                emu.ax.drawn.insert((container, part.key), el);
                 el
             }
         };
-        let old = props(emu, el).label;
-        let same = old != 0 && foundation::nsstring(emu, old).is_ok_and(|s| s == label);
-        if !same {
-            let s = foundation::new_nsstring(emu, &label)?;
-            if old != 0 {
-                objc::objc_release_obj(emu, old)?;
-            }
-            props_mut(emu, el).label = s;
-        }
+        set_string(emu, el, |p| &mut p.label, Some(&part.label))?;
+        set_string(emu, el, |p| &mut p.value, part.value.as_deref())?;
         let p = props(emu, el);
-        if p.traits != Some(traits) || p.container != bar || p.frame_in_container != Some(frame) || p.is_element != Some(true) {
+        if p.traits != Some(part.traits) || p.container != container || p.frame_in_container != Some(part.frame) || p.is_element != Some(true) {
             let p = props_mut(emu, el);
-            p.traits = Some(traits);
-            p.container = bar;
-            p.frame_in_container = Some(frame);
+            p.traits = Some(part.traits);
+            p.container = container;
+            p.frame_in_container = Some(part.frame);
             p.is_element = Some(true);
         }
         out.push(el);
@@ -573,12 +584,67 @@ fn bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
     Ok(out)
 }
 
+/// Set a string property of a drawn element, if it changed.
+fn set_string(emu: &mut Emu, el: u64, slot: fn(&mut Props) -> &mut u64, text: Option<&str>) -> Result<()> {
+    let old = *slot(&mut props(emu, el));
+    let same = match text {
+        None => old == 0,
+        Some(t) => old != 0 && foundation::nsstring(emu, old).is_ok_and(|s| s == t),
+    };
+    if same {
+        return Ok(());
+    }
+    let new = match text {
+        Some(t) => foundation::new_nsstring(emu, t)?,
+        None => 0,
+    };
+    if old != 0 {
+        objc::objc_release_obj(emu, old)?;
+    }
+    *slot(props_mut(emu, el)) = new;
+    Ok(())
+}
+
+/// What a tab bar shows accessibility, as UIKit's tab buttons say it: each
+/// tab a button (and a tab), selected or not, by its title; before iOS 26 a
+/// badge reads as its value ("3 items"), as measured.
+fn tab_bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
+    let glass = emu.system.liquid_glass();
+    let mut parts = Vec::new();
+    for (i, b) in crate::tabbar::buttons(emu, bar)?.into_iter().enumerate() {
+        let mut traits = TRAIT_BUTTON | TRAIT_TAB;
+        if b.selected {
+            traits |= TRAIT_SELECTED;
+        }
+        if !b.enabled {
+            traits |= TRAIT_NOT_ENABLED;
+        }
+        let value = if glass {
+            None
+        } else {
+            b.badge.map(|badge| match badge.text.parse::<i64>() {
+                Ok(1) => "1 item".to_string(),
+                Ok(n) => format!("{n} items"),
+                Err(_) => badge.text,
+            })
+        };
+        parts.push(Part { key: i as u32, label: b.title, value, traits, frame: b.frame });
+    }
+    drawn_elements(emu, bar, parts)
+}
+
 /// The bar's own elements, unless the app gave it some.
 fn bar_children(emu: &mut Emu, bar: u64) -> Result<Option<Vec<u64>>> {
-    if props(emu, bar).elements != 0 || !emu.nav.bars.contains_key(&bar) {
+    if props(emu, bar).elements != 0 {
         return Ok(None);
     }
-    Ok(Some(bar_elements(emu, bar)?))
+    if emu.nav.bars.contains_key(&bar) {
+        return Ok(Some(bar_elements(emu, bar)?));
+    }
+    if crate::tabbar::is_bar(emu, bar) {
+        return Ok(Some(tab_bar_elements(emu, bar)?));
+    }
+    Ok(None)
 }
 
 fn bar_element_count(emu: &mut Emu) -> Result<()> {
@@ -823,24 +889,29 @@ pub enum Role {
     Heading,
     Image,
     StaticText,
+    /// A tab bar (`UIAccessibilityTraitTabBar`, or UIKit's UITabBar): it holds tabs.
     TabBar,
+    /// A tab in a tab bar: selected or not.
+    Tab,
     /// An element with no more specific trait.
     Element,
 }
 
 impl Role {
-    fn of(e: &Element, switch: bool) -> Role {
+    fn of(e: &Element, switch: bool, tab_bar: bool) -> Role {
         let t = e.traits;
         if !e.is_element {
             if e.depth == 0 {
                 Role::Window
-            } else if t & TRAIT_TAB_BAR != 0 {
+            } else if t & TRAIT_TAB_BAR != 0 || tab_bar {
                 Role::TabBar
             } else if e.container_type == CONTAINER_LIST {
                 Role::List
             } else {
                 Role::Group
             }
+        } else if t & TRAIT_TAB != 0 {
+            Role::Tab
         } else if t & TRAIT_SEARCH_FIELD != 0 {
             Role::SearchField
         } else if t & TRAIT_TEXT_ENTRY != 0 {
@@ -977,13 +1048,15 @@ pub fn tree(emu: &mut Emu) -> Result<Vec<Node>> {
             i = ends[i]; // not this, nor anything in it
             continue;
         }
-        let keep = e.depth == 0 || e.is_element || e.container_type != 0 || e.traits & TRAIT_TAB_BAR != 0;
+        // (UIKit's UITabBar doesn't carry the tab bar trait; VoiceOver knows it as one.)
+        let tab_bar = !e.is_element && is_kind(emu, e.object, "UITabBar")?;
+        let keep = e.depth == 0 || e.is_element || e.container_type != 0 || e.traits & TRAIT_TAB_BAR != 0 || tab_bar;
         if keep {
             let switch = e.is_element && is_kind(emu, e.object, "UISwitch")?;
             out.push(Node {
                 id: e.object,
                 parent: path.last().map(|&(_, id)| id),
-                role: Role::of(e, switch),
+                role: Role::of(e, switch, tab_bar),
                 label: e.label.clone(),
                 value: e.value.clone(),
                 hint: e.hint.clone(),

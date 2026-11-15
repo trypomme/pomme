@@ -18,8 +18,10 @@ class Node: LayoutProxy {
   /// Its focus, if a FocusState follows it (`.focused`): whether it has it,
   /// and taking or giving it up.
   var focus: (get: () -> Bool, set: (Bool) -> Void)?
-  /// What it's known by (`.tag(_:)`): a picker's option.
+  /// What it's known by (`.tag(_:)`): a picker's option, a tab.
   var tag: AnyHashable?
+  /// What a tab bar shows for it, if it's a tab (`.tabItem`, a `Tab`'s title and image).
+  var tabItem: TabItem?
 
   init(path: ViewPath) {
     self.path = path
