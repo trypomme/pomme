@@ -5,3 +5,8 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
+
+# pomme interprets the app one instruction at a time: unoptimized, the tests
+# run about 5x slower, while level 1 costs only a couple of seconds per rebuild.
+[profile.dev]
+opt-level = 1

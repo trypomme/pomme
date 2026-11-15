@@ -217,10 +217,10 @@ mod tests {
     fn memory(seed: u64) -> Memory {
         let mut mem = Memory::default();
         mem.map(BASE, SIZE, Prot::RW, "data").unwrap();
+        // One write of the whole region: 8 bytes at a time is slow in unoptimized builds.
         let mut r = Rng(seed);
-        for a in (BASE..BASE + SIZE).step_by(8) {
-            mem.write_u64(a, r.next()).unwrap();
-        }
+        let bytes: Vec<u8> = (0..SIZE / 8).flat_map(|_| r.next().to_le_bytes()).collect();
+        mem.write(BASE, &bytes).unwrap();
         mem
     }
 
@@ -278,7 +278,8 @@ mod tests {
             *checked.entry(kind).or_default() += 1;
             let seed = r.next();
             let (mut a, mut b) = (cpu(&mut Rng(seed | 1)), cpu(&mut Rng(seed | 1)));
-            let (mut ma, mut mb) = (memory(seed), memory(seed));
+            let mut ma = memory(seed);
+            let mut mb = ma.clone();
             let ra = a.exec(insn, &mut ma);
             let rb = b.exec_op(&op, &mut mb);
             assert_eq!(format!("{ra:?}"), format!("{rb:?}"), "{insn:#010x} {op:?}");
