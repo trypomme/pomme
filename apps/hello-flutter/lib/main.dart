@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'firebase_page.dart';
-
 // The same scene as apps/hello-skia, so Flutter (Impeller on Metal) and React
 // Native Skia (Ganesh on Metal) can be compared with each other and with the
 // iOS Simulator: a dark slate rounded square with a rose → amber gradient
@@ -18,7 +16,7 @@ class HelloApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       home: const HelloPage(),
-      routes: {'/list': (_) => const ListPage(), '/firebase': (_) => const FirebasePage()},
+      routes: {'/list': (_) => const ListPage()},
     );
   }
 }

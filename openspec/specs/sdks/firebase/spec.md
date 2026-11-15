@@ -17,8 +17,8 @@ Words used here:
 - **Offline**: no network, as in tests. Modules that need the server then
   report errors, but the app keeps running.
 
-Test apps: hello-expo's `pommehello:///firebase` screen, hello-flutter's
-`pommeflutter:///firebase` page and hello-swiftui. Probe for what the SDKs
+Test apps: hello-expo's `pommehello:///firebase` screen, hello-flutter-firebase
+(which opens on its Firebase page) and hello-swiftui. Probe for what the SDKs
 call at launch: `crates/pomme-cli/tests/fixtures/sdkstartup/main.m`.
 
 ## Requirements
@@ -82,10 +82,10 @@ error and the app SHALL keep running.
 ### Requirement: The same SDK from every framework
 
 The same modules SHALL run from React Native Firebase in hello-expo, from
-FlutterFire in hello-flutter, and from Swift in hello-swiftui, one line
+FlutterFire in hello-flutter-firebase, and from Swift in hello-swiftui, one line
 each.
 
 #### Scenario: Flutter page
 
-- **WHEN** hello-flutter opens `pommeflutter:///firebase` with a live network
+- **WHEN** hello-flutter-firebase starts with a live network
 - **THEN** it shows one line each for Core, Analytics, Crashlytics, Auth and Firestore

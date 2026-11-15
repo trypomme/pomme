@@ -5,7 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/material.dart';
 
-// Firebase through FlutterFire (the pommeflutter:///firebase link): the
+// Firebase through FlutterFire (the page this app opens on): the
 // native Firebase Apple SDK, configured from GoogleService-Info.plist. Each
 // line runs one module and shows what came back, as hello-expo's screen does.
 
