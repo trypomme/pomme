@@ -367,24 +367,24 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
 /// Which of iOS's typesetters text is set as: TextKit's (NSLayoutManager,
 /// UITextView) or CoreText's (UILabel, NSString drawing, CTFramesetter).
 /// They differ in one rule (fixtures/intltext, `ct.*` against `ja.*`): on a
-/// Japanese phone CoreText doesn't count the space before an opening bracket
-/// that starts a line when it fits the line, so the line can run over by
-/// that much; TextKit counts it.
+/// Chinese or Japanese phone CoreText doesn't count the space before an
+/// opening bracket that starts a line when it fits the line, so the line can
+/// run over by that much; TextKit counts it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rules {
-    /// iOS's Japanese punctuation spacing (a Japanese phone).
-    pub japanese: bool,
+    /// How the phone sets CJK text: its punctuation spacing (cjk.rs).
+    pub cjk: crate::cjk::Profile,
     /// CoreText's rule for a line's leading space.
     pub coretext: bool,
 }
 
 /// The rules for text set by `coretext` (or TextKit) on this phone.
 pub(crate) fn rules(emu: &mut Emu, coretext: bool) -> Result<Rules> {
-    Ok(Rules { japanese: crate::cjk::japanese_spacing(emu)?, coretext })
+    Ok(Rules { cjk: crate::cjk::profile(emu)?, coretext })
 }
 
 /// Lay out UTF-16 text with per-run fonts; `adv(ch, font)` measures a
-/// character; `rules` says which typesetter's rules (and whether Japanese
+/// character; `rules` says which typesetter's rules (and which CJK
 /// punctuation spacing) apply.
 pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -> f64, rules: Rules, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
     let mut items = Vec::new();
@@ -413,20 +413,19 @@ pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -
         items.push(Item { unit, units, ch, adv: a, lead: 0.0, size: font.size, face: font.face, break_before: false, metrics, para });
         unit += units;
     }
-    if rules.japanese {
-        for i in 1..items.len() {
-            let (a, b) = (&items[i - 1], &items[i]);
-            if a.face != 0 || b.face != 0 {
-                continue;
-            }
-            if let Some((em, leading)) = crate::cjk::pair_spacing(a.ch, b.ch) {
-                if leading {
-                    let pts = em * b.size;
-                    items[i].adv += pts;
-                    items[i].lead += pts;
-                } else {
-                    items[i - 1].adv += em * a.size;
-                }
+    // CJK punctuation spacing, as this phone sets it.
+    for i in 1..items.len() {
+        let (a, b) = (&items[i - 1], &items[i]);
+        if a.face != 0 || b.face != 0 {
+            continue;
+        }
+        if let Some((em, leading)) = crate::cjk::pair_spacing(a.ch, b.ch, rules.cjk) {
+            if leading {
+                let pts = em * b.size;
+                items[i].adv += pts;
+                items[i].lead += pts;
+            } else {
+                items[i - 1].adv += em * a.size;
             }
         }
     }

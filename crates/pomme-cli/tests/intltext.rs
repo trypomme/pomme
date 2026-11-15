@@ -1,9 +1,10 @@
 //! Text in other scripts (tests/fixtures/intltext/main.m): the fonts iOS
 //! falls back to for Chinese, Japanese and Korean, held to what the iOS 26
 //! Simulator reports (fixtures/intltext/ios26-<language>.txt, recorded with
-//! scripts/swiftui/metrics-simulator.sh, VARIANT=en and VARIANT=ja): each
+//! scripts/swiftui/metrics-simulator.sh, VARIANT=en, ja, ko, zh-Hans and zh-Hant): each
 //! CJK character's advance, and where TextKit and CoreText (as UILabel sets
-//! text) break a Japanese paragraph at five widths. Latin letters are left out of the widths: pomme draws
+//! text) break a Japanese paragraph at five widths, on phones set to five
+//! languages. Latin letters are left out of the widths: pomme draws
 //! Inter in place of SF Pro. Built with the iOS SDK; skipped without Xcode or
 //! the sysroot.
 
@@ -112,6 +113,27 @@ fn differences(variant: &str, languages: &[&str], region: &str) -> Option<Vec<St
 #[test]
 fn japanese_on_a_japanese_phone() {
     let Some(wrong) = differences("ja", &["ja-JP"], "JP") else { return };
+    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+}
+
+/// On a Korean phone only the widths: iOS sets lines there by Apple SD
+/// Gothic Neo's coverage and line height (add-text-in-other-scripts, task 2.9).
+#[test]
+fn japanese_on_a_korean_phone() {
+    let Some(wrong) = differences("ko", &["ko-KR"], "KR") else { return };
+    let wrong: Vec<_> = wrong.into_iter().filter(|w| w.starts_with("width.")).collect();
+    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+}
+
+#[test]
+fn japanese_on_a_simplified_chinese_phone() {
+    let Some(wrong) = differences("zh-Hans", &["zh-Hans-CN"], "CN") else { return };
+    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+}
+
+#[test]
+fn japanese_on_a_traditional_chinese_phone() {
+    let Some(wrong) = differences("zh-Hant", &["zh-Hant-TW"], "TW") else { return };
     assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
 }
 

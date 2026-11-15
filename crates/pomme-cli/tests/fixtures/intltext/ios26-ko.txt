@@ -1,0 +1,328 @@
+# The intltext fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+METRIC ja.180.line0 0.00 0.00 177.62 20.29
+METRIC ja.180.line1 0.00 20.29 176.46 17.51
+METRIC ja.180.line2 0.00 37.80 174.90 17.51
+METRIC ja.180.line3 0.00 55.31 170.65 20.29
+METRIC ja.180.line4 0.00 75.59 175.95 20.29
+METRIC ja.180.line5 0.00 95.88 176.46 17.51
+METRIC ja.180.line6 0.00 113.39 71.96 17.51
+METRIC ja.200.line0 0.00 0.00 192.33 20.29
+METRIC ja.200.line1 0.00 20.29 191.17 17.51
+METRIC ja.200.line2 0.00 37.80 186.12 17.51
+METRIC ja.200.line3 0.00 55.31 190.99 20.29
+METRIC ja.200.line4 0.00 75.59 188.51 20.29
+METRIC ja.200.line5 0.00 95.88 174.90 17.51
+METRIC ja.220.line0 0.00 0.00 207.03 20.29
+METRIC ja.220.line1 0.00 20.29 205.87 17.51
+METRIC ja.220.line2 0.00 37.80 208.91 17.51
+METRIC ja.220.line3 0.00 55.31 181.33 20.29
+METRIC ja.220.line4 0.00 75.59 219.49 20.29
+METRIC ja.220.line5 0.00 95.88 101.37 17.51
+METRIC ja.250.line0 0.00 0.00 236.44 20.29
+METRIC ja.250.line1 0.00 20.29 248.42 17.51
+METRIC ja.250.line2 0.00 37.80 244.18 20.29
+METRIC ja.250.line3 0.00 58.08 249.48 20.29
+METRIC ja.250.line4 0.00 78.37 145.49 17.51
+METRIC ja.300.line0 0.00 0.00 295.26 20.29
+METRIC ja.300.line1 0.00 20.29 274.35 17.51
+METRIC ja.300.line2 0.00 37.80 291.27 20.29
+METRIC ja.300.line3 0.00 58.08 263.13 17.51
+METRIC label 20.00 120.00 191.33 122.00
+VALUE advance.arabic 4.05
+VALUE advance.fullwidthComma 11.58
+VALUE advance.hangul 14.71
+VALUE advance.hebrew 10.58
+VALUE advance.hiragana 14.71
+VALUE advance.ideographicStop 13.14
+VALUE advance.kanji 14.71
+VALUE advance.katakana 14.71
+VALUE advance.thai 10.30
+VALUE cascade.ar .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.en .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.he .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.ja .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleJapaneseFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.ko .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.th .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.zh-Hans .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleSimplifiedChineseFont,.AppleKoreanFont,.AppleTraditionalChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE cascade.zh-Hant .AppleSystemFallback,.Apple Color Emoji UI,.SF Georgian,Helvetica Neue,.Apple Symbols Fallback,.SF Arabic,.AppleUrduFont,.AppleTraditionalChineseFont,.AppleKoreanFont,.AppleSimplifiedChineseFont,.AppleHongKongChineseFont,.AppleMacaoChineseFont,.AppleJapaneseFont,Noto Sans Myanmar,Noto Sans Zawgyi,.ThonburiUI,.SF Hebrew,.SF Armenian,.AppleIndicFont,Kohinoor Devanagari,Kailasa,Kohinoor Bangla,Kohinoor Gujarati,Mukta Mahee,Noto Sans Kannada,Khmer Sangam MN,Lao Sangam MN,Malayalam Sangam MN,Noto Sans Oriya,Sinhala Sangam MN,Tamil Sangam MN,Kohinoor Telugu,Noto Sans Armenian,Euphemia UCAS,Menlo,Apple Symbols,Arial,STIX Two Math,.Hiragino Kaku Gothic Interface,Helvetica Neue,Kefa III,Galvji,.PhoneFallback
+VALUE ct.180.line0.text 日本語の文章は、単語の間
+VALUE ct.180.line0.width 175.478
+VALUE ct.180.line0.x 0.000
+VALUE ct.180.line1.text に空白がなくても行の途中
+VALUE ct.180.line1.width 176.460
+VALUE ct.180.line1.x 0.000
+VALUE ct.180.line2.text で折り返されます。小さい
+VALUE ct.180.line2.width 174.896
+VALUE ct.180.line2.x 0.000
+VALUE ct.180.line3.text 「ょ」や「っ」、句読点は行の
+VALUE ct.180.line3.width 168.508
+VALUE ct.180.line3.x 0.000
+VALUE ct.180.line4.text 頭に来ません。Pommeで
+VALUE ct.180.line4.width 175.954
+VALUE ct.180.line4.x 0.000
+VALUE ct.180.line5.text も同じように折り返される
+VALUE ct.180.line5.width 176.460
+VALUE ct.180.line5.x 0.000
+VALUE ct.180.line6.text はずです。
+VALUE ct.180.line6.width 71.961
+VALUE ct.180.line6.x 0.000
+VALUE ct.180.lines 7
+VALUE ct.200.line0.text 日本語の文章は、単語の間に
+VALUE ct.200.line0.width 190.183
+VALUE ct.200.line0.x 0.000
+VALUE ct.200.line1.text 空白がなくても行の途中で折
+VALUE ct.200.line1.width 191.165
+VALUE ct.200.line1.x 0.000
+VALUE ct.200.line2.text り返されます。小さい「ょ」や
+VALUE ct.200.line2.width 186.116
+VALUE ct.200.line2.x 0.000
+VALUE ct.200.line3.text 「っ」、句読点は行の頭に来ま
+VALUE ct.200.line3.width 188.844
+VALUE ct.200.line3.x 0.000
+VALUE ct.200.line4.text せん。Pommeでも同じよう
+VALUE ct.200.line4.width 188.513
+VALUE ct.200.line4.x 0.000
+VALUE ct.200.line5.text に折り返されるはずです。
+VALUE ct.200.line5.width 174.896
+VALUE ct.200.line5.x 0.000
+VALUE ct.200.lines 6
+VALUE ct.220.line0.text 日本語の文章は、単語の間に空白
+VALUE ct.220.line0.width 219.593
+VALUE ct.220.line0.x 0.000
+VALUE ct.220.line1.text がなくても行の途中で折り返さ
+VALUE ct.220.line1.width 205.870
+VALUE ct.220.line1.x 0.000
+VALUE ct.220.line2.text れます。小さい「ょ」や「っ」、句読
+VALUE ct.220.line2.width 211.059
+VALUE ct.220.line2.x 0.000
+VALUE ct.220.line3.text 点は行の頭に来ません。
+VALUE ct.220.line3.width 162.337
+VALUE ct.220.line3.x 0.000
+VALUE ct.220.line4.text Pommeでも同じように折り返さ
+VALUE ct.220.line4.width 219.487
+VALUE ct.220.line4.x 0.000
+VALUE ct.220.line5.text れるはずです。
+VALUE ct.220.line5.width 101.371
+VALUE ct.220.line5.x 0.000
+VALUE ct.220.lines 6
+VALUE ct.250.line0.text 日本語の文章は、単語の間に空白がな
+VALUE ct.250.line0.width 249.003
+VALUE ct.250.line0.x 0.000
+VALUE ct.250.line1.text くても行の途中で折り返されます。小
+VALUE ct.250.line1.width 248.421
+VALUE ct.250.line1.x 0.000
+VALUE ct.250.line2.text さい「ょ」や「っ」、句読点は行の頭に来
+VALUE ct.250.line2.width 244.179
+VALUE ct.250.line2.x 0.000
+VALUE ct.250.line3.text ません。Pommeでも同じように折り
+VALUE ct.250.line3.width 247.333
+VALUE ct.250.line3.x 0.000
+VALUE ct.250.line4.text 返されるはずです。
+VALUE ct.250.line4.width 130.781
+VALUE ct.250.line4.x 0.000
+VALUE ct.250.lines 5
+VALUE ct.300.line0.text 日本語の文章は、単語の間に空白がなくても
+VALUE ct.300.line0.width 293.118
+VALUE ct.300.line0.x 0.000
+VALUE ct.300.line1.text 行の途中で折り返されます。小さい「ょ」や
+VALUE ct.300.line1.width 274.346
+VALUE ct.300.line1.x 0.000
+VALUE ct.300.line2.text 「っ」、句読点は行の頭に来ません。Pomme
+VALUE ct.300.line2.width 289.127
+VALUE ct.300.line2.x 0.000
+VALUE ct.300.line3.text でも同じように折り返されるはずです。
+VALUE ct.300.line3.width 263.126
+VALUE ct.300.line3.x 0.000
+VALUE ct.300.lines 4
+VALUE font.arabic .SF Arabic
+VALUE font.fullwidthComma .Apple SD Gothic NeoI
+VALUE font.hangul .Apple SD Gothic NeoI
+VALUE font.hebrew .SF Hebrew
+VALUE font.hiragana .Apple SD Gothic NeoI
+VALUE font.ideographicStop .Apple SD Gothic NeoI
+VALUE font.kanji .Apple SD Gothic NeoI
+VALUE font.katakana .Apple SD Gothic NeoI
+VALUE font.thai .ThonburiUI
+VALUE ja.180.line0.text 日本語の文章は、単語の間
+VALUE ja.180.line1.text に空白がなくても行の途中
+VALUE ja.180.line2.text で折り返されます。小さい
+VALUE ja.180.line3.text 「ょ」や「っ」、句読点は行の
+VALUE ja.180.line4.text 頭に来ません。Pommeで
+VALUE ja.180.line5.text も同じように折り返される
+VALUE ja.180.line6.text はずです。
+VALUE ja.180.lines 7
+VALUE ja.200.line0.text 日本語の文章は、単語の間に
+VALUE ja.200.line1.text 空白がなくても行の途中で折
+VALUE ja.200.line2.text り返されます。小さい「ょ」や
+VALUE ja.200.line3.text 「っ」、句読点は行の頭に来ま
+VALUE ja.200.line4.text せん。Pommeでも同じよう
+VALUE ja.200.line5.text に折り返されるはずです。
+VALUE ja.200.lines 6
+VALUE ja.220.line0.text 日本語の文章は、単語の間に空
+VALUE ja.220.line1.text 白がなくても行の途中で折り返
+VALUE ja.220.line2.text されます。小さい「ょ」や「っ」、句
+VALUE ja.220.line3.text 読点は行の頭に来ません。
+VALUE ja.220.line4.text Pommeでも同じように折り返さ
+VALUE ja.220.line5.text れるはずです。
+VALUE ja.220.lines 6
+VALUE ja.250.line0.text 日本語の文章は、単語の間に空白が
+VALUE ja.250.line1.text なくても行の途中で折り返されます。
+VALUE ja.250.line2.text 小さい「ょ」や「っ」、句読点は行の頭に
+VALUE ja.250.line3.text 来ません。Pommeでも同じように折
+VALUE ja.250.line4.text り返されるはずです。
+VALUE ja.250.lines 5
+VALUE ja.300.line0.text 日本語の文章は、単語の間に空白がなくても
+VALUE ja.300.line1.text 行の途中で折り返されます。小さい「ょ」や
+VALUE ja.300.line2.text 「っ」、句読点は行の頭に来ません。Pomme
+VALUE ja.300.line3.text でも同じように折り返されるはずです。
+VALUE ja.300.lines 4
+VALUE pair.U+0061.U+0031 -0.664
+VALUE width.U+0050 10.368
+VALUE width.U+0065 9.280
+VALUE width.U+006D 14.360
+VALUE width.U+006F 9.612
+VALUE width.U+2025 11.339
+VALUE width.U+2026 13.248
+VALUE width.U+3000 14.382
+VALUE width.U+3001 11.577
+VALUE width.U+3002 13.141
+VALUE width.U+3003 8.517
+VALUE width.U+3005 16.126
+VALUE width.U+3008 7.463
+VALUE width.U+3009 7.616
+VALUE width.U+300A 7.684
+VALUE width.U+300B 7.701
+VALUE width.U+300C 5.610
+VALUE width.U+300D 5.610
+VALUE width.U+300E 5.797
+VALUE width.U+300F 5.763
+VALUE width.U+3010 5.984
+VALUE width.U+3011 6.103
+VALUE width.U+3014 5.491
+VALUE width.U+3015 5.729
+VALUE width.U+301C 14.382
+VALUE width.U+3041 14.705
+VALUE width.U+3042 14.705
+VALUE width.U+3043 14.705
+VALUE width.U+3044 14.705
+VALUE width.U+3045 14.705
+VALUE width.U+3046 14.705
+VALUE width.U+3047 14.705
+VALUE width.U+3048 14.705
+VALUE width.U+3049 14.705
+VALUE width.U+304A 14.705
+VALUE width.U+304B 14.705
+VALUE width.U+304C 14.705
+VALUE width.U+304D 14.705
+VALUE width.U+304F 14.705
+VALUE width.U+3051 14.705
+VALUE width.U+3053 14.705
+VALUE width.U+3055 14.705
+VALUE width.U+3058 14.705
+VALUE width.U+3059 14.705
+VALUE width.U+305A 14.705
+VALUE width.U+305B 14.705
+VALUE width.U+3063 14.705
+VALUE width.U+3066 14.705
+VALUE width.U+3067 14.705
+VALUE width.U+306A 14.705
+VALUE width.U+306B 14.705
+VALUE width.U+306E 14.705
+VALUE width.U+306F 14.705
+VALUE width.U+307E 14.705
+VALUE width.U+3082 14.705
+VALUE width.U+3083 14.705
+VALUE width.U+3084 14.705
+VALUE width.U+3085 14.705
+VALUE width.U+3087 14.705
+VALUE width.U+3088 14.705
+VALUE width.U+308A 14.705
+VALUE width.U+308B 14.705
+VALUE width.U+308C 14.705
+VALUE width.U+308E 14.705
+VALUE width.U+3093 14.705
+VALUE width.U+309D 16.126
+VALUE width.U+309E 16.126
+VALUE width.U+30A1 14.705
+VALUE width.U+30A2 14.705
+VALUE width.U+30A3 14.705
+VALUE width.U+30A4 14.705
+VALUE width.U+30A5 14.705
+VALUE width.U+30A6 14.705
+VALUE width.U+30A7 14.705
+VALUE width.U+30A8 14.705
+VALUE width.U+30A9 14.705
+VALUE width.U+30AA 14.705
+VALUE width.U+30AB 14.705
+VALUE width.U+30AD 14.705
+VALUE width.U+30AF 14.705
+VALUE width.U+30B1 14.705
+VALUE width.U+30B3 14.705
+VALUE width.U+30C3 14.705
+VALUE width.U+30E3 14.705
+VALUE width.U+30E5 14.705
+VALUE width.U+30E7 14.705
+VALUE width.U+30EE 14.705
+VALUE width.U+30F5 14.705
+VALUE width.U+30F6 14.705
+VALUE width.U+30FB 5.151
+VALUE width.U+30FC 14.705
+VALUE width.U+30FD 16.126
+VALUE width.U+30FE 16.126
+VALUE width.U+4E00 14.705
+VALUE width.U+4E03 14.705
+VALUE width.U+4E09 14.705
+VALUE width.U+4E0A 14.705
+VALUE width.U+4E0B 14.705
+VALUE width.U+4E2D 14.705
+VALUE width.U+4E5D 14.705
+VALUE width.U+4E8C 14.705
+VALUE width.U+4E94 14.705
+VALUE width.U+4EAC 14.705
+VALUE width.U+4EBA 14.705
+VALUE width.U+516B 14.705
+VALUE width.U+516D 14.705
+VALUE width.U+5341 14.705
+VALUE width.U+5358 16.851
+VALUE width.U+53E5 14.705
+VALUE width.U+540C 14.705
+VALUE width.U+56DB 14.705
+VALUE width.U+5927 14.705
+VALUE width.U+5C0F 14.705
+VALUE width.U+6298 14.705
+VALUE width.U+6587 14.705
+VALUE width.U+65E5 14.705
+VALUE width.U+672C 14.705
+VALUE width.U+6765 16.851
+VALUE width.U+6771 14.705
+VALUE width.U+70B9 14.705
+VALUE width.U+767D 14.705
+VALUE width.U+7A7A 14.705
+VALUE width.U+7AE0 14.705
+VALUE width.U+884C 14.705
+VALUE width.U+8A9E 14.705
+VALUE width.U+8AAD 16.851
+VALUE width.U+8FD4 14.705
+VALUE width.U+9014 14.705
+VALUE width.U+90FD 14.705
+VALUE width.U+9593 14.705
+VALUE width.U+982D 14.705
+VALUE width.U+FF01 14.705
+VALUE width.U+FF08 14.705
+VALUE width.U+FF09 14.705
+VALUE width.U+FF0C 14.705
+VALUE width.U+FF0E 14.705
+VALUE width.U+FF11 14.705
+VALUE width.U+FF12 14.705
+VALUE width.U+FF13 14.705
+VALUE width.U+FF1A 14.705
+VALUE width.U+FF1B 14.705
+VALUE width.U+FF1F 14.705
+VALUE width.U+FF21 14.705
+VALUE width.U+FF22 14.705
+VALUE width.U+FF23 14.705
+VALUE width.U+FF3B 14.705
+VALUE width.U+FF3D 14.705
+VALUE width.U+FF41 14.705
+VALUE width.U+FF42 14.705
+VALUE width.U+FF43 14.705

@@ -8,10 +8,15 @@
 //! with the open-source Noto Sans fonts in the same order: JP for Hiragino, SC
 //! and TC for PingFang, KR for Apple SD Gothic Neo.
 //!
-//! The shapes are Noto's, but the advances are iOS's, as measured: Apple's UI
-//! fonts are narrower than a full em, and on a Japanese phone brackets and
-//! `、。` take half a cell. Each glyph moves within its cell as Apple's do:
-//! centred, or (opening brackets) against the right edge.
+//! The shapes are Noto's, but the widths and spacing are iOS's, as measured
+//! for each phone language (cjk-metrics.txt, made from the recordings by
+//! scripts/measure/intltext/cjk-metrics.sh): Apple's CJK UI fonts are
+//! narrower than an em, and on a Chinese or Japanese phone iOS halves the
+//! punctuation and spaces pairs of characters as their typesetting does (an
+//! English phone, with the same Chinese font, does neither). Each glyph moves
+//! within its cell as Apple's do: centred, opening brackets against the right
+//! edge, other half-width punctuation against the left (centred on a
+//! Traditional Chinese phone, as Taiwan sets it).
 //!
 //! The fonts are coretext faces of their own (not answering to names), so
 //! TextKit and drawing treat a fallback glyph like a glyph in an app's font.
@@ -50,61 +55,149 @@ impl Kind {
     }
 }
 
-/// The cascade's CJK fonts in iOS's order for the phone's first language
-/// (fixtures/intltext, `cascade.*`): its own script's font first, then
-/// Simplified Chinese, Traditional Chinese, Japanese, Korean.
-fn order(first_language: &str) -> [Kind; 4] {
-    use Kind::*;
-    let l = first_language.to_lowercase();
-    if l.starts_with("ja") {
-        [Japanese, SimplifiedChinese, TraditionalChinese, Korean]
-    } else if l.starts_with("ko") {
-        [Korean, SimplifiedChinese, TraditionalChinese, Japanese]
-    } else if l.starts_with("zh-hant") || l == "zh-tw" || l == "zh-hk" || l == "zh-mo" {
-        [TraditionalChinese, SimplifiedChinese, Japanese, Korean]
-    } else {
-        [SimplifiedChinese, TraditionalChinese, Japanese, Korean]
+/// How iOS sets CJK text, by the phone's first language (its key in cjk-metrics.txt).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Profile {
+    /// Any other language (measured on an English phone).
+    #[default]
+    Other,
+    Japanese,
+    Korean,
+    SimplifiedChinese,
+    TraditionalChinese,
+}
+
+impl Profile {
+    pub fn of(first_language: &str) -> Profile {
+        let l = first_language.to_lowercase();
+        if l.starts_with("ja") {
+            Profile::Japanese
+        } else if l.starts_with("ko") {
+            Profile::Korean
+        } else if l.starts_with("zh-hant") || l == "zh-tw" || l == "zh-hk" || l == "zh-mo" || l.starts_with("zh-tw") || l.starts_with("zh-hk") {
+            Profile::TraditionalChinese
+        } else if l.starts_with("zh") {
+            Profile::SimplifiedChinese
+        } else {
+            Profile::Other
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Profile::Other => "en",
+            Profile::Japanese => "ja",
+            Profile::Korean => "ko",
+            Profile::SimplifiedChinese => "zh-Hans",
+            Profile::TraditionalChinese => "zh-Hant",
+        }
+    }
+
+    /// The cascade's CJK fonts in iOS's order (fixtures/intltext, `cascade.*`):
+    /// the phone's own script's font first, then Simplified Chinese,
+    /// Traditional Chinese, Japanese, Korean.
+    fn order(self) -> [Kind; 4] {
+        use Kind::*;
+        match self {
+            Profile::Japanese => [Japanese, SimplifiedChinese, TraditionalChinese, Korean],
+            Profile::Korean => [Korean, SimplifiedChinese, TraditionalChinese, Japanese],
+            Profile::TraditionalChinese => [TraditionalChinese, SimplifiedChinese, Japanese, Korean],
+            Profile::SimplifiedChinese | Profile::Other => [SimplifiedChinese, TraditionalChinese, Japanese, Korean],
+        }
     }
 }
 
-/// Characters that take half a cell in iOS's Japanese UI font (Hiragino
-/// Kaku Gothic Interface): brackets, and the comma and full stop.
-const JAPANESE_HALF: &str = "、。〈〉《》「」『』【】〔〕（），．";
-/// Of those, the ones whose ink sits on the right of a full cell.
-const OPENING: &str = "〈《「『【〔（";
+/// Punctuation whose ink sits on the right of a full cell.
+const OPENING: &str = "〈《「『【〔（［｛";
+/// Punctuation a Traditional Chinese font centres in its cell.
+const CENTRED: &str = "、。，．：；！？";
 
-fn is_kana(ch: char) -> bool {
-    matches!(ch, '\u{3041}'..='\u{30ff}') || "々ゝゞヽヾ".contains(ch)
+fn is_hiragana(ch: char) -> bool {
+    matches!(ch, '\u{3041}'..='\u{309f}') || "々ゝゞ".contains(ch)
+}
+
+fn is_katakana(ch: char) -> bool {
+    matches!(ch, '\u{30a0}'..='\u{30ff}') && !"・ー".contains(ch)
 }
 
 fn is_hangul(ch: char) -> bool {
     matches!(ch, '\u{ac00}'..='\u{d7a3}' | '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}')
 }
 
-/// A character's advance on iOS, in em, as measured with the system font at
-/// 17 pt (fixtures/intltext, `width.*`): on a Japanese phone (Hiragino),
-/// 0.9355, or half that for brackets and `、。`; otherwise (PingFang, and its
-/// kana fallback) 0.9912, kana 0.9486; Hangul (Apple SD Gothic Neo) 0.8653.
-fn ios_advance(ch: char, japanese_first: bool) -> f64 {
-    if is_hangul(ch) {
-        0.8653
-    } else if japanese_first {
-        if JAPANESE_HALF.contains(ch) { 0.4677 } else { 0.9355 }
-    } else if is_kana(ch) {
-        0.9486
-    } else {
-        0.9912
+/// The measured table (cjk-metrics.txt), in em.
+struct Metrics {
+    widths: HashMap<(&'static str, char), f64>,
+    defaults: HashMap<(&'static str, &'static str), f64>,
+    pairs: HashMap<(&'static str, char, char), f64>,
+    /// The characters the pairs were measured for.
+    pair_chars: Vec<char>,
+}
+
+fn metrics() -> &'static Metrics {
+    static M: std::sync::OnceLock<Metrics> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        let mut m = Metrics { widths: HashMap::new(), defaults: HashMap::new(), pairs: HashMap::new(), pair_chars: Vec::new() };
+        let ch = |s: &str| s.strip_prefix("U+").and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
+        let key = |s: &str| -> &'static str { ["en", "ja", "ko", "zh-Hans", "zh-Hant"].into_iter().find(|k| *k == s).unwrap_or("en") };
+        for line in include_str!("cjk-metrics.txt").lines().filter(|l| !l.starts_with('#')) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let em = |s: &str| s.parse::<f64>().ok().map(|v| v / 17.0);
+            match f.as_slice() {
+                ["width", l, c, v] => {
+                    if let (Some(c), Some(v)) = (ch(c), em(v)) {
+                        m.widths.insert((key(l), c), v);
+                    }
+                }
+                ["default", l, kind, v] => {
+                    let kind = ["kana", "kanji", "hangul"].into_iter().find(|k| k == kind).unwrap_or("kanji");
+                    if let Some(v) = em(v) {
+                        m.defaults.insert((key(l), kind), v);
+                    }
+                }
+                ["pair", l, a, b, v] => {
+                    if let (Some(a), Some(b), Some(v)) = (ch(a), ch(b), em(v)) {
+                        m.pairs.insert((key(l), a, b), v);
+                        for c in [a, b] {
+                            if !m.pair_chars.contains(&c) {
+                                m.pair_chars.push(c);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        m
+    })
+}
+
+/// A character's width on iOS, in em: as measured, else its kind's.
+fn ios_advance(ch: char, profile: Profile) -> f64 {
+    let m = metrics();
+    let k = profile.key();
+    if let Some(&w) = m.widths.get(&(k, ch)) {
+        return w;
     }
+    let kind = if is_hangul(ch) {
+        "hangul"
+    } else if is_hiragana(ch) || is_katakana(ch) {
+        "kana"
+    } else {
+        "kanji"
+    };
+    m.defaults.get(&(k, kind)).copied().unwrap_or(1.0)
 }
 
 /// Where a glyph of `font_advance` sits in a cell of `advance` (both in em),
-/// from the cell's left edge: centred, or opening brackets against its right.
-fn ink_shift(ch: char, advance: f64, font_advance: f64) -> f64 {
-    if advance >= font_advance {
-        return (advance - font_advance) / 2.0;
-    }
-    if JAPANESE_HALF.contains(ch) {
-        if OPENING.contains(ch) { advance - font_advance } else { 0.0 }
+/// from the cell's left edge.
+fn ink_shift(ch: char, advance: f64, font_advance: f64, profile: Profile) -> f64 {
+    if advance >= font_advance || (profile == Profile::TraditionalChinese && CENTRED.contains(ch)) {
+        (advance - font_advance) / 2.0
+    } else if OPENING.contains(ch) {
+        advance - font_advance
+    } else if advance <= font_advance * 0.75 {
+        // Half-width punctuation: against the left edge.
+        0.0
     } else {
         (advance - font_advance) / 2.0
     }
@@ -166,16 +259,15 @@ pub(crate) fn fallback(emu: &mut Emu, ch: char, weight: f64) -> Result<Option<Fa
     }
     let mut found = None;
     if !ch.is_ascii() && !system_has(emu, ch) {
-        let first = crate::locale::first_preferred_language(emu)?;
-        let japanese_first = first.to_lowercase().starts_with("ja");
-        for kind in order(&first) {
+        let profile = profile(emu)?;
+        for kind in profile.order() {
             let Some(face) = face(emu, kind, bold) else { continue };
             let Some((bytes, index, _)) = coretext::face_data(emu, face) else { continue };
             let Ok(parsed) = ttf_parser::Face::parse(&bytes, index) else { continue };
             let Some(g) = parsed.glyph_index(ch) else { continue };
             let font_advance = parsed.glyph_hor_advance(g).map_or(1.0, |a| a as f64 / parsed.units_per_em() as f64);
-            let advance = ios_advance(ch, japanese_first);
-            found = Some(Fallback { face, advance, shift: ink_shift(ch, advance, font_advance) });
+            let advance = ios_advance(ch, profile);
+            found = Some(Fallback { face, advance, shift: ink_shift(ch, advance, font_advance, profile) });
             break;
         }
     }
@@ -186,52 +278,45 @@ pub(crate) fn fallback(emu: &mut Emu, ch: char, weight: f64) -> Result<Option<Fa
 /// The CJK fonts' faces in cascade order, for the phone's first language
 /// (at regular weight; those with a font file).
 pub(crate) fn cascade(emu: &mut Emu) -> Result<Vec<usize>> {
-    let first = crate::locale::first_preferred_language(emu)?;
-    Ok(order(&first).into_iter().filter_map(|k| face(emu, k, false)).collect())
+    let profile = profile(emu)?;
+    Ok(profile.order().into_iter().filter_map(|k| face(emu, k, false)).collect())
 }
 
-/// iOS's Japanese punctuation spacing (japanese-spacing.txt): for a pair of
-/// characters, how much space goes between them (em), and whether it belongs
-/// to the right one (before an opening bracket: it moves to the next line
-/// with it) or the left (after `、。` and closing brackets: it stays at the
-/// end of a line).
-pub(crate) fn pair_spacing(a: char, b: char) -> Option<(f64, bool)> {
-    static TABLE: std::sync::OnceLock<HashMap<(char, char), f64>> = std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut t = HashMap::new();
-        for line in include_str!("japanese-spacing.txt").lines().filter(|l| !l.starts_with('#')) {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            let ch = |s: &str| s.strip_prefix("U+").and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
-            if let (Some(a), Some(b), Some(v)) = (ch(f[0]), ch(f[1]), f.get(2).and_then(|v| v.parse::<f64>().ok())) {
-                t.insert((a, b), v / 17.0);
-            }
-        }
-        t
-    });
+/// How this phone sets CJK text (its first language's profile).
+pub(crate) fn profile(emu: &mut Emu) -> Result<Profile> {
+    Ok(Profile::of(&crate::locale::first_preferred_language(emu)?))
+}
+
+/// iOS's CJK punctuation spacing on this phone (cjk-metrics.txt, `pair`): for
+/// a pair of characters, how much space goes between them (em), and whether
+/// it belongs to the right one (before an opening bracket: it moves to the
+/// next line with it) or the left (after `、。` and closing brackets: it stays
+/// at the end of a line).
+pub(crate) fn pair_spacing(a: char, b: char, profile: Profile) -> Option<(f64, bool)> {
+    // (Between two Latin characters: the Latin font's own kerning, not this.)
+    if a.is_ascii() && b.is_ascii() {
+        return None;
+    }
+    let m = metrics();
     let rep = |c: char| -> Option<char> {
-        if table.keys().any(|&(x, y)| x == c || y == c) && !c.is_ascii() {
+        if m.pair_chars.contains(&c) && !c.is_ascii() {
             Some(c)
         } else if c.is_ascii_digit() {
             Some('1')
         } else if c.is_ascii_alphabetic() {
             Some('a')
-        } else if is_kana(c) || matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}' | '\u{ff10}'..='\u{ff5a}') {
+        } else if is_hiragana(c) {
             Some('あ')
+        } else if is_katakana(c) {
+            Some('ア')
+        } else if matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}' | '\u{ff10}'..='\u{ff5a}') {
+            Some('漢')
         } else {
             None
         }
     };
-    // (Between two Latin characters: the Latin font's own kerning, not this.)
-    if a.is_ascii() && b.is_ascii() {
-        return None;
-    }
-    let em = *table.get(&(rep(a)?, rep(b)?))?;
+    let em = *m.pairs.get(&(profile.key(), rep(a)?, rep(b)?))?;
     Some((em, OPENING.contains(b)))
-}
-
-/// Whether text gets iOS's Japanese punctuation spacing: on a Japanese phone.
-pub(crate) fn japanese_spacing(emu: &mut Emu) -> Result<bool> {
-    Ok(crate::locale::first_preferred_language(emu)?.to_lowercase().starts_with("ja"))
 }
 
 /// Draw each glyph the system font (or the glyph's own app font) lacks from
@@ -263,44 +348,52 @@ mod tests {
 
     #[test]
     fn the_phones_language_picks_the_first_font() {
-        assert_eq!(order("ja-JP")[0], Kind::Japanese);
-        assert_eq!(order("en-US")[0], Kind::SimplifiedChinese);
-        assert_eq!(order("zh-Hant-TW")[0], Kind::TraditionalChinese);
-        assert_eq!(order("ko")[0], Kind::Korean);
+        assert_eq!(Profile::of("ja-JP").order()[0], Kind::Japanese);
+        assert_eq!(Profile::of("en-US").order()[0], Kind::SimplifiedChinese);
+        assert_eq!(Profile::of("zh-Hant-TW").order()[0], Kind::TraditionalChinese);
+        assert_eq!(Profile::of("zh-Hans-CN"), Profile::SimplifiedChinese);
+        assert_eq!(Profile::of("ko").order()[0], Kind::Korean);
     }
 
     #[test]
     fn advances_as_measured() {
-        assert_eq!(ios_advance('の', true), 0.9355);
-        assert_eq!(ios_advance('、', true), 0.4677);
-        assert_eq!(ios_advance('「', true), 0.4677);
-        assert_eq!(ios_advance('［', true), 0.9355);
-        assert_eq!(ios_advance('の', false), 0.9486);
-        assert_eq!(ios_advance('漢', false), 0.9912);
-        assert_eq!(ios_advance('、', false), 0.9912);
-        assert_eq!(ios_advance('한', false), 0.8653);
+        let em = |pts: f64| pts / 17.0;
+        assert_eq!(ios_advance('の', Profile::Japanese), em(15.903));
+        assert_eq!(ios_advance('、', Profile::Japanese), em(7.951));
+        assert_eq!(ios_advance('の', Profile::Other), em(16.126));
+        assert_eq!(ios_advance('漢', Profile::Other), em(16.851));
+        assert_eq!(ios_advance('、', Profile::Other), em(16.851));
+        assert_eq!(ios_advance('、', Profile::SimplifiedChinese), em(8.583));
+        assert_eq!(ios_advance('한', Profile::Other), em(14.710));
+        // Not measured one by one: its kind's.
+        assert_eq!(ios_advance('猫', Profile::Japanese), em(15.903));
     }
 
     #[test]
-    fn japanese_spacing_as_measured() {
-        // Half an em after 、 before kana; it stays with the 、.
-        assert_eq!(pair_spacing('、', 'の'), Some((0.5, false)));
+    fn spacing_as_measured() {
+        // Half an em after 、 before kana on a Japanese phone; it stays with the 、.
+        assert_eq!(pair_spacing('、', 'の', Profile::Japanese), Some((0.5, false)));
         // Before an opening bracket, after kanji: it goes with the bracket.
-        let (em, leading) = pair_spacing('漢', '「').unwrap();
+        let (em, leading) = pair_spacing('猫', '「', Profile::Japanese).unwrap();
         assert!((em - 3.953 / 17.0).abs() < 1e-9 && leading);
         // An eighth of an em between Japanese and Latin.
-        assert_eq!(pair_spacing('の', 'P'), Some((0.125, false)));
-        assert_eq!(pair_spacing('P', 'o'), None);
-        assert_eq!(pair_spacing('の', 'の'), None);
+        assert_eq!(pair_spacing('の', 'P', Profile::Japanese), Some((0.125, false)));
+        assert_eq!(pair_spacing('P', 'o', Profile::Japanese), None);
+        // None on an English phone.
+        assert_eq!(pair_spacing('、', 'の', Profile::Other), None);
+        // Some on a Chinese one.
+        assert!(pair_spacing('、', '漢', Profile::SimplifiedChinese).is_some());
     }
 
     #[test]
     fn glyphs_sit_as_apples_do() {
         // A full-width Noto glyph in a narrower cell: centred.
-        assert!((ink_shift('の', 0.9355, 1.0) + 0.03225).abs() < 1e-9);
+        assert!((ink_shift('の', 0.9355, 1.0, Profile::Japanese) + 0.03225).abs() < 1e-9);
         // Half-width brackets: an opening one against the right edge, a closing one at the left.
-        assert!((ink_shift('「', 0.4677, 1.0) + 0.5323).abs() < 1e-9);
-        assert_eq!(ink_shift('」', 0.4677, 1.0), 0.0);
-        assert_eq!(ink_shift('。', 0.4677, 1.0), 0.0);
+        assert!((ink_shift('「', 0.4677, 1.0, Profile::Japanese) + 0.5323).abs() < 1e-9);
+        assert_eq!(ink_shift('」', 0.4677, 1.0, Profile::Japanese), 0.0);
+        assert_eq!(ink_shift('。', 0.4677, 1.0, Profile::Japanese), 0.0);
+        // Taiwan centres its full stop.
+        assert!((ink_shift('。', 0.5, 1.0, Profile::TraditionalChinese) + 0.25).abs() < 1e-9);
     }
 }
