@@ -15,6 +15,8 @@ import UIKit
 struct TabItem {
   var title: String?
   var image: UIImage?
+  /// Its badge (`.badge`): a count or a word.
+  var badge: String?
 
   /// From a tab item's label as resolved: its first text and first image.
   init(from nodes: [Node]) {
@@ -38,9 +40,10 @@ struct TabItem {
     nodes.forEach(visit)
   }
 
-  init(title: String?, image: UIImage?) {
+  init(title: String?, image: UIImage?, badge: String? = nil) {
     self.title = title
     self.image = image
+    self.badge = badge
   }
 }
 
@@ -61,7 +64,10 @@ struct TabItemModifier: ViewModifier, NodeModifier {
       item.image = item.image ?? resolved.image
     }
     for node in nodes {
-      node.tabItem = item
+      // (A badge given before the tab item stays.)
+      var merged = item
+      merged.badge = item.badge ?? node.tabItem?.badge
+      node.tabItem = merged
       if let tag { node.tag = tag }
     }
   }
@@ -71,6 +77,50 @@ extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func tabItem<V>(@SwiftUICore.ViewBuilder _ label: () -> V) -> some SwiftUICore.View where V : SwiftUICore.View
   nonisolated public func tabItem<V>(@ViewBuilder _ label: () -> V) -> some View where V: View {
     modifier(TabItemModifier(label: AnyView(label())))
+  }
+}
+
+/// `.badge(…)`: a tab's badge (nil or 0: none).
+struct BadgeModifier: ViewModifier, NodeModifier {
+  typealias Body = Never
+  let badge: String?
+
+  func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
+    for node in nodes {
+      var item = node.tabItem ?? TabItem(title: nil, image: nil)
+      item.badge = badge
+      node.tabItem = item
+    }
+  }
+
+  /// A count's badge: none for 0, as iOS shows it.
+  static func count(_ n: Int) -> String? { n == 0 ? nil : String(n) }
+}
+
+extension View {
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func badge(_ count: Swift.Int) -> some SwiftUICore.View
+  nonisolated public func badge(_ count: Int) -> some View {
+    modifier(BadgeModifier(badge: BadgeModifier.count(count)))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func badge(_ label: SwiftUICore.Text?) -> some SwiftUICore.View
+  nonisolated public func badge(_ label: Text?) -> some View {
+    modifier(BadgeModifier(badge: label?.pommeString))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func badge(_ key: SwiftUICore.LocalizedStringKey?) -> some SwiftUICore.View
+  nonisolated public func badge(_ key: LocalizedStringKey?) -> some View {
+    modifier(BadgeModifier(badge: key?.pommeLocalized()))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func badge(_ resource: Foundation.LocalizedStringResource?) -> some SwiftUICore.View
+  nonisolated public func badge(_ resource: LocalizedStringResource?) -> some View {
+    modifier(BadgeModifier(badge: resource.map { String(localized: $0) }))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func badge<S>(_ label: S?) -> some SwiftUICore.View where S : Swift.StringProtocol
+  nonisolated public func badge<S>(_ label: S?) -> some View where S: StringProtocol {
+    modifier(BadgeModifier(badge: label.map { String($0) }))
   }
 }
 
@@ -116,6 +166,11 @@ extension TabView: PrimitiveView {
   /// Each of its views a tab; the selection's tab selected (without a
   /// selection, the tab bar keeps its own).
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    switch graph.environment.pommeTabViewStyle {
+    case nil, is DefaultTabViewStyle, is TabBarOnlyTabViewStyle, is SidebarAdaptableTabViewStyle: break
+    case let style?:
+      fatalError("SwiftUI in pomme doesn't implement the tab view style \(type(of: style)) yet")
+    }
     let tabs = graph.resolve(pommeContent, at: path.appending("tabs"), Preferences())
     let binding = pommeSelection
     let selected = binding.flatMap { pommeUnwrapped($0.wrappedValue) }
@@ -153,6 +208,27 @@ public struct Tab<Value, Content, Label> {
   var pommeValue: Value?
   var pommeContent: Content
   var pommeLabel: Label?
+  /// Its role (search). (iOS 26 shows a search tab apart from the others;
+  /// pomme shows it among them for now.)
+  var pommeRole: TabRole? = nil
+}
+
+// pomme: owns public struct TabRole : Swift.Hashable, Swift.Sendable
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public struct TabRole: Hashable, Sendable {
+  let pommeName: String
+
+  // pomme: replaces public struct TabRole : Swift.Hashable, Swift.Sendable :: public static var search: SwiftUI.TabRole
+  public static var search: TabRole { TabRole(pommeName: "search") }
+
+  // pomme: replaces public struct TabRole : Swift.Hashable, Swift.Sendable :: public static func == (a: SwiftUI.TabRole, b: SwiftUI.TabRole) -> Swift.Bool
+  public static func == (a: TabRole, b: TabRole) -> Bool { a.pommeName == b.pommeName }
+
+  // pomme: replaces public struct TabRole : Swift.Hashable, Swift.Sendable :: public func hash(into hasher: inout Swift.Hasher)
+  public func hash(into hasher: inout Hasher) { hasher.combine(pommeName) }
+
+  // pomme: replaces public struct TabRole : Swift.Hashable, Swift.Sendable :: public var hashValue: Swift.Int
+  public var hashValue: Int { pommeName.hashValue }
 }
 
 @available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
@@ -274,6 +350,386 @@ extension Tab where Value == Never, Content: View, Label: View {
   public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
     self.init(pommeTitle: nil, pommeImage: nil, pommeValue: nil, pommeContent: content(), pommeLabel: label())
   }
+}
+
+// (Generated from the SDK's interface: each initializer with a role or a
+// LocalizedStringResource title, into the same parts as the rest.)
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+extension Tab where Value: Hashable, Content: View, Label: View {
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<S>(_ title: S, image: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol
+  @_disfavoredOverload
+  nonisolated public init<S>(_ title: S, image: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel, S : StringProtocol {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(named: image), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<S, T>(_ title: S, image: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<S, T>(_ title: S, image: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, S : StringProtocol, T : Hashable {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(named: image), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, value: Value, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  nonisolated public init(_ titleResource: LocalizedStringResource, image: String, value: Value, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleKey: SwiftUICore.LocalizedStringKey, image: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  nonisolated public init(_ titleKey: LocalizedStringKey, image: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(named: image), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  nonisolated public init(_ titleResource: LocalizedStringResource, image: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, value: T, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<T>(_ titleResource: LocalizedStringResource, image: String, value: T, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleKey: SwiftUICore.LocalizedStringKey, image: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  nonisolated public init<T>(_ titleKey: LocalizedStringKey, image: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(named: image), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<T>(_ titleResource: LocalizedStringResource, image: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<S>(_ title: S, systemImage: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol
+  @_disfavoredOverload
+  nonisolated public init<S>(_ title: S, systemImage: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel, S : StringProtocol {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<S, T>(_ title: S, systemImage: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<S, T>(_ title: S, systemImage: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, S : StringProtocol, T : Hashable {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, value: Value, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  nonisolated public init(_ titleResource: LocalizedStringResource, systemImage: String, value: Value, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleKey: SwiftUICore.LocalizedStringKey, systemImage: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  nonisolated public init(_ titleKey: LocalizedStringKey, systemImage: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  nonisolated public init(_ titleResource: LocalizedStringResource, systemImage: String, value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, value: T, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<T>(_ titleResource: LocalizedStringResource, systemImage: String, value: T, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleKey: SwiftUICore.LocalizedStringKey, systemImage: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  nonisolated public init<T>(_ titleKey: LocalizedStringKey, systemImage: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<T>(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, value: T, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == T?, Label == SwiftUI.DefaultTabLabel, T : Swift.Hashable
+  @_disfavoredOverload
+  nonisolated public init<T>(_ titleResource: LocalizedStringResource, systemImage: String, value: T, role: TabRole?, @ViewBuilder content: () -> Content) where Value == T?, Label == DefaultTabLabel, T : Hashable {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  nonisolated public init(value: Value, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: value, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<V>(value: V, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Value == V?, Label == SwiftUI.DefaultTabLabel, V : Swift.Hashable
+  nonisolated public init<V>(value: V, role: TabRole?, @ViewBuilder content: () -> Content) where Value == V?, Label == DefaultTabLabel, V : Hashable {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: .some(value), pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init(value: Value, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content, @SwiftUICore.ViewBuilder label: () -> Label)
+  nonisolated public init(value: Value, role: TabRole?, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: value, pommeContent: content(), pommeLabel: label(), pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab : SwiftUI.TabContent where Value : Swift.Hashable, Content : SwiftUICore.View, Label : SwiftUICore.View :: nonisolated public init<V>(value: V, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content, @SwiftUICore.ViewBuilder label: () -> Label) where Value == V?, V : Swift.Hashable
+  nonisolated public init<V>(value: V, role: TabRole?, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) where Value == V?, V : Hashable {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: .some(value), pommeContent: content(), pommeLabel: label(), pommeRole: role)
+  }
+}
+
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+extension Tab where Value == Never, Content: View, Label: View {
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init<S>(_ title: S, image: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol
+  @_disfavoredOverload
+  public init<S>(_ title: S, image: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel, S : StringProtocol {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(named: image), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  public init(_ titleResource: LocalizedStringResource, image: String, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleKey: SwiftUICore.LocalizedStringKey, image: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  public init(_ titleKey: LocalizedStringKey, image: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(named: image), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleResource: Foundation.LocalizedStringResource, image: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  public init(_ titleResource: LocalizedStringResource, image: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(named: image), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init<S>(_ title: S, systemImage: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel, S : Swift.StringProtocol
+  @_disfavoredOverload
+  public init<S>(_ title: S, systemImage: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel, S : StringProtocol {
+    self.init(pommeTitle: String(title), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  public init(_ titleResource: LocalizedStringResource, systemImage: String, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: nil)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleKey: SwiftUICore.LocalizedStringKey, systemImage: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  public init(_ titleKey: LocalizedStringKey, systemImage: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: titleKey.pommeLocalized(), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(_ titleResource: Foundation.LocalizedStringResource, systemImage: Swift.String, role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  @_disfavoredOverload
+  public init(_ titleResource: LocalizedStringResource, systemImage: String, role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: String(localized: titleResource), pommeImage: Self.pommeImage(systemName: systemImage), pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content) where Label == SwiftUI.DefaultTabLabel
+  public init(role: TabRole?, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: nil, pommeContent: content(), pommeLabel: nil, pommeRole: role)
+  }
+
+  // pomme: replaces extension SwiftUI.Tab where Value == Swift.Never, Content : SwiftUICore.View, Label : SwiftUICore.View :: public init(role: SwiftUI.TabRole?, @SwiftUICore.ViewBuilder content: () -> Content, @SwiftUICore.ViewBuilder label: () -> Label)
+  public init(role: TabRole?, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+    self.init(pommeTitle: nil, pommeImage: nil, pommeValue: nil, pommeContent: content(), pommeLabel: label(), pommeRole: role)
+  }
+}
+
+// ---- Badges on tabs ----
+
+/// A tab with a badge (`Tab(…).badge(3)`).
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+struct PommeBadgedTab<C: TabContent>: TabContent {
+  typealias TabValue = C.TabValue
+  let content: C
+  let badge: String?
+
+  var _identifiedView: some View {
+    return content._identifiedView.modifier(BadgeModifier(badge: badge))
+  }
+
+  var body: PommeBadgedTab<C> {
+    return self
+  }
+}
+
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+extension TabContent {
+  // pomme: replaces extension SwiftUI.TabContent :: nonisolated public func badge(_ count: Swift.Int) -> some SwiftUI.TabContent<Self.TabValue>
+  nonisolated public func badge(_ count: Int) -> some TabContent<TabValue> {
+    return PommeBadgedTab(content: self, badge: BadgeModifier.count(count))
+  }
+
+  // pomme: replaces extension SwiftUI.TabContent :: nonisolated public func badge(_ label: SwiftUICore.Text?) -> some SwiftUI.TabContent<Self.TabValue>
+  nonisolated public func badge(_ label: Text?) -> some TabContent<TabValue> {
+    return PommeBadgedTab(content: self, badge: label?.pommeString)
+  }
+
+  // pomme: replaces extension SwiftUI.TabContent :: nonisolated public func badge(_ key: SwiftUICore.LocalizedStringKey) -> some SwiftUI.TabContent<Self.TabValue>
+  nonisolated public func badge(_ key: LocalizedStringKey) -> some TabContent<TabValue> {
+    return PommeBadgedTab(content: self, badge: key.pommeLocalized())
+  }
+
+  // pomme: replaces extension SwiftUI.TabContent :: nonisolated public func badge(_ resource: Foundation.LocalizedStringResource) -> some SwiftUI.TabContent<Self.TabValue>
+  nonisolated public func badge(_ resource: LocalizedStringResource) -> some TabContent<TabValue> {
+    return PommeBadgedTab(content: self, badge: String(localized: resource))
+  }
+
+  // pomme: replaces extension SwiftUI.TabContent :: nonisolated public func badge<S>(_ label: S) -> some SwiftUI.TabContent<Self.TabValue> where S : Swift.StringProtocol
+  nonisolated public func badge<S>(_ label: S) -> some TabContent<TabValue> where S: StringProtocol {
+    return PommeBadgedTab(content: self, badge: String(label))
+  }
+}
+
+// ---- ForEach and Group of tabs ----
+
+// pomme: in extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent
+extension ForEach where Content: TabContent {
+  // pomme: replaces extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent :: nonisolated public init<V>(_ data: Data, id: Swift.KeyPath<Data.Element, ID>, @SwiftUI.TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue
+  nonisolated public init<V>(_ data: Data, id: KeyPath<Data.Element, ID>, @TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue {
+    self.init(pommeData: data, id: { $0[keyPath: id] }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent :: internal init<V>(_ data: Data, id: Swift.KeyPath<Data.Element, ID>, @SwiftUI.TabContentBuilder<V?> liftedContent content: @escaping (Data.Element) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @usableFromInline
+  internal init<V>(_ data: Data, id: KeyPath<Data.Element, ID>, @TabContentBuilder<V?> liftedContent content: @escaping (Data.Element) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0[keyPath: id] }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent :: nonisolated public init<V>(_ data: Data, id: Swift.KeyPath<Data.Element, ID>, @SwiftUI.TabContentBuilder<V?> content: @escaping (Data.Element) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @_disfavoredOverload
+  nonisolated public init<V>(_ data: Data, id: KeyPath<Data.Element, ID>, @TabContentBuilder<V?> content: @escaping (Data.Element) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0[keyPath: id] }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public var _identifiedView: SwiftUICore.ForEach<Data, ID, Content._IdentifiedView>
+  /// Each element's tab, as a view.
+  @MainActor @preconcurrency public var _identifiedView: ForEach<Data, ID, Content._IdentifiedView> {
+    let content = self.content
+    return ForEach<Data, ID, Content._IdentifiedView>(pommeData: data, id: pommeID) { content($0)._identifiedView }
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public var body: SwiftUICore.ForEach<Data, ID, Content>
+  @MainActor @preconcurrency public var body: ForEach<Data, ID, Content> {
+    return self
+  }
+}
+
+// pomme: in extension SwiftUICore.ForEach where ID == Data.Element.ID, Content : SwiftUI.TabContent, Data.Element : Swift.Identifiable
+extension ForEach where ID == Data.Element.ID, Content: TabContent, Data.Element: Identifiable {
+  // pomme: replaces extension SwiftUICore.ForEach where ID == Data.Element.ID, Content : SwiftUI.TabContent, Data.Element : Swift.Identifiable :: public init<V>(_ data: Data, @SwiftUI.TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue
+  public init<V>(_ data: Data, @TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue {
+    self.init(pommeData: data, id: { $0.id }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach where ID == Data.Element.ID, Content : SwiftUI.TabContent, Data.Element : Swift.Identifiable :: internal init<V>(_ data: Data, @SwiftUI.TabContentBuilder<V?> liftedContent content: @escaping (Data.Element) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @usableFromInline
+  internal init<V>(_ data: Data, @TabContentBuilder<V?> liftedContent content: @escaping (Data.Element) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0.id }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach where ID == Data.Element.ID, Content : SwiftUI.TabContent, Data.Element : Swift.Identifiable :: public init<V>(_ data: Data, @SwiftUI.TabContentBuilder<V?> content: @escaping (Data.Element) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @_disfavoredOverload
+  public init<V>(_ data: Data, @TabContentBuilder<V?> content: @escaping (Data.Element) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0.id }, content: content)
+  }
+}
+
+// pomme: in extension SwiftUICore.ForEach where Data == Swift.Range<Swift.Int>, ID == Swift.Int, Content : SwiftUI.TabContent
+extension ForEach where Data == Range<Int>, ID == Int, Content: TabContent {
+  // pomme: replaces extension SwiftUICore.ForEach where Data == Swift.Range<Swift.Int>, ID == Swift.Int, Content : SwiftUI.TabContent :: public init<V>(_ data: Swift.Range<Swift.Int>, @SwiftUI.TabContentBuilder<V> content: @escaping (Swift.Int) -> Content) where V == Content.TabValue
+  public init<V>(_ data: Range<Int>, @TabContentBuilder<V> content: @escaping (Int) -> Content) where V == Content.TabValue {
+    self.init(pommeData: data, id: { $0 }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach where Data == Swift.Range<Swift.Int>, ID == Swift.Int, Content : SwiftUI.TabContent :: internal init<V>(_ data: Swift.Range<Swift.Int>, @SwiftUI.TabContentBuilder<V?> liftedContent content: @escaping (Swift.Int) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @usableFromInline
+  internal init<V>(_ data: Range<Int>, @TabContentBuilder<V?> liftedContent content: @escaping (Int) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0 }, content: content)
+  }
+
+  // pomme: replaces extension SwiftUICore.ForEach where Data == Swift.Range<Swift.Int>, ID == Swift.Int, Content : SwiftUI.TabContent :: public init<V>(_ data: Swift.Range<Swift.Int>, @SwiftUI.TabContentBuilder<V?> content: @escaping (Swift.Int) -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @_disfavoredOverload
+  public init<V>(_ data: Range<Int>, @TabContentBuilder<V?> content: @escaping (Int) -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(pommeData: data, id: { $0 }, content: content)
+  }
+}
+
+// pomme: in extension SwiftUICore.Group : SwiftUI.TabContent where Content : SwiftUI.TabContent
+extension Group where Content: TabContent {
+  // pomme: replaces extension SwiftUICore.Group : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public init<V>(@SwiftUI.TabContentBuilder<V> content: () -> Content) where V == Content.TabValue
+  public init<V>(@TabContentBuilder<V> content: () -> Content) where V == Content.TabValue {
+    self.init(_content: content())
+  }
+
+  // pomme: replaces extension SwiftUICore.Group : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public init<V>(@SwiftUI.TabContentBuilder<V?> content: () -> Content) where V : Swift.Hashable, Content.TabValue == V?
+  @_disfavoredOverload
+  public init<V>(@TabContentBuilder<V?> content: () -> Content) where V: Hashable, Content.TabValue == V? {
+    self.init(_content: content())
+  }
+
+  // pomme: replaces extension SwiftUICore.Group : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public var _identifiedView: Content._IdentifiedView
+  /// Its tabs, where it's placed.
+  @MainActor @preconcurrency public var _identifiedView: Content._IdentifiedView {
+    return content._identifiedView
+  }
+
+  // pomme: replaces extension SwiftUICore.Group : SwiftUI.TabContent where Content : SwiftUI.TabContent :: public var body: SwiftUICore.Group<Content>
+  @MainActor @preconcurrency public var body: Group<Content> {
+    return self
+  }
+}
+
+// ---- Styles ----
+
+extension EnvironmentValues {
+  /// The tab views' style within (`tabViewStyle`); automatic until set.
+  var pommeTabViewStyle: Any? {
+    get { pommeByName["pommeTabViewStyle"] }
+    set { pommeByName["pommeTabViewStyle"] = newValue }
+  }
+}
+
+extension View {
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func tabViewStyle<S>(_ style: S) -> some SwiftUICore.View where S : SwiftUI.TabViewStyle
+  nonisolated public func tabViewStyle<S>(_ style: S) -> some View where S: TabViewStyle {
+    environment(\.pommeTabViewStyle, style)
+  }
+}
+
+// On an iPhone these all show a tab bar.
+
+extension TabViewStyle where Self == DefaultTabViewStyle {
+  // pomme: replaces extension SwiftUI.TabViewStyle where Self == SwiftUI.DefaultTabViewStyle :: public static var automatic: SwiftUI.DefaultTabViewStyle
+  public static var automatic: DefaultTabViewStyle { DefaultTabViewStyle() }
+}
+
+// pomme: in public struct DefaultTabViewStyle : SwiftUI.TabViewStyle
+extension DefaultTabViewStyle {
+  // pomme: replaces public struct DefaultTabViewStyle : SwiftUI.TabViewStyle :: public init()
+  public init() { _pommeStorage = () }
+}
+
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, visionOS 2.0, *)
+extension TabViewStyle where Self == TabBarOnlyTabViewStyle {
+  // pomme: replaces extension SwiftUI.TabViewStyle where Self == SwiftUI.TabBarOnlyTabViewStyle :: internal static var _tabBarOnlyABI: SwiftUI.TabBarOnlyTabViewStyle
+  // (`.tabBarOnly` itself is emitted into the app; this is its symbol here.)
+  @usableFromInline
+  @MainActor @preconcurrency internal static var _tabBarOnlyABI: TabBarOnlyTabViewStyle {
+    @_silgen_name("$s7SwiftUI12TabViewStylePA2A0c7BarOnlycdE0VRszrlE03tabfG0AEvgZ")
+    get { TabBarOnlyTabViewStyle() }
+  }
+}
+
+// pomme: in public struct TabBarOnlyTabViewStyle : SwiftUI.TabViewStyle
+extension TabBarOnlyTabViewStyle {
+  // pomme: replaces public struct TabBarOnlyTabViewStyle : SwiftUI.TabViewStyle :: public init()
+  public init() { _pommeStorage = () }
+}
+
+@available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+extension TabViewStyle where Self == SidebarAdaptableTabViewStyle {
+  // pomme: replaces extension SwiftUI.TabViewStyle where Self == SwiftUI.SidebarAdaptableTabViewStyle :: public static var sidebarAdaptable: SwiftUI.SidebarAdaptableTabViewStyle
+  public static var sidebarAdaptable: SidebarAdaptableTabViewStyle { SidebarAdaptableTabViewStyle() }
+}
+
+// pomme: in public struct SidebarAdaptableTabViewStyle : SwiftUI.TabViewStyle
+extension SidebarAdaptableTabViewStyle {
+  // pomme: replaces public struct SidebarAdaptableTabViewStyle : SwiftUI.TabViewStyle :: public init()
+  public init() { _pommeStorage = () }
 }
 
 // ---- Tab content: a TabView's tabs, built ----

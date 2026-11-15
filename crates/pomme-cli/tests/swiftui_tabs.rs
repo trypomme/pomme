@@ -40,15 +40,18 @@ impl Host for ScreenReader {
     }
 }
 
-/// Run a fixture, activating a tab; the trees the screen reader saw.
-fn run(fixture: &str, activate: &'static str) -> Option<Vec<Vec<Node>>> {
+/// Run a fixture, activating a tab; the trees the screen reader saw, and the tabs' badges.
+fn run(fixture: &str, activate: &'static str) -> Option<(Vec<Vec<Node>>, Vec<Option<String>>)> {
     let mut emu = common::boot(fixture)?;
     let trees = Arc::new(Mutex::new(Vec::new()));
     *emu.live.host = Some(Box::new(ScreenReader { trees: trees.clone(), activate: Some(activate), seen: 0 }));
     emu.live.scale = 1.0;
     common::views(&mut emu, 4.0);
     let t = trees.lock().unwrap().clone();
-    Some(t)
+    let bar = pomme_hle::tabbar::bars(&emu)[0];
+    let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+    let badges = look.buttons.iter().map(|b| b.badge.as_ref().map(|b| b.text.clone())).collect();
+    Some((t, badges))
 }
 
 fn says(tree: &[Node], text: &str) -> bool {
@@ -61,7 +64,9 @@ fn tab_labels(tree: &[Node]) -> Vec<String> {
 
 #[test]
 fn ios_18_tabs_by_value() {
-    let Some(trees) = run("swiftuitabs", "Search") else { return };
+    let Some((trees, badges)) = run("swiftuitabs", "Search") else { return };
+    // (Search comes from a ForEach in a Group; Settings has `.badge(3)`.)
+    assert_eq!(badges, [None, None, Some("3".to_string())]);
     let first = &trees[0];
     assert_eq!(tab_labels(first), ["Home", "Search", "Settings"]);
     // The first tab: its navigation stack, with its title in the bar.
@@ -75,7 +80,8 @@ fn ios_18_tabs_by_value() {
 
 #[test]
 fn tab_items_and_tags() {
-    let Some(trees) = run("swiftuitabitems", "Second") else { return };
+    let Some((trees, badges)) = run("swiftuitabitems", "Second") else { return };
+    assert_eq!(badges, [None, Some("New".to_string())]);
     let first = &trees[0];
     assert_eq!(tab_labels(first), ["First", "Second"]);
     assert!(says(first, "First screen, tab 1"));

@@ -21,3 +21,13 @@ extension ForEach where Content: View {
     data.map { (pommeID($0), content($0)) }
   }
 }
+
+extension ForEach {
+  /// For SwiftUI's own conformances (tab content's): from its parts.
+  package init(pommeData: Data, id: @escaping (Data.Element) -> ID, content: @escaping (Data.Element) -> Content) {
+    _pommeStorage = ()
+    self.data = pommeData
+    self.content = content
+    pommeID = id
+  }
+}

@@ -340,6 +340,7 @@ final class TabPageController: UIViewController {
     let item = tab.tabItem
     shown.tabBarItem.title = item?.title
     shown.tabBarItem.image = item?.image
+    shown.tabBarItem.badgeValue = item?.badge
   }
 
   override func viewSafeAreaInsetsDidChange() {

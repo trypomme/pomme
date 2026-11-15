@@ -26,6 +26,7 @@ struct TabItemsView: View {
           Text("Second")
         }
         .tag(2)
+        .badge("New")
     }
   }
 }
