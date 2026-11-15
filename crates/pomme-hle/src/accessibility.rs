@@ -510,6 +510,9 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UITabBar", false, "accessibilityElementCount", bar_element_count),
     ("UITabBar", false, "accessibilityElementAtIndex:", bar_element_at_index),
     ("UITabBar", false, "indexOfAccessibilityElement:", bar_index_of_element),
+    ("UIMoreListView", false, "accessibilityElementCount", bar_element_count),
+    ("UIMoreListView", false, "accessibilityElementAtIndex:", bar_element_at_index),
+    ("UIMoreListView", false, "indexOfAccessibilityElement:", bar_index_of_element),
     (E, false, "initWithAccessibilityContainer:", element_init_with_container),
     (E, false, "accessibilityContainer", container),
     (E, false, "setAccessibilityContainer:", set_container),
@@ -643,6 +646,11 @@ fn bar_children(emu: &mut Emu, bar: u64) -> Result<Option<Vec<u64>>> {
     }
     if crate::tabbar::is_bar(emu, bar) {
         return Ok(Some(tab_bar_elements(emu, bar)?));
+    }
+    if let Some(list) = crate::tabbar::more_list(emu, bar)? {
+        // The More list's rows: a button each, by its tab's title, its badge the value.
+        let parts = list.rows.into_iter().enumerate().map(|(i, r)| Part { key: i as u32, label: r.title, value: r.badge, traits: TRAIT_BUTTON, frame: r.frame }).collect();
+        return Ok(Some(drawn_elements(emu, bar, parts)?));
     }
     Ok(None)
 }

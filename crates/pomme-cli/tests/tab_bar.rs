@@ -158,3 +158,150 @@ fn the_screen_reader_sees_and_switches_tabs() {
         assert!(last.iter().any(|n| n.label.as_deref() == Some("Settings screen")));
     }
 }
+
+// ---- The probe's other cases (PROBE_VARIANT), each recorded on its own ----
+
+/// Run the probe in a case, in a design; its console and the tab bar's look.
+fn run_variant(variant: &str, compat: bool) -> Option<(pomme_hle::Emu, String)> {
+    let mut emu = boot(compat)?;
+    // (The probe turns its window dark on iOS; pomme's appearance is the
+    // system's, which looks the same: it starts dark.)
+    emu.appearance.dark = variant.contains("dark");
+    pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", variant);
+    common::views(&mut emu, 4.5);
+    let console = emu.console.clone();
+    Some((emu, console))
+}
+
+/// The recorded file for a case.
+fn recording(variant: &str, compat: bool) -> String {
+    format!("ios26{}-{variant}.txt", if compat { "-compat" } else { "" })
+}
+
+/// The probe's reports that aren't frames, as iOS printed them (fixtures/tabbar/measured).
+fn measured_line(variant: &str, compat: bool, prefix: &str) -> String {
+    let path = format!("{}/tests/fixtures/tabbar/measured/tabbar-{}-{variant}.log", env!("CARGO_MANIFEST_DIR"), if compat { "compat" } else { "glass" });
+    std::fs::read_to_string(path).unwrap().lines().find(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no {prefix}")).to_string()
+}
+
+fn line<'a>(console: &'a str, prefix: &str) -> &'a str {
+    console.lines().find(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no {prefix} in\n{console}"))
+}
+
+/// The bar and safe-area reports, as recorded.
+fn reports_match(console: &str, file: &str) -> Vec<String> {
+    let ours = common::parse_metrics(console);
+    let mut wrong = Vec::new();
+    for (name, want) in recorded(file) {
+        if !(name.ends_with(".bar") || name.ends_with(".insets")) {
+            continue;
+        }
+        match ours.get(&name) {
+            Some(got) if got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 0.5) => {}
+            got => wrong.push(format!("{name}: {got:?}, iOS {want:?}")),
+        }
+    }
+    wrong
+}
+
+/// Seven tabs: four and More on the bar, as recorded (frames and all); the
+/// seventh selected sits on the More navigation controller over its list, as
+/// on iOS; the list has the other three, the badge with Settings.
+#[test]
+fn more_than_five_tabs_have_more() {
+    for compat in [false, true] {
+        let Some((mut emu, console)) = run_variant("more", compat) else { return };
+        let wrong = reports_match(&console, &recording("more", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {}", wrong.join("\n"));
+        assert_eq!(line(&console, "MORE "), measured_line("more", compat, "MORE "));
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        let titles: Vec<&str> = look.buttons.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(titles, ["Home", "Search", "Library", "Favourites", "More"]);
+        // The More tab is selected (its list showing, at the end).
+        assert!(look.buttons[4].selected && look.buttons.iter().filter(|b| b.selected).count() == 1);
+        let xs: Vec<f64> = look.buttons.iter().map(|b| b.frame[0]).collect();
+        let want = if compat { [2.0, 80.0, 158.0, 236.0, 314.0] } else { [25.0, 89.2, 153.3, 217.5, 291.0] };
+        assert!(xs.iter().zip(want).all(|(x, w)| (x - w).abs() <= 1.5), "compat {compat}: {xs:?}");
+        let views = emu.describe_views();
+        let list_view = pomme_hle::tabbar::more_lists(&emu).into_iter().next().expect("a More list");
+        let list = pomme_hle::tabbar::more_list(&mut emu, list_view).unwrap().unwrap();
+        let rows: Vec<(&str, Option<&str>)> = list.rows.iter().map(|r| (r.title.as_str(), r.badge.as_deref())).collect();
+        assert_eq!(rows, [("Settings", Some("3")), ("Downloads", None), ("History", None)], "{views}");
+        // Rows from under the navigation bar: 52 pt under Liquid Glass, 44 before (measured).
+        let want_top = if compat { 91.0 } else { 101.0 };
+        assert_eq!(list.rows[0].frame[1], want_top);
+        assert_eq!(list.rows[1].frame[1] - list.rows[0].frame[1], if compat { 44.0 } else { 52.0 });
+    }
+}
+
+/// A screen pushed with hidesBottomBarWhenPushed hides the bar (its safe
+/// area only the home indicator's); popping brings it back.
+#[test]
+fn pushed_screens_can_hide_the_bar() {
+    for compat in [false, true] {
+        let Some((_, console)) = run_variant("push", compat) else { return };
+        let wrong = reports_match(&console, &recording("push", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {}", wrong.join("\n"));
+        assert_eq!(line(&console, "PUSHED "), measured_line("push", compat, "PUSHED "));
+        assert_eq!(line(&console, "POPPED "), measured_line("push", compat, "POPPED "));
+    }
+}
+
+/// On its side: the compact bar (64 pt under Liquid Glass, 52 before), image
+/// beside title, the buttons where iOS puts them.
+#[test]
+fn on_its_side_the_bar_is_compact() {
+    for compat in [false, true] {
+        let Some((mut emu, console)) = run_variant("landscape", compat) else { return };
+        let wrong = reports_match(&console, &recording("landscape", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {}", wrong.join("\n"));
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        // (Recorded: fixtures/tabbar/measured/tabbar-*-landscape.log. Widths
+        // follow the titles, which pomme sets in Inter, so a little room.)
+        let want: &[[f64; 2]] = if compat { &[[81.0, 220.0], [305.0, 222.0], [531.0, 230.0]] } else { &[[286.0, 83.7], [373.7, 86.0], [463.7, 94.7]] };
+        for (b, w) in look.buttons.iter().zip(want) {
+            assert!((b.frame[0] - w[0]).abs() <= 4.0 && (b.frame[2] - w[1]).abs() <= 4.0, "compat {compat}: {:?}, iOS {w:?}", b.frame);
+            assert!(b.image_frame[0] + b.image_frame[2] < b.title_frame[0], "image beside title");
+        }
+    }
+}
+
+/// Dark: Liquid Glass's unselected tabs white, the tint dark mode's blue; before, grey.
+#[test]
+fn dark() {
+    for compat in [false, true] {
+        let Some((mut emu, console)) = run_variant("dark", compat) else { return };
+        let wrong = reports_match(&console, &recording("dark", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {}", wrong.join("\n"));
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        assert!(look.dark);
+        let rgb = |c: [f64; 4]| c.map(|v| (v * 255.0).round() as u8);
+        assert_eq!(rgb(look.buttons[1].color)[..3], [0, 145, 255], "the selected tab, dark blue");
+        assert_eq!(rgb(look.buttons[0].color)[..3], if compat { [146, 146, 146] } else { [255, 255, 255] });
+    }
+}
+
+/// Colours from the bar's appearance (as React Native's native tabs set
+/// them): icons and titles by state, badges; under Liquid Glass an
+/// unselected title keeps its own colour (measured).
+#[test]
+fn appearance_colours() {
+    for compat in [false, true] {
+        let Some((mut emu, _)) = run_variant("appearance", compat) else { return };
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        let rgb = |c: [f64; 4]| [c[0], c[1], c[2]].map(|v| (v * 255.0).round() as u8);
+        let (normal, selected) = (&look.buttons[0], &look.buttons[1]);
+        assert!(selected.selected);
+        assert_eq!(rgb(normal.color), [255, 56, 60], "compat {compat}: red icons");
+        assert_eq!(rgb(selected.color), [203, 48, 224], "compat {compat}: a purple selected icon");
+        assert_eq!(rgb(selected.title_color), [255, 141, 40], "compat {compat}: an orange selected title");
+        let want_title = if compat { [52, 199, 89] } else { [25, 25, 25] };
+        assert_eq!(rgb(normal.title_color), want_title, "compat {compat}: unselected titles");
+        let badge = look.buttons[2].badge.as_ref().unwrap();
+        assert_eq!(rgb(badge.color), [0, 136, 255], "compat {compat}: blue badges");
+    }
+}

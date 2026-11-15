@@ -29,6 +29,8 @@ pub struct State {
     containers: HashMap<u64, u64>,
     /// Tab bar → what's on it.
     bars: HashMap<u64, Bar>,
+    /// A More list's view → its tab bar controller.
+    more_lists: HashMap<u64, u64>,
 }
 
 #[derive(Default, Clone)]
@@ -40,6 +42,33 @@ struct Tabs {
     delegate: u64,
     /// The controller whose view is in the container now.
     shown: u64,
+    /// The More tab's navigation controller (`moreNavigationController`), its
+    /// list, and the More item, made on first use.
+    more: u64,
+    more_list: u64,
+    more_item: u64,
+    /// The More tab is selected, showing its list (no tab of its own selected).
+    more_selected: bool,
+}
+
+/// A tab bar shows at most five buttons; with more tabs, four and More.
+const MAX_BUTTONS: usize = 5;
+
+impl Tabs {
+    /// Whether some tabs are in the More list.
+    fn overflows(&self) -> bool {
+        self.controllers.len() > MAX_BUTTONS
+    }
+
+    /// The tabs with their own buttons.
+    fn on_bar(&self) -> &[u64] {
+        if self.overflows() { &self.controllers[..MAX_BUTTONS - 1] } else { &self.controllers }
+    }
+
+    /// Whether the More tab is what's selected (its list, or a tab in it).
+    fn in_more(&self) -> bool {
+        self.more_selected || (self.overflows() && self.selected.is_some_and(|i| i >= MAX_BUTTONS - 1))
+    }
 }
 
 #[derive(Default, Clone)]
@@ -51,8 +80,23 @@ struct Bar {
     controller: u64,
 }
 
-/// The bar's height above the bottom safe-area inset (both designs).
-pub const BAR_HEIGHT: f64 = 49.0;
+/// The bar's height above the bottom safe-area inset: 49 pt (both designs);
+/// with the phone on its side (a compact height), 44 under Liquid Glass, 32
+/// before (over the 20-pt inset there: 64 and 52 in all, as measured).
+pub fn bar_height(emu: &Emu) -> f64 {
+    if !compact(emu) {
+        49.0
+    } else if emu.system.liquid_glass() {
+        44.0
+    } else {
+        32.0
+    }
+}
+
+/// The phone is on its side: the bar's compact layout (image beside title).
+fn compact(emu: &Emu) -> bool {
+    crate::orientation::size_classes(emu).1 == crate::device::COMPACT
+}
 /// Titles: 10 pt, medium; selected under Liquid Glass, semibold.
 const TITLE_SIZE: f64 = 10.0;
 const TITLE_WEIGHT: f64 = 0.23;
@@ -105,6 +149,13 @@ pub fn container_bar(emu: &Emu, v: u64) -> Option<u64> {
 /// Every tab bar there is (for tests and tools).
 pub fn bars(emu: &Emu) -> Vec<u64> {
     let mut v: Vec<u64> = emu.tabs.bars.keys().copied().collect();
+    v.sort();
+    v
+}
+
+/// Every More list there is (for tests and tools).
+pub fn more_lists(emu: &Emu) -> Vec<u64> {
+    let mut v: Vec<u64> = emu.tabs.more_lists.keys().copied().collect();
     v.sort();
     v
 }
@@ -270,8 +321,14 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     let t = tabs(emu, tbc);
     let b = view(emu, container).bounds;
     let (w, h) = (b[2], b[3]);
-    let bar_h = BAR_HEIGHT + crate::orientation::safe_area(emu)[2];
+    let bar_h = bar_height(emu) + crate::orientation::safe_area(emu)[2];
     set_frame_of(emu, t.bar, [0.0, h - bar_h, w, bar_h]);
+    // Hidden while a pushed screen asks (hidesBottomBarWhenPushed).
+    let hidden = hidden_by_push(emu, t.shown);
+    if view(emu, t.bar).hidden != hidden {
+        crate::uiview::view_mut(emu, t.bar).hidden = hidden;
+        crate::host::changed(emu);
+    }
     if t.shown != 0 {
         let v = send(emu, t.shown, "view", &[])?;
         set_frame_of(emu, v, [0.0, 0.0, w, h]);
@@ -279,15 +336,70 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     Ok(())
 }
 
-/// The bar's items: each tab's controller's item.
+/// Whether a tab's navigation controller shows a screen that hides the bar:
+/// one pushed (not its root) with `hidesBottomBarWhenPushed`, or one above it.
+fn hidden_by_push(emu: &Emu, shown: u64) -> bool {
+    let Some(stack) = crate::navigation::stack_of(emu, shown) else { return false };
+    stack.iter().skip(1).any(|&vc| bag_get(emu, vc, "hidesBottomBarWhenPushed").unwrap_or(0) != 0)
+}
+
+/// A navigation controller's stack changed: if it's a tab's, the bar may hide or come back.
+pub(crate) fn navigation_changed(emu: &mut Emu, nc: u64) -> Result<()> {
+    let tbc = tab_bar_controller_of(emu, nc);
+    if tbc != 0 {
+        let c = tabs(emu, tbc).container;
+        if c != 0 {
+            layout_container(emu, c)?;
+        }
+    }
+    Ok(())
+}
+
+/// The More tab's item: UIKit's system More item.
+fn more_item(emu: &mut Emu, tbc: u64) -> Result<u64> {
+    let t = tabs(emu, tbc);
+    if t.more_item != 0 {
+        return Ok(t.more_item);
+    }
+    let item = new_object(emu, ITEM)?;
+    send(emu, item, "initWithTabBarSystemItem:tag:", &[0, 0])?;
+    tabs_mut(emu, tbc).more_item = item;
+    Ok(item)
+}
+
+/// The More tab's navigation controller, its root the More list, made on first use.
+fn more_navigation(emu: &mut Emu, tbc: u64) -> Result<u64> {
+    let t = tabs(emu, tbc);
+    if t.more != 0 {
+        return Ok(t.more);
+    }
+    let list = new_object(emu, "UIMoreListController")?;
+    send(emu, list, "init", &[])?;
+    let title = foundation::new_nsstring(emu, "More")?;
+    send(emu, list, "setTitle:", &[title])?;
+    bag_set(emu, list, "pommeTabBarController", tbc);
+    let nav = new_object(emu, "UIMoreNavigationController")?;
+    send(emu, nav, "initWithRootViewController:", &[list])?;
+    crate::navigation::add_child(emu, tbc, nav)?;
+    let tm = tabs_mut(emu, tbc);
+    tm.more = nav;
+    tm.more_list = list;
+    Ok(nav)
+}
+
+/// The bar's items: each tab's controller's item (with more than five tabs,
+/// the first four's and More's).
 fn sync_items(emu: &mut Emu, tbc: u64) -> Result<()> {
     let t = tabs(emu, tbc);
     let b = ensure_bar(emu, tbc)?;
     let mut items = Vec::new();
-    for &vc in &t.controllers {
+    for &vc in t.on_bar() {
         items.push(vc_item(emu, vc)?);
     }
-    let selected = t.selected.and_then(|i| items.get(i).copied()).unwrap_or(0);
+    if t.overflows() {
+        items.push(more_item(emu, tbc)?);
+    }
+    let selected = if t.in_more() { items.last().copied().unwrap_or(0) } else { t.selected.and_then(|i| items.get(i).copied()).unwrap_or(0) };
     let bs = bar_mut(emu, b);
     bs.items = items;
     bs.selected = selected;
@@ -302,8 +414,28 @@ fn show_selected(emu: &mut Emu, tbc: u64) -> Result<()> {
     if t.container == 0 {
         return Ok(());
     }
-    let new = t.selected.and_then(|i| t.controllers.get(i).copied()).unwrap_or(0);
+    let new = if t.in_more() {
+        // The More tab: its navigation controller, with the selected tab pushed on its list.
+        let nav = more_navigation(emu, tbc)?;
+        let list = tabs(emu, tbc).more_list;
+        let mut stack = vec![list];
+        if !t.more_selected
+            && let Some(vc) = t.selected.and_then(|i| t.controllers.get(i).copied())
+        {
+            stack.push(vc);
+        }
+        if crate::navigation::stack_of(emu, nav).as_deref() != Some(&stack[..]) {
+            let a = foundation::new_array_of(emu, &stack)?;
+            // (Chosen from the list, it's pushed as a row's screen is; otherwise it's just there.)
+            let animated = t.shown == nav && stack.len() == 2;
+            send(emu, nav, "setViewControllers:animated:", &[a, animated as u64])?;
+        }
+        nav
+    } else {
+        t.selected.and_then(|i| t.controllers.get(i).copied()).unwrap_or(0)
+    };
     if new == t.shown {
+        crate::host::changed(emu);
         return Ok(());
     }
     let on_screen = view(emu, t.container).window != 0;
@@ -336,7 +468,7 @@ fn show_selected(emu: &mut Emu, tbc: u64) -> Result<()> {
 /// The tab bar controller's selected child: the one appearance callbacks reach.
 pub fn selected_child(emu: &Emu, vc: u64) -> Option<Option<u64>> {
     let t = emu.tabs.tabs.get(&vc)?;
-    Some(t.selected.and_then(|i| t.controllers.get(i).copied()))
+    Some(if t.in_more() { Some(t.more).filter(|&m| m != 0) } else { t.selected.and_then(|i| t.controllers.get(i).copied()) })
 }
 
 fn set_controllers(emu: &mut Emu, tbc: u64, list: Vec<u64>) -> Result<()> {
@@ -371,6 +503,30 @@ fn set_controllers(emu: &mut Emu, tbc: u64, list: Vec<u64>) -> Result<()> {
     show_selected(emu, tbc)
 }
 
+/// The More tab tapped: its list, the delegate asked first and told after (about the More navigation controller).
+fn select_more(emu: &mut Emu, tbc: u64) -> Result<()> {
+    let nav = more_navigation(emu, tbc)?;
+    let delegate = tabs(emu, tbc).delegate;
+    if delegate != 0 {
+        let ask = objc::intern(emu, "tabBarController:shouldSelectViewController:")?;
+        if objc::responds(emu, delegate, ask)? && send(emu, delegate, "tabBarController:shouldSelectViewController:", &[tbc, nav])? & 0xff == 0 {
+            return Ok(());
+        }
+    }
+    let tm = tabs_mut(emu, tbc);
+    tm.more_selected = true;
+    tm.selected = None;
+    sync_items(emu, tbc)?;
+    show_selected(emu, tbc)?;
+    if delegate != 0 {
+        let did = objc::intern(emu, "tabBarController:didSelectViewController:")?;
+        if objc::responds(emu, delegate, did)? {
+            send(emu, delegate, "tabBarController:didSelectViewController:", &[tbc, nav])?;
+        }
+    }
+    Ok(())
+}
+
 /// Select a tab. From a tap (`by_user`), the delegate is asked first and told after.
 fn select(emu: &mut Emu, tbc: u64, index: usize, by_user: bool) -> Result<()> {
     let t = tabs(emu, tbc);
@@ -381,7 +537,9 @@ fn select(emu: &mut Emu, tbc: u64, index: usize, by_user: bool) -> Result<()> {
             return Ok(());
         }
     }
-    tabs_mut(emu, tbc).selected = Some(index);
+    let tm = tabs_mut(emu, tbc);
+    tm.selected = Some(index);
+    tm.more_selected = false;
     sync_items(emu, tbc)?;
     show_selected(emu, tbc)?;
     if by_user && t.delegate != 0 {
@@ -394,6 +552,75 @@ fn select(emu: &mut Emu, tbc: u64, index: usize, by_user: bool) -> Result<()> {
 }
 
 const TBC: &str = "UITabBarController";
+const MORE_LIST: &str = "UIMoreListController";
+
+// ---- The More list ----
+
+/// The More tab's list as drawn: a row per tab beyond the bar's four (in its view's coordinates).
+#[derive(Clone, Debug)]
+pub struct MoreList {
+    pub rows: Vec<MoreRow>,
+    pub glass: bool,
+    /// The image tint.
+    pub tint: [f64; 4],
+}
+
+#[derive(Clone, Debug)]
+pub struct MoreRow {
+    /// Its tab's index in the controller's tabs.
+    pub index: usize,
+    pub title: String,
+    /// The tab's image (a template, in the tint).
+    pub image: u64,
+    pub badge: Option<String>,
+    pub frame: [f64; 4],
+}
+
+/// Rows of 52 pt under Liquid Glass (44 before), from under the navigation bar (measured).
+fn more_row_height(emu: &Emu) -> f64 {
+    if emu.system.liquid_glass() { 52.0 } else { 44.0 }
+}
+
+/// A More list's rows, if the view is one.
+pub fn more_list(emu: &mut Emu, v: u64) -> Result<Option<MoreList>> {
+    let Some(&tbc) = emu.tabs.more_lists.get(&v) else { return Ok(None) };
+    let t = tabs(emu, tbc);
+    let top = crate::navigation::safe_area(emu, v)[0];
+    let w = view(emu, v).bounds[2];
+    let h = more_row_height(emu);
+    let mut rows = Vec::new();
+    for (k, (index, &vc)) in t.controllers.iter().enumerate().skip(MAX_BUTTONS - 1).enumerate() {
+        let item = vc_item(emu, vc)?;
+        let title = item_title(emu, item)?;
+        let image = bag_get(emu, item, "image").unwrap_or(0);
+        let badge = item_string(emu, item, "badgeValue");
+        rows.push(MoreRow { index, title, image, badge, frame: [0.0, top + k as f64 * h, w, h] });
+    }
+    let tint = default_tint(emu, v)?;
+    Ok(Some(MoreList { rows, glass: emu.system.liquid_glass(), tint }))
+}
+
+/// A finger lifted on the More list: on a row, its tab (pushed on the More navigation controller).
+fn more_list_touches_ended(emu: &mut Emu) -> Result<()> {
+    let v = emu.arg(0);
+    let Some(p) = crate::touch::active_location(emu) else { return Ok(()) };
+    let o = crate::uiview::window_origin(emu, v);
+    let (x, y) = (p[0] - o[0], p[1] - o[1]);
+    let Some(list) = more_list(emu, v)? else { return Ok(()) };
+    let Some(row) = list.rows.iter().find(|r| x >= r.frame[0] && x < r.frame[0] + r.frame[2] && y >= r.frame[1] && y < r.frame[1] + r.frame[3]) else {
+        return Ok(());
+    };
+    let tbc = emu.tabs.more_lists[&v];
+    select(emu, tbc, row.index, true)
+}
+
+/// Choose a More list's row (a screen reader's activation).
+pub fn more_list_tap(emu: &mut Emu, v: u64, row: usize) -> Result<()> {
+    let Some(list) = more_list(emu, v)? else { return Ok(()) };
+    let Some(r) = list.rows.get(row) else { return Ok(()) };
+    let tbc = emu.tabs.more_lists[&v];
+    select(emu, tbc, r.index, true)
+}
 
 // ---- UITabBar ----
 
@@ -420,7 +647,8 @@ pub fn tap(emu: &mut Emu, b: u64, i: usize) -> Result<()> {
         return Ok(());
     }
     if bs.controller != 0 {
-        return select(emu, bs.controller, i, true);
+        let t = tabs(emu, bs.controller);
+        return if t.overflows() && i == MAX_BUTTONS - 1 { select_more(emu, bs.controller) } else { select(emu, bs.controller, i, true) };
     }
     let item = bs.items[i];
     bar_mut(emu, b).selected = item;
@@ -442,6 +670,7 @@ const BAR: &str = "UITabBar";
 #[derive(Clone, Debug)]
 pub struct Look {
     pub glass: bool,
+    pub dark: bool,
     /// Liquid Glass's capsule the buttons sit on.
     pub platter: Option<[f64; 4]>,
     /// The bar's fill (before iOS 26), and its hairline along the top.
@@ -455,8 +684,11 @@ pub struct Button {
     pub item: u64,
     pub frame: [f64; 4],
     pub title: String,
+    /// The title's colour (an appearance's title attributes may differ from the icon's).
+    pub title_color: [f64; 4],
     pub title_frame: [f64; 4],
     pub title_weight: f64,
+    pub title_size: f64,
     /// The image to draw (a UIImage, a template in `color`), and where.
     pub image: u64,
     pub image_frame: [f64; 4],
@@ -475,8 +707,9 @@ pub struct Badge {
     pub weight: f64,
 }
 
-/// The item's image as the bar shows it: a symbol at the tab bar's size.
-fn tab_image(emu: &mut Emu, item: u64, selected: bool) -> Result<u64> {
+/// The item's image as the bar shows it: a symbol at the tab bar's size
+/// (smaller on its side: the medium scale at 17.5 pt, fitted as upright's is).
+fn tab_image(emu: &mut Emu, item: u64, selected: bool, side: bool) -> Result<u64> {
     let key_img = if selected { "selectedImage" } else { "image" };
     let mut img = bag_get(emu, item, key_img).unwrap_or(0);
     if img == 0 {
@@ -484,13 +717,19 @@ fn tab_image(emu: &mut Emu, item: u64, selected: bool) -> Result<u64> {
     }
     let Some(symbol) = emu.render.images.get(&img).and_then(|i| i.look.symbol.clone()) else { return Ok(img) };
     // Kept per item until its image changes.
-    let (cache, source) = if selected { ("pommeSelectedTabImage", "pommeSelectedTabSource") } else { ("pommeTabImage", "pommeTabSource") };
+    let (cache, source) = match (selected, side) {
+        (true, false) => ("pommeSelectedTabImage", "pommeSelectedTabSource"),
+        (false, false) => ("pommeTabImage", "pommeTabSource"),
+        (true, true) => ("pommeSelectedSideTabImage", "pommeSelectedSideTabSource"),
+        (false, true) => ("pommeSideTabImage", "pommeSideTabSource"),
+    };
     if bag_get(emu, item, source) == Some(img)
         && let Some(i) = bag_get(emu, item, cache)
     {
         return Ok(i);
     }
-    let config = symbol.config.applying(&crate::symbols::Config { point_size: SYMBOL_POINTS, scale: 3, ..Default::default() });
+    let size = if side { crate::symbols::Config { point_size: 17.5, scale: 2, ..Default::default() } } else { crate::symbols::Config { point_size: SYMBOL_POINTS, scale: 3, ..Default::default() } };
+    let config = symbol.config.applying(&size);
     let sized = crate::symbols::image(emu, &symbol.name, config)?;
     if sized != 0 {
         send(emu, sized, "retain", &[])?;
@@ -503,6 +742,18 @@ fn tab_image(emu: &mut Emu, item: u64, selected: bool) -> Result<u64> {
     Ok(sized)
 }
 
+/// A view's tint: one set on it or a superview, else the system blue as the appearance has it.
+fn default_tint(emu: &mut Emu, v: u64) -> Result<[f64; 4]> {
+    let mut cur = v;
+    while cur != 0 {
+        if let Some(c) = bag_get(emu, cur, "tintColor").filter(|&c| c != 0) {
+            return Ok(color_of(emu, c).unwrap_or([0.0, 0.533, 1.0, 1.0]));
+        }
+        cur = view(emu, cur).superview;
+    }
+    Ok(crate::appearance::system(emu, "systemBlueColor"))
+}
+
 fn color_of(emu: &mut Emu, c: u64) -> Option<[f64; 4]> {
     (c != 0).then(|| emu.ui.views.colors.get(&c).copied()).flatten()
 }
@@ -510,6 +761,106 @@ fn color_of(emu: &mut Emu, c: u64) -> Option<[f64; 4]> {
 fn text_width(emu: &mut Emu, text: &str, size: f64, weight: f64) -> f64 {
     crate::textkit::line_glyphs(emu, text, size, weight, [0.0; 4], 0.0, 0.0).1
 }
+
+// ---- Appearances (UITabBarAppearance's item appearances) ----
+
+/// A lazily made sub-appearance kept on `owner` under `key`.
+fn sub_appearance(emu: &mut Emu, owner: u64, key: &'static str, class: &str) -> Result<u64> {
+    if let Some(a) = bag_get(emu, owner, key).filter(|&a| a != 0) {
+        return Ok(a);
+    }
+    let a = new_object(emu, class)?;
+    send(emu, a, "init", &[])?;
+    bag_set(emu, owner, key, a);
+    Ok(a)
+}
+
+/// An item's colours in a state, from the appearance that applies: the
+/// item's own, else the bar's (at the scroll edge: its scroll-edge
+/// appearance if it has one); the stacked layout upright, compact inline on
+/// its side. (icon, title, badge background), each if set.
+fn state_colors(emu: &mut Emu, b: u64, item: u64, selected: bool, side: bool) -> Result<(Option<[f64; 4]>, Option<[f64; 4]>, Option<[f64; 4]>)> {
+    let appearance = [bag_get(emu, item, "scrollEdgeAppearance"), bag_get(emu, item, "standardAppearance"), bag_get(emu, b, "scrollEdgeAppearance"), bag_get(emu, b, "standardAppearance")]
+        .into_iter()
+        .flatten()
+        .find(|&a| a != 0);
+    let Some(a) = appearance else { return Ok((None, None, None)) };
+    let layout = bag_get(emu, a, if side { "compactInlineLayoutAppearance" } else { "stackedLayoutAppearance" }).unwrap_or(0);
+    if layout == 0 {
+        return Ok((None, None, None));
+    }
+    let state = bag_get(emu, layout, if selected { "selected" } else { "normal" }).unwrap_or(0);
+    if state == 0 {
+        return Ok((None, None, None));
+    }
+    let icon = bag_get(emu, state, "iconColor").and_then(|c| color_of(emu, c));
+    let badge = bag_get(emu, state, "badgeBackgroundColor").and_then(|c| color_of(emu, c));
+    let attrs = bag_get(emu, state, "titleTextAttributes").unwrap_or(0);
+    let title = if attrs != 0 {
+        let key = foundation::new_nsstring(emu, "NSForegroundColorAttributeName")?;
+        let c = send(emu, attrs, "objectForKey:", &[key])?;
+        color_of(emu, c)
+    } else {
+        None
+    };
+    Ok((icon, title, badge))
+}
+
+/// `copy` of an item or state appearance: a new one of its class with what it holds.
+fn copy_appearance(emu: &mut Emu) -> Result<()> {
+    let from = emu.arg(0);
+    let cls = emu.read_u64(from)?;
+    let to = objc::create_instance(emu, cls, 0)?;
+    objc::bag_copy(emu, from, to);
+    ret(emu, to)
+}
+
+const ITEM_APPEARANCE: &str = "UITabBarItemAppearance";
+const STATE_APPEARANCE: &str = "UITabBarItemStateAppearance";
+
+macro_rules! sub_appearance_property {
+    ($class:expr, $get:literal, $set:literal, $sub:expr) => {
+        [
+            ($class, false, $get, (|e: &mut Emu| {
+                let a = sub_appearance(e, e.arg(0), $get, $sub)?;
+                ret(e, a)
+            }) as HostFn),
+            ($class, false, $set, (|e: &mut Emu| {
+                let (o, v) = (e.arg(0), e.arg(2));
+                set_object(e, o, $get, v, true)
+            }) as HostFn),
+        ]
+    };
+}
+
+macro_rules! retained_property {
+    ($class:expr, $get:literal, $set:literal, $copy:expr) => {
+        [
+            ($class, false, $get, (|e: &mut Emu| {
+                let v = bag_get(e, e.arg(0), $get).unwrap_or(0);
+                ret(e, v)
+            }) as HostFn),
+            ($class, false, $set, (|e: &mut Emu| {
+                let (o, v) = (e.arg(0), e.arg(2));
+                set_object(e, o, $get, v, $copy)
+            }) as HostFn),
+        ]
+    };
+}
+
+const APPEARANCE_PROPS: &[[(&str, bool, &str, HostFn); 2]] = &[
+    sub_appearance_property!("UITabBarAppearance", "stackedLayoutAppearance", "setStackedLayoutAppearance:", ITEM_APPEARANCE),
+    sub_appearance_property!("UITabBarAppearance", "inlineLayoutAppearance", "setInlineLayoutAppearance:", ITEM_APPEARANCE),
+    sub_appearance_property!("UITabBarAppearance", "compactInlineLayoutAppearance", "setCompactInlineLayoutAppearance:", ITEM_APPEARANCE),
+    sub_appearance_property!(ITEM_APPEARANCE, "normal", "setNormal:", STATE_APPEARANCE),
+    sub_appearance_property!(ITEM_APPEARANCE, "selected", "setSelected:", STATE_APPEARANCE),
+    sub_appearance_property!(ITEM_APPEARANCE, "disabled", "setDisabled:", STATE_APPEARANCE),
+    sub_appearance_property!(ITEM_APPEARANCE, "focused", "setFocused:", STATE_APPEARANCE),
+    retained_property!(STATE_APPEARANCE, "iconColor", "setIconColor:", false),
+    retained_property!(STATE_APPEARANCE, "badgeBackgroundColor", "setBadgeBackgroundColor:", false),
+    retained_property!(STATE_APPEARANCE, "titleTextAttributes", "setTitleTextAttributes:", true),
+    retained_property!(STATE_APPEARANCE, "badgeTextAttributes", "setBadgeTextAttributes:", true),
+];
 
 /// The bar's background before iOS 26: its scroll-edge appearance's (the
 /// content rests at the bottom edge, so that's the one that shows), else
@@ -530,72 +881,123 @@ fn background(emu: &mut Emu, b: u64) -> (Option<[f64; 4]>, Option<[f64; 4]>) {
     (bg, shadow)
 }
 
-/// How a tab bar looks now, if it's one.
+/// How a tab bar looks now, if it's one. Measured on the iOS 26 Simulator
+/// (tests/fixtures/tabbar), held upright and on its side, in both designs:
+///
+/// - Liquid Glass, upright: 94-pt buttons overlapping by 8 on a capsule 4 pt
+///   around them, centred, while that fits 21 pt in from each side; else the
+///   capsule takes that width and the buttons (95 pt for four, 74 for five,
+///   wider for longer titles) overlap evenly across it. Image above title.
+/// - Liquid Glass, on its side: a 44-pt capsule, centred, its buttons sized to
+///   image and title side by side (6, image, 8, title, 10), 4 pt apart.
+/// - Before, upright: equal buttons 4 pt apart, 2 pt in from the edges.
+/// - Before, on its side: buttons sharing the width (at most 228 pt each),
+///   their content centred, image and title side by side 6 pt apart.
 pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
     let Some(bs) = emu.tabs.bars.get(&b).cloned() else { return Ok(None) };
     let glass = emu.system.liquid_glass();
+    let dark = emu.appearance.dark;
+    let side = compact(emu);
     let w = view(emu, b).bounds[2];
     let n = bs.items.len();
-    let tint = {
-        let c = crate::uiview::tint_color(emu, b)?;
-        color_of(emu, c).unwrap_or([0.0, 0.533, 1.0, 1.0])
-    };
+    let tint = default_tint(emu, b)?;
     let unselected = match bag_get(emu, b, "unselectedItemTintColor").and_then(|c| color_of(emu, c)) {
         Some(c) => c,
-        // (Measured: glass's are the label's colour as drawn on it, a little lifted; before, grey.)
+        // (Measured: under Liquid Glass the label's colour as drawn on the glass; before, grey.)
         None if glass => {
-            if emu.appearance.dark {
-                [0.92, 0.92, 0.92, 1.0]
+            if dark {
+                [1.0, 1.0, 1.0, 1.0]
             } else {
                 [0.098, 0.098, 0.098, 1.0]
             }
         }
         None => [0.5725, 0.5725, 0.5725, 1.0],
     };
-    let mut titles = Vec::new();
+    let title_size = if side { 12.0 } else { TITLE_SIZE };
+    // Titles' weights: Liquid Glass's selected tab semibold; otherwise medium upright, regular on its side.
+    let weight_of = |selected: bool| -> f64 {
+        if glass && selected {
+            GLASS_SELECTED_WEIGHT
+        } else if side {
+            0.0
+        } else {
+            TITLE_WEIGHT
+        }
+    };
+    let mut titles = Vec::with_capacity(n);
+    let mut images = Vec::with_capacity(n);
     for &it in &bs.items {
         titles.push(item_title(emu, it)?);
+        let image = tab_image(emu, it, it == bs.selected, side)?;
+        let size = emu.render.images.get(&image).map_or([0.0; 2], |im| im.size);
+        images.push((image, size));
+    }
+    // Each button's content width on its side: image, gap, title.
+    let gap = if glass { 8.0 } else { 6.0 };
+    let mut side_content = Vec::with_capacity(n);
+    for (i, t) in titles.iter().enumerate() {
+        let tw = text_width(emu, t, title_size, if glass { GLASS_SELECTED_WEIGHT } else { 0.0 });
+        side_content.push(images[i].1[0] + gap + tw);
     }
     // Where the buttons go.
     let mut frames = Vec::with_capacity(n);
     let mut platter = None;
-    if glass {
-        // 94-pt buttons overlapping by 8 on a capsule 4 pt around them,
-        // centred, while that fits 21 pt in from each side; else the capsule
-        // takes that width and the buttons (95 pt for four, 74 for five,
-        // wider for longer titles) overlap evenly across it.
-        let max_w = w - 42.0;
-        let compact = n == 0 || 8.0 + n as f64 * 94.0 - 8.0 * (n as f64 - 1.0) <= max_w;
-        let base: f64 = if compact {
-            94.0
-        } else if n == 4 {
-            95.0
-        } else {
-            74.0
-        };
-        let mut widths = Vec::with_capacity(n);
-        for t in &titles {
-            widths.push(base.max(text_width(emu, t, TITLE_SIZE, GLASS_SELECTED_WEIGHT) + 32.0));
+    match (glass, side) {
+        (true, false) => {
+            let max_w = w - 42.0;
+            let fits = n == 0 || 8.0 + n as f64 * 94.0 - 8.0 * (n as f64 - 1.0) <= max_w;
+            let base: f64 = if fits {
+                94.0
+            } else if n == 4 {
+                95.0
+            } else {
+                74.0
+            };
+            let mut widths = Vec::with_capacity(n);
+            for t in &titles {
+                widths.push(base.max(text_width(emu, t, TITLE_SIZE, GLASS_SELECTED_WEIGHT) + 32.0));
+            }
+            let sum: f64 = widths.iter().sum();
+            let (px, pw, overlap) = if fits {
+                let pw = 8.0 + sum - 8.0 * (n.max(1) as f64 - 1.0);
+                ((w - pw) / 2.0, pw, 8.0)
+            } else {
+                (21.0, max_w, (sum - (max_w - 8.0)) / (n as f64 - 1.0).max(1.0))
+            };
+            platter = Some([px, 0.0, pw, 62.0]);
+            let mut x = px + 4.0;
+            for bw in widths {
+                frames.push([x, 4.0, bw, 54.0]);
+                x += bw - overlap;
+            }
         }
-        let sum: f64 = widths.iter().sum();
-        let (px, pw, overlap) = if compact {
-            let pw = 8.0 + sum - 8.0 * (n.max(1) as f64 - 1.0);
-            ((w - pw) / 2.0, pw, 8.0)
-        } else {
-            (21.0, max_w, (sum - (max_w - 8.0)) / (n as f64 - 1.0).max(1.0))
-        };
-        platter = Some([px, 0.0, pw, 62.0]);
-        let mut x = px + 4.0;
-        for bw in widths {
-            frames.push([x, 4.0, bw, 54.0]);
-            x += bw - overlap;
+        (true, true) => {
+            let widths: Vec<f64> = side_content.iter().map(|c| 6.0 + c + 10.0).collect();
+            let pw = 8.0 + widths.iter().sum::<f64>() + 4.0 * (n.max(1) as f64 - 1.0);
+            let px = (w - pw) / 2.0;
+            platter = Some([px, 0.0, pw, 44.0]);
+            let mut x = px + 4.0;
+            for bw in widths {
+                frames.push([x, 4.0, bw, 36.0]);
+                x += bw + 4.0;
+            }
         }
-    } else {
-        // Equal buttons 4 pt apart, 2 pt in from the edges, on whole points.
-        let bw = (w - 4.0 - 4.0 * (n as f64 - 1.0).max(0.0)) / n.max(1) as f64;
-        let xs: Vec<f64> = (0..=n).map(|i| if i == n { w - 2.0 + 4.0 } else { (2.0 + i as f64 * (bw + 4.0)).round() }).collect();
-        for i in 0..n {
-            frames.push([xs[i], 1.0, xs[i + 1] - 4.0 - xs[i], 48.0]);
+        (false, false) => {
+            let bw = (w - 4.0 - 4.0 * (n as f64 - 1.0).max(0.0)) / n.max(1) as f64;
+            let xs: Vec<f64> = (0..=n).map(|i| if i == n { w - 2.0 + 4.0 } else { (2.0 + i as f64 * (bw + 4.0)).round() }).collect();
+            for i in 0..n {
+                frames.push([xs[i], 1.0, xs[i + 1] - 4.0 - xs[i], 48.0]);
+            }
+        }
+        (false, true) => {
+            let span = (w - 88.0).min(n as f64 * 228.0 - 4.0).max(0.0);
+            let content: f64 = side_content.iter().sum();
+            let pad = ((span - 4.0 * (n.max(1) as f64 - 1.0) - content) / n.max(1) as f64).max(0.0);
+            let mut x = ((w - span) / 2.0).floor();
+            for c in &side_content {
+                frames.push([x, 1.0, c + pad, 31.0]);
+                x += c + pad + 4.0;
+            }
         }
     }
     let mut buttons = Vec::with_capacity(n);
@@ -603,32 +1005,57 @@ pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
         let selected = item == bs.selected;
         let enabled = bag_get(emu, item, "disabled").unwrap_or(0) == 0;
         let frame = frames[i];
-        let image = tab_image(emu, item, selected)?;
-        let size = emu.render.images.get(&image).map_or([0.0; 2], |im| im.size);
-        // Images centred 17.7 pt down the button (20 under Liquid Glass); titles below.
-        let (image_mid, title_top) = if glass { (20.0, 35.0) } else { (17.7, 34.33) };
-        let image_frame = [frame[0] + (frame[2] - size[0]) / 2.0, frame[1] + image_mid - size[1] / 2.0, size[0], size[1]];
-        let weight = if glass && selected { GLASS_SELECTED_WEIGHT } else { TITLE_WEIGHT };
-        let tw = text_width(emu, &titles[i], TITLE_SIZE, weight);
-        let title_frame = [frame[0] + (frame[2] - tw) / 2.0, frame[1] + title_top, tw, 12.0];
-        let mut color = if selected { tint } else { unselected };
+        let (image, size) = images[i];
+        let weight = weight_of(selected);
+        let tw = text_width(emu, &titles[i], title_size, weight);
+        let th = if side { 14.33 } else { 12.0 };
+        let (image_frame, title_frame) = if side {
+            // Image and title side by side, centred in the button (Liquid Glass: from 6 pt in).
+            let x0 = if glass { frame[0] + 6.0 } else { frame[0] + (frame[2] - side_content[i]) / 2.0 };
+            let mid = frame[1] + frame[3] / 2.0;
+            let img = [x0, mid - size[1] / 2.0, size[0], size[1]];
+            (img, [x0 + size[0] + gap, mid - th / 2.0, tw, th])
+        } else {
+            // Image centred 17.7 pt down the button (20 under Liquid Glass); title below.
+            let (image_mid, title_top) = if glass { (20.0, 35.0) } else { (17.7, 34.33) };
+            let img = [frame[0] + (frame[2] - size[0]) / 2.0, frame[1] + image_mid - size[1] / 2.0, size[0], size[1]];
+            (img, [frame[0] + (frame[2] - tw) / 2.0, frame[1] + title_top, tw, th])
+        };
+        // An appearance's colours override the tints.
+        let (icon_c, title_c, badge_c) = state_colors(emu, b, item, selected, side)?;
+        let mut color = icon_c.unwrap_or(if selected { tint } else { unselected });
+        // (Measured: under Liquid Glass an unselected title keeps its colour
+        // whatever the appearance says; the icon follows it.)
+        let title_c = if glass && !selected { None } else { title_c };
+        let mut title_color = title_c.unwrap_or(if glass && !selected { unselected } else { color });
         if !enabled {
             color[3] *= 0.35;
+            title_color[3] *= 0.35;
         }
-        // A badge at the image's top right, 5 pt in: red, white text, at least round.
+        // A badge: red, white text, at least round; at the image's top right
+        // (on its side under Liquid Glass, the button's).
         let badge = match item_string(emu, item, "badgeValue") {
             Some(text) => {
-                let (size, weight, h, pad): (f64, f64, f64, f64) = if glass { (12.0, 0.23, 18.33, 4.0) } else { (13.0, 0.0, 18.0, 5.0) };
-                let bw = h.max(text_width(emu, &text, size, weight) + 2.0 * pad);
-                let red = bag_get(emu, item, "badgeColor").and_then(|c| color_of(emu, c)).unwrap_or_else(|| crate::appearance::system(emu, "systemRedColor"));
-                Some(Badge { text, frame: [image_frame[0] + image_frame[2] - 5.0, frame[1] + 2.0, bw, h], color: red, size, weight })
+                let (bsize, bweight, h, pad): (f64, f64, f64, f64) = match (glass, side) {
+                    (true, _) => (12.0, 0.23, 18.33, 4.0),
+                    (false, false) => (13.0, 0.0, 18.0, 5.0),
+                    (false, true) => (10.0, 0.23, 14.0, 4.0),
+                };
+                let bw = h.max(text_width(emu, &text, bsize, bweight) + 2.0 * pad);
+                let red = bag_get(emu, item, "badgeColor").and_then(|c| color_of(emu, c)).or(badge_c).unwrap_or_else(|| crate::appearance::system(emu, "systemRedColor"));
+                let origin = match (glass, side) {
+                    (true, true) => [frame[0] + frame[2] - 20.33, frame[1]],
+                    (false, true) => [image_frame[0] + image_frame[2] - 9.0, frame[1] + 1.0],
+                    _ => [image_frame[0] + image_frame[2] - 5.0, frame[1] + 2.0],
+                };
+                Some(Badge { text, frame: [origin[0], origin[1], bw, h], color: red, size: bsize, weight: bweight })
             }
             None => None,
         };
-        buttons.push(Button { item, frame, title: titles[i].clone(), title_frame, title_weight: weight, image, image_frame, color, selected, enabled, badge });
+        buttons.push(Button { item, frame, title: titles[i].clone(), title_color, title_frame, title_weight: weight, title_size, image, image_frame, color, selected, enabled, badge });
     }
     let (background, hairline) = if glass { (None, None) } else { background(emu, b) };
-    Ok(Some(Look { glass, platter, background, hairline, buttons }))
+    Ok(Some(Look { glass, dark, platter, background, hairline, buttons }))
 }
 
 /// A tab bar's selected button and count, for accessibility.
@@ -639,7 +1066,7 @@ pub fn buttons(emu: &mut Emu, b: u64) -> Result<Vec<Button>> {
 // ---- methods ----
 
 pub(crate) fn methods() -> Vec<(&'static str, bool, &'static str, HostFn)> {
-    let mut m: Vec<_> = ITEM_PROPS.iter().flatten().copied().collect();
+    let mut m: Vec<_> = ITEM_PROPS.iter().chain(APPEARANCE_PROPS).flatten().copied().collect();
     m.extend_from_slice(METHODS);
     m
 }
@@ -698,6 +1125,33 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
         }
         Ok(())
     }),
+    ("UIViewController", false, "hidesBottomBarWhenPushed", |e| {
+        let v = bag_get(e, e.arg(0), "hidesBottomBarWhenPushed").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIViewController", false, "setHidesBottomBarWhenPushed:", |e| {
+        let (vc, v) = (e.arg(0), e.arg(2) & 0xff);
+        bag_set(e, vc, "hidesBottomBarWhenPushed", v);
+        Ok(())
+    }),
+    // The More tab's list: its view is drawn by pomme (render.rs), a row per tab in it.
+    (MORE_LIST, false, "loadView", |e| {
+        let list = e.arg(0);
+        let v = new_object(e, "UIMoreListView")?;
+        send(e, v, "init", &[])?;
+        // (On the system background, as UIKit's table is.)
+        let cls = host_class(e, "UIColor")?;
+        let bg = send(e, cls, "systemBackgroundColor", &[])?;
+        send(e, v, "setBackgroundColor:", &[bg])?;
+        let tbc = bag_get(e, list, "pommeTabBarController").unwrap_or(0);
+        e.tabs.more_lists.insert(v, tbc);
+        send(e, list, "setView:", &[v])?;
+        Ok(())
+    }),
+    ("UIMoreListView", false, "touchesBegan:withEvent:", |_| Ok(())),
+    ("UIMoreListView", false, "touchesMoved:withEvent:", |_| Ok(())),
+    ("UIMoreListView", false, "touchesCancelled:withEvent:", |_| Ok(())),
+    ("UIMoreListView", false, "touchesEnded:withEvent:", more_list_touches_ended),
     ("UIViewController", false, "tabBarController", |e| {
         let t = tab_bar_controller_of(e, e.arg(0));
         ret(e, t)
@@ -738,13 +1192,26 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     (TBC, false, "selectedViewController", |e| {
         let t = tabs(e, e.arg(0));
-        let vc = t.selected.and_then(|i| t.controllers.get(i).copied()).unwrap_or(0);
+        let vc = if t.more_selected { t.more } else { t.selected.and_then(|i| t.controllers.get(i).copied()).unwrap_or(0) };
         ret(e, vc)
+    }),
+    (TBC, false, "moreNavigationController", |e| {
+        let nav = more_navigation(e, e.arg(0))?;
+        ret(e, nav)
     }),
     (TBC, false, "setSelectedViewController:", |e| {
         let (tbc, vc) = (e.arg(0), e.arg(2));
-        match tabs(e, tbc).controllers.iter().position(|&v| v == vc) {
+        let t = tabs(e, tbc);
+        match t.controllers.iter().position(|&v| v == vc) {
             Some(i) => select(e, tbc, i, false),
+            // The More tab's list.
+            None if vc != 0 && vc == t.more => {
+                let tm = tabs_mut(e, tbc);
+                tm.more_selected = true;
+                tm.selected = None;
+                sync_items(e, tbc)?;
+                show_selected(e, tbc)
+            }
             None => Ok(()),
         }
     }),
@@ -800,6 +1267,21 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (b, c) = (e.arg(0), e.arg(2));
         set_object(e, b, "barTintColor", c, false)
     }),
+    // Item appearances copy what they hold (as UIBarAppearance does).
+    (ITEM_APPEARANCE, false, "copy", copy_appearance),
+    (ITEM_APPEARANCE, false, "copyWithZone:", copy_appearance),
+    (STATE_APPEARANCE, false, "copy", copy_appearance),
+    (STATE_APPEARANCE, false, "copyWithZone:", copy_appearance),
+    // iOS 26's: the bar minimises as content scrolls (pomme keeps it whole).
+    (TBC, false, "tabBarMinimizeBehavior", |e| {
+        let v = bag_get(e, e.arg(0), "tabBarMinimizeBehavior").unwrap_or(0);
+        ret(e, v)
+    }),
+    (TBC, false, "setTabBarMinimizeBehavior:", |e| {
+        let (t, v) = (e.arg(0), e.arg(2));
+        bag_set(e, t, "tabBarMinimizeBehavior", v);
+        Ok(())
+    }),
     (BAR, false, "standardAppearance", |e| {
         let v = bag_get(e, e.arg(0), "standardAppearance").unwrap_or(0);
         ret(e, v)
@@ -827,7 +1309,7 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     (BAR, false, "sizeThatFits:", |e| {
         let w = d(e, 0);
-        let h = BAR_HEIGHT + crate::orientation::safe_area(e)[2];
+        let h = bar_height(e) + crate::orientation::safe_area(e)[2];
         ret_size(e, w, h);
         Ok(())
     }),

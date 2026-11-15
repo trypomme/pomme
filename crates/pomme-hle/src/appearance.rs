@@ -86,13 +86,15 @@ const PALETTE: &[(&str, [f64; 4], [f64; 4])] = &[
     ("systemGray6Color", [0.949, 0.949, 0.9686, 1.0], [0.1098, 0.1098, 0.1176, 1.0]),
 ];
 
-/// Before iOS 26's design, the system blue (and the tint) was iOS 18's.
+/// Before iOS 26, the system blue (and the tint) was iOS 18's. (iOS 26 in
+/// the design before it, UIDesignRequiresCompatibility, keeps its own blue:
+/// measured, tests/fixtures/tabbar/measured/tabbar-compat*.log.)
 const BLUE_18: ([f64; 4], [f64; 4]) = ([0.0, 0.478, 1.0, 1.0], [0.039, 0.518, 1.0, 1.0]);
 
 /// A system colour's (light, dark) values, by its class method's name.
 pub fn system_values(emu: &Emu, sel: &str) -> Option<([f64; 4], [f64; 4])> {
     let sel = if sel == "tintColor" { "systemBlueColor" } else { sel };
-    if sel == "systemBlueColor" && !emu.system.liquid_glass() {
+    if sel == "systemBlueColor" && emu.system.os.major() < 26 {
         return Some(BLUE_18);
     }
     PALETTE.iter().find(|(n, _, _)| *n == sel).map(|&(_, l, d)| (l, d))

@@ -111,7 +111,18 @@ Debugging:
   bar of tabs (selected or not; before iOS 26 a badge reads "3 items"), in the browser as a
   `tablist` of `tab`s. SwiftUI's `TabView` shows its tabs the same way, both as views with
   `.tabItem` and `.tag` and as iOS 18's `Tab`s by value, a tab able to hold a
-  `NavigationStack`; the selection binding follows the bar. `tests/tab_bar.rs` and
+  `NavigationStack`; the selection binding follows the bar. More than five tabs show four and
+  More, whose `moreNavigationController` lists the rest (52-pt rows under Liquid Glass, 44
+  before; rows are buttons to VoiceOver; no Edit yet). A screen pushed with
+  `hidesBottomBarWhenPushed` hides the bar until it's popped. On its side the bar is compact
+  (a 44-pt platter of image-beside-title buttons, or the 32-pt row before iOS 26). Dark mode
+  and a `UITabBarAppearance`'s per-state icon, title and badge colours (how React Native's
+  native tabs style them) are as measured; under Liquid Glass an unselected title keeps the
+  label colour whatever the appearance says. SwiftUI also takes `ForEach` and `Group` among
+  its `Tab`s, `Tab`'s roles and `LocalizedStringResource` titles, `.badge` on a tab or a
+  `.tabItem`, and the automatic, tab-bar-only and sidebar-adaptable styles (pages aren't
+  yet). React Native's native tabs (react-native-screens) take their pre-iOS 26.1 path,
+  `viewControllers` and appearances, which this covers. `tests/tab_bar.rs` and
   `tests/swiftui_tabs.rs`.
 - `pomme run … --device iphone-17-pro-max` presents another iPhone: its screen size and scale,
   safe area, keyboard height, and its notch or Dynamic Island in screenshots

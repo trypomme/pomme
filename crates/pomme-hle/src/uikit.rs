@@ -40,6 +40,9 @@ pub struct State {
     /// How the interface is turned, and how the device is held (see orientation.rs).
     pub orientation: crate::device::Orientation,
     pub device_orientation: crate::device::Orientation,
+    /// The orientation the app asked for (`requestGeometryUpdate`): kept while
+    /// it's supported, until the phone is turned.
+    pub requested_orientation: Option<crate::device::Orientation>,
     /// Scripted turns of the phone: (virtual ns, how it's then held).
     pub rotations: Vec<(u64, crate::device::Orientation)>,
     /// The interface turn in progress, if any.

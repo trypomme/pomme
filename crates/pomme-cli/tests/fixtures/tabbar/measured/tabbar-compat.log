@@ -1,7 +1,3 @@
-CALLED _AXSApplicationAccessibilitySetEnabled
-CALLED _AXSSetAutomationEnabled
-LOADED /System/Library/PrivateFrameworks/AccessibilityUtilities.framework true
-LOADED /System/Library/AccessibilityBundles/UIKit.axbundle true
 METRIC first.bar 0.0 761.0 390.0 83.0
 METRIC first.insets 0.0 47.0 0.0 83.0
 VIEW first UITabBar 0.0 0.0 390.0×83.0 bg - alpha 1.0
@@ -170,4 +166,4 @@ TEXT second 3 | size 13.0 | weight {
 } | color 255,255,255,255 | frame 338.7 4.0 8.3 15.7
 METRIC second.text.3 338.6666666666667 3.999999999999999 8.333333333333314 15.666666666666664
 ITEMS second 3 selected 1 tint 0,136,255,255 unselected -
-dev.pomme.tabbar: 68977
+dev.pomme.tabbar: 88994

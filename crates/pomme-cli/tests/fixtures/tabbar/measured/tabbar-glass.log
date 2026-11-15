@@ -1,7 +1,3 @@
-CALLED _AXSApplicationAccessibilitySetEnabled
-CALLED _AXSSetAutomationEnabled
-LOADED /System/Library/PrivateFrameworks/AccessibilityUtilities.framework true
-LOADED /System/Library/AccessibilityBundles/UIKit.axbundle true
 METRIC first.bar 0.0 761.0 390.0 83.0
 METRIC first.insets 0.0 47.0 0.0 83.0
 VIEW first UITabBar 0.0 0.0 390.0×83.0 bg - alpha 1.0
@@ -152,6 +148,21 @@ TEXT first 3 | size 12.0 | weight {
 METRIC first.text.3 295.0 8.0 10.333333333333314 14.333333333333336
 VIEW first     DestOutView 58.0 0.0 94.0×54.0 bg 0,0,0,255 alpha 1.0
 ITEMS first 3 selected 0 tint 0,136,255,255 unselected -
+LENS 8.0 148.0 94.0
+LENS 53.2 148.0 94.0
+LENS 105.6 148.0 94.0
+LENS 159.5 148.0 94.0
+LENS 209.5 148.0 94.0
+LENS 260.1 148.0 94.0
+LENS 318.0 148.0 94.0
+LENS 370.0 148.0 94.0
+LENS 422.3 148.0 94.0
+LENS 470.8 148.0 94.0
+LENS 510.6 148.0 94.0
+LENS 576.2 148.0 94.0
+LENS 626.2 148.0 94.0
+LENS 675.0 148.0 94.0
+LENS 737.4 148.0 94.0
 METRIC second.bar 0.0 761.0 390.0 83.0
 METRIC second.insets 0.0 47.0 0.0 83.0
 VIEW second UITabBar 0.0 0.0 390.0×83.0 bg - alpha 1.0
@@ -302,4 +313,4 @@ TEXT second 3 | size 12.0 | weight {
 METRIC second.text.3 295.0 8.0 10.333333333333314 14.333333333333336
 VIEW second     DestOutView 58.0 0.0 94.0×54.0 bg 0,0,0,255 alpha 1.0
 ITEMS second 3 selected 1 tint 0,136,255,255 unselected -
-dev.pomme.tabbar: 68883
+dev.pomme.tabbar: 88885

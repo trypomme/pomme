@@ -7,6 +7,14 @@
 // Simulator in both designs (scripts/swiftui/metrics-simulator.sh tabbar →
 // ios26.txt; COMPAT=1 → ios26-compat.txt, UIDesignRequiresCompatibility);
 // tests/tab_bar.rs holds pomme to them.
+//
+// PROBE_VARIANT (an environment variable; metrics-simulator.sh VARIANT=…)
+// tries other cases, each recorded in its own file (ios26[-compat]-VARIANT.txt):
+// `more`: seven tabs, so UIKit adds its More tab; the seventh selected, then More.
+// `push`: the first tab a navigation stack, pushing a screen that hides the bar.
+// `dark`: the dark appearance. `landscape`: the phone turned left.
+// `appearance`: colours from the bar's appearance. Variants combine: `landscape,more`.
+// Without one, the lens is followed as the selection moves.
 
 import Darwin
 import UIKit
@@ -19,6 +27,8 @@ func say(_ s: String) {
 func report(_ name: String, _ r: CGRect) {
   say("METRIC \(name) \(r.minX) \(r.minY) \(r.width) \(r.height)")
 }
+
+let variant = ProcessInfo.processInfo.environment["PROBE_VARIANT"] ?? ""
 
 func f(_ x: CGFloat) -> String { String(format: "%.1f", x) }
 
@@ -94,15 +104,77 @@ final class Tabs: UITabBarController {
     say("ITEMS \(step) \(bar.items?.count ?? 0) selected \(selectedIndex) tint \(rgba(bar.tintColor, bar)) unselected \(rgba(bar.unselectedItemTintColor, bar))")
   }
 
+  /// A view of this class in the bar, if there is one.
+  func find(_ name: String, in v: UIView) -> UIView? {
+    if String(describing: type(of: v)) == name { return v }
+    for s in v.subviews { if let found = find(name, in: s) { return found } }
+    return nil
+  }
+
+  /// The texts in a view (a More list's rows).
+  func texts(in v: UIView) -> [String] {
+    if v.isHidden { return [] }
+    var out: [String] = []
+    if let l = v as? UILabel, let t = l.text, !t.isEmpty { out.append(t) }
+    for s in v.subviews { out += texts(in: s) }
+    return out
+  }
+
+  func after(_ s: Double, _ work: @escaping () -> Void) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: work)
+  }
+
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     guard !reported else { return }
     reported = true
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+    after(1) { [self] in
       describe("first")
-      selectedIndex = 1
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
-        describe("second")
+      switch true {
+      case variant.contains("more"):
+        selectedIndex = 6
+        after(1) { [self] in
+          describe("second")
+          let more = moreNavigationController
+          say("MORE selected \(selectedIndex) shown \(selectedViewController === more) top \(more.topViewController?.title ?? "-") stack \(more.viewControllers.count)")
+          selectedViewController = more
+          more.popToRootViewController(animated: false)
+          after(1) { [self] in
+            say("MORELIST title \(more.topViewController?.navigationItem.title ?? "-") rows \(texts(in: more.view).joined(separator: "|"))")
+            report("third.bar", tabBar.frame)
+          }
+        }
+      case variant.contains("push"):
+        let nav = viewControllers![0] as! UINavigationController
+        let pushed = Screen("Pushed", "star")
+        pushed.hidesBottomBarWhenPushed = true
+        nav.pushViewController(pushed, animated: true)
+        after(1) { [self] in
+          say("PUSHED bar hidden \(tabBar.isHidden) alpha \(f(tabBar.alpha))")
+          report("second.bar", tabBar.frame)
+          let v = pushed.view!
+          report("second.insets", CGRect(x: v.safeAreaInsets.left, y: v.safeAreaInsets.top, width: v.safeAreaInsets.right, height: v.safeAreaInsets.bottom))
+          nav.popViewController(animated: true)
+          after(1) { [self] in
+            report("third.bar", tabBar.frame)
+            say("POPPED bar hidden \(tabBar.isHidden)")
+          }
+        }
+      default:
+        // The selection moves: where the lens is, every 50 ms.
+        let start = Date()
+        selectedIndex = 1
+        for i in 0...14 {
+          after(Double(i) * 0.05) { [self] in
+            if let lens = find("_UILiquidLensView", in: tabBar) {
+              let r = lens.convert(lens.bounds, to: tabBar)
+              say("LENS \(f(Date().timeIntervalSince(start) * 1000)) \(f(r.minX)) \(f(r.width))")
+            }
+          }
+        }
+        after(1) { [self] in
+          describe("second")
+        }
       }
     }
   }
@@ -133,10 +205,38 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     loadAccessibility()
     let window = UIWindow(windowScene: scene as! UIWindowScene)
     let tabs = Tabs()
-    tabs.viewControllers = [Screen("Home", "house.fill"), Screen("Search", "magnifyingglass"), Screen("Settings", "gear", badge: "3")]
+    switch true {
+    case variant.contains("more"):
+      tabs.viewControllers = [Screen("Home", "house.fill"), Screen("Search", "magnifyingglass"), Screen("Library", "books.vertical"), Screen("Favourites", "star"), Screen("Settings", "gear", badge: "3"), Screen("Downloads", "arrow.down.circle"), Screen("History", "clock")]
+    case variant.contains("push"):
+      let home = Screen("Home", "house.fill")
+      let nav = UINavigationController(rootViewController: home)
+      nav.tabBarItem = home.tabBarItem
+      tabs.viewControllers = [nav, Screen("Search", "magnifyingglass"), Screen("Settings", "gear", badge: "3")]
+    default:
+      tabs.viewControllers = [Screen("Home", "house.fill"), Screen("Search", "magnifyingglass"), Screen("Settings", "gear", badge: "3")]
+    }
+    if variant.contains("appearance") {
+      // Colours through the bar's appearance, as React Native's native tabs set them.
+      let a = UITabBarAppearance()
+      a.configureWithDefaultBackground()
+      a.stackedLayoutAppearance.normal.iconColor = .systemRed
+      a.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor.systemGreen]
+      a.stackedLayoutAppearance.selected.iconColor = .systemPurple
+      a.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor.systemOrange]
+      a.stackedLayoutAppearance.normal.badgeBackgroundColor = .systemBlue
+      tabs.tabBar.standardAppearance = a
+      tabs.tabBar.scrollEdgeAppearance = a
+    }
+    if variant.contains("dark") {
+      window.overrideUserInterfaceStyle = .dark
+    }
     window.rootViewController = tabs
     window.makeKeyAndVisible()
     self.window = window
+    if variant.contains("landscape") {
+      (scene as! UIWindowScene).requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+    }
   }
 }
 

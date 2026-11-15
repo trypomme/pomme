@@ -7,6 +7,8 @@
 # PROBE_SECONDS: how long the probe runs (default 6).
 # COMPAT=1: run it in the design before iOS 26 (UIDesignRequiresCompatibility)
 # and record ios26-compat.txt. RAW=file: also keep everything it printed.
+# VARIANT=name: the probe's PROBE_VARIANT (a case it tries), recorded as
+# ios26[-compat]-name.txt. SHOT=file: a screenshot of the screen at 5 s.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PROBE=${1:-swiftuimetrics}
@@ -37,12 +39,18 @@ PLIST
 codesign -s - "$APP" 2>/dev/null
 xcrun simctl install "$DEVICE" "$APP"
 OUT=$(mktemp)
-xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE >"$OUT" 2>&1 &
-sleep "${PROBE_SECONDS:-6}"
+SIMCTL_CHILD_PROBE_VARIANT="${VARIANT:-}" xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE >"$OUT" 2>&1 &
+if [ -n "${SHOT:-}" ]; then
+  sleep 5
+  xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1 || true
+  sleep "$(( ${PROBE_SECONDS:-6} > 5 ? ${PROBE_SECONDS:-6} - 5 : 0 ))"
+else
+  sleep "${PROBE_SECONDS:-6}"
+fi
 xcrun simctl terminate "$DEVICE" dev.pomme.$PROBE || true
 wait || true
 [ -n "${RAW:-}" ] && tr -d '\r' <"$OUT" >"$RAW"
-RECORD=$FIXTURE/ios26${COMPAT:+-compat}.txt
+RECORD=$FIXTURE/ios26${COMPAT:+-compat}${VARIANT:+-$VARIANT}.txt
 OS=$(xcrun simctl list devices | grep -B100 "$DEVICE" | grep -- '-- iOS' | tail -1 | tr -d '-' | xargs)
 {
   echo "# The $PROBE fixture on the $OS Simulator (iPhone 16e)${COMPAT:+ in the design before iOS 26 (UIDesignRequiresCompatibility)}: what it reports (frames, sizes), in points."

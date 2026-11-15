@@ -1759,6 +1759,9 @@ fn draw_view_cast(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     if let Ok(Some(look)) = crate::tabbar::look(emu, v) {
         draw_tab_bar(emu, p, &look, w, h, a, &inner, m);
     }
+    if let Ok(Some(list)) = crate::tabbar::more_list(emu, v) {
+        draw_more_list(emu, p, &list, w, a, &inner, m);
+    }
     for s in vw.subviews {
         draw_view(emu, p, s, a, &inner, m);
     }
@@ -1835,13 +1838,60 @@ fn draw_keyboard(p: &mut Painter, screen: (f64, f64), height: f64, visible: f64,
 /// its screen, during a push or pop), and its back button at `back_alpha`
 /// (None: just the title, for the screen leaving).
 #[allow(clippy::too_many_arguments)]
+/// The More tab's list (tabbar.rs says what's in it), as UIKit's plain
+/// table shows it: a separator above each row and after the last, from the
+/// title's start (to 16 pt short of the edge under Liquid Glass); each row's
+/// image in the tint centred 25.7 pt in, its title in 17 pt at 52, its badge
+/// as secondary text before a chevron (measured on the iOS 26 Simulator).
+#[allow(clippy::too_many_arguments)]
+fn draw_more_list(emu: &mut Emu, p: &mut Painter, list: &crate::tabbar::MoreList, w: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    let separator = if list.glass { [0.91, 0.91, 0.91, 1.0] } else { [0.776, 0.776, 0.784, 1.0] };
+    let right = if list.glass { w - 16.0 } else { w };
+    let line = |p: &mut Painter, y: f32| {
+        p.fill(&rect_els(52.0, y, right - 52.0, 1.0 / 3.0), separator, alpha, false, t, mask);
+    };
+    let label = crate::appearance::label(emu);
+    let secondary = crate::appearance::system(emu, "secondaryLabelColor");
+    let tertiary = crate::appearance::system(emu, "tertiaryLabelColor");
+    for (i, row) in list.rows.iter().enumerate() {
+        let [_, y, _, h] = row.frame.map(|v| v as f32);
+        if i == 0 {
+            line(p, y);
+        }
+        line(p, y + h - 1.0 / 3.0);
+        let mid = (y + h / 2.0) as f64;
+        if let Some(mut img) = emu.render.images.get(&row.image).cloned() {
+            if img.look.is_template() {
+                img = tinted(&img, list.tint.map(|v| v as f32));
+            }
+            let [iw, ih] = img.size.map(|v| v as f32);
+            draw_contents(p, &img, [0.0, 0.0, 1.0, 1.0], iw, ih, alpha, &concat(&[1.0, 0.0, 0.0, 1.0, 25.7 - iw / 2.0, mid as f32 - ih / 2.0], t), mask);
+        }
+        let baseline = mid + 17.0 * 0.35;
+        let (glyphs, _) = crate::textkit::line_glyphs(emu, &row.title, 17.0, 0.0, label, 52.0, baseline);
+        p.glyphs(&glyphs, alpha, t, mask);
+        // The chevron: tertiary, 369.3 pt from the left on a 390-pt screen.
+        let cx = right - 4.7 - if list.glass { 0.0 } else { 16.0 };
+        let chevron = [El::Move(cx - 2.6, mid as f32 - 5.3), El::Line(cx + 2.6, mid as f32), El::Line(cx - 2.6, mid as f32 + 5.3)];
+        let s = Stroke { width: 1.8, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+        if let (Some(path), Some(paint)) = (build(&chevron), paint(tertiary.map(|v| v as f32), alpha)) {
+            p.pix.stroke_path(&path, &paint, &s, ts(t), mask);
+        }
+        if let Some(badge) = &row.badge {
+            let (_, bw) = crate::textkit::line_glyphs(emu, badge, 17.0, 0.0, secondary, 0.0, 0.0);
+            let (glyphs, _) = crate::textkit::line_glyphs(emu, badge, 17.0, 0.0, secondary, cx as f64 - 14.0 - bw, baseline);
+            p.glyphs(&glyphs, alpha, t, mask);
+        }
+    }
+}
+
 /// A tab bar (tabbar.rs says where everything goes): under Liquid Glass, a
 /// floating capsule with a soft shadow and a lens under the selected tab;
 /// before, the bar's background (if its appearance has one) and hairline.
 /// Then each tab's image (a template, in the tab's color), title and badge.
 #[allow(clippy::too_many_arguments)]
 fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
-    let dark = emu.appearance.dark;
+    let dark = look.dark;
     let capsule = |r: [f64; 4], grow: f32, dy: f32| {
         let [x, y, rw, rh] = r.map(|v| v as f32);
         let (rw, rh) = (rw + 2.0 * grow, rh + 2.0 * grow);
@@ -1856,14 +1906,17 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
     }
     if let Some(platter) = look.platter {
         // The shadow, soft and mostly below: rings fading out (measured: about
-        // 4% darker just below the capsule, nothing 10 pt out).
-        for grow in [2.0f32, 4.0, 6.0, 8.0, 10.0] {
-            p.fill(&capsule(platter, grow, 3.0), [0.0, 0.0, 0.0, 0.009], alpha, false, t, mask);
+        // 4% darker just below the capsule, nothing 10 pt out; none to see in the dark).
+        if !dark {
+            for grow in [2.0f32, 4.0, 6.0, 8.0, 10.0] {
+                p.fill(&capsule(platter, grow, 3.0), [0.0, 0.0, 0.0, 0.009], alpha, false, t, mask);
+            }
         }
-        let fill = if dark { [0.13, 0.13, 0.14, 1.0] } else { [0.992, 0.992, 0.992, 1.0] };
+        // (Measured: the capsule 253 white, 19 in the dark; the lens 235, 53 in the dark.)
+        let fill = if dark { [0.075, 0.075, 0.075, 1.0] } else { [0.992, 0.992, 0.992, 1.0] };
         p.fill(&capsule(platter, 0.0, 0.0), fill, alpha, false, t, mask);
         if let Some(sel) = look.buttons.iter().find(|b| b.selected) {
-            let lens = if dark { [0.25, 0.25, 0.26, 1.0] } else { [0.922, 0.922, 0.922, 1.0] };
+            let lens = if dark { [0.208, 0.208, 0.208, 1.0] } else { [0.922, 0.922, 0.922, 1.0] };
             p.fill(&capsule(sel.frame, 0.0, 0.0), lens, alpha, false, t, mask);
         }
     }
@@ -1877,8 +1930,9 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
             draw_contents(p, &img, [0.0, 0.0, 1.0, 1.0], iw, ih, alpha, &concat(&[1.0, 0.0, 0.0, 1.0, x, y], t), mask);
         }
         if !b.title.is_empty() {
-            let [x, y, _, _] = b.title_frame;
-            let (glyphs, _) = crate::textkit::line_glyphs(emu, &b.title, 10.0, b.title_weight, b.color, x, y + 9.6);
+            let [x, y, _, th] = b.title_frame;
+            // (The baseline: four fifths of the way down the title's line.)
+            let (glyphs, _) = crate::textkit::line_glyphs(emu, &b.title, b.title_size, b.title_weight, b.title_color, x, y + th * 0.8);
             p.glyphs(&glyphs, alpha, t, mask);
         }
         if let Some(badge) = &b.badge {

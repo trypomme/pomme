@@ -101,10 +101,16 @@ pub fn supported(emu: &mut Emu) -> Result<u64> {
     Ok(app & vc & emu.device.orientations())
 }
 
-/// Where the interface should be given `allowed`: the device's orientation
-/// if allowed (it was turned there), else where it is if still allowed, else
-/// the first allowed in UIKit's order.
+/// Where the interface should be given `allowed`: where the app asked for
+/// (`requestGeometryUpdate`, until the phone is turned) if allowed, else the
+/// device's orientation if allowed (it was turned there), else where it is if
+/// still allowed, else the first allowed in UIKit's order.
 fn choose(emu: &Emu, allowed: u64) -> Option<Orientation> {
+    if let Some(r) = emu.ui.requested_orientation
+        && allowed & r.mask() != 0
+    {
+        return Some(r);
+    }
     let device = emu.ui.device_orientation;
     if allowed & device.mask() != 0 {
         return Some(device);
@@ -144,6 +150,8 @@ pub fn turn_device(emu: &mut Emu, to: Orientation) -> Result<()> {
         return Ok(());
     }
     emu.ui.device_orientation = to;
+    // Turning the phone ends what the app asked for.
+    emu.ui.requested_orientation = None;
     let device = crate::uikit::current_device_obj(emu)?;
     let yes = foundation::new_number_i64(emu, 1)?;
     let key = foundation::new_nsstring(emu, "UIDeviceOrientationRotateAnimatedUserInfoKey")?;
@@ -403,7 +411,10 @@ fn request_geometry_update(emu: &mut Emu) -> Result<()> {
     let allowed = supported(emu)? & wanted;
     let target = if allowed & current(emu).mask() != 0 { Some(current(emu)) } else { PREFERENCE.into_iter().find(|o| allowed & o.mask() != 0) };
     match target {
-        Some(o) => turn_interface(emu, o, true),
+        Some(o) => {
+            emu.ui.requested_orientation = Some(o);
+            turn_interface(emu, o, true)
+        }
         None if handler != 0 => {
             // UISceneErrorDomain, UISceneErrorCodeGeometryRequestUnsupported (101).
             let domain = foundation::new_nsstring(emu, "UISceneErrorDomain")?;

@@ -231,6 +231,11 @@ fn new_object(emu: &mut Emu, class: &str) -> Result<u64> {
     objc::create_instance(emu, cls, 0)
 }
 
+/// A navigation controller's stack, if it's one.
+pub fn stack_of(emu: &Emu, nc: u64) -> Option<Vec<u64>> {
+    emu.nav.navs.get(&nc).map(|n| n.stack.clone())
+}
+
 fn nav(emu: &mut Emu, nc: u64) -> Nav {
     emu.nav.navs.entry(nc).or_insert_with(|| Nav { translucent: true, ..Default::default() }).clone()
 }
@@ -409,6 +414,8 @@ fn change_stack(emu: &mut Emu, nc: u64, stack: Vec<u64>, animated: bool, interac
         }
     }
     layout_container(emu, container)?;
+    // In a tab, a pushed screen may hide the tab bar (or bring it back).
+    crate::tabbar::navigation_changed(emu, nc)?;
     let mut t = Transition {
         nc,
         old_stack: old.clone(),
@@ -1112,18 +1119,20 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
     while cur != 0 {
         if let Some(bar) = crate::tabbar::container_bar(emu, cur) {
             if bar != below && !view(emu, bar).hidden {
-                bottom += crate::tabbar::BAR_HEIGHT;
+                bottom += crate::tabbar::bar_height(emu);
             }
             break;
         }
         below = cur;
         cur = view(emu, cur).superview;
     }
-    // Inside a navigation controller with a visible bar, the bar covers more.
+    // Inside a navigation controller with a visible bar, the bar covers more
+    // (its screens; not its own view, nor the bar).
     let mut cur = v;
     while cur != 0 {
         if let Some(&nc) = emu.nav.containers.get(&cur) {
-            if !nav(emu, nc).bar_hidden {
+            let n = nav(emu, nc);
+            if cur != v && !n.bar_hidden && !is_inside(emu, v, n.bar) {
                 top += nav_bar_height(emu, nc).unwrap_or(BAR_HEIGHT);
             }
             break;

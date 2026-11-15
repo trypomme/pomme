@@ -1,0 +1,169 @@
+METRIC first.bar 0.0 338.0 844.0 52.0
+METRIC first.insets 47.0 0.0 47.0 52.0
+VIEW first UITabBar 0.0 0.0 844.0×52.0 bg - alpha 1.0
+AXV first UITabBar element false label Tab Bar | value - | traits 0 | frame 0.0 0.0 844.0 52.0
+VIEW first   _UIBarBackground 0.0 0.0 844.0×52.0 bg - alpha 1.0
+VIEW first     _UIBarBackgroundShadowView 0.0 -0.3 844.0×0.3 bg - alpha 1.0
+VIEW first   UITabBarButton 81.0 1.0 220.0×31.0 bg - alpha 1.0
+AXV first UITabBarButton element true label Home | value - | traits 268435465 | frame 81.0 1.0 220.0 31.0
+AX first.tab0 label Home | value - | traits 268435465 | hint -
+METRIC first.tab0 81.0 1.0 220.00000000993413 31.0
+VIEW first     UIVisualEffectView 81.0 1.0 220.0×31.0 bg - alpha 1.0
+VIEW first       _UIVisualEffectContentView 81.0 1.0 220.0×31.0 bg - alpha 1.0
+VIEW first     UITabBarSwappableImageView 159.0 5.7 24.3×20.7 bg - alpha 1.0
+AXV first UITabBarSwappableImageView element false label home | value - | traits 4 | frame 159.0 5.7 24.3 20.7
+IMAGE first tint 0,136,255,255 | frame 159.0 5.7 24.3 20.7
+VIEW first     UITabBarButtonLabel 189.3 8.7 33.3×14.3 bg - alpha 1.0
+AXV first UITabBarButtonLabel element true label Home | value - | traits 64 | frame 189.3 8.7 33.3 14.3
+AX first.tab1 label Home | value - | traits 64 | hint -
+METRIC first.tab1 189.33333333333331 8.666666666666668 33.33333333333334 14.333333333333332
+TEXT first Home | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 0,136,255,255 | frame 189.3 8.7 33.3 14.3
+METRIC first.text.Home 189.33333333333331 8.666666666666668 33.33333333333334 14.333333333333332
+VIEW first   UITabBarButton 305.0 1.0 222.0×31.0 bg - alpha 1.0
+AXV first UITabBarButton element true label Search | value - | traits 268435457 | frame 305.0 1.0 222.0 31.0
+AX first.tab2 label Search | value - | traits 268435457 | hint -
+METRIC first.tab2 305.0000000099341 1.0 222.00000000000006 31.0
+VIEW first     UIVisualEffectView 305.0 1.0 222.0×31.0 bg - alpha 1.0
+VIEW first       _UIVisualEffectContentView 305.0 1.0 222.0×31.0 bg - alpha 1.0
+VIEW first         UITabBarSwappableImageView 383.0 6.3 20.7×19.3 bg - alpha 1.0
+AXV first UITabBarSwappableImageView element false label Search | value - | traits 4 | frame 383.0 6.3 20.7 19.3
+IMAGE first tint 255,255,255,255 | frame 383.0 6.3 20.7 19.3
+VIEW first         UITabBarButtonLabel 409.7 8.7 39.3×14.3 bg - alpha 1.0
+AXV first UITabBarButtonLabel element true label Search | value - | traits 64 | frame 409.7 8.7 39.3 14.3
+AX first.tab3 label Search | value - | traits 64 | hint -
+METRIC first.tab3 409.6666666766008 8.666666666666668 39.333333333333314 14.333333333333332
+TEXT first Search | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 146,146,146,255 | frame 409.7 8.7 39.3 14.3
+METRIC first.text.Search 409.6666666766008 8.666666666666668 39.333333333333314 14.333333333333332
+VIEW first   UITabBarButton 531.0 1.0 230.0×31.0 bg - alpha 1.0
+AXV first UITabBarButton element true label Settings | value 3 items | traits 268435457 | frame 531.0 1.0 230.0 31.0
+AX first.tab4 label Settings | value 3 items | traits 268435457 | hint -
+METRIC first.tab4 531.0000000099342 1.0 229.99999998013186 31.0
+VIEW first     UIVisualEffectView 531.0 1.0 230.0×31.0 bg - alpha 1.0
+VIEW first       _UIVisualEffectContentView 531.0 1.0 230.0×31.0 bg - alpha 1.0
+VIEW first         UITabBarSwappableImageView 608.3 5.3 21.7×21.3 bg - alpha 1.0
+AXV first UITabBarSwappableImageView element false label settings | value - | traits 4 | frame 608.3 5.3 21.7 21.3
+IMAGE first tint 255,255,255,255 | frame 608.3 5.3 21.7 21.3
+VIEW first         UITabBarButtonLabel 636.0 8.7 47.0×14.3 bg - alpha 1.0
+AXV first UITabBarButtonLabel element true label Settings | value - | traits 64 | frame 636.0 8.7 47.0 14.3
+AX first.tab5 label Settings | value - | traits 64 | hint -
+METRIC first.tab5 636.0000000099342 8.666666666666668 47.0 14.333333333333332
+TEXT first Settings | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 146,146,146,255 | frame 636.0 8.7 47.0 14.3
+METRIC first.text.Settings 636.0000000099342 8.666666666666668 47.0 14.333333333333332
+VIEW first     _UIBadgeView 621.0 2.0 14.0×14.0 bg 255,56,60,255 alpha 1.0
+AXV first _UIBadgeView element false label 3 | value - | traits 0 | frame 621.0 2.0 14.0 14.0
+VIEW first       UILabel 624.7 3.0 6.7×12.0 bg 0,0,0,0 alpha 1.0
+AXV first UILabel element true label 3 | value - | traits 64 | frame 624.7 3.0 6.7 12.0
+AX first.tab6 label 3 | value - | traits 64 | hint -
+METRIC first.tab6 624.6666666766008 3.0 6.666666666666629 12.0
+TEXT first 3 | size 10.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = "0.2300000041723251";
+} | color 255,255,255,255 | frame 624.7 3.0 6.7 12.0
+METRIC first.text.3 624.6666666766008 3.0 6.666666666666629 12.0
+ITEMS first 3 selected 0 tint 0,136,255,255 unselected -
+METRIC second.bar 0.0 338.0 844.0 52.0
+METRIC second.insets 47.0 0.0 47.0 52.0
+VIEW second UITabBar 0.0 0.0 844.0×52.0 bg - alpha 1.0
+AXV second UITabBar element false label Tab Bar | value - | traits 0 | frame 0.0 0.0 844.0 52.0
+VIEW second   _UIBarBackground 0.0 0.0 844.0×52.0 bg - alpha 1.0
+VIEW second     _UIBarBackgroundShadowView 0.0 -0.3 844.0×0.3 bg - alpha 1.0
+VIEW second   UITabBarButton 81.0 1.0 220.0×31.0 bg - alpha 1.0
+AXV second UITabBarButton element true label Home | value - | traits 268435457 | frame 81.0 1.0 220.0 31.0
+AX second.tab0 label Home | value - | traits 268435457 | hint -
+METRIC second.tab0 81.0 1.0 220.00000000993413 31.0
+VIEW second     UIVisualEffectView 81.0 1.0 220.0×31.0 bg - alpha 1.0
+VIEW second       _UIVisualEffectContentView 81.0 1.0 220.0×31.0 bg - alpha 1.0
+VIEW second         UITabBarSwappableImageView 159.0 5.7 24.3×20.7 bg - alpha 1.0
+AXV second UITabBarSwappableImageView element false label home | value - | traits 4 | frame 159.0 5.7 24.3 20.7
+IMAGE second tint 255,255,255,255 | frame 159.0 5.7 24.3 20.7
+VIEW second         UITabBarButtonLabel 189.3 8.7 33.3×14.3 bg - alpha 1.0
+AXV second UITabBarButtonLabel element true label Home | value - | traits 64 | frame 189.3 8.7 33.3 14.3
+AX second.tab1 label Home | value - | traits 64 | hint -
+METRIC second.tab1 189.33333333333331 8.666666666666668 33.33333333333334 14.333333333333332
+TEXT second Home | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 146,146,146,255 | frame 189.3 8.7 33.3 14.3
+METRIC second.text.Home 189.33333333333331 8.666666666666668 33.33333333333334 14.333333333333332
+VIEW second   UITabBarButton 305.0 1.0 222.0×31.0 bg - alpha 1.0
+AXV second UITabBarButton element true label Search | value - | traits 268435465 | frame 305.0 1.0 222.0 31.0
+AX second.tab2 label Search | value - | traits 268435465 | hint -
+METRIC second.tab2 305.0000000099341 1.0 222.00000000000006 31.0
+VIEW second     UIVisualEffectView 305.0 1.0 222.0×31.0 bg - alpha 1.0
+VIEW second       _UIVisualEffectContentView 305.0 1.0 222.0×31.0 bg - alpha 1.0
+VIEW second     UITabBarSwappableImageView 383.0 6.3 20.7×19.3 bg - alpha 1.0
+AXV second UITabBarSwappableImageView element false label Search | value - | traits 4 | frame 383.0 6.3 20.7 19.3
+IMAGE second tint 0,136,255,255 | frame 383.0 6.3 20.7 19.3
+VIEW second     UITabBarButtonLabel 409.7 8.7 39.3×14.3 bg - alpha 1.0
+AXV second UITabBarButtonLabel element true label Search | value - | traits 64 | frame 409.7 8.7 39.3 14.3
+AX second.tab3 label Search | value - | traits 64 | hint -
+METRIC second.tab3 409.6666666766008 8.666666666666668 39.333333333333314 14.333333333333332
+TEXT second Search | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 0,136,255,255 | frame 409.7 8.7 39.3 14.3
+METRIC second.text.Search 409.6666666766008 8.666666666666668 39.333333333333314 14.333333333333332
+VIEW second   UITabBarButton 531.0 1.0 230.0×31.0 bg - alpha 1.0
+AXV second UITabBarButton element true label Settings | value 3 items | traits 268435457 | frame 531.0 1.0 230.0 31.0
+AX second.tab4 label Settings | value 3 items | traits 268435457 | hint -
+METRIC second.tab4 531.0000000099342 1.0 229.99999998013186 31.0
+VIEW second     UIVisualEffectView 531.0 1.0 230.0×31.0 bg - alpha 1.0
+VIEW second       _UIVisualEffectContentView 531.0 1.0 230.0×31.0 bg - alpha 1.0
+VIEW second         UITabBarSwappableImageView 608.3 5.3 21.7×21.3 bg - alpha 1.0
+AXV second UITabBarSwappableImageView element false label settings | value - | traits 4 | frame 608.3 5.3 21.7 21.3
+IMAGE second tint 255,255,255,255 | frame 608.3 5.3 21.7 21.3
+VIEW second         UITabBarButtonLabel 636.0 8.7 47.0×14.3 bg - alpha 1.0
+AXV second UITabBarButtonLabel element true label Settings | value - | traits 64 | frame 636.0 8.7 47.0 14.3
+AX second.tab5 label Settings | value - | traits 64 | hint -
+METRIC second.tab5 636.0000000099342 8.666666666666668 47.0 14.333333333333332
+TEXT second Settings | size 12.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = 0;
+} | color 146,146,146,255 | frame 636.0 8.7 47.0 14.3
+METRIC second.text.Settings 636.0000000099342 8.666666666666668 47.0 14.333333333333332
+VIEW second     _UIBadgeView 621.0 2.0 14.0×14.0 bg 255,56,60,255 alpha 1.0
+AXV second _UIBadgeView element false label 3 | value - | traits 0 | frame 621.0 2.0 14.0 14.0
+VIEW second       UILabel 624.7 3.0 6.7×12.0 bg 0,0,0,0 alpha 1.0
+AXV second UILabel element true label 3 | value - | traits 64 | frame 624.7 3.0 6.7 12.0
+AX second.tab6 label 3 | value - | traits 64 | hint -
+METRIC second.tab6 624.6666666766008 3.0 6.666666666666629 12.0
+TEXT second 3 | size 10.0 | weight {
+    NSCTFontProportionTrait = 0;
+    NSCTFontSlantTrait = 0;
+    NSCTFontSymbolicTrait = 16384;
+    NSCTFontUIFontDesignTrait = NSCTFontUIFontDesignDefault;
+    NSCTFontWeightTrait = "0.2300000041723251";
+} | color 255,255,255,255 | frame 624.7 3.0 6.7 12.0
+METRIC second.text.3 624.6666666766008 3.0 6.666666666666629 12.0
+ITEMS second 3 selected 1 tint 0,136,255,255 unselected -
+dev.pomme.tabbar: 89709
