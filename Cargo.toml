@@ -10,3 +10,6 @@ license = "MIT OR Apache-2.0"
 # run about 5x slower, while level 1 costs only a couple of seconds per rebuild.
 [profile.dev]
 opt-level = 1
+# File and line numbers for backtraces, but no variable info: target/ (every
+# worktree has its own) is 3.5 GB instead of 4.7 GB, and links are faster.
+debug = "line-tables-only"
