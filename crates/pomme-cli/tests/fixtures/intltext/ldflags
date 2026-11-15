@@ -1,1 +1,1 @@
--framework CoreText
+-framework CoreText -framework CoreGraphics

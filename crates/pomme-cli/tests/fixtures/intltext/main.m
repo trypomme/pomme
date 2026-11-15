@@ -103,6 +103,32 @@ static UILabel *report(void) {
         value([NSString stringWithFormat:@"ja.%d.lines", w.intValue], [NSString stringWithFormat:@"%d", line]);
     }
 
+    // The same paragraph through CoreText's typesetter (as UILabel and
+    // NSString drawing set text): each line's characters, where its first
+    // glyph sits (`ct.<width>.lineN.x`) and its typographic width.
+    for (NSNumber *w in @[ @180, @200, @220, @250, @300 ]) {
+        NSAttributedString *a = [[NSAttributedString alloc] initWithString:kJapanese attributes:@{NSFontAttributeName : system}];
+        CTFramesetterRef fs = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)a);
+        CGPathRef path = CGPathCreateWithRect(CGRectMake(0, 0, w.doubleValue, 10000), NULL);
+        CTFrameRef frame = CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), path, NULL);
+        NSArray *lines = (__bridge NSArray *)CTFrameGetLines(frame);
+        for (NSUInteger i = 0; i < lines.count; i++) {
+            CTLineRef line = (__bridge CTLineRef)lines[i];
+            CFRange r = CTLineGetStringRange(line);
+            NSString *name = [NSString stringWithFormat:@"ct.%d.line%lu", w.intValue, (unsigned long)i];
+            value([name stringByAppendingString:@".text"], [kJapanese substringWithRange:NSMakeRange(r.location, r.length)]);
+            CTRunRef run = (__bridge CTRunRef)((__bridge NSArray *)CTLineGetGlyphRuns(line)).firstObject;
+            CGPoint first = CGPointZero;
+            if (run) CTRunGetPositions(run, CFRangeMake(0, 1), &first);
+            value([name stringByAppendingString:@".x"], [NSString stringWithFormat:@"%.3f", first.x]);
+            value([name stringByAppendingString:@".width"], [NSString stringWithFormat:@"%.3f", CTLineGetTypographicBounds(line, NULL, NULL, NULL)]);
+        }
+        value([NSString stringWithFormat:@"ct.%d.lines", w.intValue], [NSString stringWithFormat:@"%lu", (unsigned long)lines.count]);
+        CFRelease(frame);
+        CGPathRelease(path);
+        CFRelease(fs);
+    }
+
     // A label, for the screenshot and its size.
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 120, 200, 0)];
     label.numberOfLines = 0;

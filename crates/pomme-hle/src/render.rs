@@ -2255,15 +2255,13 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
 fn draw_text_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) -> Result<()> {
     let laid = crate::textview::lay_out(emu, v)?;
     for l in &laid.lines {
-        let units = &laid.text[l.start..l.start + l.len];
-        let text: String = String::from_utf16_lossy(units).trim_end_matches(['\n', '\r', '\u{2028}', '\u{2029}']).to_string();
         let dx = match laid.alignment {
             1 => (laid.width - l.width) / 2.0,
             2 => laid.width - l.width,
             _ => 0.0,
         };
         let baseline = laid.origin.1 + l.y + l.ascent;
-        let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &laid.font, laid.color, laid.origin.0 + dx, baseline);
+        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, laid.origin.0 + dx, baseline);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())
@@ -2274,14 +2272,12 @@ fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f
     let laid = crate::label::lay_out(emu, v, bounds[2])?;
     let top = bounds[1] + (bounds[3] - laid.height()) / 2.0;
     for l in &laid.lines {
-        let units = &laid.text[l.start..l.start + l.len];
-        let text: String = String::from_utf16_lossy(units).trim_end_matches(['\n', '\r', '\u{2028}', '\u{2029}']).to_string();
         let dx = match laid.alignment {
             1 => (bounds[2] - l.width) / 2.0,
             2 => bounds[2] - l.width,
             _ => 0.0,
         };
-        let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &laid.font, laid.color, bounds[0] + dx, top + l.y + l.ascent);
+        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, bounds[0] + dx, top + l.y + l.ascent);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())

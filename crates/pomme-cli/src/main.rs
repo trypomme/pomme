@@ -40,6 +40,11 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value = "vendor/sysroot")]
         sysroot: PathBuf,
+        /// Languages whose fonts to include besides the app's own localizations'
+        /// (the Chinese, Japanese and Korean fonts are large, so a bundle has
+        /// them only when needed): `--fonts ja,zh-Hans`.
+        #[arg(long, value_delimiter = ',')]
+        fonts: Vec<String>,
     },
     /// Load and link a .app into guest memory, and report the result.
     Load {
@@ -490,7 +495,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
+        Cmd::Bundle { path, out, sysroot, fonts } => make_bundle(&path, &sysroot, &out, &fonts),
         Cmd::Run(args) => run_command(args, None),
         Cmd::Coverage { coverage, run } => run_command(run, Some(coverage)),
     }
@@ -558,7 +563,7 @@ fn bundle_app_path(bytes: &[u8]) -> Option<String> {
 }
 
 /// Pack the app and the sysroot files it loads (plus fonts) into a vfs bundle.
-fn make_bundle(path: &Path, sysroot: &Path, out: &Path) -> Result<()> {
+fn make_bundle(path: &Path, sysroot: &Path, out: &Path, languages: &[String]) -> Result<()> {
     use pomme_loader::vfs::{Entry, write_bundle};
     let sysroot = sysroot.canonicalize().context("no sysroot (run scripts/build-sysroot.sh)")?;
     let (_, _, app_dir) = pomme_loader::locate_executable(path)?;
@@ -611,9 +616,25 @@ fn make_bundle(path: &Path, sysroot: &Path, out: &Path) -> Result<()> {
     if let Some(dir) = impeller.as_ref().filter(|d| !d.is_dir()) {
         eprintln!("warning: no Impeller MSL at {} (run scripts/flutter/impeller-msl.sh): Flutter won't draw", dir.display());
     }
+    // The CJK fonts: only for the app's own localizations and the languages asked for.
+    let mut languages = languages.to_vec();
+    if let Ok(dir) = std::fs::read_dir(&app_dir) {
+        languages.extend(dir.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".lproj").map(str::to_string)));
+    }
+    let cjk_wanted = |file: &str| -> bool {
+        let wants = |prefixes: &[&str]| languages.iter().any(|l| prefixes.iter().any(|p| l.to_lowercase().starts_with(p)));
+        match file.split(['.', '-']).next().unwrap_or("") {
+            "NotoSansJP" => wants(&["ja"]),
+            "NotoSansSC" => wants(&["zh"]),
+            "NotoSansTC" => wants(&["zh-hant", "zh-tw", "zh-hk", "zh-mo"]),
+            "NotoSansKR" => wants(&["ko"]),
+            _ => true,
+        }
+    };
     for f in sys_files {
         let real = f.canonicalize()?;
-        let wanted = loaded.contains(&real) || f.starts_with(&fonts) || impeller.as_ref().is_some_and(|d| f.starts_with(d));
+        let font_wanted = f.starts_with(&fonts) && f.file_name().and_then(|n| n.to_str()).is_some_and(cjk_wanted);
+        let wanted = loaded.contains(&real) || font_wanted || impeller.as_ref().is_some_and(|d| f.starts_with(d));
         if !wanted {
             continue;
         }

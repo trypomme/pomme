@@ -38,6 +38,7 @@ mod nsvalue;
 mod json;
 mod calendar;
 mod cjk;
+mod ctframe;
 mod scanner;
 mod sysctl;
 mod filemanager;
@@ -358,6 +359,8 @@ pub struct Emu {
     pub locales: locale::State,
     /// Fallback fonts for Chinese, Japanese and Korean.
     pub(crate) cjk: cjk::State,
+    /// CoreText framesetters, frames, lines and runs.
+    pub(crate) ctframes: ctframe::State,
     /// Units, measurements and measurement formatters.
     pub(crate) measurements: measurement::State,
     pub(crate) calendars: calendar::State,
@@ -412,7 +415,7 @@ impl Emu {
         p.memory.map(TLS_BASE, TLS_SIZE, Prot::RW, "[tls]")?;
 
         let mut registry: HashMap<&'static str, HostFn> = HashMap::new();
-        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, rand::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, metal::FUNCS, accessibility::FUNCS] {
+        for table in [objc::FUNCS, objc::REFLECT_FUNCS, foundation::FUNCS, foundation::PATH_FUNCS, libc::FUNCS, libsystem::FUNCS, libsystem::MORE_FUNCS, libsystem::WIDE_FUNCS, libsystem::DYLD_FUNCS, posix::FUNCS, sysctl::FUNCS, sockets::FUNCS, dnssd::FUNCS, cfnetwork::FUNCS, fs::FUNCS, printf::FUNCS, scanf::FUNCS, time::FUNCS, fortify::FUNCS, locks::FUNCS, rand::FUNCS, dsource::FUNCS, userdefaults::FUNCS, constants::FUNCS, swift::FUNCS, uikit::FUNCS, cg::FUNCS, render::FUNCS, image::FUNCS, imageio::FUNCS, uttype::FUNCS, network::FUNCS, reachability::FUNCS, keychain::FUNCS, coretext::FUNCS, ctframe::FUNCS, metal::FUNCS, accessibility::FUNCS] {
             registry.extend(table.iter().copied());
         }
         registry.extend(commoncrypto::DIGESTS.iter().flatten().copied());
@@ -497,6 +500,7 @@ impl Emu {
             pointer_arrays: Default::default(),
             locales: Default::default(),
             cjk: Default::default(),
+            ctframes: Default::default(),
             measurements: Default::default(),
             calendars: Default::default(),
             scanners: Default::default(),

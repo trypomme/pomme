@@ -2,8 +2,8 @@
 //! falls back to for Chinese, Japanese and Korean, held to what the iOS 26
 //! Simulator reports (fixtures/intltext/ios26-<language>.txt, recorded with
 //! scripts/swiftui/metrics-simulator.sh, VARIANT=en and VARIANT=ja): each
-//! CJK character's advance, and where TextKit breaks a Japanese paragraph
-//! at five widths. Latin letters are left out of the widths: pomme draws
+//! CJK character's advance, and where TextKit and CoreText (as UILabel sets
+//! text) break a Japanese paragraph at five widths. Latin letters are left out of the widths: pomme draws
 //! Inter in place of SF Pro. Built with the iOS SDK; skipped without Xcode or
 //! the sysroot.
 
@@ -56,9 +56,22 @@ fn differences(variant: &str, languages: &[&str], region: &str) -> Option<Vec<St
             if !is_cjk(ch) || OTHER_FONTS.contains(&ch) {
                 continue;
             }
-        } else if variant == "ja" && LATIN_WIDTH.iter().any(|l| name.starts_with(l)) {
+        } else if variant == "ja" && LATIN_WIDTH.iter().any(|l| name.starts_with(l) || name.starts_with(&l.replacen("ja.", "ct.", 1))) {
             continue;
-        } else if !name.starts_with("ja.") {
+        } else if name.starts_with("ct.") && name.ends_with(".x") {
+            // (Where a line's first glyph sits depends on the font's own glyph.)
+            continue;
+        } else if name.starts_with("ct.") && name.ends_with(".width") {
+            let line = &name[..name.len() - ".width".len()];
+            if ios.get(&format!("{line}.text")).is_some_and(|t| t.chars().any(|c| c.is_ascii())) {
+                continue;
+            }
+            let (g, w): (f64, f64) = (ours.get(name).and_then(|v| v.parse().ok()).unwrap_or(f64::NAN), want.parse().unwrap());
+            if !((g - w).abs() <= 0.5) {
+                wrong.push(format!("{name}: {g:.3}, iOS {want}"));
+            }
+            continue;
+        } else if !name.starts_with("ja.") && !name.starts_with("ct.") {
             // (The cascade lists and font names are Apple's own.)
             continue;
         }

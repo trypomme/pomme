@@ -79,8 +79,9 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
     let max_lines = objc::bag_get(emu, v, "numberOfLines").unwrap_or(1) as usize;
     let text: Vec<u16> = text.encode_utf16().collect();
     let runs = [Run::new(emu, text.len(), f)];
-    let japanese = crate::cjk::japanese_spacing(emu)?;
-    let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), japanese, width, f64::INFINITY, max_lines);
+    // (A label sets its text as CoreText does.)
+    let rules = textkit::rules(emu, true)?;
+    let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), rules, width, f64::INFINITY, max_lines);
     let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(0) & 0xff;
     Ok(LabelText { text, lines, font: f, color, alignment })
 }
