@@ -1,0 +1,27 @@
+# hello-expo's localization facts on the iOS 26.0 Simulator (iPhone 16e): languages (en-AU), locale en_AU, time zone Australia/Sydney, 24-hour switch -.
+locales en-AU
+languageTag en-AU
+languageCode en
+regionCode AU
+languageRegionCode AU
+currencyCode AUD
+currencySymbol $
+decimalSeparator .
+digitGroupingSeparator ,
+measurementSystem metric
+temperatureUnit celsius
+textDirection ltr
+calendar gregory
+firstWeekday 2
+timeZone Australia/Sydney
+uses24hourClock false
+intl.locale en-AU
+intl.timeZone Australia/Sydney
+intl.date 14/3/2026
+intl.dateTime Saturday, 14 March 2026 at 8:05:30 pm AEDT
+intl.time 8:05 pm
+intl.number 1,234,567.891
+intl.price $1,234.50
+date.toLocaleString 14/3/2026, 8:05:30 pm
+date.offset -660
+date.hours 20

@@ -67,6 +67,7 @@ mod coretext;
 mod pointer_array;
 pub mod storyboard;
 pub mod locale;
+mod measurement;
 pub mod metal;
 #[cfg(feature = "gpu")]
 mod metal_gpu;
@@ -354,6 +355,8 @@ pub struct Emu {
     pub metal: metal::State,
     pub(crate) pointer_arrays: pointer_array::State,
     pub locales: locale::State,
+    /// Units, measurements and measurement formatters.
+    pub(crate) measurements: measurement::State,
     pub(crate) calendars: calendar::State,
     pub(crate) scanners: scanner::State,
     pub(crate) reachability: reachability::State,
@@ -490,6 +493,7 @@ impl Emu {
             metal: Default::default(),
             pointer_arrays: Default::default(),
             locales: Default::default(),
+            measurements: Default::default(),
             calendars: Default::default(),
             scanners: Default::default(),
             reachability: Default::default(),

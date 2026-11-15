@@ -1,0 +1,27 @@
+# hello-expo's localization facts on the iOS 26.0 Simulator (iPhone 16e): languages (en-US), locale en_US, time zone America/Los_Angeles, 24-hour switch on.
+locales en-US
+languageTag en-US
+languageCode en
+regionCode US
+languageRegionCode US
+currencyCode USD
+currencySymbol $
+decimalSeparator .
+digitGroupingSeparator ,
+measurementSystem us
+temperatureUnit fahrenheit
+textDirection ltr
+calendar gregory
+firstWeekday 1
+timeZone America/Los_Angeles
+uses24hourClock true
+intl.locale en-US
+intl.timeZone America/Los_Angeles
+intl.date 3/14/2026
+intl.dateTime Saturday, March 14, 2026 at 2:05:30 AM PDT
+intl.time 2:05 AM
+intl.number 1,234,567.891
+intl.price $1,234.50
+date.toLocaleString 3/14/2026, 2:05:30 AM
+date.offset 420
+date.hours 2

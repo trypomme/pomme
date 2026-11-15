@@ -63,6 +63,10 @@ pub struct State {
     current_cf: Option<(String, u64)>,
     /// The device locale's week rules (first weekday, minimum days in the first week), for its identifier.
     week: Option<(String, (i64, i64))>,
+    /// The current locale's identifier and the 24-Hour Time switch, worked out
+    /// once: as on iOS, a change to the language or region applies from the next launch.
+    current: Option<String>,
+    forced_hours: Option<Option<bool>>,
 }
 
 #[derive(Debug, PartialEq, Default)]
@@ -125,23 +129,98 @@ fn device_string(emu: &mut Emu, key: &str) -> Result<Option<String>> {
     Ok(Some(nsstring(emu, v)?))
 }
 
-/// The device locale's identifier, as `currentLocale` reports it.
+/// The device locale's identifier, as `currentLocale` reports it. As on iOS,
+/// its language is the app's: when the app has localizations, the first
+/// preferred language it has (else its development region) replaces the
+/// device locale's language, and the region stays (Japanese, on a phone set to
+/// Japan, for an app in English only: `en_JP`).
 pub fn current_id(emu: &mut Emu) -> Result<String> {
-    Ok(match device_string(emu, "AppleLocale")? {
+    if let Some(id) = &emu.locales.current {
+        return Ok(id.clone());
+    }
+    let mut id = match device_string(emu, "AppleLocale")? {
         Some(id) => id,
         None => emu.locales.settings.locale_id(),
-    })
+    };
+    let localizations = crate::bundle::main_localizations(emu);
+    if !localizations.is_empty() {
+        let preferred = preferred_language_list(emu)?;
+        let chosen = best_localization(&preferred, &localizations).or_else(|| crate::bundle::main_development_region(emu)).unwrap_or_else(|| localizations[0].clone());
+        id = with_language(&id, &chosen);
+    }
+    emu.locales.current = Some(id.clone());
+    Ok(id)
+}
+
+/// The preferred languages as Rust strings.
+fn preferred_language_list(emu: &mut Emu) -> Result<Vec<String>> {
+    let a = preferred_languages(emu)?;
+    let n = objc::send(emu, a, "count", &[])?;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let s = objc::send(emu, a, "objectAtIndex:", &[i])?;
+        out.push(nsstring(emu, s)?);
+    }
+    Ok(out)
+}
+
+/// The first preferred language the app has a localization for: the same
+/// tag, else the same language and script (`en-AU` → `en`, `zh-Hant-HK` → `zh-Hant`).
+pub(crate) fn best_localization(preferred: &[String], localizations: &[String]) -> Option<String> {
+    let norm = |s: &str| s.replace('_', "-").to_lowercase();
+    for want in preferred {
+        if let Some(l) = localizations.iter().find(|l| norm(l) == norm(want)) {
+            return Some(l.clone());
+        }
+        let w = parse(want);
+        if let Some(l) = localizations.iter().find(|l| {
+            let p = parse(l);
+            p.language == w.language && p.region.is_none() && (p.script.is_none() || p.script == w.script)
+        }) {
+            return Some(l.clone());
+        }
+    }
+    None
+}
+
+/// `id` with the language (and script) of `localization`, keeping its region and variant.
+fn with_language(id: &str, localization: &str) -> String {
+    let (base, keywords) = id.split_once('@').map_or((id, None), |(b, k)| (b, Some(k)));
+    let (p, l) = (parse(base), parse(localization));
+    if p.language == l.language && (l.script.is_none() || l.script == p.script) {
+        return id.to_string();
+    }
+    let mut out = l.language;
+    if let Some(script) = l.script {
+        out = format!("{out}_{script}");
+    }
+    if let Some(region) = p.region {
+        out = format!("{out}_{region}");
+    }
+    if let Some(variant) = p.variant {
+        out = format!("{out}_{variant}");
+    }
+    if let Some(k) = keywords {
+        out = format!("{out}@{k}");
+    }
+    out
 }
 
 /// iOS's 24-Hour Time switch: Some(true) forces 24 hours, Some(false) 12, None follows the region.
 pub(crate) fn forced_hours(emu: &mut Emu) -> Result<Option<bool>> {
+    if let Some(f) = emu.locales.forced_hours {
+        return Ok(f);
+    }
+    let mut forced = None;
     for (key, force_24) in [("AppleICUForce24HourTime", true), ("AppleICUForce12HourTime", false)] {
         let v = crate::userdefaults::device_value(emu, key)?;
         if v != 0 && v == emu.fnd.true_obj {
-            return Ok(Some(force_24));
+            forced = Some(force_24);
+            break;
         }
     }
-    Ok(None)
+    emu.locales.forced_hours = Some(forced);
+    Ok(forced)
 }
 
 /// The preferred languages (an NSArray of strings), as `preferredLanguages` reports them.
@@ -487,6 +566,18 @@ fn current(emu: &mut Emu) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_apps_language_with_the_devices_region() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(best_localization(&v(&["ja-JP"]), &v(&["en"])), None);
+        assert_eq!(best_localization(&v(&["en-AU"]), &v(&["en", "ja"])).as_deref(), Some("en"));
+        assert_eq!(best_localization(&v(&["fr", "ja-JP"]), &v(&["en", "ja"])).as_deref(), Some("ja"));
+        assert_eq!(best_localization(&v(&["zh-Hant-HK"]), &v(&["zh-Hans", "zh-Hant"])).as_deref(), Some("zh-Hant"));
+        assert_eq!(with_language("ja_JP", "en"), "en_JP");
+        assert_eq!(with_language("en_AU", "en"), "en_AU");
+        assert_eq!(with_language("ja_JP", "zh-Hant"), "zh_Hant_JP");
+    }
 
     #[test]
     fn parses_identifiers() {

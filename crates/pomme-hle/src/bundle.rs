@@ -49,6 +49,38 @@ pub(crate) fn host_info_plist(emu: &Emu) -> Option<plist::Value> {
     plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()
 }
 
+/// The app's localizations, as iOS finds them: its `.lproj` folders (not
+/// Base) and Info.plist's `CFBundleLocalizations`; with neither, its
+/// development region (`CFBundleDevelopmentRegion`) alone; with none of
+/// these, none.
+pub(crate) fn main_localizations(emu: &Emu) -> Vec<String> {
+    let mut found: Vec<String> = pomme_loader::vfs::read_dir(&host_app_dir(emu))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, is_dir)| if is_dir { name.strip_suffix(".lproj").map(str::to_string) } else { None })
+        .filter(|n| n != "Base")
+        .collect();
+    let info = host_info_plist(emu);
+    let info = info.as_ref().and_then(|v| v.as_dictionary());
+    if let Some(list) = info.and_then(|d| d.get("CFBundleLocalizations")).and_then(|v| v.as_array()) {
+        found.extend(list.iter().filter_map(|v| v.as_string()).map(str::to_string));
+    }
+    if found.is_empty() {
+        if let Some(dev) = info.and_then(|d| d.get("CFBundleDevelopmentRegion")).and_then(|v| v.as_string()) {
+            found.push(dev.to_string());
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The app's development region (`CFBundleDevelopmentRegion`), if it names one.
+pub(crate) fn main_development_region(emu: &Emu) -> Option<String> {
+    let info = host_info_plist(emu)?;
+    info.as_dictionary()?.get("CFBundleDevelopmentRegion")?.as_string().map(str::to_string)
+}
+
 /// Convert a parsed plist value into Foundation objects in guest memory.
 fn plist_to_guest(emu: &mut Emu, v: &plist::Value) -> Result<u64> {
     Ok(match v {

@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Stack } from 'expo-router';
+import { recordLocalizationIfAsked } from '../components/localizationFacts';
 
 const queryClient = new QueryClient();
+recordLocalizationIfAsked();
 
 export default function RootLayout() {
   return (
@@ -17,6 +19,7 @@ export default function RootLayout() {
         <Stack.Screen name="rotation" options={{ title: 'Rotation' }} />
         <Stack.Screen name="image" options={{ title: 'Image' }} />
         <Stack.Screen name="network" options={{ title: 'Network' }} />
+        <Stack.Screen name="localization" options={{ title: 'Localization' }} />
         <Stack.Screen name="storage" options={{ title: 'Storage' }} />
         <Stack.Screen name="lock" options={{ title: 'Lock' }} />
         <Stack.Screen name="firebase" options={{ title: 'Firebase' }} />

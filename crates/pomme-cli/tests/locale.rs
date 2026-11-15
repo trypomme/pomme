@@ -36,7 +36,7 @@ const CASES: &[Case] = &[
 /// NSListFormatter, NSDateComponentsFormatter, NSByteCountFormatter and
 /// locale-aware case mapping. The probe reports them last, so the rest is
 /// still compared.
-const NOT_YET: &[&str] = &["measure.", "list.", "duration.", "bytes.", "string."];
+const NOT_YET: &[&str] = &["list.", "duration.", "bytes.", "string."];
 
 /// Known differences, by variant and name, with the reason.
 const KNOWN: &[(&str, &str, &str)] = &[

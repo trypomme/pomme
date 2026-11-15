@@ -71,6 +71,38 @@ typedef NS_OPTIONS(unsigned long, NSStringCompareOptions) {
 @property (readonly) float floatValue;
 @end
 
+// The device's language and region settings are in the global domain, as iOS keeps them.
+@interface NSUserDefaults : NSObject
+@property (class, readonly, strong) NSUserDefaults *standardUserDefaults;
+- (nullable id)objectForKey:(NSString *)defaultName;
+@end
+
+// Measurements (Swift's Measurement holds a Unit; MeasurementFormatter formats an NSMeasurement).
+// Swift names as in Apple's Foundation; the classes mangle by their Objective-C names.
+__attribute__((swift_name("Unit")))
+@interface NSUnit : NSObject
+@property (readonly, copy) NSString *symbol;
+@end
+
+__attribute__((swift_name("Dimension")))
+@interface NSDimension : NSUnit
+@end
+
+__attribute__((swift_name("UnitDuration")))
+@interface NSUnitDuration : NSDimension
+@end
+
+@interface NSMeasurement : NSObject
+- (instancetype)initWithDoubleValue:(double)doubleValue unit:(NSUnit *)unit;
+@property (readonly, copy) NSUnit *unit;
+@property (readonly) double doubleValue;
+@end
+
+__attribute__((swift_name("MeasurementFormatter")))
+@interface NSMeasurementFormatter : NSObject
+- (NSString *)stringFromMeasurement:(NSMeasurement *)measurement;
+@end
+
 @interface NSURL : NSObject
 - (nullable instancetype)initWithString:(NSString *)string;
 @property (readonly) NSString *absoluteString;
@@ -108,6 +140,15 @@ typedef NS_OPTIONS(unsigned long, NSDataBase64DecodingOptions) {
 @property (readonly) double timeIntervalSinceReferenceDate;
 @end
 
+// Locale.LanguageDirection is this enum, as in Apple's Foundation.
+typedef NS_ENUM(unsigned long, NSLocaleLanguageDirection) {
+    NSLocaleLanguageDirectionUnknown = 0,
+    NSLocaleLanguageDirectionLeftToRight = 1,
+    NSLocaleLanguageDirectionRightToLeft = 2,
+    NSLocaleLanguageDirectionTopToBottom = 3,
+    NSLocaleLanguageDirectionBottomToTop = 4,
+} __attribute__((swift_name("NSLocale.LanguageDirection")));
+
 @interface NSLocale : NSObject
 - (instancetype)initWithLocaleIdentifier:(NSString *)string;
 @property (readonly, copy) NSString *localeIdentifier;
@@ -121,6 +162,7 @@ __attribute__((swift_name("DateFormatter")))
 @end
 
 @interface NSTimeZone : NSObject
+@property (class, readonly, copy) NSTimeZone *systemTimeZone;
 + (nullable instancetype)timeZoneWithName:(NSString *)tzName;
 + (instancetype)timeZoneForSecondsFromGMT:(long)seconds;
 @property (readonly, copy) NSString *name;

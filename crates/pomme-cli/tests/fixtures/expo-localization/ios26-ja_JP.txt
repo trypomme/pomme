@@ -1,0 +1,27 @@
+# hello-expo's localization facts on the iOS 26.0 Simulator (iPhone 16e): languages (ja-JP), locale ja_JP, time zone Asia/Tokyo, 24-hour switch -.
+locales ja-JP
+languageTag ja-JP
+languageCode ja
+regionCode JP
+languageRegionCode JP
+currencyCode JPY
+currencySymbol ¥
+decimalSeparator .
+digitGroupingSeparator ,
+measurementSystem metric
+temperatureUnit celsius
+textDirection ltr
+calendar gregory
+firstWeekday 1
+timeZone Asia/Tokyo
+uses24hourClock true
+intl.locale en-JP
+intl.timeZone Asia/Tokyo
+intl.date 2026/03/14
+intl.dateTime Saturday, March 14, 2026 at 18:05:30 JST
+intl.time 18:05
+intl.number 1,234,567.891
+intl.price ¥1,234
+date.toLocaleString 2026/03/14, 18:05:30
+date.offset -540
+date.hours 18

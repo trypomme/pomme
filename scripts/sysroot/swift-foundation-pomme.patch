@@ -1,0 +1,57 @@
+--- a/Sources/FoundationEssentials/Locale/Locale_Cache.swift
++++ b/Sources/FoundationEssentials/Locale/Locale_Cache.swift
+@@ -283,7 +283,20 @@
+             return nil
+         }
+         return preferredLocaleID
++    }
++#elseif POMME
++    // POMME: the device's settings (pomme's overlay reads them from the user defaults).
++    func preferences() -> (LocalePreferences, Bool) {
++        (_pommeLocalePreferences(), true)
+     }
++
++    func preferredLanguages(forCurrentUser: Bool) -> [String] {
++        _pommePreferredLanguages()
++    }
++
++    func preferredLocale() -> String? {
++        _pommeLocalePreferences().locale
++    }
+ #else
+     func preferences() -> (LocalePreferences, Bool) {
+         var prefs = LocalePreferences()
+--- a/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift
++++ b/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift
+@@ -110,6 +110,12 @@
+ 
+         /// Reads from environment variables `TZFILE`, `TZ` and finally the symlink pointed at by the C macro `TZDEFAULT` to figure out what the current (aka "system") time zone is.
+         mutating func findCurrentTimeZone() -> TimeZone {
++#if POMME
++            // POMME: the device's time zone (pomme's NSTimeZone.systemTimeZone).
++            if let identifier = _pommeSystemTimeZoneIdentifier(), let result = fixed(identifier) {
++                return TimeZone(inner: result)
++            }
++#endif
+ #if !NO_TZFILE
+             if let tzenv = ProcessInfo.processInfo.environment["TZFILE"], let result = fixed(tzenv) {
+                 return TimeZone(inner: result)
+--- a/Sources/FoundationEssentials/Locale/Locale.swift
++++ b/Sources/FoundationEssentials/Locale/Locale.swift
+@@ -15,10 +15,15 @@
+ 
+  Locales are typically used to provide, format, and interpret information about and according to the user's customs and preferences. They are frequently used in conjunction with formatters. Although you can use many locales, you usually use the one associated with the current user.
+ */
++#if POMME
++import PommeObjC
++#endif
++
+ @available(macOS 10.10, iOS 8.0, watchOS 2.0, tvOS 9.0, *)
+ public struct Locale : Hashable, Equatable, Sendable {
+ 
+-#if FOUNDATION_FRAMEWORK
++#if FOUNDATION_FRAMEWORK || POMME
++    // POMME: Apple's type (pomme's overlay declares NSLocale.LanguageDirection), so its uses mangle as Apple's.
+     public typealias LanguageDirection = NSLocale.LanguageDirection
+ #else
+     public enum LanguageDirection : UInt, Sendable {

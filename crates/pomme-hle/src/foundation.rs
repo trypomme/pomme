@@ -653,6 +653,16 @@ fn string_with_utf8(emu: &mut Emu) -> Result<()> {
     ret_made_string(emu, &s)
 }
 
+/// `stringWithCharacters:length:` / `initWithCharacters:length:`: UTF-16 units.
+fn string_with_characters(emu: &mut Emu) -> Result<()> {
+    let (p, len) = (emu.arg(2), emu.arg(3));
+    let mut units = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        units.push(emu.p.memory.read_u16(p + 2 * i)?);
+    }
+    ret_made_string(emu, &String::from_utf16_lossy(&units))
+}
+
 fn string_with_string(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(2))?;
     if wants_mutable(emu, emu.arg(0), "NSMutableString")? {
@@ -4453,6 +4463,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "initWithUTF8String:", string_with_utf8),
     ("NSString", true, "stringWithCString:encoding:", string_with_utf8),
     ("NSString", false, "initWithCString:encoding:", string_with_utf8),
+    ("NSString", true, "stringWithCharacters:length:", string_with_characters),
+    ("NSString", false, "initWithCharacters:length:", string_with_characters),
     ("NSString", true, "stringWithString:", string_with_string),
     ("NSString", false, "initWithString:", string_with_string),
     ("NSString", true, "stringWithFormat:", string_with_format),

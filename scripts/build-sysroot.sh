@@ -127,13 +127,15 @@ for f in "$CF_SRC"/*.c "$SHIMS/cf-pomme.c"; do
   xcrun clang "${CFLAGS[@]}" -c "$f" -o "$o" &
 done
 wait
+# All of ICU goes in (-force_load), not only what CoreFoundation calls: Swift
+# Foundation's ICU half calls it too, and finds it here (one ICU, one copy of its data).
 # CF declares its legacy constant names as __attribute__((alias)), which Mach-O
 # doesn't support; Apple's build uses a linker alias list instead.
 grep -ho 'CFStringRef const k[A-Za-z0-9]* __attribute__((alias ("[A-Za-z0-9]*")))' "$CF_SRC/CFLocaleKeys.c" |
   sed -E 's/.*const (k[A-Za-z0-9]*) .*alias \("([A-Za-z0-9]*)".*/_\2 _\1/' > "$CF_OBJ/aliases.txt"
 xcrun clang++ -dynamiclib -target "$MAC_TARGET" -isysroot "$MAC_SDK" -Wl,-alias_list,"$CF_OBJ/aliases.txt" \
   -install_name /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation \
-  "$CF_OBJ"/*.o "$VENDOR/build/icu-macos/lib/lib_FoundationICU.a" -lobjc \
+  "$CF_OBJ"/*.o -Wl,-force_load,"$VENDOR/build/icu-macos/lib/lib_FoundationICU.a" -lobjc \
   -o "$CF_FW/CoreFoundation"
 
 # Swift Foundation (swift-foundation, as module `Foundation`, plus pomme's bridging overlay)

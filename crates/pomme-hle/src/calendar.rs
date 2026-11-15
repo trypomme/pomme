@@ -87,14 +87,14 @@ impl TimeZoneInfo {
         }
     }
 
-    fn dst_at(&self, t: i64) -> i64 {
+    pub(crate) fn dst_at(&self, t: i64) -> i64 {
         match &self.zone {
             Zone::Fixed(_) => 0,
             Zone::Named(tz) => tz.offset_from_utc_datetime(&utc(t)).dst_offset().num_seconds(),
         }
     }
 
-    fn abbreviation_at(&self, t: i64) -> String {
+    pub(crate) fn abbreviation_at(&self, t: i64) -> String {
         match &self.zone {
             Zone::Fixed(s) => fixed_abbreviation(*s),
             Zone::Named(tz) => {
@@ -112,6 +112,11 @@ impl TimeZoneInfo {
     fn local(&self, t: i64, nanos: u32) -> NaiveDateTime {
         let offset = self.offset_at(t) as i64;
         utc(t + offset).with_nanosecond(nanos).unwrap_or_else(|| utc(t + offset))
+    }
+
+    /// Seconds since 1970 for a wall-clock time given as seconds since 1970 as if it were UTC.
+    pub(crate) fn instant_of_wall_clock(&self, wall: i64) -> i64 {
+        self.instant(utc(wall))
     }
 
     /// Seconds since 1970 for wall-clock time `local`: in a daylight saving gap,
@@ -543,7 +548,7 @@ fn new_zone(emu: &mut Emu, info: TimeZoneInfo) -> Result<u64> {
 }
 
 /// The device's time zone (Settings ▸ General ▸ Date & Time): the setting's, else GMT.
-fn system_zone(emu: &Emu) -> TimeZoneInfo {
+pub(crate) fn system_zone(emu: &Emu) -> TimeZoneInfo {
     emu.locales.settings.time_zone.as_deref().and_then(TimeZoneInfo::named).unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"))
 }
 
@@ -1106,6 +1111,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
             }
             None => ret(e, 0),
         }
+    }),
+    // The abbreviations `timeZoneWithAbbreviation:` knows (Swift's TimeZone reads them).
+    (TZ, true, "abbreviationDictionary", |e| {
+        let mut pairs = Vec::new();
+        for (a, n) in ABBREVIATIONS {
+            let (a, n) = (foundation::new_nsstring(e, a)?, foundation::new_nsstring(e, n)?);
+            pairs.push((a, n));
+        }
+        let d = foundation::new_dict_of(e, &pairs)?;
+        ret(e, d)
     }),
     (TZ, true, "knownTimeZoneNames", |e| {
         let mut names = Vec::new();

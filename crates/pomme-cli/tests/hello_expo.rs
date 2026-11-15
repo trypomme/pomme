@@ -931,3 +931,72 @@ fn native_tabs_more() {
         }
     }
 }
+
+/// The localization screen's facts (`name value`, one per text), with the
+/// phone set to `languages`, `region`, `zone` and the 24-hour switch.
+fn localization_screen(languages: &[&str], region: &str, zone: &str, hours: Option<bool>) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut emu = boot()?;
+    emu.locales.settings = pomme_hle::locale::Settings {
+        languages: languages.iter().map(|s| s.to_string()).collect(),
+        region: region.into(),
+        time_zone: Some(zone.into()),
+        force_24_hour: hours,
+    };
+    emu.ui.launch_url = Some("pommehello:///localization".into());
+    let v = run_for(&mut emu, 5.0);
+    let mut facts = std::collections::BTreeMap::new();
+    for text in v.split('"').skip(1).step_by(2) {
+        if let Some((name, value)) = text.split_once(' ') {
+            facts.insert(name.to_string(), unescape(value));
+        }
+    }
+    Some(facts)
+}
+
+/// The view dump's `\u{202f}` escapes, as the characters.
+fn unescape(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("\\u{") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 3..];
+        match after.find('}').and_then(|end| u32::from_str_radix(&after[..end], 16).ok().and_then(char::from_u32).map(|c| (c, end))) {
+            Some((c, end)) => {
+                out.push(c);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str("\\u{");
+                rest = after;
+            }
+        }
+    }
+    out + rest
+}
+
+/// expo-localization, Hermes's Intl and Date, held to what the screen shows
+/// on the iOS 26 Simulator (fixtures/expo-localization, recorded by
+/// scripts/measure/expo-localization/run.sh).
+#[test]
+fn expo_localization_and_intl_follow_the_device() {
+    let cases: [(&str, &[&str], &str, &str, Option<bool>); 4] = [
+        ("en_US", &["en-US"], "US", "America/Los_Angeles", None),
+        ("en_AU", &["en-AU"], "AU", "Australia/Sydney", None),
+        ("ja_JP", &["ja-JP"], "JP", "Asia/Tokyo", None),
+        ("en_US-24h", &["en-US"], "US", "America/Los_Angeles", Some(true)),
+    ];
+    let mut report = String::new();
+    for (name, languages, region, zone, hours) in cases {
+        let Some(ours) = localization_screen(languages, region, zone, hours) else { return };
+        let path = format!("tests/fixtures/expo-localization/ios26-{name}.txt");
+        let ios = std::fs::read_to_string(path).unwrap();
+        for line in ios.lines().filter(|l| !l.starts_with('#')) {
+            let (fact, want) = line.split_once(' ').unwrap_or((line, ""));
+            match ours.get(fact) {
+                Some(got) if got == want => {}
+                got => report += &format!("{name}: {fact}: {got:?}, iOS {want:?}\n"),
+            }
+        }
+    }
+    assert!(report.is_empty(), "differences from iOS 26:\n{report}");
+}

@@ -1,8 +1,10 @@
 //! Calendar time in the C library: `gmtime_r`/`localtime_r` (and the
 //! non-reentrant forms), `timegm`/`mktime`, and `strftime`.
 //!
-//! The device's time zone is UTC (see calendar.rs), so local time is UTC
-//! too. `strftime` formats in the C locale, as an app's process starts in it.
+//! Local time is in the device's time zone (`pomme run --time-zone`; GMT
+//! unless set), as NSTimeZone.systemTimeZone has it (see calendar.rs), so
+//! JavaScript's Date in Hermes, which asks `localtime_r`, agrees with
+//! Foundation. `strftime` formats in the C locale, as an app's process starts in it.
 
 use crate::{Emu, HostFn, Result};
 
@@ -95,57 +97,99 @@ pub(crate) fn read_tm(emu: &Emu, p: u64) -> Result<Tm> {
     })
 }
 
-fn write_tm(emu: &mut Emu, p: u64, tm: &Tm) -> Result<()> {
+/// Write `tm` and its zone's abbreviation (`tm_zone`).
+fn write_tm(emu: &mut Emu, p: u64, tm: &Tm, zone: &str) -> Result<()> {
     let fields = [tm.sec, tm.min, tm.hour, tm.mday, tm.mon, tm.year, tm.wday, tm.yday, tm.isdst];
     for (i, f) in fields.iter().enumerate() {
         emu.p.memory.write_u32(p + i as u64 * 4, *f as u32)?;
     }
     emu.write_u64(p + TM_GMTOFF, tm.gmtoff as u64)?;
-    let zone = utc_name(emu)?;
+    let zone = zone_name(emu, zone)?;
     emu.write_u64(p + TM_ZONE, zone)
 }
 
-/// The zone's abbreviation ("UTC"), one guest copy for every `struct tm`.
-fn utc_name(emu: &mut Emu) -> Result<u64> {
-    if emu.time.utc_name == 0 {
-        emu.time.utc_name = emu.alloc_cstr("UTC")?;
+/// A zone abbreviation ("UTC", "AEDT"), one guest copy of each for every `struct tm`.
+fn zone_name(emu: &mut Emu, name: &str) -> Result<u64> {
+    if let Some(&p) = emu.time.zone_names.get(name) {
+        return Ok(p);
     }
-    Ok(emu.time.utc_name)
+    let p = emu.alloc_cstr(name)?;
+    emu.time.zone_names.insert(name.to_string(), p);
+    Ok(p)
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct State {
-    utc_name: u64,
+    zone_names: std::collections::HashMap<String, u64>,
     /// The `struct tm` that `gmtime` and `localtime` return.
     static_tm: u64,
 }
 
-/// `gmtime_r(const time_t *, struct tm *)` and `localtime_r`: the device is in UTC.
+/// Broken-down time for `t` in the device's time zone, and the zone's abbreviation then.
+fn local(emu: &Emu, t: i64) -> (Tm, String) {
+    let zone = crate::calendar::system_zone(emu);
+    let offset = zone.offset_at(t) as i64;
+    let mut tm = Tm::utc(t + offset);
+    tm.gmtoff = offset;
+    tm.isdst = (zone.dst_at(t) != 0) as i32;
+    (tm, zone.abbreviation_at(t))
+}
+
+/// Into `out`, or the one static `struct tm` when `out` is 0; returns where.
+fn broken_down(emu: &mut Emu, tp: u64, out: u64, in_local: bool) -> Result<()> {
+    let out = if out != 0 {
+        out
+    } else {
+        if emu.time.static_tm == 0 {
+            emu.time.static_tm = emu.alloc(56)?;
+        }
+        emu.time.static_tm
+    };
+    let t = emu.read_u64(tp)? as i64;
+    let (tm, zone) = if in_local { local(emu, t) } else { (Tm::utc(t), "UTC".to_string()) };
+    write_tm(emu, out, &tm, &zone)?;
+    emu.ret(out);
+    Ok(())
+}
+
+/// `gmtime_r(const time_t *, struct tm *)`
 fn gmtime_r(emu: &mut Emu) -> Result<()> {
-    let (tp, out) = (emu.arg(0), emu.arg(1));
-    let tm = Tm::utc(emu.read_u64(tp)? as i64);
-    write_tm(emu, out, &tm)?;
-    emu.ret(out);
-    Ok(())
+    broken_down(emu, emu.arg(0), emu.arg(1), false)
 }
 
-/// `gmtime(const time_t *)` and `localtime`: into one static `struct tm`.
+/// `localtime_r(const time_t *, struct tm *)`: in the device's time zone.
+fn localtime_r(emu: &mut Emu) -> Result<()> {
+    broken_down(emu, emu.arg(0), emu.arg(1), true)
+}
+
+/// `gmtime(const time_t *)`: into one static `struct tm`.
 fn gmtime(emu: &mut Emu) -> Result<()> {
-    if emu.time.static_tm == 0 {
-        emu.time.static_tm = emu.alloc(56)?;
-    }
-    let (tp, out) = (emu.arg(0), emu.time.static_tm);
-    let tm = Tm::utc(emu.read_u64(tp)? as i64);
-    write_tm(emu, out, &tm)?;
-    emu.ret(out);
-    Ok(())
+    broken_down(emu, emu.arg(0), 0, false)
 }
 
-/// `timegm(struct tm *)` and `mktime`: seconds since the epoch, the fields normalized.
+/// `localtime(const time_t *)`
+fn localtime(emu: &mut Emu) -> Result<()> {
+    broken_down(emu, emu.arg(0), 0, true)
+}
+
+/// `timegm(struct tm *)`: seconds since the epoch, the fields normalized.
 fn timegm(emu: &mut Emu) -> Result<()> {
     let p = emu.arg(0);
     let t = read_tm(emu, p)?.to_epoch();
-    write_tm(emu, p, &Tm::utc(t))?;
+    write_tm(emu, p, &Tm::utc(t), "UTC")?;
+    emu.ret(t as u64);
+    Ok(())
+}
+
+/// `mktime(struct tm *)`: the fields as wall-clock time in the device's time
+/// zone (in a daylight saving gap, as if the clocks hadn't changed; when the
+/// time happens twice, the first), normalized.
+fn mktime(emu: &mut Emu) -> Result<()> {
+    let p = emu.arg(0);
+    let wall = read_tm(emu, p)?.to_epoch();
+    let t = crate::calendar::system_zone(emu).instant_of_wall_clock(wall);
+    let (tm, zone) = local(emu, t);
+    write_tm(emu, p, &tm, &zone)?;
     emu.ret(t as u64);
     Ok(())
 }
@@ -273,11 +317,11 @@ fn format_into(emu: &mut Emu, buf: u64, max: u64, fmt: u64, tp: u64) -> Result<(
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_gmtime_r", gmtime_r),
-    ("_localtime_r", gmtime_r),
+    ("_localtime_r", localtime_r),
     ("_gmtime", gmtime),
-    ("_localtime", gmtime),
+    ("_localtime", localtime),
     ("_timegm", timegm),
-    ("_mktime", timegm),
+    ("_mktime", mktime),
     ("_strftime", strftime_fn),
     ("_strftime_l", strftime_l),
 ];
