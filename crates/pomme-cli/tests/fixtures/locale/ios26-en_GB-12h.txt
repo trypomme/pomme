@@ -1,0 +1,78 @@
+# The locale fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bytes.1500000 1.5 MB
+VALUE calendar.AMSymbol am
+VALUE calendar.firstWeekday 2
+VALUE calendar.fixed.weekOfYear 11
+VALUE calendar.fixed.weekday 7
+VALUE calendar.identifier gregorian
+VALUE calendar.locale en_GB
+VALUE calendar.minimumDaysInFirstWeek 4
+VALUE calendar.monthSymbols.0 January
+VALUE calendar.shortWeekdaySymbols Sun,Mon,Tue,Wed,Thu,Fri,Sat
+VALUE cflocale.identifier en_GB
+VALUE cflocale.preferredLanguages en-GB
+VALUE date.fixed 2026-03-14 9:05:30 am GMT
+VALUE date.full Saturday, 14 March 2026
+VALUE date.long 14 March 2026
+VALUE date.medium 14 Mar 2026
+VALUE date.relativeToday Today
+VALUE date.short 14/03/2026
+VALUE datetime.full Saturday, 14 March 2026 at 9:05:30 am GMT
+VALUE datetime.long 14 March 2026 at 9:05:30 am GMT
+VALUE datetime.medium 14 Mar 2026 at 9:05:30 am
+VALUE datetime.short 14/03/2026, 9:05 am
+VALUE defaults.AppleLanguages en-GB
+VALUE defaults.AppleLocale en_GB
+VALUE duration.3725s 1 hour, 2 minutes, 5 seconds
+VALUE format.j h a
+VALUE format.jmm h:mm a
+VALUE format.yMMMEd EEE, d MMM y
+VALUE format.yMd dd/MM/y
+VALUE list.three A, B and C
+VALUE locale.alternateQuotationBeginDelimiter ‘
+VALUE locale.alternateQuotationEndDelimiter ’
+VALUE locale.autoupdatingIsCurrent 1
+VALUE locale.calendarIdentifier gregorian
+VALUE locale.characterDirection 1
+VALUE locale.countryCode GB
+VALUE locale.currencyCode GBP
+VALUE locale.currencySymbol £
+VALUE locale.decimalSeparator .
+VALUE locale.displayName English (United Kingdom)
+VALUE locale.displayName.en_US English (United Kingdom)
+VALUE locale.groupingSeparator ,
+VALUE locale.identifier en_GB
+VALUE locale.languageCode en
+VALUE locale.lineDirection 3
+VALUE locale.measurementSystem U.K.
+VALUE locale.preferredLanguages en-GB
+VALUE locale.quotationBeginDelimiter “
+VALUE locale.quotationEndDelimiter ”
+VALUE locale.scriptCode nil
+VALUE locale.usesMetricSystem 1
+VALUE measure.20C 20°C
+VALUE measure.2kg 2 kg
+VALUE measure.5km 3.107 mi
+VALUE measure.5km.provided 5 km
+VALUE number.currency £1,234,567.89
+VALUE number.currencyAccounting £1,234,567.89
+VALUE number.currencyISOCode GBP 1,234,567.89
+VALUE number.currencyPlural 1,234,567.89 British pounds
+VALUE number.decimal 1,234,567.891
+VALUE number.localized 1,234.5
+VALUE number.ordinal 1,234,568th
+VALUE number.ordinal.3 3rd
+VALUE number.percent 123,456,789%
+VALUE number.percent.quarter 25%
+VALUE number.scientific 1.234567891E6
+VALUE number.spellOut one million two hundred thirty-four thousand five hundred sixty-seven point eight nine one
+VALUE price.1234.5 £1,234.50
+VALUE price.negative -£1,234.50
+VALUE price.negative.accounting (£1,234.50)
+VALUE string.localizedUppercase.i I
+VALUE string.uppercase.i I
+VALUE time.full 9:05:30 am GMT
+VALUE time.long 9:05:30 am GMT
+VALUE time.medium 9:05:30 am
+VALUE time.short 9:05 am
+VALUE timeZone.name Europe/London

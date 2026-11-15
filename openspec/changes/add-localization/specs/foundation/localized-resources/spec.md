@@ -47,7 +47,7 @@ the right plural form for the language.
 #### Scenario: A translated string
 
 - **WHEN** the probe looks up its test key with `--language ja-JP`
-- **THEN** it gets the Japanese text recorded in `fixtures/locale/ja_JP.txt`
+- **THEN** it gets the Japanese text recorded in `fixtures/locale/ios26-ja_JP.txt`
 
 #### Scenario: Plurals
 
@@ -80,4 +80,4 @@ chosen localization's strings file with the storyboard's name.
 #### Scenario: An image per language
 
 - **WHEN** the probe loads its per-language image with `--language ja-JP`
-- **THEN** it gets the image from `ja.lproj`, with the size recorded in `fixtures/locale/ja_JP.txt`
+- **THEN** it gets the image from `ja.lproj`, with the size recorded in `fixtures/locale/ios26-ja_JP.txt`

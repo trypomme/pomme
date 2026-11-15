@@ -41,24 +41,60 @@ fn app_domain(emu: &Emu) -> String {
     emu.p.bundle_id.clone().unwrap_or_else(|| "pomme.app".into())
 }
 
-/// The domain called `name`, made (empty, or for the global domain, with a
-/// fresh English-language device's settings) on first use.
+/// The domain called `name`, made (empty, or for the global domain, with the
+/// device's language and region settings) on first use.
 fn domain(emu: &mut Emu, name: &str) -> Result<u64> {
     if let Some(&d) = emu.defaults.domains.get(name) {
         return Ok(d);
     }
     let d = foundation::new_dict(emu)?;
     if name == GLOBAL {
-        let en = foundation::new_nsstring(emu, "en")?;
-        let langs = foundation::array_from(emu, &[en])?;
-        let k = foundation::new_nsstring(emu, "AppleLanguages")?;
-        cf(emu, "_CFDictionarySetValue", &[d, k, langs])?;
-        let k = foundation::new_nsstring(emu, "AppleLocale")?;
-        let v = foundation::new_nsstring(emu, "en_US")?;
-        cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
+        write_device_settings(emu, d)?;
     }
     emu.defaults.domains.insert(name.to_string(), d);
     Ok(d)
+}
+
+/// The global domain's language and region keys, as iOS keeps them
+/// (fixtures/locale/global-defaults.txt): `AppleLanguages`, `AppleLocale`,
+/// and the 24-Hour Time switch when it's been moved.
+fn write_device_settings(emu: &mut Emu, d: u64) -> Result<()> {
+    let settings = emu.locales.settings.clone();
+    let mut langs = Vec::new();
+    for l in &settings.languages {
+        langs.push(foundation::new_nsstring(emu, l)?);
+    }
+    let langs = foundation::array_from(emu, &langs)?;
+    let k = foundation::new_nsstring(emu, "AppleLanguages")?;
+    cf(emu, "_CFDictionarySetValue", &[d, k, langs])?;
+    let k = foundation::new_nsstring(emu, "AppleLocale")?;
+    let v = foundation::new_nsstring(emu, &settings.locale_id())?;
+    cf(emu, "_CFDictionarySetValue", &[d, k, v])?;
+    if let Some(force_24) = settings.force_24_hour {
+        let key = if force_24 { "AppleICUForce24HourTime" } else { "AppleICUForce12HourTime" };
+        let k = foundation::new_nsstring(emu, key)?;
+        let yes = foundation::boolean(emu, true);
+        cf(emu, "_CFDictionarySetValue", &[d, k, yes])?;
+    }
+    Ok(())
+}
+
+/// The global domain (a mutable CFDictionary).
+pub(crate) fn global_domain(emu: &mut Emu) -> Result<u64> {
+    domain(emu, GLOBAL)
+}
+
+/// A device setting as the app reads it: from the launch arguments, else the
+/// global domain (`AppleLanguages`, `AppleLocale`, ...); 0 if neither has it.
+pub fn device_value(emu: &mut Emu, key: &str) -> Result<u64> {
+    let key = foundation::new_nsstring(emu, key)?;
+    for d in [arguments(emu)?, domain(emu, GLOBAL)?] {
+        let v = cf(emu, "_CFDictionaryGetValue", &[d, key])?;
+        if v != 0 {
+            return Ok(v);
+        }
+    }
+    Ok(0)
 }
 
 fn registration(emu: &mut Emu) -> Result<u64> {

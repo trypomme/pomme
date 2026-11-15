@@ -44,7 +44,7 @@ pub struct State {
     /// Classes CF objects can have as their isa.
     cf_classes: HashSet<u64>,
     const_string_class: u64,
-    true_obj: u64,
+    pub(crate) true_obj: u64,
     false_obj: u64,
     pub(crate) null_obj: u64,
     /// NSRunLoop object for each CFRunLoop.
@@ -232,6 +232,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
     emu.hook(retain, hook_collection_retain)?;
     emu.hook(release, hook_collection_release)?;
     crate::userdefaults::hook_cf_preferences(emu)?;
+    crate::locale::hook_cf(emu)?;
     crate::tollfree::install(emu)?;
     Ok(())
 }

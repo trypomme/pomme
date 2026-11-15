@@ -24,4 +24,4 @@ defines none. The defaults of `locale`, `calendar`, `timeZone` and
 #### Scenario: Locale
 
 - **WHEN** a view reads `@Environment(\.locale)` with `--language en-AU --region AU`
-- **THEN** its identifier is the one recorded in `fixtures/locale/en_AU.txt`
+- **THEN** its identifier is the one recorded in `fixtures/locale/ios26-en_AU.txt`

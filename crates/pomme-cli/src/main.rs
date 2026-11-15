@@ -196,6 +196,22 @@ struct DeviceStateArgs {
     /// `--face toggle-enrolled@2` (repeatable). A face answers the prompts waiting then.
     #[arg(long, value_parser = parse_face)]
     face: Vec<(pomme_hle::keychain::Face, f64)>,
+    /// A preferred language, as Settings ▸ General ▸ Language & Region sets it:
+    /// `--language ja-JP` (repeatable: the first is the one the app shows, the
+    /// others its fallbacks). The default is `en-US`.
+    #[arg(long = "language", value_parser = parse_language)]
+    languages: Vec<String>,
+    /// The region, which sets the formats of dates, numbers, money and units:
+    /// `--region AU`. The default is `US`.
+    #[arg(long, value_parser = parse_region)]
+    region: Option<String>,
+    /// The phone's time zone, an IANA name: `--time-zone Australia/Sydney`. The default is GMT.
+    #[arg(long = "time-zone", value_parser = parse_time_zone)]
+    time_zone: Option<String>,
+    /// Settings' 24-Hour Time switch, moved away from the region's choice:
+    /// `--24-hour on` (24 hours everywhere) or `--24-hour off` (12 hours everywhere).
+    #[arg(long = "24-hour", value_parser = parse_on_off)]
+    force_24_hour: Option<bool>,
     /// The phone's clock at launch: `now`, a date (`2026-03-14` or
     /// `2026-03-14T09:30:00Z`, UTC) or seconds since 1970. By default it's `now` when
     /// the network is live (TLS certificates and sign-in tokens are checked against
@@ -218,6 +234,30 @@ struct DeviceStateArgs {
     /// set user defaults (NSArgumentDomain), as an Xcode scheme's arguments do.
     #[arg(last = true)]
     args: Vec<String>,
+}
+
+/// A BCP 47 language tag: `ja`, `en-AU`, `zh-Hans-CN`.
+fn parse_language(s: &str) -> std::result::Result<String, String> {
+    let ok = !s.is_empty() && s.split(['-', '_']).all(|p| !p.is_empty() && p.len() <= 8 && p.chars().all(|c| c.is_ascii_alphanumeric()));
+    if ok { Ok(s.replace('_', "-")) } else { Err(format!("{s}: expected a language like ja-JP or en-AU")) }
+}
+
+/// A region code: two letters (`AU`) or three digits (`419`).
+fn parse_region(s: &str) -> std::result::Result<String, String> {
+    let ok = (s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic())) || (s.len() == 3 && s.chars().all(|c| c.is_ascii_digit()));
+    if ok { Ok(s.to_uppercase()) } else { Err(format!("{s}: expected a region like AU or JP")) }
+}
+
+fn parse_time_zone(s: &str) -> std::result::Result<String, String> {
+    if pomme_hle::locale::is_time_zone(s) { Ok(s.to_string()) } else { Err(format!("{s}: not a time zone (expected an IANA name like Australia/Sydney)")) }
+}
+
+fn parse_on_off(s: &str) -> std::result::Result<bool, String> {
+    match s {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(format!("{s}: expected on or off")),
+    }
 }
 
 fn parse_env(s: &str) -> std::result::Result<(String, String), String> {
@@ -279,6 +319,15 @@ impl DeviceStateArgs {
         for (k, v) in &self.env {
             pomme_hle::libsystem::set_env(emu, k, v);
         }
+        let settings = &mut emu.locales.settings;
+        if !self.languages.is_empty() {
+            settings.languages = self.languages.clone();
+        }
+        if let Some(r) = &self.region {
+            settings.region = r.clone();
+        }
+        settings.time_zone = self.time_zone.clone().or(settings.time_zone.take());
+        settings.force_24_hour = self.force_24_hour.or(settings.force_24_hour);
         emu.launch_args = self.args.clone();
         emu.os_log_debug = self.debug_logs;
         emu.net.log_requests = self.log_requests;

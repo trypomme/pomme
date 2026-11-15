@@ -49,7 +49,7 @@ The work is in four phases. Each phase is useful on its own.
 **Phase 1: language and region.**
 
 - A way to choose the device's preferred languages, region and time zone:
-  `pomme run --language ja-JP --region JP --time-zone Asia/Tokyo`, the
+  `pomme run --language ja-JP --region JP --time-zone Asia/Tokyo` (and `--24-hour on|off`), the
   browser's URL settings, and a menu in the desktop window.
 - `NSLocale`, `CFLocale`, the `AppleLanguages` and `AppleLocale` user
   defaults, number and date formatters, calendars and time zones all follow

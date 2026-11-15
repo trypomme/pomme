@@ -9,6 +9,8 @@
 # and record ios26-compat.txt. RAW=file: also keep everything it printed.
 # VARIANT=name: the probe's PROBE_VARIANT (a case it tries), recorded as
 # ios26[-compat]-name.txt. SHOT=file: a screenshot of the screen at 5 s.
+# ARGS: launch arguments (for example "-AppleLanguages (ja-JP) -AppleLocale
+# ja_JP"). TZ: the app's time zone. A probe may be main.swift or main.m.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PROBE=${1:-swiftuimetrics}
@@ -21,8 +23,13 @@ xcrun simctl bootstatus "$DEVICE" -b >/dev/null
 
 APP=$(mktemp -d)/$EXE.app
 mkdir -p "$APP"
-xcrun --sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator -parse-as-library -O \
-  "$FIXTURE/main.swift" -o "$APP/$EXE"
+if [ -f "$FIXTURE/main.swift" ]; then
+  xcrun --sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator -parse-as-library -O \
+    "$FIXTURE/main.swift" -o "$APP/$EXE"
+else
+  xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-arc \
+    -framework UIKit -framework Foundation "$FIXTURE/main.m" -o "$APP/$EXE"
+fi
 cat >"$APP/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,14 +39,15 @@ cat >"$APP/Info.plist" <<PLIST
 <key>CFBundleName</key><string>$EXE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>MinimumOSVersion</key><string>17.0</string>
-$(cat "$FIXTURE/Info.extra.plist")
+$(cat "$FIXTURE/Info.extra.plist" 2>/dev/null)
 $([ -n "${COMPAT:-}" ] && echo '<key>UIDesignRequiresCompatibility</key><true/>')
 </dict></plist>
 PLIST
 codesign -s - "$APP" 2>/dev/null
 xcrun simctl install "$DEVICE" "$APP"
 OUT=$(mktemp)
-SIMCTL_CHILD_PROBE_VARIANT="${VARIANT:-}" xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE >"$OUT" 2>&1 &
+# shellcheck disable=SC2086 # (ARGS is split into arguments; TZ, when set, is one)
+env SIMCTL_CHILD_PROBE_VARIANT="${VARIANT:-}" ${TZ:+SIMCTL_CHILD_TZ="$TZ"} xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE ${ARGS:-} >"$OUT" 2>&1 &
 if [ -n "${SHOT:-}" ]; then
   sleep 5
   xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1 || true
@@ -55,6 +63,6 @@ OS=$(xcrun simctl list devices | grep -B100 "$DEVICE" | grep -- '-- iOS' | tail 
 {
   echo "# The $PROBE fixture on the $OS Simulator (iPhone 16e)${COMPAT:+ in the design before iOS 26 (UIDesignRequiresCompatibility)}: what it reports (frames, sizes), in points."
   # (Each name's last report, of the kinds probes print.)
-  grep -E '^(METRIC|SYMBOL|SMALL|LARGE|CONFIG) ' "$OUT" | tr -d '\r' | awk '{last[$1" "$2]=$0} END {for (k in last) print last[k]}' | sort
+  grep -E '^(METRIC|SYMBOL|SMALL|LARGE|CONFIG|VALUE) ' "$OUT" | tr -d '\r' | awk '{last[$1" "$2]=$0} END {for (k in last) print last[k]}' | sort
 } >"$RECORD"
 cat "$RECORD"

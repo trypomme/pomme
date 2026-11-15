@@ -1,0 +1,78 @@
+# The locale fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bytes.1500000 1.5 MB
+VALUE calendar.AMSymbol 午前
+VALUE calendar.firstWeekday 1
+VALUE calendar.fixed.weekOfYear 11
+VALUE calendar.fixed.weekday 7
+VALUE calendar.identifier gregorian
+VALUE calendar.locale ja_JP
+VALUE calendar.minimumDaysInFirstWeek 1
+VALUE calendar.monthSymbols.0 1月
+VALUE calendar.shortWeekdaySymbols 日,月,火,水,木,金,土
+VALUE cflocale.identifier ja_JP
+VALUE cflocale.preferredLanguages ja-JP
+VALUE date.fixed 2026-03-14 18:05:30 JST
+VALUE date.full 2026年3月14日 土曜日
+VALUE date.long 2026年3月14日
+VALUE date.medium 2026/03/14
+VALUE date.relativeToday 今日
+VALUE date.short 2026/03/14
+VALUE datetime.full 2026年3月14日 土曜日 18時05分30秒 日本標準時
+VALUE datetime.long 2026年3月14日 18:05:30 JST
+VALUE datetime.medium 2026/03/14 18:05:30
+VALUE datetime.short 2026/03/14 18:05
+VALUE defaults.AppleLanguages ja-JP
+VALUE defaults.AppleLocale ja_JP
+VALUE duration.3725s 1時間 2分 5秒
+VALUE format.j H時
+VALUE format.jmm H:mm
+VALUE format.yMMMEd y年M月d日(EEE)
+VALUE format.yMd y/M/d
+VALUE list.three A、B、C
+VALUE locale.alternateQuotationBeginDelimiter 『
+VALUE locale.alternateQuotationEndDelimiter 』
+VALUE locale.autoupdatingIsCurrent 1
+VALUE locale.calendarIdentifier gregorian
+VALUE locale.characterDirection 1
+VALUE locale.countryCode JP
+VALUE locale.currencyCode JPY
+VALUE locale.currencySymbol ¥
+VALUE locale.decimalSeparator .
+VALUE locale.displayName 日本語（日本）
+VALUE locale.displayName.en_US Japanese (Japan)
+VALUE locale.groupingSeparator ,
+VALUE locale.identifier ja_JP
+VALUE locale.languageCode ja
+VALUE locale.lineDirection 3
+VALUE locale.measurementSystem Metric
+VALUE locale.preferredLanguages ja-JP
+VALUE locale.quotationBeginDelimiter 「
+VALUE locale.quotationEndDelimiter 」
+VALUE locale.scriptCode nil
+VALUE locale.usesMetricSystem 1
+VALUE measure.20C 20°C
+VALUE measure.2kg 2 kg
+VALUE measure.5km 5 km
+VALUE measure.5km.provided 5 km
+VALUE number.currency ¥1,234,568
+VALUE number.currencyAccounting ¥1,234,568
+VALUE number.currencyISOCode JPY 1,234,568
+VALUE number.currencyPlural 1,234,568 円
+VALUE number.decimal 1,234,567.891
+VALUE number.localized 1,234.5
+VALUE number.ordinal 第1,234,568
+VALUE number.ordinal.3 第3
+VALUE number.percent 123,456,789%
+VALUE number.percent.quarter 25%
+VALUE number.scientific 1.234567891E6
+VALUE number.spellOut 百二十三万四千五百六十七・八九一
+VALUE price.1234.5 ¥1,234
+VALUE price.negative -¥1,234
+VALUE price.negative.accounting (¥1,234)
+VALUE string.localizedUppercase.i I
+VALUE string.uppercase.i I
+VALUE time.full 18時05分30秒 日本標準時
+VALUE time.long 18:05:30 JST
+VALUE time.medium 18:05:30
+VALUE time.short 18:05
+VALUE timeZone.name Asia/Tokyo

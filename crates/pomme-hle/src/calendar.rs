@@ -542,10 +542,20 @@ fn new_zone(emu: &mut Emu, info: TimeZoneInfo) -> Result<u64> {
     Ok(z)
 }
 
+/// The device's time zone (Settings ▸ General ▸ Date & Time): the setting's, else GMT.
+fn system_zone(emu: &Emu) -> TimeZoneInfo {
+    emu.locales.settings.time_zone.as_deref().and_then(TimeZoneInfo::named).unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"))
+}
+
+/// The default zone: `setDefaultTimeZone:`'s, else the device's.
+fn default_zone(emu: &Emu) -> TimeZoneInfo {
+    emu.calendars.default_zone.clone().unwrap_or_else(|| system_zone(emu))
+}
+
 /// The zone an NSTimeZone object stands for; 0 is the default (device) zone.
 pub(crate) fn zone_info(emu: &Emu, z: u64) -> TimeZoneInfo {
     if z == 0 {
-        return emu.calendars.default_zone.clone().unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"));
+        return default_zone(emu);
     }
     zone_of(emu, z)
 }
@@ -563,10 +573,25 @@ fn new_calendar(emu: &mut Emu, cal: Gregorian) -> Result<u64> {
 
 fn device_calendar(emu: &Emu) -> Gregorian {
     let mut cal = Gregorian::device();
-    if let Some(z) = &emu.calendars.default_zone {
-        cal.zone = z.clone();
-    }
+    cal.zone = default_zone(emu);
     cal
+}
+
+/// The device's calendar, with the region's week rules (first weekday,
+/// minimum days in the first week), as ICU has them for the device locale.
+fn localized_calendar(emu: &mut Emu) -> Result<Gregorian> {
+    let mut cal = device_calendar(emu);
+    (cal.first_weekday, cal.minimum_days_in_first_week) = crate::locale::week_rules(emu)?;
+    Ok(cal)
+}
+
+/// A date symbol list or symbol (`_kCFDateFormatterShortWeekdaySymbolsKey`) in the device locale.
+fn date_symbols(emu: &mut Emu, key: &'static str) -> Result<()> {
+    let loc = crate::locale::cf_locale_for(emu, None)?;
+    let f = foundation::cf_call(emu, "_CFDateFormatterCreate", &[0, loc, 0, 0])?;
+    let k = foundation::cf_data_pub(emu, key)?;
+    let v = foundation::cf_call(emu, "_CFDateFormatterCopyProperty", &[f, k])?;
+    ret(emu, v)
 }
 
 fn cal_of(emu: &Emu, c: u64) -> Gregorian {
@@ -682,7 +707,7 @@ fn calendar_with_identifier(emu: &mut Emu) -> Result<()> {
         return ret(emu, 0);
     }
     let id = nsstring(emu, id)?;
-    let mut cal = device_calendar(emu);
+    let mut cal = localized_calendar(emu)?;
     cal.identifier = id;
     let c = new_calendar(emu, cal)?;
     ret(emu, c)
@@ -721,8 +746,9 @@ const ABBREVIATIONS: &[(&str, &str)] = &[
     ("AEDT", "Australia/Sydney"),
 ];
 
+/// `localTimeZone`, `defaultTimeZone`: the default zone.
 fn device_zone(emu: &mut Emu) -> Result<()> {
-    let info = emu.calendars.default_zone.clone().unwrap_or_else(|| TimeZoneInfo::named(DEVICE_ZONE).expect("GMT"));
+    let info = default_zone(emu);
     let z = new_zone(emu, info)?;
     ret(emu, z)
 }
@@ -740,22 +766,42 @@ fn t_now_or_arg(emu: &mut Emu, date_arg: Option<usize>) -> Result<i64> {
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     // NSCalendar
     (C, true, "currentCalendar", |e| {
-        let cal = device_calendar(e);
+        let cal = localized_calendar(e)?;
         let c = new_calendar(e, cal)?;
         ret(e, c)
     }),
     (C, true, "autoupdatingCurrentCalendar", |e| {
-        let cal = device_calendar(e);
+        let cal = localized_calendar(e)?;
         let c = new_calendar(e, cal)?;
         ret(e, c)
     }),
+    (C, false, "eraSymbols", |e| date_symbols(e, "_kCFDateFormatterEraSymbolsKey")),
+    (C, false, "longEraSymbols", |e| date_symbols(e, "_kCFDateFormatterLongEraSymbolsKey")),
+    (C, false, "monthSymbols", |e| date_symbols(e, "_kCFDateFormatterMonthSymbolsKey")),
+    (C, false, "shortMonthSymbols", |e| date_symbols(e, "_kCFDateFormatterShortMonthSymbolsKey")),
+    (C, false, "veryShortMonthSymbols", |e| date_symbols(e, "_kCFDateFormatterVeryShortMonthSymbolsKey")),
+    (C, false, "standaloneMonthSymbols", |e| date_symbols(e, "_kCFDateFormatterStandaloneMonthSymbolsKey")),
+    (C, false, "shortStandaloneMonthSymbols", |e| date_symbols(e, "_kCFDateFormatterShortStandaloneMonthSymbolsKey")),
+    (C, false, "veryShortStandaloneMonthSymbols", |e| date_symbols(e, "_kCFDateFormatterVeryShortStandaloneMonthSymbolsKey")),
+    (C, false, "weekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterWeekdaySymbolsKey")),
+    (C, false, "shortWeekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterShortWeekdaySymbolsKey")),
+    (C, false, "veryShortWeekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterVeryShortWeekdaySymbolsKey")),
+    (C, false, "standaloneWeekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterStandaloneWeekdaySymbolsKey")),
+    (C, false, "shortStandaloneWeekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterShortStandaloneWeekdaySymbolsKey")),
+    (C, false, "veryShortStandaloneWeekdaySymbols", |e| date_symbols(e, "_kCFDateFormatterVeryShortStandaloneWeekdaySymbolsKey")),
+    (C, false, "quarterSymbols", |e| date_symbols(e, "_kCFDateFormatterQuarterSymbolsKey")),
+    (C, false, "shortQuarterSymbols", |e| date_symbols(e, "_kCFDateFormatterShortQuarterSymbolsKey")),
+    (C, false, "standaloneQuarterSymbols", |e| date_symbols(e, "_kCFDateFormatterStandaloneQuarterSymbolsKey")),
+    (C, false, "shortStandaloneQuarterSymbols", |e| date_symbols(e, "_kCFDateFormatterShortStandaloneQuarterSymbolsKey")),
+    (C, false, "AMSymbol", |e| date_symbols(e, "_kCFDateFormatterAMSymbolKey")),
+    (C, false, "PMSymbol", |e| date_symbols(e, "_kCFDateFormatterPMSymbolKey")),
     (C, true, "calendarWithIdentifier:", calendar_with_identifier),
     (C, false, "initWithCalendarIdentifier:", |e| {
         let (c, id) = (e.arg(0), e.arg(2));
         if id == 0 {
             return ret(e, 0);
         }
-        let mut cal = device_calendar(e);
+        let mut cal = localized_calendar(e)?;
         cal.identifier = nsstring(e, id)?;
         e.calendars.calendars.insert(c, cal);
         ret(e, c)
@@ -1016,7 +1062,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, same as u64)
     }),
     // NSTimeZone
-    (TZ, true, "systemTimeZone", device_zone),
+    (TZ, true, "systemTimeZone", |e| {
+        let info = system_zone(e);
+        let z = new_zone(e, info)?;
+        ret(e, z)
+    }),
     (TZ, true, "localTimeZone", device_zone),
     (TZ, true, "defaultTimeZone", device_zone),
     (TZ, true, "resetSystemTimeZone", |_| Ok(())),

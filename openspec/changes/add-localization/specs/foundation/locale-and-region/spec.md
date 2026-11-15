@@ -25,7 +25,7 @@ SHALL NOT read the host's language or region unless the user chooses that.
 #### Scenario: Japanese
 
 - **WHEN** a user runs an app with `--language ja-JP --region JP`
-- **THEN** `NSLocale.preferredLanguages` starts with `ja-JP`, and `NSLocale.currentLocale.localeIdentifier` is the identifier recorded in `fixtures/locale/ja_JP.txt`
+- **THEN** `NSLocale.preferredLanguages` starts with `ja-JP`, and `NSLocale.currentLocale.localeIdentifier` is the identifier recorded in `fixtures/locale/ios26-ja_JP.txt`
 
 #### Scenario: Nothing chosen
 
@@ -63,7 +63,7 @@ whether short times use a 24-hour clock.
 #### Scenario: Australian English
 
 - **WHEN** the `locale` probe runs in pomme with `--language en-AU --region AU`
-- **THEN** every line it prints matches `fixtures/locale/en_AU.txt`
+- **THEN** every line it prints matches `fixtures/locale/ios26-en_AU.txt`
 
 #### Scenario: Every recorded locale
 
@@ -74,12 +74,12 @@ whether short times use a 24-hour clock.
 
 pomme SHALL offer iOS's 24-Hour Time setting. When it is on, short time
 formats SHALL use a 24-hour clock in every region, as recorded in
-`fixtures/locale/en_US-24h.txt`.
+`fixtures/locale/ios26-en_US-24h.txt`.
 
 #### Scenario: US English with 24-hour time
 
-- **WHEN** the `locale` probe runs with `--language en-US --region US --24-hour`
-- **THEN** its output matches `fixtures/locale/en_US-24h.txt`
+- **WHEN** the `locale` probe runs with `--language en-US --region US --24-hour on`
+- **THEN** its output matches `fixtures/locale/ios26-en_US-24h.txt`
 
 ### Requirement: A region change while the app runs
 

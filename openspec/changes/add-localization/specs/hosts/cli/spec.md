@@ -10,7 +10,7 @@ deep link at launch), `--orientation`, `--appearance`, `--battery`,
 `--network`, `--status-bar` (pinned for screenshots), `--biometry`,
 `--clock`, `--clipboard`, `--paste-permission`, `--language` (repeatable;
 the first is the preferred language), `--region`, `--time-zone`,
-`--24-hour`, `--env KEY=VALUE`, and launch arguments after `--`.
+`--24-hour` (on or off), `--env KEY=VALUE`, and launch arguments after `--`.
 
 #### Scenario: Deep link
 

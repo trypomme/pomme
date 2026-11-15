@@ -66,7 +66,7 @@ pub mod system;
 mod coretext;
 mod pointer_array;
 pub mod storyboard;
-mod locale;
+pub mod locale;
 pub mod metal;
 #[cfg(feature = "gpu")]
 mod metal_gpu;
@@ -353,7 +353,7 @@ pub struct Emu {
     pub system: system::System,
     pub metal: metal::State,
     pub(crate) pointer_arrays: pointer_array::State,
-    pub(crate) locales: locale::State,
+    pub locales: locale::State,
     pub(crate) calendars: calendar::State,
     pub(crate) scanners: scanner::State,
     pub(crate) reachability: reachability::State,

@@ -23,7 +23,7 @@ to nil.
 #### Scenario: The device locale
 
 - **WHEN** the app runs with `--language ja-JP --region JP` and a formatter with no locale formats the probe's fixed date in the long style
-- **THEN** the result is the one recorded in `fixtures/locale/ja_JP.txt`
+- **THEN** the result is the one recorded in `fixtures/locale/ios26-ja_JP.txt`
 
 ### Requirement: Calendars do Gregorian arithmetic
 
@@ -42,7 +42,7 @@ their daylight saving rules.
 #### Scenario: The first day of the week
 
 - **WHEN** the app runs with `--region AU` and reads `NSCalendar.currentCalendar.firstWeekday`
-- **THEN** it is the value recorded in `fixtures/locale/en_AU.txt`
+- **THEN** it is the value recorded in `fixtures/locale/ios26-en_AU.txt`
 
 ## REMOVED Requirements
 

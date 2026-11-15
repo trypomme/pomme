@@ -1,6 +1,6 @@
 //! NSNumberFormatter, on CoreFoundation's CFNumberFormatter (ICU), as
 //! Foundation builds it: a style (decimal, currency, percent, scientific,
-//! spell-out, ordinal, ...), a locale (the device's, en_US, unless set), and
+//! spell-out, ordinal, ...), a locale (the device's unless set), and
 //! properties such as fraction digits and grouping. Each conversion makes a CF
 //! formatter from those and asks it.
 
@@ -44,9 +44,7 @@ fn set_prop(emu: &mut Emu, f: u64, key: &'static str, value: u64) {
 /// A CFNumberFormatter for `f`'s settings.
 fn cf_formatter(emu: &mut Emu, f: u64) -> Result<u64> {
     let fm = get(emu, f);
-    let id = fm.locale.unwrap_or_else(|| crate::locale::CURRENT.into());
-    let id = foundation::new_nsstring(emu, &id)?;
-    let locale = cf(emu, "_CFLocaleCreate", &[0, id])?;
+    let locale = crate::locale::cf_locale_for(emu, fm.locale.as_deref())?;
     let formatter = cf(emu, "_CFNumberFormatterCreate", &[0, locale, fm.style])?;
     for (key, value) in fm.props {
         let k = cf_data_pub(emu, key)?;

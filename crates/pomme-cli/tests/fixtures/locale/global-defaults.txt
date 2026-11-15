@@ -1,0 +1,5 @@
+# The global user defaults domain (defaults read -g) on the iOS 26.0 Simulator (iPhone 16e): the keys about language and region.
+# The 12/24-hour overrides (AppleICUForce24HourTime, AppleICUForce12HourTime) are read from here, not from launch arguments: see ios26-en_US-24h.txt and ios26-en_GB-12h.txt, recorded with them set here.
+AppleLanguages ( "en-US" )
+AppleLanguagesSchemaVersion 5400
+AppleLocale "en_US"

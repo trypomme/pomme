@@ -1,0 +1,78 @@
+# The locale fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bytes.1500000 1.5 MB
+VALUE calendar.AMSymbol לפ׳
+VALUE calendar.firstWeekday 1
+VALUE calendar.fixed.weekOfYear 11
+VALUE calendar.fixed.weekday 7
+VALUE calendar.identifier gregorian
+VALUE calendar.locale he_IL
+VALUE calendar.minimumDaysInFirstWeek 1
+VALUE calendar.monthSymbols.0 ינואר
+VALUE calendar.shortWeekdaySymbols יום א׳,יום ב׳,יום ג׳,יום ד׳,יום ה׳,יום ו׳,שבת
+VALUE cflocale.identifier he_IL
+VALUE cflocale.preferredLanguages he-IL
+VALUE date.fixed 2026-03-14 11:05:30 GMT‎+2‎
+VALUE date.full יום שבת, 14 במרץ 2026
+VALUE date.long 14 במרץ 2026
+VALUE date.medium 14 במרץ 2026
+VALUE date.relativeToday היום
+VALUE date.short 14.3.2026
+VALUE datetime.full יום שבת, 14 במרץ 2026 בשעה 11:05:30 שעון ישראל (חורף)
+VALUE datetime.long 14 במרץ 2026 בשעה 11:05:30 GMT‎+2‎
+VALUE datetime.medium 14 במרץ 2026, 11:05:30
+VALUE datetime.short 14.3.2026, 11:05
+VALUE defaults.AppleLanguages he-IL
+VALUE defaults.AppleLocale he_IL
+VALUE duration.3725s 1 שעה, שתי דקות ו-5 שניות
+VALUE format.j H
+VALUE format.jmm H:mm
+VALUE format.yMMMEd EEE, d בMMM y
+VALUE format.yMd d.M.y
+VALUE list.three ⁨A⁩, ⁨B⁩ ו-⁨C⁩
+VALUE locale.alternateQuotationBeginDelimiter '
+VALUE locale.alternateQuotationEndDelimiter '
+VALUE locale.autoupdatingIsCurrent 1
+VALUE locale.calendarIdentifier gregorian
+VALUE locale.characterDirection 2
+VALUE locale.countryCode IL
+VALUE locale.currencyCode ILS
+VALUE locale.currencySymbol ₪
+VALUE locale.decimalSeparator .
+VALUE locale.displayName עברית (ישראל)
+VALUE locale.displayName.en_US Hebrew (Israel)
+VALUE locale.groupingSeparator ,
+VALUE locale.identifier he_IL
+VALUE locale.languageCode he
+VALUE locale.lineDirection 3
+VALUE locale.measurementSystem Metric
+VALUE locale.preferredLanguages he-IL
+VALUE locale.quotationBeginDelimiter "
+VALUE locale.quotationEndDelimiter "
+VALUE locale.scriptCode nil
+VALUE locale.usesMetricSystem 1
+VALUE measure.20C 20°C
+VALUE measure.2kg 2 ק״ג
+VALUE measure.5km 5 ק״מ
+VALUE measure.5km.provided 5 ק״מ
+VALUE number.currency ‏1,234,567.89 ‏₪
+VALUE number.currencyAccounting ‏1,234,567.89 ‏₪
+VALUE number.currencyISOCode ‏1,234,567.89 ‏ILS
+VALUE number.currencyPlural 1,234,567.89 שקלים חדשים
+VALUE number.decimal 1,234,567.891
+VALUE number.localized 1,234.5
+VALUE number.ordinal 1,234,568
+VALUE number.ordinal.3 3
+VALUE number.percent 123,456,789%
+VALUE number.percent.quarter 25%
+VALUE number.scientific 1.234567891E6
+VALUE number.spellOut מיליון מאתיים שלושים וארבעה אלף חמש מאות שישים ושבע נקודה שמונה תשע אחת
+VALUE price.1234.5 ‏1,234.50 ‏₪
+VALUE price.negative ‏‎-1,234.50 ‏₪
+VALUE price.negative.accounting ‏‎-1,234.50 ‏₪
+VALUE string.localizedUppercase.i I
+VALUE string.uppercase.i I
+VALUE time.full 11:05:30 שעון ישראל (חורף)
+VALUE time.long 11:05:30 GMT‎+2‎
+VALUE time.medium 11:05:30
+VALUE time.short 11:05
+VALUE timeZone.name Asia/Jerusalem

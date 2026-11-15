@@ -13,7 +13,7 @@ formatters SHALL use the same locale.
 #### Scenario: Australian English
 
 - **WHEN** hello-expo's localization screen runs with `--language en-AU --region AU`
-- **THEN** the values it shows agree with `fixtures/locale/en_AU.txt`
+- **THEN** the values it shows agree with `fixtures/locale/ios26-en_AU.txt`
 
 #### Scenario: Intl
 

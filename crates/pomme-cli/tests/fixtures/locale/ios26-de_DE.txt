@@ -1,0 +1,78 @@
+# The locale fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bytes.1500000 1,5 MB
+VALUE calendar.AMSymbol AM
+VALUE calendar.firstWeekday 2
+VALUE calendar.fixed.weekOfYear 11
+VALUE calendar.fixed.weekday 7
+VALUE calendar.identifier gregorian
+VALUE calendar.locale de_DE
+VALUE calendar.minimumDaysInFirstWeek 4
+VALUE calendar.monthSymbols.0 Januar
+VALUE calendar.shortWeekdaySymbols So.,Mo.,Di.,Mi.,Do.,Fr.,Sa.
+VALUE cflocale.identifier de_DE
+VALUE cflocale.preferredLanguages de-DE
+VALUE date.fixed 2026-03-14 10:05:30 MEZ
+VALUE date.full Samstag, 14. März 2026
+VALUE date.long 14. März 2026
+VALUE date.medium 14.03.2026
+VALUE date.relativeToday Heute
+VALUE date.short 14.03.26
+VALUE datetime.full Samstag, 14. März 2026 um 10:05:30 Mitteleuropäische Normalzeit
+VALUE datetime.long 14. März 2026 um 10:05:30 MEZ
+VALUE datetime.medium 14.03.2026, 10:05:30
+VALUE datetime.short 14.03.26, 10:05
+VALUE defaults.AppleLanguages de-DE
+VALUE defaults.AppleLocale de_DE
+VALUE duration.3725s 1 Stunde, 2 Minuten und 5 Sekunden
+VALUE format.j HH 'Uhr'
+VALUE format.jmm HH:mm
+VALUE format.yMMMEd EEE d. MMM y
+VALUE format.yMd d.M.y
+VALUE list.three A, B und C
+VALUE locale.alternateQuotationBeginDelimiter ‚
+VALUE locale.alternateQuotationEndDelimiter ‘
+VALUE locale.autoupdatingIsCurrent 1
+VALUE locale.calendarIdentifier gregorian
+VALUE locale.characterDirection 1
+VALUE locale.countryCode DE
+VALUE locale.currencyCode EUR
+VALUE locale.currencySymbol €
+VALUE locale.decimalSeparator ,
+VALUE locale.displayName Deutsch (Deutschland)
+VALUE locale.displayName.en_US German (Germany)
+VALUE locale.groupingSeparator .
+VALUE locale.identifier de_DE
+VALUE locale.languageCode de
+VALUE locale.lineDirection 3
+VALUE locale.measurementSystem Metric
+VALUE locale.preferredLanguages de-DE
+VALUE locale.quotationBeginDelimiter „
+VALUE locale.quotationEndDelimiter “
+VALUE locale.scriptCode nil
+VALUE locale.usesMetricSystem 1
+VALUE measure.20C 20 °C
+VALUE measure.2kg 2 kg
+VALUE measure.5km 5 km
+VALUE measure.5km.provided 5 km
+VALUE number.currency 1.234.567,89 €
+VALUE number.currencyAccounting 1.234.567,89 €
+VALUE number.currencyISOCode 1.234.567,89 EUR
+VALUE number.currencyPlural 1.234.567,89 Euro
+VALUE number.decimal 1.234.567,891
+VALUE number.localized 1.234,5
+VALUE number.ordinal 1.234.568.
+VALUE number.ordinal.3 3.
+VALUE number.percent 123.456.789 %
+VALUE number.percent.quarter 25 %
+VALUE number.scientific 1,234567891E6
+VALUE number.spellOut eine Million zwei­hundert­vier­und­dreißig­tausend­fünf­hundert­sieben­und­sechzig Komma acht neun eins
+VALUE price.1234.5 1.234,50 €
+VALUE price.negative -1.234,50 €
+VALUE price.negative.accounting -1.234,50 €
+VALUE string.localizedUppercase.i I
+VALUE string.uppercase.i I
+VALUE time.full 10:05:30 Mitteleuropäische Normalzeit
+VALUE time.long 10:05:30 MEZ
+VALUE time.medium 10:05:30
+VALUE time.short 10:05
+VALUE timeZone.name Europe/Berlin

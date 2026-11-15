@@ -1,0 +1,78 @@
+# The locale fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bytes.1500000 ١٫٥ MB
+VALUE calendar.AMSymbol ص
+VALUE calendar.firstWeekday 1
+VALUE calendar.fixed.weekOfYear 38
+VALUE calendar.fixed.weekday 7
+VALUE calendar.identifier islamic-umalqura
+VALUE calendar.locale ar_SA
+VALUE calendar.minimumDaysInFirstWeek 1
+VALUE calendar.monthSymbols.0 محرم
+VALUE calendar.shortWeekdaySymbols أحد,اثنين,ثلاثاء,أربعاء,خميس,جمعة,سبت
+VALUE cflocale.identifier ar_SA
+VALUE cflocale.preferredLanguages ar-SA
+VALUE date.fixed ١٤٤٧-٠٩-٢٥ ١٢:٠٥:٣٠ غرينتش+٣
+VALUE date.full السبت، ٢٥ رمضان، ١٤٤٧ هـ
+VALUE date.long ٢٥ رمضان، ١٤٤٧ هـ
+VALUE date.medium ٢٥ رمضان، ١٤٤٧ هـ
+VALUE date.relativeToday اليوم
+VALUE date.short ٢٥ رمضان، ١٤٤٧ هـ
+VALUE datetime.full السبت، ٢٥ رمضان، ١٤٤٧ هـ، ١٢:٠٥:٣٠ م التوقيت العربي الرسمي
+VALUE datetime.long ٢٥ رمضان، ١٤٤٧ هـ، ١٢:٠٥:٣٠ م غرينتش+٣
+VALUE datetime.medium ٢٥ رمضان، ١٤٤٧ هـ، ١٢:٠٥:٣٠ م
+VALUE datetime.short ٢٥ رمضان، ١٤٤٧ هـ، ١٢:٠٥ م
+VALUE defaults.AppleLanguages ar-SA
+VALUE defaults.AppleLocale ar_SA
+VALUE duration.3725s ساعة، دقيقتان، و٥ ثوانٍ
+VALUE format.j h a
+VALUE format.jmm h:mm a
+VALUE format.yMMMEd EEE، d MMM، y G
+VALUE format.yMd d MMM، y G
+VALUE list.three ⁨A⁩ و⁨B⁩ و⁨C⁩
+VALUE locale.alternateQuotationBeginDelimiter '
+VALUE locale.alternateQuotationEndDelimiter '
+VALUE locale.autoupdatingIsCurrent 1
+VALUE locale.calendarIdentifier islamic-umalqura
+VALUE locale.characterDirection 2
+VALUE locale.countryCode SA
+VALUE locale.currencyCode SAR
+VALUE locale.currencySymbol ر.س.‏
+VALUE locale.decimalSeparator ٫
+VALUE locale.displayName العربية (المملكة العربية السعودية)
+VALUE locale.displayName.en_US Arabic (Saudi Arabia)
+VALUE locale.groupingSeparator ٬
+VALUE locale.identifier ar_SA
+VALUE locale.languageCode ar
+VALUE locale.lineDirection 3
+VALUE locale.measurementSystem Metric
+VALUE locale.preferredLanguages ar-SA
+VALUE locale.quotationBeginDelimiter "
+VALUE locale.quotationEndDelimiter "
+VALUE locale.scriptCode nil
+VALUE locale.usesMetricSystem 1
+VALUE measure.20C ٢٠°‏م
+VALUE measure.2kg ٢ كغم
+VALUE measure.5km ٥ كم
+VALUE measure.5km.provided ٥ كم
+VALUE number.currency ‏١٬٢٣٤٬٥٦٧٫٨٩ ر.س.‏
+VALUE number.currencyAccounting ‏١٬٢٣٤٬٥٦٧٫٨٩ ر.س.‏
+VALUE number.currencyISOCode ‏١٬٢٣٤٬٥٦٧٫٨٩ SAR
+VALUE number.currencyPlural ١٬٢٣٤٬٥٦٧٫٨٩ ريال سعودي
+VALUE number.decimal ١٬٢٣٤٬٥٦٧٫٨٩١
+VALUE number.localized ١٬٢٣٤٫٥
+VALUE number.ordinal ١٬٢٣٤٬٥٦٨
+VALUE number.ordinal.3 ٣
+VALUE number.percent ١٢٣٬٤٥٦٬٧٨٩٪؜
+VALUE number.percent.quarter ٢٥٪؜
+VALUE number.scientific ١٫٢٣٤٥٦٧٨٩١أس٦
+VALUE number.spellOut مليون ومائتان وأربعة وثلاثون ألف وخمسة مائة وسبعة وستون فاصل ثمانية تسعة واحد
+VALUE price.1234.5 ‏١٬٢٣٤٫٥٠ ر.س.‏
+VALUE price.negative ؜-‏١٬٢٣٤٫٥٠ ر.س.‏
+VALUE price.negative.accounting ؜-‏١٬٢٣٤٫٥٠ ر.س.‏
+VALUE string.localizedUppercase.i I
+VALUE string.uppercase.i I
+VALUE time.full ١٢:٠٥:٣٠ م التوقيت العربي الرسمي
+VALUE time.long ١٢:٠٥:٣٠ م غرينتش+٣
+VALUE time.medium ١٢:٠٥:٣٠ م
+VALUE time.short ١٢:٠٥ م
+VALUE timeZone.name Asia/Riyadh
