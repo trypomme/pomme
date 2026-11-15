@@ -4,7 +4,7 @@
 //!
 //! What's outside the phone isn't in a snapshot (see [`crate::External`]):
 //! the window or browser showing it, the network, a web engine, a profiler,
-//! a driving test. Restoring keeps the ones in use. So a snapshot can't be
+//! a coverage recorder, a driving test. Restoring keeps the ones in use. So a snapshot can't be
 //! taken while the app holds something that lives out there: an open network
 //! connection, or pages in a web engine.
 //!
@@ -73,6 +73,7 @@ impl Emu {
         let engine = self.webkit.engine.take();
         let driver = self.driver.take();
         let profiler = self.profiler.take();
+        let coverage = self.coverage.take();
         let (max_steps, time_limit_ns, trace, serial) = (self.max_steps, self.time_limit_ns, self.trace, self.frame_serial);
         *self = (*snapshot.emu).clone();
         *self.live.host = host;
@@ -81,6 +82,7 @@ impl Emu {
         *self.webkit.engine = engine;
         *self.driver = driver;
         *self.profiler = profiler;
+        *self.coverage = coverage;
         (self.max_steps, self.time_limit_ns, self.trace) = (max_steps, time_limit_ns, trace);
         // Frames made from here on are new ones, whatever the snapshot's count.
         self.frame_serial = self.frame_serial.max(serial);

@@ -113,6 +113,9 @@ pub struct Stubs {
     index: HashMap<Stub, usize>,
     /// For each stub, the pointers bound to it: (location, addend).
     sites: Vec<Vec<(u64, u64)>>,
+    /// For each stub, whether HLE gave it a real target with [`Process::rebind`]
+    /// (a data symbol such as a class or a constant, backed by real memory).
+    backed: Vec<bool>,
 }
 
 impl Stubs {
@@ -123,6 +126,7 @@ impl Stubs {
         if i == n {
             self.list.push(key);
             self.sites.push(Vec::new());
+            self.backed.push(false);
         }
         STUB_BASE + i as u64 * STUB_SIZE
     }
@@ -148,6 +152,11 @@ impl Stubs {
     pub fn index_of(&self, addr: u64) -> Option<usize> {
         let i = (addr.checked_sub(STUB_BASE)? / STUB_SIZE) as usize;
         (i < self.list.len()).then_some(i)
+    }
+
+    /// Whether the stub with this index was rebound to real backing memory.
+    pub fn is_backed(&self, i: usize) -> bool {
+        self.backed.get(i).copied().unwrap_or(false)
     }
 
     /// The stub at a guest address, if it is one.
@@ -203,6 +212,7 @@ impl Process {
         }
         let n = sites.len();
         self.stubs.sites[i] = sites;
+        self.stubs.backed[i] = true;
         Ok(n)
     }
 

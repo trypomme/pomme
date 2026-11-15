@@ -21,85 +21,16 @@ enum Cmd {
         symbols: bool,
     },
     /// Load a .app and run it: main() on the arm64 interpreter, system libraries in HLE.
-    Run {
-        path: PathBuf,
-        /// Stop after this many instructions.
-        #[arg(long, default_value_t = 50_000_000)]
-        steps: u64,
-        /// Stop once the app is idle past this many seconds of virtual time.
-        #[arg(long, default_value_t = 10.0)]
-        seconds: f64,
-        /// Print the view hierarchy when the run stops.
-        #[arg(long)]
-        views: bool,
-        /// Print what accessibility sees when the run stops: identifiers
-        /// (React Native's testID, SwiftUI's and Flutter's), labels, values
-        /// and frames, as UI tests find elements by them.
-        #[arg(long)]
-        elements: bool,
-        /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
-        #[arg(long, value_parser = parse_tap)]
-        tap: Vec<(f64, f64, f64)>,
-        /// Swipe from one point to another at a virtual time: `--swipe 195,700>195,200@2`
-        /// (0.3 s; `~0.1` after the time for a faster fling). Scroll views scroll and keep
-        /// going after a fast swipe (repeatable).
-        #[arg(long, value_parser = parse_swipe)]
-        swipe: Vec<Swipe>,
-        /// Write a PNG of the screen (at the device's scale) when the run stops.
-        #[arg(long)]
-        screenshot: Option<PathBuf>,
-        /// The iPhone to present: its screen, safe area, notch or Dynamic Island and keyboard
-        /// (`iphone-17-pro-max`, `"iPhone SE (3rd generation)"`; `--device list` lists them).
-        #[arg(long, default_value = pomme_hle::device::DEFAULT, value_parser = parse_device)]
-        device: &'static pomme_hle::device::Device,
-        /// Draw the screenshot inside a phone body (rounded screen corners, bezel, buttons).
-        #[arg(long)]
-        shell: bool,
-        /// Print every system call and Objective-C message as it happens.
-        #[arg(long)]
-        trace: bool,
-        /// Directory of pomme-built system libraries (see scripts/build-sysroot.sh).
-        #[arg(long, default_value = "vendor/sysroot")]
-        sysroot: PathBuf,
-        /// Run from a bundle made by `pomme bundle` instead of the disk (PATH is then ignored).
-        #[arg(long)]
-        bundle: Option<PathBuf>,
-        /// No network: every request fails as if the device were offline.
-        #[arg(long)]
-        offline: bool,
-        /// Answer requests for URL (or URL prefix ending in `*`) with FILE: `--fixture 'https://api.x/*=x.json'`.
-        #[arg(long, value_parser = parse_fixture)]
-        fixture: Vec<(String, PathBuf)>,
-        /// The iOS version to present (`18.6`, `26`, ...). The app's own SDK and Info.plist
-        /// decide the rest: e.g. Liquid Glass needs iOS 26 and an app linked against the 26 SDK.
-        #[arg(long, default_value_t = pomme_hle::system::LATEST)]
-        ios: pomme_hle::system::Version,
-        /// List the system functions the app binds that pomme doesn't implement yet, and exit.
-        #[arg(long)]
-        missing: bool,
-        /// Launch the app with this URL (a deep link), as iOS does: `--url 'myapp:///settings'`.
-        #[arg(long)]
-        url: Option<String>,
-        /// Type on the software keyboard at a virtual time: `--type 'Ada\n@4'` (`\n` is
-        /// return, `\b` delete). Keys go to the first responder (tap a text field first).
-        #[arg(long = "type", value_parser = parse_typing)]
-        typing: Vec<(String, f64)>,
+    Run(RunArgs),
+    /// How much of iOS the app needs and how much of it pomme provides: every system
+    /// symbol it binds (implemented, data, or missing), then a run (taking `run`'s
+    /// options) that records every missing function and method the app calls, and
+    /// the messages pomme answers with a generic stand-in instead of iOS's behaviour.
+    Coverage {
         #[command(flatten)]
-        clipboard: ClipboardArgs,
+        coverage: CoverageArgs,
         #[command(flatten)]
-        state: DeviceStateArgs,
-        #[command(flatten)]
-        profile: ProfileArgs,
-        /// Run live in a window that looks like the iOS Simulator: click and drag to
-        /// touch, type into the focused field, ⌘← / ⌘→ (Ctrl on Windows and Linux)
-        /// to turn the phone. Runs until the window closes (no step or time limit).
-        #[arg(long)]
-        window: bool,
-        /// With --window: print, for each second frames arrive, how many there
-        /// were (in wall time and in the app's own time) and the longest wait
-        /// between consecutive frames of motion, to see where it stutters.
-        #[arg(long, requires = "window")]
-        frame_stats: bool,
+        run: RunArgs,
     },
     /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
@@ -117,6 +48,105 @@ enum Cmd {
         #[arg(long)]
         stubs: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    path: PathBuf,
+    /// Stop after this many instructions.
+    #[arg(long, default_value_t = 50_000_000)]
+    steps: u64,
+    /// Stop once the app is idle past this many seconds of virtual time.
+    #[arg(long, default_value_t = 10.0)]
+    seconds: f64,
+    /// Print the view hierarchy when the run stops.
+    #[arg(long)]
+    views: bool,
+    /// Print what accessibility sees when the run stops: identifiers
+    /// (React Native's testID, SwiftUI's and Flutter's), labels, values
+    /// and frames, as UI tests find elements by them.
+    #[arg(long)]
+    elements: bool,
+    /// Tap at a point (in points) at a virtual time: `--tap 195,438@2` (repeatable).
+    #[arg(long, value_parser = parse_tap)]
+    tap: Vec<(f64, f64, f64)>,
+    /// Swipe from one point to another at a virtual time: `--swipe 195,700>195,200@2`
+    /// (0.3 s; `~0.1` after the time for a faster fling). Scroll views scroll and keep
+    /// going after a fast swipe (repeatable).
+    #[arg(long, value_parser = parse_swipe)]
+    swipe: Vec<Swipe>,
+    /// Write a PNG of the screen (at the device's scale) when the run stops.
+    #[arg(long)]
+    screenshot: Option<PathBuf>,
+    /// The iPhone to present: its screen, safe area, notch or Dynamic Island and keyboard
+    /// (`iphone-17-pro-max`, `"iPhone SE (3rd generation)"`; `--device list` lists them).
+    #[arg(long, default_value = pomme_hle::device::DEFAULT, value_parser = parse_device)]
+    device: &'static pomme_hle::device::Device,
+    /// Draw the screenshot inside a phone body (rounded screen corners, bezel, buttons).
+    #[arg(long)]
+    shell: bool,
+    /// Print every system call and Objective-C message as it happens.
+    #[arg(long)]
+    trace: bool,
+    /// Directory of pomme-built system libraries (see scripts/build-sysroot.sh).
+    #[arg(long, default_value = "vendor/sysroot")]
+    sysroot: PathBuf,
+    /// Run from a bundle made by `pomme bundle` instead of the disk (PATH is then ignored).
+    #[arg(long)]
+    bundle: Option<PathBuf>,
+    /// No network: every request fails as if the device were offline.
+    #[arg(long)]
+    offline: bool,
+    /// Answer requests for URL (or URL prefix ending in `*`) with FILE: `--fixture 'https://api.x/*=x.json'`.
+    #[arg(long, value_parser = parse_fixture)]
+    fixture: Vec<(String, PathBuf)>,
+    /// The iOS version to present (`18.6`, `26`, ...). The app's own SDK and Info.plist
+    /// decide the rest: e.g. Liquid Glass needs iOS 26 and an app linked against the 26 SDK.
+    #[arg(long, default_value_t = pomme_hle::system::LATEST)]
+    ios: pomme_hle::system::Version,
+    /// List the system functions the app binds that pomme doesn't implement yet, and exit.
+    #[arg(long)]
+    missing: bool,
+    /// Launch the app with this URL (a deep link), as iOS does: `--url 'myapp:///settings'`.
+    #[arg(long)]
+    url: Option<String>,
+    /// Type on the software keyboard at a virtual time: `--type 'Ada\n@4'` (`\n` is
+    /// return, `\b` delete). Keys go to the first responder (tap a text field first).
+    #[arg(long = "type", value_parser = parse_typing)]
+    typing: Vec<(String, f64)>,
+    #[command(flatten)]
+    clipboard: ClipboardArgs,
+    #[command(flatten)]
+    state: DeviceStateArgs,
+    #[command(flatten)]
+    profile: ProfileArgs,
+    /// Run live in a window that looks like the iOS Simulator: click and drag to
+    /// touch, type into the focused field, ⌘← / ⌘→ (Ctrl on Windows and Linux)
+    /// to turn the phone. Runs until the window closes (no step or time limit).
+    #[arg(long)]
+    window: bool,
+    /// With --window: print, for each second frames arrive, how many there
+    /// were (in wall time and in the app's own time) and the longest wait
+    /// between consecutive frames of motion, to see where it stutters.
+    #[arg(long, requires = "window")]
+    frame_stats: bool,
+}
+
+#[derive(clap::Args, Clone)]
+struct CoverageArgs {
+    /// Only what's bound: go as far as dyld does (the initializers), not into main.
+    #[arg(long)]
+    no_run: bool,
+    /// Stop at the first missing function or method, as `run` does, instead of
+    /// answering it with 0 (nil) and carrying on to find the rest.
+    #[arg(long)]
+    stop_at_first: bool,
+    /// List every missing symbol, not just the first few of each library.
+    #[arg(long)]
+    all: bool,
+    /// Also write the report as JSON (always complete).
+    #[arg(long, value_name = "FILE")]
+    json: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -412,37 +442,42 @@ fn main() -> Result<()> {
         Cmd::Inspect { path, symbols } => inspect(&path, symbols),
         Cmd::Load { path, stubs } => load(&path, stubs),
         Cmd::Bundle { path, out, sysroot } => make_bundle(&path, &sysroot, &out),
-        Cmd::Run { path, steps, seconds, views, elements, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } => {
-            // A live network talks to servers that check the date: use the real one.
-            if state.clock.is_none() && !offline {
-                state.clock = Some(Clock::Now);
-            }
-            let (path, sysroot) = match bundle {
-                Some(b) => {
-                    let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
-                    pomme_loader::vfs::mount(&bytes).map_err(anyhow::Error::msg)?;
-                    let app = bundle_app_path(&bytes).context("the bundle has no .app")?;
-                    (PathBuf::from(app), PathBuf::from(BUNDLE_SYSROOT))
-                }
-                None => (path, sysroot),
-            };
-            if window {
-                let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled, frame_stats };
-                let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
-                let out = result.clone();
-                pomme_desktop::launch(config, move |host, scale| {
-                    let r = make_net(offline, &fixture).and_then(|net| {
-                        run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, Some((host, scale)))
-                    });
-                    *out.lock().unwrap() = r;
-                })
-                .map_err(anyhow::Error::msg)?;
-                return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
-            }
-            let net = make_net(offline, &fixture)?;
-            run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, None)
-        }
+        Cmd::Run(args) => run_command(args, None),
+        Cmd::Coverage { coverage, run } => run_command(run, Some(coverage)),
     }
+}
+
+/// `run` and `coverage`: set up the network and the window (if any), then [`run`].
+fn run_command(args: RunArgs, coverage: Option<CoverageArgs>) -> Result<()> {
+    let RunArgs { path, steps, seconds, views, elements, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } = args;
+    // A live network talks to servers that check the date: use the real one.
+    if state.clock.is_none() && !offline {
+        state.clock = Some(Clock::Now);
+    }
+    let (path, sysroot) = match bundle {
+        Some(b) => {
+            let bytes = std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?;
+            pomme_loader::vfs::mount(&bytes).map_err(anyhow::Error::msg)?;
+            let app = bundle_app_path(&bytes).context("the bundle has no .app")?;
+            (PathBuf::from(app), PathBuf::from(BUNDLE_SYSROOT))
+        }
+        None => (path, sysroot),
+    };
+    if window {
+        let config = pomme_desktop::Config { device, orientation: state.held, title: format!("{} — iOS {ios}", device.name), enrolled: state.biometry != pomme_hle::keychain::Biometry::NotEnrolled, frame_stats };
+        let result = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
+        let out = result.clone();
+        pomme_desktop::launch(config, move |host, scale| {
+            let r = make_net(offline, &fixture).and_then(|net| {
+                run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, coverage.as_ref(), Some((host, scale)))
+            });
+            *out.lock().unwrap() = r;
+        })
+        .map_err(anyhow::Error::msg)?;
+        return std::mem::replace(&mut *result.lock().unwrap(), Ok(()));
+    }
+    let net = make_net(offline, &fixture)?;
+    run(&path, steps, seconds, views, elements, &tap, &swipe, screenshot.as_deref(), device, shell, trace, &sysroot, net, ios, missing, url, &typing, &clipboard, &state, &profile, coverage.as_ref(), None)
 }
 
 /// `--device`: an id or name from pomme's device table; `list` prints the table.
@@ -832,8 +867,8 @@ fn parse_tap(s: &str) -> std::result::Result<(f64, f64, f64), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, profile: &ProfileArgs, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
-    use pomme_hle::{Emu, Stop};
+fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, taps: &[(f64, f64, f64)], swipes: &[Swipe], screenshot: Option<&Path>, device: &'static pomme_hle::device::Device, shell: bool, trace: bool, sysroot: &Path, net: Option<Box<dyn pomme_hle::net::Net>>, ios: pomme_hle::system::Version, missing: bool, url: Option<String>, typing: &[(String, f64)], clipboard: &ClipboardArgs, state: &DeviceStateArgs, profile: &ProfileArgs, coverage: Option<&CoverageArgs>, live: Option<(Box<dyn pomme_hle::host::Host>, f32)>) -> Result<()> {
+    use pomme_hle::Emu;
 
     let sysroot = &pomme_loader::vfs::canonicalize(sysroot);
     let opts = pomme_loader::LoadOptions { sysroot: pomme_loader::vfs::is_dir(sysroot).then(|| sysroot.to_path_buf()) };
@@ -857,6 +892,18 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
             println!("  {sym}  ({lib})");
         }
         return Ok(());
+    }
+    if let Some(c) = coverage {
+        *emu.coverage = Some(pomme_hle::coverage::Recorder::new(!c.stop_at_first));
+        if c.no_run {
+            // As far as dyld goes: CoreFoundation's initializer has to run before HLE backs the data constants.
+            emu.max_steps = max_steps;
+            let ended = match emu.run_to_main() {
+                Ok(()) => "reached main, and stopped there (--no-run)".to_string(),
+                Err(stop) => format!("stopped before main: {stop}"),
+            };
+            return write_coverage(&emu, Some(ended), c);
+        }
     }
     emu.max_steps = max_steps;
     emu.system.os = ios;
@@ -938,6 +985,10 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         println!("\nprofile: {} samples, every {} instructions, written to {} (open it at https://www.speedscope.app)", p.samples(), p.every, out.display());
         print!("{}", p.summary(15));
     }
+    let ended = match &result {
+        Ok(code) => format!("exit({code})"),
+        Err(stop) => stop.to_string(),
+    };
     match result {
         Ok(code) => println!("\nexit({code}) after {steps} instructions in {elapsed:.2?}"),
         Err(stop) => {
@@ -986,6 +1037,21 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
             }
             Err(e) => println!("\nscreenshot failed: {e}"),
         }
+    }
+    if let Some(c) = coverage {
+        println!();
+        write_coverage(&emu, Some(ended), c)?;
+    }
+    Ok(())
+}
+
+/// Print the coverage report (and write it as JSON with `--json`).
+fn write_coverage(emu: &pomme_hle::Emu, ended: Option<String>, args: &CoverageArgs) -> Result<()> {
+    let report = pomme_hle::coverage::report(emu, ended);
+    print!("{}", report.text(if args.all { usize::MAX } else { 8 }));
+    if let Some(out) = &args.json {
+        std::fs::write(out, serde_json::to_string_pretty(&report)?).with_context(|| format!("writing {}", out.display()))?;
+        println!("\ncoverage: {}", out.display());
     }
     Ok(())
 }

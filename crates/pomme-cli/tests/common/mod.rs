@@ -50,10 +50,13 @@ fn build_now(name: &str) -> Option<PathBuf> {
     others.sort();
     // WebKit only for fixtures whose sources (headers too) import it.
     let webkit = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "h" || x == "m" || x == "mm")).any(|p| std::fs::read_to_string(p).unwrap_or_default().contains("<WebKit/"));
+    // Extra linker flags, one per line (tests/fixtures/NAME/ldflags).
+    let ldflags: Vec<String> = std::fs::read_to_string(dir.join("ldflags")).unwrap_or_default().split_whitespace().map(str::to_string).collect();
     let status = Command::new("xcrun")
         .args(["--sdk", "iphoneos", "clang", "-target", "arm64-apple-ios17.0", "-fobjc-arc", "-framework", "UIKit", "-framework", "Foundation", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "SystemConfiguration", "-lsqlite3"])
         .args(if cxx { &["-lc++", "-std=c++17"][..] } else { &[][..] })
         .args(if webkit { &["-framework", "WebKit"][..] } else { &[][..] })
+        .args(&ldflags)
         .arg(&src)
         .args(&others)
         .arg("-o")

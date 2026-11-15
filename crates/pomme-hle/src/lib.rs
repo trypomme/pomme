@@ -9,6 +9,7 @@
 //! calling the app delegate.
 
 pub mod accessibility;
+pub mod coverage;
 pub mod driver;
 pub mod snapshot;
 pub mod heap;
@@ -257,6 +258,8 @@ pub struct Emu {
     pub profiler: External<profile::Profiler>,
     /// Count of host calls by name, for reports.
     pub calls: HashMap<String, u64>,
+    /// Recording what the app reaches that pomme doesn't provide (see coverage.rs).
+    pub coverage: External<coverage::Recorder>,
     /// NSSetUncaughtExceptionHandler's function, or 0.
     pub uncaught_exception_handler: u64,
     /// Whether debug-level os_log messages print (as Xcode's "Include Debug Messages").
@@ -410,6 +413,7 @@ impl Emu {
             trace: false,
             profiler: External(None),
             calls: HashMap::new(),
+            coverage: External(None),
             argc: 0,
             argv: 0,
             launch_args: Vec::new(),
@@ -639,6 +643,26 @@ impl Emu {
     /// Run `main(argc, argv, envp, apple)` to completion.
     pub fn run_main(&mut self) -> Result<i32> {
         let entry = self.p.entry().ok_or(Stop::Unsupported("no LC_MAIN entry point".into()))?;
+        match self.run_to_main() {
+            Ok(()) => {}
+            Err(Stop::Exit(code)) => return Ok(code),
+            Err(e) => return Err(e),
+        }
+        let (argc, sp) = (self.argc, self.argv);
+        self.cpu.sp = sp;
+        let (envp, apple) = (sp + (argc + 1) * 8, sp + (argc + 2) * 8);
+        match self.call(entry, &[argc, sp, envp, apple]) {
+            Ok(code) => Ok(code as i32),
+            Err(Stop::Exit(code)) => Ok(code),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// What happens before `main`: the arguments on the stack, then dyld's
+    /// initializers (CoreFoundation's, which lets HLE back the system data
+    /// constants, `+load` methods, static initializers). [`run_main`](Self::run_main)
+    /// does this itself; call one or the other.
+    pub fn run_to_main(&mut self) -> Result<()> {
         let exe = self.p.main().name.clone();
         let mut sp = STACK_TOP;
         let mut args = vec![self.push_cstr(&mut sp, &exe)?];
@@ -657,18 +681,7 @@ impl Emu {
         self.cpu.sp = sp;
         self.argc = argc;
         self.argv = sp;
-        match self.run_initializers() {
-            Ok(()) => {}
-            Err(Stop::Exit(code)) => return Ok(code),
-            Err(e) => return Err(e),
-        }
-        self.cpu.sp = sp;
-        let (envp, apple) = (sp + (argc + 1) * 8, sp + (argc + 2) * 8);
-        match self.call(entry, &[argc, sp, envp, apple]) {
-            Ok(code) => Ok(code as i32),
-            Err(Stop::Exit(code)) => Ok(code),
-            Err(e) => Err(e),
-        }
+        self.run_initializers()
     }
 
     fn push_cstr(&mut self, sp: &mut u64, s: &str) -> Result<u64> {
@@ -817,8 +830,8 @@ impl Emu {
         let idx = self.p.stubs.index_of(self.cpu.pc).unwrap();
         let caller = self.cpu.x[30];
         let Some(f) = self.handlers[idx] else {
-            let stub = self.p.stubs.at(self.cpu.pc).unwrap();
-            return Err(Stop::MissingFunction { symbol: stub.symbol.clone(), library: stub.library.clone(), caller });
+            let stub = self.p.stubs.at(self.cpu.pc).unwrap().clone();
+            return coverage::missing_function(self, &stub.library, &stub.symbol, caller);
         };
         if self.trace {
             let name = &self.p.stubs.at(self.cpu.pc).unwrap().symbol;

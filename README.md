@@ -33,6 +33,31 @@ cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS S
 `inspect` lists every image in the bundle and the **HLE surface**: the system
 libraries and symbols pomme has to implement for the app to run.
 
+`coverage` says how much of that surface pomme provides, and what a run of the
+app actually reaches that it doesn't:
+
+```bash
+cargo run -- coverage apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --tap 195,438@3 --json expo.json
+```
+
+- **Bound** (exact): each system symbol the app binds to pomme is *implemented*
+  (a host function), *data* (a class or constant pomme backs with real memory)
+  or *missing* (calling or reading it stops the app). Per library, with how many
+  of the implemented ones the run called. `--no-run` stops where dyld would
+  hand over to `main` (CoreFoundation's initializer has to run before the data
+  constants are backed).
+- **Run**: every missing function and Objective-C method the app called, with
+  counts and where from. A miss answers 0 (nil) and the run carries on, so one
+  run finds them all; the first is marked, since everything after it ran on a
+  stand-in answer (`--stop-at-first` stops there, as `run` does).
+- **Permissive classes**: messages pomme answers generically instead of as iOS
+  does, split by what that amounted to: setters whose value nothing in pomme
+  reads (no effect, unlike on iOS: the real gaps), other generic answers, and
+  setters stored generically that pomme does read (a label's `font`).
+
+It takes every `run` option (taps, `--window` to use the app by hand, `--device`
+…). `--all` lists every missing symbol; `--json` writes the full report.
+
 ## MVP
 
 Open hello-expo's `.app` on a machine with **no Apple software behind it**

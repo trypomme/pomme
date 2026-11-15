@@ -709,11 +709,11 @@ fn stopped_fire(emu: &mut Emu) -> Result<()> {
 // ---- reading CAAnimation objects ----
 
 fn bag_f64(emu: &Emu, o: u64, key: &str) -> Option<f64> {
-    emu.objc.bag.get(&(o, key.to_string())).map(|&(_, q)| f64::from_bits(q as u64))
+    objc::bag_get_f64(emu, o, key)
 }
 
 fn bag_bool(emu: &Emu, o: u64, key: &str) -> Option<bool> {
-    emu.objc.bag.get(&(o, key.to_string())).map(|&(x, _)| x & 0xff != 0)
+    objc::bag_get(emu, o, key).map(|x| x & 0xff != 0)
 }
 
 /// An animated value from an object: NSNumber, NSValue (point, size, rect,
@@ -750,7 +750,7 @@ fn read_timing(emu: &mut Emu, o: u64) -> Timing {
 
 /// A CAMediaTimingFunction's curve.
 fn timing_of(emu: &Emu, tf: u64) -> Timing {
-    match emu.objc.bag.get(&(tf, "controlPoints".to_string())) {
+    match objc::bag_get(emu, tf, "controlPoints") {
         Some(_) => {
             let p: [f64; 4] = std::array::from_fn(|i| bag_f64(emu, tf, &format!("cp{i}")).unwrap_or(0.0));
             Timing::Bezier(p)

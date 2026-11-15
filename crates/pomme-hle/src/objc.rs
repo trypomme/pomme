@@ -208,14 +208,21 @@ fn permissive_class(emu: &Emu, mut cls: u64) -> bool {
     false
 }
 
+/// A stored property as pomme's own code reads it: its integer and
+/// floating-point registers. (The coverage report learns that pomme uses the key.)
+pub(crate) fn bag_read(emu: &Emu, obj: u64, key: &str) -> Option<(u64, u128)> {
+    crate::coverage::read_key(emu, key);
+    emu.objc.bag.get(&(obj, key.to_string())).copied()
+}
+
 /// A property stored on a permissive object (`setFoo:`), if it was set.
 pub(crate) fn bag_get(emu: &Emu, obj: u64, key: &str) -> Option<u64> {
-    emu.objc.bag.get(&(obj, key.to_string())).map(|&(x, _)| x)
+    bag_read(emu, obj, key).map(|(x, _)| x)
 }
 
 /// A floating-point property stored on a permissive object (passed in d0).
 pub(crate) fn bag_get_f64(emu: &Emu, obj: u64, key: &str) -> Option<f64> {
-    emu.objc.bag.get(&(obj, key.to_string())).map(|&(_, q)| f64::from_bits(q as u64))
+    bag_read(emu, obj, key).map(|(_, q)| f64::from_bits(q as u64))
 }
 
 /// Copy every stored property of `from` onto `to` (copy initializers).
@@ -1099,6 +1106,8 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
         Some(Imp::Host(f)) => f(emu),
         None if permissive_class(emu, cls) => {
             let name = sel_name(emu, sel);
+            let meta = emu.objc.classes.get(&cls).is_some_and(|c| c.meta);
+            crate::coverage::permissive(emu, k, &name, meta, emu.cpu.x[30]);
             permissive_answer(emu, cls, &name)
         }
         None => {
@@ -1115,12 +1124,17 @@ fn dispatch(emu: &mut Emu, cls: u64) -> Result<()> {
             if crate::invocation::forward(emu, recv, sel)? {
                 return Ok(());
             }
-            Err(Stop::MissingMethod {
+            let stop = Stop::MissingMethod {
                 class: emu.objc.class_name(k),
                 selector: sel_name(emu, sel),
                 class_method: emu.objc.classes[&cls].meta,
                 caller: emu.cpu.x[30],
-            })
+            };
+            // Keeping going (coverage): nil, as a message to nil answers.
+            crate::coverage::missing_method(emu, stop, k)?;
+            emu.ret(0);
+            emu.cpu.q[0] = 0;
+            Ok(())
         }
     }
 }
@@ -1178,12 +1192,14 @@ pub fn send(emu: &mut Emu, recv: u64, sel: &str, args: &[u64]) -> Result<u64> {
             if forwarded {
                 return Ok(result);
             }
-            Err(Stop::MissingMethod {
+            let stop = Stop::MissingMethod {
                 class: emu.objc.class_name(k),
                 selector: sel_name(emu, sel),
                 class_method: emu.objc.classes[&cls].meta,
                 caller: emu.cpu.pc,
-            })
+            };
+            crate::coverage::missing_method(emu, stop, k)?;
+            Ok(0)
         }
     }
 }
@@ -1254,7 +1270,9 @@ pub(crate) fn send_fp(emu: &mut Emu, recv: u64, sel: &str, args: &[u64], fargs: 
             if forwarded {
                 return Ok(r);
             }
-            Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel.to_string(), class_method: emu.objc.classes[&cls].meta, caller: emu.cpu.pc })
+            let stop = Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel.to_string(), class_method: emu.objc.classes[&cls].meta, caller: emu.cpu.pc };
+            crate::coverage::missing_method(emu, stop, k)?;
+            Ok([0.0; 4])
         }
     }
 }
@@ -2306,7 +2324,10 @@ fn method_exchange_implementations(emu: &mut Emu) -> Result<()> {
 fn forward_missing(emu: &mut Emu) -> Result<()> {
     let (recv, sel) = (emu.arg(0), emu.arg(1));
     let k = instance_class(emu, recv)?;
-    Err(Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel_name(emu, sel), class_method: false, caller: emu.cpu.x[30] })
+    let stop = Stop::MissingMethod { class: emu.objc.class_name(k), selector: sel_name(emu, sel), class_method: false, caller: emu.cpu.x[30] };
+    crate::coverage::missing_method(emu, stop, k)?;
+    emu.ret(0);
+    Ok(())
 }
 
 fn class_get_method_implementation(emu: &mut Emu) -> Result<()> {
