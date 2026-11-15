@@ -2,27 +2,24 @@
 
 ## Why
 
-Three things stop a screen reader user on the host from using many apps
-well:
+Three things stop host screen reader users from using many apps well:
 
 1. **Announcements and screen changes are lost.** Apps call
    `UIAccessibility.post(notification:argument:)` to say something ("Message
-   sent", React Native's `AccessibilityInfo.announceForAccessibility`), or
-   to tell VoiceOver the screen changed and where to put its cursor. pomme
+   sent"), or to tell VoiceOver the screen changed and where to put its
+   cursor. React Native's `announceForAccessibility` uses it too. pomme
    ignores these calls. The user misses the message, and after a new screen
-   the cursor stays in a place that no longer exists.
+   the cursor is lost.
 2. **Apps think no screen reader is running.**
    `UIAccessibility.isVoiceOverRunning` always answers false. Some apps
-   change for VoiceOver users (they stop carousels that move on their own,
-   or show extra buttons). Those users get the version for people who see
-   the screen.
+   change for VoiceOver users (they stop moving carousels, or show extra
+   buttons). Those users get the version for sighted people.
 3. **Custom actions cannot be reached.** Apps put actions such as "Delete"
    or "Archive" on an element (`accessibilityCustomActions`; React Native's
-   `accessibilityActions`), because the gesture for them (a swipe) is hard
-   with a screen reader. pomme stores them but does not give them to the
-   host.
+   `accessibilityActions`), because their swipe gesture is hard with a
+   screen reader. pomme stores them but does not pass them to the host.
 
-Words used here:
+## Words used here
 
 - **Announcement**: a short text the screen reader speaks without moving
   its cursor.

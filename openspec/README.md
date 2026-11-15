@@ -22,6 +22,23 @@ npx @fission-ai/openspec validate --all --strict
 npx @fission-ai/openspec archive <change>     # when every task is done: moves the change's spec updates into specs/
 ```
 
+## Working with an AI assistant
+
+`.claude/skills/` has OpenSpec's skills for Claude Code (the files are in
+`.agents/skills/`, so other assistants can use them too). Type them in the
+chat, not in the terminal:
+
+- `/openspec-explore`: think through an idea or a problem before you write a
+  change. It reads the code and does not change it.
+- `/openspec-propose <name>`: write a new change (proposal, specs, design,
+  tasks).
+- `/openspec-apply-change`: do a change's tasks.
+- `/openspec-update-change`, `/openspec-sync-specs`, `/openspec-archive-change`.
+
+The skills run the `openspec` command, so install it first:
+`npm install -g @fission-ai/openspec`. To make the skills again after
+updating OpenSpec: `openspec update`.
+
 ## How we work
 
 1. **Measure first.** For anything iOS draws, lays out or times, the numbers

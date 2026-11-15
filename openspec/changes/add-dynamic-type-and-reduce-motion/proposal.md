@@ -14,7 +14,7 @@ movement. Apps read it (`UIAccessibility.isReduceMotionEnabled`, React
 Native's `AccessibilityInfo`, Reanimated's `ReduceMotion.System`) and use
 fades instead of movement. pomme always answers "no".
 
-Words used here:
+## Words used here
 
 - **Content size category**: the text size setting. There are 12: extra
   small, small, medium, large (the default), extra large, extra extra
