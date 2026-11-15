@@ -114,6 +114,13 @@ pub(crate) fn face_named(emu: &mut Emu, family: &str) -> Option<usize> {
         // The system font's other names.
         let system = [".SF UI Text", ".SF UI Display", "System Font", ".SFUI-Regular", "SF Pro", "SF Pro Text", "SF Pro Display", "Helvetica", "Helvetica Neue", "CupertinoSystemText", "CupertinoSystemDisplay"];
         system.iter().any(|s| s.eq_ignore_ascii_case(f)).then_some(0)
+    }).or_else(|| {
+        // A system fallback font (cjk.rs) by the name its descriptor gave
+        // (Skia makes a font again from that), regular rather than bold.
+        faces.iter().enumerate().filter(|(_, x)| !x.available && x.family.eq_ignore_ascii_case(f)).min_by(|(_, a), (_, b)| {
+            let w = |x: &Face| x.coords.iter().find(|c| &c.0 == b"wght").map_or(400.0, |c| c.1);
+            w(a).partial_cmp(&w(b)).unwrap_or(std::cmp::Ordering::Equal)
+        }).map(|(i, _)| i)
     })
 }
 
@@ -121,6 +128,10 @@ pub(crate) fn face_named(emu: &mut Emu, family: &str) -> Option<usize> {
 fn with_face<T>(emu: &mut Emu, font: &Font, f: impl FnOnce(&ttf_parser::Face) -> T) -> Option<T> {
     let face = faces(emu).get(font.face)?.clone();
     let mut parsed = ttf_parser::Face::parse(&face.bytes, face.index).ok()?;
+    // A named instance (or a fallback face's weight): its place on the axes.
+    for (tag, v) in &face.coords {
+        parsed.set_variation(ttf_parser::Tag::from_bytes(tag), *v);
+    }
     if face.variable_weight {
         parsed.set_variation(ttf_parser::Tag::from_bytes(b"wght"), crate::textkit::ot_weight(font.weight) as f32);
         parsed.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), font.size.clamp(14.0, 32.0) as f32);
@@ -237,6 +248,10 @@ fn resolve(emu: &mut Emu, desc: u64) -> Result<(Option<usize>, f64, f64)> {
             let v = dict_get(emu, attrs, key)?;
             if v != 0 {
                 let name = nsstring(emu, v)?;
+                // (An empty name, as Skia gives for the default family: the system font.)
+                if name.is_empty() {
+                    continue;
+                }
                 found = face_named(emu, &name);
                 if found.is_none() {
                     return Ok((None, 0.0, 0.0)); // a family nobody has
@@ -323,7 +338,8 @@ fn create_copy_with_traits(emu: &mut Emu) -> Result<()> {
 /// `CTFontCreateForStringWithLanguage(font, string, range, language)`: a font that has the first character.
 fn create_for_string(emu: &mut Emu) -> Result<()> {
     let (src, string, loc) = (emu.arg(0), emu.arg(1), emu.arg(2) as usize);
-    let Some(f) = font(emu, src) else { return ret(emu, 0) };
+    // (No font: the system font's fallback, as CoreText gives.)
+    let f = font(emu, src).unwrap_or_else(|| system_font(0.0));
     let s: Vec<char> = nsstring(emu, string)?.encode_utf16().skip(loc).collect::<Vec<u16>>().iter().copied().map(|u| u as u32).filter_map(char::from_u32).collect();
     let text = nsstring(emu, string)?;
     let ch = String::from_utf16_lossy(&text.encode_utf16().skip(loc).take(2).collect::<Vec<u16>>()).chars().next().or(s.first().copied()).unwrap_or(' ');
@@ -373,6 +389,7 @@ fn glyphs_for_characters(emu: &mut Emu) -> Result<()> {
         if g == 0 {
             all = false;
         }
+        crate::cjk::note_glyph(emu, f.face, g, ch);
         glyphs[i] = g;
         i += len;
     }
@@ -394,7 +411,11 @@ fn advances(emu: &mut Emu) -> Result<()> {
     .unwrap_or_default();
     let mut total = 0.0;
     for (i, a) in adv.iter().enumerate() {
-        let a = a * s;
+        // A CJK fallback glyph: its width as iOS's own font gives it to Skia.
+        let a = match crate::cjk::glyph_advance(emu, f.face, ids[i])? {
+            Some(em) if !vertical => em * f.size,
+            _ => a * s,
+        };
         total += a;
         if out != 0 {
             let (w, h) = if vertical { (0.0, a) } else { (a, 0.0) };
@@ -495,6 +516,9 @@ fn draw_glyphs(emu: &mut Emu) -> Result<()> {
 
 fn copy_table(emu: &mut Emu, src: u64, tag: u32) -> Result<u64> {
     let Some(f) = font(emu, src) else { return Ok(0) };
+    if crate::cjk::hides_table(emu, f.face, tag)? {
+        return Ok(0);
+    }
     let bytes = with_face(emu, &f, |p| p.raw_face().table(ttf_parser::Tag(tag)).map(<[u8]>::to_vec)).flatten();
     match bytes {
         Some(b) => foundation::new_data(emu, &b),
@@ -509,7 +533,8 @@ fn table_tags(emu: &mut Emu, f: &Font) -> Vec<u32> {
     // The sfnt table directory (a single face; collections start with 'ttcf').
     let base = if b.starts_with(b"ttcf") { u32::from_be_bytes(b[12..16].try_into().unwrap_or_default()) as usize } else { 0 };
     let n = b.get(base + 4..base + 6).map_or(0, |x| u16::from_be_bytes([x[0], x[1]]) as usize);
-    (0..n).filter_map(|i| b.get(base + 12 + i * 16..base + 16 + i * 16).map(|t| u32::from_be_bytes(t.try_into().unwrap()))).collect()
+    let tags: Vec<u32> = (0..n).filter_map(|i| b.get(base + 12 + i * 16..base + 16 + i * 16).map(|t| u32::from_be_bytes(t.try_into().unwrap()))).collect();
+    tags.into_iter().filter(|&t| !crate::cjk::hides_table(emu, f.face, t).unwrap_or(false)).collect()
 }
 
 fn names(emu: &mut Emu, src: u64) -> Option<Face> {

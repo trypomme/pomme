@@ -669,7 +669,8 @@ pub(crate) fn draw_font_glyphs(emu: &mut Emu, c: u64, face: &crate::coretext::Fa
     let vars = if face.variable_weight {
         vec![(*b"wght", crate::textkit::ot_weight(font.weight) as f32), (*b"opsz", font.size.clamp(14.0, 32.0) as f32)]
     } else {
-        Vec::new()
+        // A named instance (or a fallback face's weight): its place on the axes.
+        face.coords.clone()
     };
     let fr = FontRef { bytes: face.bytes.clone(), index: face.index, color: face.color, vars };
     let Some(ctx) = ctx_mut(emu, c) else { return Ok(()) };

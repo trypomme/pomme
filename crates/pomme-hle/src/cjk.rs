@@ -128,6 +128,9 @@ fn is_hangul(ch: char) -> bool {
 struct Metrics {
     widths: HashMap<(&'static str, char), f64>,
     defaults: HashMap<(&'static str, &'static str), f64>,
+    /// Glyph widths as Flutter (Skia) measures them, and their kinds' defaults.
+    glyphs: HashMap<(&'static str, char), f64>,
+    glyph_defaults: HashMap<(&'static str, &'static str), f64>,
     pairs: HashMap<(&'static str, char, char), f64>,
     /// The characters the pairs were measured for.
     pair_chars: Vec<char>,
@@ -136,7 +139,7 @@ struct Metrics {
 fn metrics() -> &'static Metrics {
     static M: std::sync::OnceLock<Metrics> = std::sync::OnceLock::new();
     M.get_or_init(|| {
-        let mut m = Metrics { widths: HashMap::new(), defaults: HashMap::new(), pairs: HashMap::new(), pair_chars: Vec::new() };
+        let mut m = Metrics { widths: HashMap::new(), defaults: HashMap::new(), glyphs: HashMap::new(), glyph_defaults: HashMap::new(), pairs: HashMap::new(), pair_chars: Vec::new() };
         let ch = |s: &str| s.strip_prefix("U+").and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
         let key = |s: &str| -> &'static str { ["en", "ja", "ko", "zh-Hans", "zh-Hant"].into_iter().find(|k| *k == s).unwrap_or("en") };
         for line in include_str!("cjk-metrics.txt").lines().filter(|l| !l.starts_with('#')) {
@@ -148,10 +151,16 @@ fn metrics() -> &'static Metrics {
                         m.widths.insert((key(l), c), v);
                     }
                 }
-                ["default", l, kind, v] => {
+                ["default" | "glyphdefault", l, kind, v] => {
                     let kind = ["kana", "kanji", "hangul"].into_iter().find(|k| k == kind).unwrap_or("kanji");
                     if let Some(v) = em(v) {
-                        m.defaults.insert((key(l), kind), v);
+                        let table = if f[0] == "default" { &mut m.defaults } else { &mut m.glyph_defaults };
+                        table.insert((key(l), kind), v);
+                    }
+                }
+                ["glyph", l, c, v] => {
+                    if let (Some(c), Some(v)) = (ch(c), em(v)) {
+                        m.glyphs.insert((key(l), c), v);
                     }
                 }
                 ["pair", l, a, b, v] => {
@@ -214,6 +223,8 @@ pub(crate) struct Fallback {
 
 #[derive(Clone, Default)]
 pub struct State {
+    /// (fallback face, glyph) → the character it was looked up for.
+    glyph_chars: HashMap<(usize, u16), char>,
     /// (kind, bold) → its coretext face, once registered (None: no font file).
     faces: HashMap<(Kind, bool), Option<usize>>,
     /// (char, bold) → its fallback, once looked up.
@@ -280,6 +291,48 @@ pub(crate) fn fallback(emu: &mut Emu, ch: char, weight: f64) -> Result<Option<Fa
 pub(crate) fn cascade(emu: &mut Emu) -> Result<Vec<usize>> {
     let profile = profile(emu)?;
     Ok(profile.order().into_iter().filter_map(|k| face(emu, k, false)).collect())
+}
+
+/// Whether `face` is one of the CJK fallback faces.
+fn is_fallback_face(emu: &Emu, face: usize) -> bool {
+    emu.cjk.faces.values().any(|f| *f == Some(face))
+}
+
+/// Remember which character a fallback face's glyph is (CTFontGetGlyphsForCharacters).
+pub(crate) fn note_glyph(emu: &mut Emu, face: usize, glyph: u16, ch: char) {
+    if glyph != 0 && is_fallback_face(emu, face) {
+        emu.cjk.glyph_chars.insert((face, glyph), ch);
+    }
+}
+
+/// A fallback glyph's width as Flutter (Skia) measures it on iOS, in em
+/// (`glyph` in cjk-metrics.txt: the font's own advance, with no typesetting);
+/// None for other glyphs, and where it isn't measured (a Korean phone).
+pub(crate) fn glyph_advance(emu: &mut Emu, face: usize, glyph: u16) -> Result<Option<f64>> {
+    let Some(&ch) = emu.cjk.glyph_chars.get(&(face, glyph)) else { return Ok(None) };
+    // (A Chinese phone uses the English phone's PingFang.)
+    let key = match profile(emu)? {
+        Profile::Japanese => "ja",
+        Profile::Korean => return Ok(None),
+        _ => "en",
+    };
+    let m = metrics();
+    if let Some(&w) = m.glyphs.get(&(key, ch)) {
+        return Ok(Some(w));
+    }
+    let kind = if is_hiragana(ch) || is_katakana(ch) { "kana" } else { "kanji" };
+    Ok(m.glyph_defaults.get(&(key, kind)).copied())
+}
+
+/// Whether a fallback face keeps a font table from Skia (Flutter): its
+/// kerning (`GPOS`, `kern`) except on a Japanese phone. PingFang, which iOS
+/// uses elsewhere, doesn't kern (fixtures/flutter-japanese: lines are the sum
+/// of their glyphs), but Hiragino kerns as Noto Sans JP does (`。小`).
+pub(crate) fn hides_table(emu: &mut Emu, face: usize, tag: u32) -> Result<bool> {
+    if !is_fallback_face(emu, face) || !matches!(&tag.to_be_bytes(), b"GPOS" | b"kern") {
+        return Ok(false);
+    }
+    Ok(profile(emu)? != Profile::Japanese)
 }
 
 /// How this phone sets CJK text (its first language's profile).

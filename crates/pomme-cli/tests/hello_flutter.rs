@@ -459,3 +459,78 @@ fn runs_from_a_bundle_with_its_impeller_msl() {
     assert!(!text.contains("has no substitute MSL"), "the bundle lacks Impeller's MSL:\n{}", &text[..text.len().min(4000)]);
     assert!(text.contains("cmd: pass"), "no render pass ran:\n{}", &text[text.len().saturating_sub(4000)..]);
 }
+
+/// Japanese in Flutter: Skia finds the fallback fonts through CoreText, and
+/// gets each glyph's width as iOS's own font gives it. What hello-flutter
+/// prints at launch (each character's width, and where the paragraph breaks
+/// at five widths) matches the iOS 26 Simulator's
+/// (fixtures/flutter-japanese/ios26-<language>.txt), on a Japanese and on an
+/// English phone. Known differences: on a Japanese phone Noto Sans JP kerns a
+/// few kana pairs that Hiragino doesn't (up to 1.4 pt a line), so "途中で" fits
+/// on one line at 220 pt; on an English phone the Latin word "Pomme" is wider
+/// in Inter than in SF Pro, and iOS's line at 180 pt has 0.04 pt to spare.
+#[test]
+fn japanese_text() {
+    let known = |variant: &str| -> &'static [&'static str] {
+        match variant {
+            "ja" => &["FLUTTER 220.1 ", "FLUTTER 220.2 "],
+            _ => &["FLUTTER 180.5 ", "FLUTTER 180.6 ", "FLUTTER 180.7 "],
+        }
+    };
+    for (variant, language, region) in [("ja", "ja-JP", "JP"), ("en", "en-US", "US")] {
+        let Some(mut emu) = boot() else { return };
+        emu.locales.settings.languages = vec![language.into()];
+        emu.locales.settings.region = region.into();
+        emu.time_limit_ns = Some(3_000_000_000);
+        let _ = emu.run_main();
+        let ours: Vec<&str> = emu.console.lines().filter_map(|l| l.find("FLUTTER").map(|i| &l[i..])).collect();
+        let path = format!("{}/tests/fixtures/flutter-japanese/ios26-{variant}.txt", env!("CARGO_MANIFEST_DIR"));
+        let ios = std::fs::read_to_string(path).unwrap();
+        let mut wrong = Vec::new();
+        for want in ios.lines().filter(|l| l.starts_with("FLUTTER")) {
+            if known(variant).iter().any(|k| want.starts_with(k)) {
+                continue;
+            }
+            // Lines: the same text, the width within the kerning difference (and
+            // Latin letters aside: Inter isn't SF Pro). Widths: within a hundredth.
+            let (key, rest) = want.rsplit_once(' ').unwrap();
+            let got = ours.iter().find(|l| l.rsplit_once(' ').is_some_and(|(k, _)| k == key));
+            match got {
+                None => wrong.push(format!("{want}: pomme has {:?}", ours.iter().find(|l| l.split(' ').nth(1) == want.split(' ').nth(1)))),
+                Some(g) => {
+                    let (w, gw): (f64, f64) = (rest.parse().unwrap(), g.rsplit_once(' ').unwrap().1.parse().unwrap());
+                    let tolerance = if want.starts_with("FLUTTERW") { 0.01 } else { 1.5 };
+                    if (w - gw).abs() > tolerance && !key.contains("Pomme") {
+                        wrong.push(format!("{want}: pomme {gw}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{variant}: differences from iOS 26:\n  {}", wrong.join("\n  "));
+    }
+}
+
+/// The Japanese page (pommeflutter:///japanese) is drawn: the paragraph's
+/// box (200 pt from x 20, from y 120) has ink on each of its first lines, not
+/// empty boxes. (POMME_SAVE_JAPANESE=path saves the frame.)
+#[test]
+fn japanese_page_draws() {
+    let Some(mut emu) = boot() else { return };
+    emu.locales.settings.languages = vec!["ja-JP".into()];
+    emu.ui.launch_url = Some("pommeflutter:///japanese".into());
+    emu.time_limit_ns = Some(3_000_000_000);
+    let _ = emu.run_main();
+    if emu.metal.gpu_error.is_some() {
+        return;
+    }
+    let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
+    if let Some(path) = std::env::var_os("POMME_SAVE_JAPANESE") {
+        pix.save_png(path).unwrap();
+    }
+    // Each of the first five lines (about 20 pt apart from y 120) has dark pixels across it.
+    for line in 0..5 {
+        let y0 = 120 + line * 20;
+        let dark = (y0 * 3..(y0 + 18) * 3).flat_map(|y| (20 * 3..220 * 3).map(move |x| (x, y))).filter(|&(x, y)| pix.pixel(x, y).unwrap().red() < 100).count();
+        assert!(dark > 400, "line {line}: only {dark} dark pixels");
+    }
+}

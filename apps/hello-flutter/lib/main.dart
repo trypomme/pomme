@@ -6,7 +6,11 @@ import 'package:flutter/material.dart';
 // circle, a white stroked chevron under it, plus a tap counter; and a name
 // field along the bottom (the Scaffold lifts it above the keyboard).
 
-void main() => runApp(const HelloApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  printJapaneseLines();
+  runApp(const HelloApp());
+}
 
 class HelloApp extends StatelessWidget {
   const HelloApp({super.key});
@@ -16,7 +20,7 @@ class HelloApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       home: const HelloPage(),
-      routes: {'/list': (_) => const ListPage()},
+      routes: {'/list': (_) => const ListPage(), '/japanese': (_) => const JapanesePage()},
     );
   }
 }
@@ -161,6 +165,58 @@ class _ListPageState extends State<ListPage> {
           onTap: () => setState(() => _tapped = i),
           child: Container(color: i == _tapped ? Colors.black : Color.fromARGB(255, i, 255 - i, 128)),
         ),
+      ),
+    );
+  }
+}
+
+/// Japanese text (the pommeflutter:///japanese link): the intltext probe's
+/// paragraph in a 200 pt box, as Flutter sets it with the system font's
+/// fallback (Hiragino or PingFang on iOS). It also prints where Flutter breaks
+/// the paragraph at five widths, each line as `FLUTTER <width>.<line> <text>`,
+/// so a run on the Simulator can be compared with pomme (printed at launch).
+const japanese = '日本語の文章は、単語の間に空白がなくても行の途中で折り返されます。小さい「ょ」や「っ」、句読点は行の頭に来ません。Pommeでも同じように折り返されるはずです。';
+
+/// Where Flutter breaks the paragraph at five widths, and each of its
+/// characters' widths as `FLUTTERW U+XXXX <width>` (at launch).
+void printJapaneseLines() {
+  final seen = <int>{};
+  for (final c in '$japanese「」『』（）・ー！？'.runes) {
+    if (c < 0x80 || !seen.add(c)) continue;
+    final painter = TextPainter(
+      text: TextSpan(text: String.fromCharCode(c), style: const TextStyle(fontSize: 17)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    // ignore: avoid_print
+    print('FLUTTERW U+${c.toRadixString(16).toUpperCase().padLeft(4, '0')} ${painter.width.toStringAsFixed(3)}');
+  }
+  for (final width in [180.0, 200.0, 220.0, 250.0, 300.0]) {
+    final painter = TextPainter(
+      text: const TextSpan(text: japanese, style: TextStyle(fontSize: 17)),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: width);
+    var line = 0;
+    var start = 0;
+    for (final m in painter.computeLineMetrics()) {
+      final end = painter.getLineBoundary(TextPosition(offset: start)).end;
+      // ignore: avoid_print
+      print('FLUTTER ${width.toInt()}.$line ${japanese.substring(start, end)} ${m.width.toStringAsFixed(2)}');
+      start = end;
+      line++;
+    }
+  }
+}
+
+class JapanesePage extends StatelessWidget {
+  const JapanesePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.white,
+      body: Padding(
+        padding: EdgeInsets.fromLTRB(20, 120, 0, 0),
+        child: SizedBox(width: 200, child: Text(japanese, style: TextStyle(fontSize: 17, color: Colors.black))),
       ),
     );
   }

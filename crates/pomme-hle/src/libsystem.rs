@@ -1993,6 +1993,14 @@ fn write_fd(emu: &mut Emu) -> Result<()> {
 }
 
 
+/// A syslog message: printed, and kept in the console.
+fn log_syslog(emu: &mut Emu, msg: &[u8]) {
+    let line = format!("[syslog] {}", String::from_utf8_lossy(msg).trim_end());
+    println!("{line}");
+    emu.console.push_str(&line);
+    emu.console.push('\n');
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     // Swift's Darwin overlay: `stdin`, `stdout` and `stderr`, C's FILEs.
     ("_$s6Darwin5stdinSpySo7__sFILEVGvg", |e| std_file(e, 0).map(|f| e.ret(f))),
@@ -2380,17 +2388,18 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("__os_signpost_emit_with_name_impl", noop),
     ("_os_release", noop),
     ("_openlog", noop),
-    // syslog(priority, format, ...): printed, like asl_log (Flutter's engine logs here).
+    // syslog(priority, format, ...): printed, like asl_log, and kept in the
+    // console with what the app writes (Flutter's engine logs Dart's print here).
     ("_syslog", |e| {
         let fmt = e.cstr(e.arg(1))?.into_bytes();
         let msg = crate::printf::format(e, &fmt, &mut crate::printf::Args::new(e.cpu.sp))?;
-        println!("[syslog] {}", String::from_utf8_lossy(&msg).trim_end());
+        log_syslog(e, &msg);
         Ok(())
     }),
     ("_vsyslog", |e| {
         let fmt = e.cstr(e.arg(1))?.into_bytes();
         let msg = crate::printf::format(e, &fmt, &mut crate::printf::Args::new(e.arg(2)))?;
-        println!("[syslog] {}", String::from_utf8_lossy(&msg).trim_end());
+        log_syslog(e, &msg);
         Ok(())
     }),
     ("_closelog", noop),
