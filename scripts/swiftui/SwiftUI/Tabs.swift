@@ -17,6 +17,8 @@ struct TabItem {
   var image: UIImage?
   /// Its badge (`.badge`): a count or a word.
   var badge: String?
+  /// A search tab (`Tab(role: .search)`): UIKit's own, set apart under Liquid Glass.
+  var search = false
 
   /// From a tab item's label as resolved: its first text and first image.
   init(from nodes: [Node]) {
@@ -40,10 +42,11 @@ struct TabItem {
     nodes.forEach(visit)
   }
 
-  init(title: String?, image: UIImage?, badge: String? = nil) {
+  init(title: String?, image: UIImage?, badge: String? = nil, search: Bool = false) {
     self.title = title
     self.image = image
     self.badge = badge
+    self.search = search
   }
 }
 
@@ -208,8 +211,7 @@ public struct Tab<Value, Content, Label> {
   var pommeValue: Value?
   var pommeContent: Content
   var pommeLabel: Label?
-  /// Its role (search). (iOS 26 shows a search tab apart from the others;
-  /// pomme shows it among them for now.)
+  /// Its role (search: UIKit's search tab, which iOS 26 sets apart).
   var pommeRole: TabRole? = nil
 }
 
@@ -309,7 +311,7 @@ extension Tab where Value: Hashable, Content: View, Label: View {
   @MainActor @preconcurrency public var _identifiedView: some View {
     return pommeContent.modifier(TabItemModifier(
       label: pommeLabel.map { AnyView($0) },
-      item: TabItem(title: pommeTitle, image: pommeImage),
+      item: TabItem(title: pommeTitle, image: pommeImage, search: pommeRole == .search),
       tag: pommeValue.flatMap { pommeUnwrapped($0) }))
   }
 

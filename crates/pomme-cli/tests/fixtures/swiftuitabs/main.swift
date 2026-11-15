@@ -1,7 +1,7 @@
 // SwiftUI tabs, iOS 18's way, for tests/swiftui_tabs.rs: a TabView with a
 // selection, three `Tab`s by value, the first a NavigationStack with a title,
-// the second from a ForEach in a Group, the third with a badge. Each tab
-// says which is selected.
+// the second from a ForEach in a Group, the third with a badge, the fourth
+// the search tab (`role: .search`). Each tab says which is selected.
 
 import SwiftUI
 
@@ -18,7 +18,7 @@ struct TabsApp: App {
 }
 
 enum Section: Hashable {
-  case home, search, settings
+  case home, search, settings, find
 }
 
 @available(iOS 18.0, *)
@@ -44,6 +44,9 @@ struct TabsView: View {
         Text("Settings screen")
       }
       .badge(3)
+      Tab("Find", systemImage: "magnifyingglass", value: Section.find, role: .search) {
+        Text("Find screen, \(String(describing: selection)) selected")
+      }
     }
   }
 }

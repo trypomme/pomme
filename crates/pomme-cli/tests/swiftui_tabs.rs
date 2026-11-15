@@ -42,6 +42,11 @@ impl Host for ScreenReader {
 
 /// Run a fixture, activating a tab; the trees the screen reader saw, and the tabs' badges.
 fn run(fixture: &str, activate: &'static str) -> Option<(Vec<Vec<Node>>, Vec<Option<String>>)> {
+    run_look(fixture, activate).map(|(t, look)| (t, look.buttons.iter().map(|b| b.badge.as_ref().map(|b| b.text.clone())).collect()))
+}
+
+/// Run a fixture, activating a tab; the trees the screen reader saw, and the bar as drawn.
+fn run_look(fixture: &str, activate: &'static str) -> Option<(Vec<Vec<Node>>, pomme_hle::tabbar::Look)> {
     let mut emu = common::boot(fixture)?;
     let trees = Arc::new(Mutex::new(Vec::new()));
     *emu.live.host = Some(Box::new(ScreenReader { trees: trees.clone(), activate: Some(activate), seen: 0 }));
@@ -50,8 +55,7 @@ fn run(fixture: &str, activate: &'static str) -> Option<(Vec<Vec<Node>>, Vec<Opt
     let t = trees.lock().unwrap().clone();
     let bar = pomme_hle::tabbar::bars(&emu)[0];
     let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
-    let badges = look.buttons.iter().map(|b| b.badge.as_ref().map(|b| b.text.clone())).collect();
-    Some((t, badges))
+    Some((t, look))
 }
 
 fn says(tree: &[Node], text: &str) -> bool {
@@ -66,9 +70,9 @@ fn tab_labels(tree: &[Node]) -> Vec<String> {
 fn ios_18_tabs_by_value() {
     let Some((trees, badges)) = run("swiftuitabs", "Search") else { return };
     // (Search comes from a ForEach in a Group; Settings has `.badge(3)`.)
-    assert_eq!(badges, [None, None, Some("3".to_string())]);
+    assert_eq!(badges, [None, None, Some("3".to_string()), None]);
     let first = &trees[0];
-    assert_eq!(tab_labels(first), ["Home", "Search", "Settings"]);
+    assert_eq!(tab_labels(first), ["Home", "Search", "Settings", "Find"]);
     // The first tab: its navigation stack, with its title in the bar.
     assert!(says(first, "Home screen, home selected"), "{first:#?}");
     assert!(first.iter().any(|n| n.role == Role::Heading && n.label.as_deref() == Some("Home")));
@@ -76,6 +80,19 @@ fn ios_18_tabs_by_value() {
     assert!(says(last, "Search screen, search selected"), "the binding followed the tab: {last:#?}");
     let search = last.iter().find(|n| n.role == Role::Tab && n.label.as_deref() == Some("Search")).unwrap();
     assert!(search.selected());
+}
+
+/// `Tab(role: .search)` is UIKit's search tab: under Liquid Glass on a
+/// circle of its own (tests/tab_bar.rs), and choosing it selects its value.
+#[test]
+fn the_search_tab() {
+    let Some((trees, look)) = run_look("swiftuitabs", "Find") else { return };
+    let find = look.buttons.last().unwrap();
+    assert_eq!(find.title, "Find");
+    assert!(find.detached && find.selected, "{find:?}");
+    assert!(look.search_platter.is_some());
+    let last = trees.last().unwrap();
+    assert!(says(last, "Find screen, find selected"), "{last:#?}");
 }
 
 #[test]

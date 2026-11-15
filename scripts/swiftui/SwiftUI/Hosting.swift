@@ -295,6 +295,25 @@ final class TabsController: UITabBarController, UITabBarControllerDelegate {
       page.show(tab)
     }
     let shown = pages.map(\.shown)
+    // With a search tab, the tabs are UIKit's UITabs (the search one its
+    // UISearchTab, which iOS 26 sets apart); otherwise the controllers.
+    if #available(iOS 18.0, *), let search = node.tabs.firstIndex(where: { $0.tabItem?.search == true }) {
+      if (tabs.map { $0.viewController }) != shown || !(tabs[search] is UISearchTab) {
+        tabs = shown.enumerated().map { i, controller in
+          if i == search { return UISearchTab { _ in controller } }
+          return UITab(title: controller.tabBarItem.title ?? "", image: controller.tabBarItem.image, identifier: "pomme.tab.\(i)") { _ in controller }
+        }
+      }
+      for (tab, controller) in zip(tabs, shown) {
+        if let title = controller.tabBarItem.title { tab.title = title }
+        if let image = controller.tabBarItem.image { tab.image = image }
+        tab.badgeValue = controller.tabBarItem.badgeValue
+      }
+      if let i = node.selected, i < tabs.count, selectedTab !== tabs[i] {
+        selectedTab = tabs[i]
+      }
+      return
+    }
     if viewControllers ?? [] != shown {
       setViewControllers(shown, animated: false)
     }
@@ -305,6 +324,13 @@ final class TabsController: UITabBarController, UITabBarControllerDelegate {
 
   func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
     if let i = viewControllers?.firstIndex(of: viewController) {
+      select?(i)
+    }
+  }
+
+  @available(iOS 18.0, *)
+  func tabBarController(_ tabBarController: UITabBarController, didSelectTab selectedTab: UITab, previousTab: UITab?) {
+    if let i = tabs.firstIndex(where: { $0 === selectedTab }) {
       select?(i)
     }
   }

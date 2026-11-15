@@ -9,11 +9,13 @@ archivebox.fill inventory_2 fill
 arrow.clockwise refresh
 arrow.counterclockwise undo
 arrow.down arrow_downward
+arrow.down.circle arrow_circle_down
+arrow.down.circle.fill arrow_circle_down fill
 arrow.left arrow_back
 arrow.right arrow_forward
+arrow.triangle.2.circlepath sync
 arrow.up arrow_upward
 arrow.up.arrow.down swap_vert
-arrow.triangle.2.circlepath sync
 arrow.uturn.backward undo
 bag shopping_bag
 bag.fill shopping_bag fill
@@ -29,6 +31,8 @@ book menu_book
 book.fill menu_book fill
 bookmark bookmark
 bookmark.fill bookmark fill
+books.vertical library_books
+books.vertical.fill library_books fill
 bubble.left chat_bubble
 bubble.left.fill chat_bubble fill
 calendar calendar_today
@@ -80,9 +84,9 @@ flame.fill local_fire_department fill
 folder folder
 folder.fill folder fill
 gamecontroller sports_esports
+gear settings
 gearshape settings
 gearshape.fill settings fill
-gear settings
 gift redeem
 globe language
 graduationcap school
@@ -133,13 +137,13 @@ pause pause
 pause.fill pause fill
 pencil edit
 person person
-person.fill person fill
 person.2 group
 person.2.fill group fill
 person.circle account_circle
 person.circle.fill account_circle fill
 person.crop.circle account_circle
 person.crop.circle.fill account_circle fill
+person.fill person fill
 phone call
 phone.fill call fill
 photo image
