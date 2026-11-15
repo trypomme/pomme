@@ -73,7 +73,7 @@ to the page as pixels.
 | Browser | JSPI | WebGPU in a worker | Checked |
 | --- | --- | --- | --- |
 | Chrome / Chromium | yes (137+) | yes | tested: headless Chromium 141 (`scripts/web-test.sh all`) |
-| Safari | yes (27+) | yes (26+) | not tested yet: see task 4.4 of `add-flutter-in-browser` |
+| Safari | yes (27+) | yes (26+) | not tested yet (put off: open hello-flutter by hand and tap the circle) |
 | Firefox | yes (153+, on by default) | not sure: behind `dom.webgpu.workers.enabled` (default unknown) | from release notes and bug reports, 2026-11-15; not tested |
 
 Sources for Firefox: the [Firefox 153 release notes](https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/153)

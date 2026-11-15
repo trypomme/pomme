@@ -24,12 +24,13 @@ pause. While the app is idle, input SHALL still wake it early, as before.
 
 When the browser has JSPI and WebGPU, the page SHALL give the emulator the
 browser's GPU, and Metal SHALL run on it. The page SHALL log which GPU it
-uses.
+uses: its name, or, when the browser hides the name from pages, the
+backend.
 
 #### Scenario: GPU found
 
 - **WHEN** the page opens in a browser with JSPI and WebGPU
-- **THEN** the log names the GPU adapter, and Metal apps draw
+- **THEN** the log says which GPU Metal runs on (or its backend, when the browser hides the name), and Metal apps draw
 
 ### Requirement: Browsers without JSPI or WebGPU
 
