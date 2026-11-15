@@ -6,9 +6,14 @@
 //! optical size. Every font is laid out with it. Vertical metrics stay
 //! UIFont's (SF Pro proportions), so measured line heights match iOS.
 //!
-//! Layout is greedy: break after whitespace or a hyphen, or mid-word when a
-//! word is wider than the line. One glyph per UTF-16 unit, so glyph indexes
-//! and ranges are character indexes and ranges. No kerning or ligatures yet.
+//! Layout is greedy: lines break where Unicode's line breaking algorithm
+//! (UAX #14) allows, which keeps words whole and follows the Japanese rules
+//! (no `、。」` or small kana at the start of a line, no `「` at its end), or
+//! mid-word when a word is wider than the line. Chinese, Japanese and Korean
+//! come from fallback fonts at iOS's widths, and on a Japanese phone with
+//! iOS's punctuation spacing (cjk.rs). One glyph per UTF-16 unit, so glyph
+//! indexes and ranges are character indexes and ranges. No kerning or
+//! ligatures yet.
 //!
 //! Objects (offsets in bytes):
 //! - NSTextContainer {isa, width, height, lineFragmentPadding, maximumNumberOfLines, lineBreakMode, layoutManager}
@@ -94,6 +99,7 @@ pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, col
         out.push(crate::render::Glyph { ch, x: pen, y: baseline, size, weight, face: 0, color, skew: 0.0, shadow: None });
         pen += advance(emu, ch, size, weight);
     }
+    let _ = crate::cjk::assign(emu, &mut out);
     (out, pen - x)
 }
 
@@ -105,6 +111,7 @@ pub(crate) fn line_glyphs_in(emu: &mut Emu, text: &str, font: &TextFont, color: 
         out.push(crate::render::Glyph { ch, x: pen, y: baseline, size: font.size, weight: font.weight, face: font.face, color, skew: font.skew(), shadow: None });
         pen += advance_in(emu, ch, font);
     }
+    let _ = crate::cjk::assign(emu, &mut out);
     (out, pen - x)
 }
 
@@ -183,10 +190,14 @@ pub(crate) fn advance_in(emu: &mut Emu, ch: char, f: &TextFont) -> f64 {
                 Some(g) => face.glyph_hor_advance(g).map_or(0.55, |a| a as f64 / upem),
                 // Not in an app's font: the system font's (as iOS falls back).
                 None if !axis_weight => advance(emu, ch, size, weight) / size,
-                // Not in the text font: emoji (and other symbols) come from the emoji font.
-                None => emoji_advance(emu, ch).unwrap_or_else(|| {
+                // Not in the text font: Chinese, Japanese and Korean from their
+                // fonts (at iOS's widths); emoji and other symbols from the emoji font.
+                None => match crate::cjk::fallback(emu, ch, weight).ok().flatten() {
+                    Some(f) => f.advance,
+                    None => emoji_advance(emu, ch).unwrap_or_else(|| {
                     face.glyph_index('\u{fffd}').and_then(|g| face.glyph_hor_advance(g)).map_or(0.55, |a| a as f64 / upem)
-                }),
+                    }),
+                },
             }
         }
         None if ch.is_whitespace() => 0.25,
@@ -235,6 +246,9 @@ pub struct Line {
     /// Where an ellipsis ("…") is drawn after the line's text: the last line
     /// of text cut short (a container's tail truncation).
     pub ellipsis: Option<f64>,
+    /// Space before a unit's glyph within its advance (Japanese spacing before
+    /// an opening bracket): (unit, points).
+    pub leads: Vec<(usize, f64)>,
 }
 
 struct Item {
@@ -242,6 +256,13 @@ struct Item {
     units: usize,
     ch: char,
     adv: f64,
+    /// Space before its glyph, included in `adv`.
+    lead: f64,
+    /// Its run's font size and face (Japanese spacing is for the system font).
+    size: f64,
+    face: usize,
+    /// A line may break before it.
+    break_before: bool,
     /// Its run's line height and ascent.
     metrics: (f64, f64),
     /// Its paragraph's minimum and maximum line height (0: none).
@@ -270,14 +291,14 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
                 end = j + 1;
                 break;
             }
+            if j > start && it.break_before {
+                last_break = Some(j);
+            }
             if x + it.adv > width + 1e-9 && j > start && !it.ch.is_whitespace() {
                 end = last_break.unwrap_or(j);
                 break;
             }
             x += it.adv;
-            if it.ch.is_whitespace() || it.ch == '-' {
-                last_break = Some(j + 1);
-            }
             j += 1;
         }
         let line_items = &items[start..end];
@@ -309,7 +330,8 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
         }
         let unit = line_items[0].unit;
         let next = items.get(end).map_or(total_units, |it| it.unit);
-        lines.push(Line { start: unit, len: next - unit, y, height: lh, ascent: asc, width, xs, ellipsis: None });
+        let leads = line_items.iter().filter(|it| it.lead != 0.0).map(|it| (it.unit, it.lead)).collect();
+        lines.push(Line { start: unit, len: next - unit, y, height: lh, ascent: asc, width, xs, ellipsis: None, leads });
         y += lh;
         i = end;
         if max_lines != 0 && lines.len() == max_lines {
@@ -319,8 +341,10 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
     lines
 }
 
-/// Lay out UTF-16 text with per-run fonts; `adv(ch, font)` measures a character.
-pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -> f64, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
+/// Lay out UTF-16 text with per-run fonts; `adv(ch, font)` measures a
+/// character; `japanese` adds iOS's Japanese punctuation spacing (a Japanese
+/// phone: [`crate::cjk::japanese_spacing`]).
+pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -> f64, japanese: bool, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
     let mut items = Vec::new();
     let mut unit = 0;
     let mut run_iter = runs.iter();
@@ -344,10 +368,45 @@ pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -
         let (kern, para) = run.map_or((0.0, [0.0; 2]), |r| (r.kern, r.para));
         let units = ch.len_utf16();
         let a = if is_newline(ch) { 0.0 } else { adv(ch, &font) + kern };
-        items.push(Item { unit, units, ch, adv: a, metrics, para });
+        items.push(Item { unit, units, ch, adv: a, lead: 0.0, size: font.size, face: font.face, break_before: false, metrics, para });
         unit += units;
     }
+    if japanese {
+        for i in 1..items.len() {
+            let (a, b) = (&items[i - 1], &items[i]);
+            if a.face != 0 || b.face != 0 {
+                continue;
+            }
+            if let Some((em, leading)) = crate::cjk::pair_spacing(a.ch, b.ch) {
+                if leading {
+                    let pts = em * b.size;
+                    items[i].adv += pts;
+                    items[i].lead += pts;
+                } else {
+                    items[i - 1].adv += em * a.size;
+                }
+            }
+        }
+    }
+    mark_breaks(&mut items);
     break_lines(&items, text.len(), width, height, max_lines)
+}
+
+/// Where lines may break: before each item that follows a break opportunity
+/// in Unicode's line breaking algorithm.
+fn mark_breaks(items: &mut [Item]) {
+    let s: String = items.iter().map(|it| it.ch).collect();
+    let mut starts = Vec::with_capacity(items.len());
+    let mut byte = 0;
+    for it in items.iter() {
+        starts.push(byte);
+        byte += it.ch.len_utf8();
+    }
+    for (at, _) in unicode_linebreak::linebreaks(&s) {
+        if let Ok(k) = starts.binary_search(&at) {
+            items[k].break_before = true;
+        }
+    }
 }
 
 // ---- reading the guest's objects ----
@@ -400,7 +459,8 @@ fn bounding_rect_with_size(emu: &mut Emu) -> Result<()> {
     let f = font_info(emu, font)?;
     let runs = [Run::new(emu, text.len(), f)];
     let (width, height, max_lines) = if options & 1 != 0 { (w, h, 0) } else { (f64::INFINITY, f64::INFINITY, 1) };
-    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    let japanese = crate::cjk::japanese_spacing(emu)?;
+    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), japanese, width, height, max_lines);
     let used_w = lines.iter().map(|l| l.width).fold(0.0, f64::max);
     let used_h = lines.last().map_or(0.0, |l| l.y + l.height);
     ret_rect(emu, [0.0, 0.0, used_w, used_h]);
@@ -514,9 +574,10 @@ fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, rang
             if !ch.is_whitespace() {
                 let st = styles.iter().find(|s| k >= s.start && k < s.end).copied().unwrap_or_else(plain_style);
                 let f = st.font;
+                let lead = line.leads.iter().find(|l| l.0 == k).map_or(0.0, |l| l.1);
                 glyphs.push(crate::render::Glyph {
                     ch,
-                    x: x + line.xs[k - line.start],
+                    x: x + line.xs[k - line.start] + lead,
                     y: y + line.y + line.ascent - st.baseline,
                     size: f.size,
                     weight: f.weight,
@@ -541,7 +602,8 @@ fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, rang
 /// An attributed string laid out at `width` (wrapping; infinite: only at newlines).
 fn attributed_lines(emu: &mut Emu, s: u64, width: f64, height: f64, max_lines: usize) -> Result<(Vec<u16>, Styles, Vec<Line>)> {
     let (text, runs, styles) = attributed_runs(emu, s)?;
-    let mut lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    let japanese = crate::cjk::japanese_spacing(emu)?;
+    let mut lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), japanese, width, height, max_lines);
     align_lines(emu, s, &mut lines, width)?;
     Ok((text, styles, lines))
 }
@@ -664,7 +726,8 @@ fn attributed_bounding_rect(emu: &mut Emu) -> Result<()> {
 
 fn draw_attributed(emu: &mut Emu, s: u64, rect: [f64; 4]) -> Result<()> {
     let (text, styles, lines) = attributed_lines(emu, s, rect[2], rect[3], 0)?;
-    let glyphs = glyphs_of(&text, &styles, &lines, rect[0], rect[1], (0, text.len()));
+    let mut glyphs = glyphs_of(&text, &styles, &lines, rect[0], rect[1], (0, text.len()));
+    crate::cjk::assign(emu, &mut glyphs)?;
     crate::render::draw_glyphs(emu, glyphs);
     draw_decorations(emu, &text, &styles, &lines, rect[0], rect[1], (0, text.len()))
 }
@@ -705,6 +768,7 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
     let (text, runs, styles) = attributed_runs(emu, s)?;
     let width = (w - 2.0 * padding).max(0.0);
     let mut cache: Vec<(char, TextFont, f64)> = Vec::new();
+    let japanese = crate::cjk::japanese_spacing(emu)?;
     let mut measure = |ch: char, f: &TextFont| {
         if let Some(&(_, _, a)) = cache.iter().find(|(c, cf, _)| *c == ch && cf == f) {
             return a;
@@ -713,7 +777,7 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
         cache.push((ch, *f, a));
         a
     };
-    let mut lines = layout(&text, &runs, &mut measure, width, h, max_lines);
+    let mut lines = layout(&text, &runs, &mut measure, japanese, width, h, max_lines);
     // NSLineBreakByTruncatingTail (4): the last line that fits, if text goes on past it, ends in "…".
     if mode == 4 {
         truncate_tail(&text, &runs, &mut lines, width, &mut measure);
@@ -1000,7 +1064,8 @@ fn lm_draw_glyphs(emu: &mut Emu) -> Result<()> {
     let (lm, loc, len) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3) as usize);
     let (ox, oy) = (d(emu, 0), d(emu, 1));
     let l = laid_out(emu, lm)?;
-    let glyphs = glyphs_of(&l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len));
+    let mut glyphs = glyphs_of(&l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len));
+    crate::cjk::assign(emu, &mut glyphs)?;
     crate::render::draw_glyphs(emu, glyphs);
     draw_decorations(emu, &l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len))
 }
@@ -1296,7 +1361,7 @@ mod tests {
     fn lay(s: &str, width: f64) -> Vec<(String, f64)> {
         let units: Vec<u16> = s.encode_utf16().collect();
         let runs = [Run { len: units.len(), font: TextFont::system(10.0, 0.0), line_height: 10.0 * LINE_HEIGHT, ascent: 10.0 * ASCENT, kern: 0.0, para: [0.0; 2] }];
-        layout(&units, &runs, |c, _| if c == ' ' { 5.0 } else { 10.0 }, width, f64::MAX, 0)
+        layout(&units, &runs, |c, _| if c == ' ' { 5.0 } else { 10.0 }, false, width, f64::MAX, 0)
             .iter()
             .map(|l| (String::from_utf16_lossy(&units[l.start..l.start + l.len]), l.width))
             .collect()
@@ -1316,7 +1381,7 @@ mod tests {
     #[test]
     fn line_metrics() {
         let units: Vec<u16> = "hi".encode_utf16().collect();
-        let l = layout(&units, &[Run { len: 2, font: TextFont::system(20.0, 0.0), line_height: 20.0 * LINE_HEIGHT, ascent: 20.0 * ASCENT, kern: 0.0, para: [0.0; 2] }], |_, _| 7.0, 1e9, f64::MAX, 0);
+        let l = layout(&units, &[Run { len: 2, font: TextFont::system(20.0, 0.0), line_height: 20.0 * LINE_HEIGHT, ascent: 20.0 * ASCENT, kern: 0.0, para: [0.0; 2] }], |_, _| 7.0, false, 1e9, f64::MAX, 0);
         assert_eq!(l.len(), 1);
         assert!((l[0].height - 20.0 * LINE_HEIGHT).abs() < 1e-9);
         assert_eq!(l[0].xs, vec![0.0, 7.0, 14.0]);

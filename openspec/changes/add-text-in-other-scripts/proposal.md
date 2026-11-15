@@ -59,5 +59,5 @@ Out of scope:
 - `crates/pomme-cli/src/main.rs` (`pomme bundle`): fonts in the bundle.
 - New crate as a dependency: `unicode-linebreak`. It is pure Rust and builds
   for WebAssembly.
-- New probe: `crates/pomme-cli/tests/fixtures/rtl/` (its first screen), with
-  test `rtl.rs`.
+- New probe: `crates/pomme-cli/tests/fixtures/intltext/`, with test
+  `intltext.rs`.

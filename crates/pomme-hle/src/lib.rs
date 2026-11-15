@@ -37,6 +37,7 @@ mod textkit;
 mod nsvalue;
 mod json;
 mod calendar;
+mod cjk;
 mod scanner;
 mod sysctl;
 mod filemanager;
@@ -355,6 +356,8 @@ pub struct Emu {
     pub metal: metal::State,
     pub(crate) pointer_arrays: pointer_array::State,
     pub locales: locale::State,
+    /// Fallback fonts for Chinese, Japanese and Korean.
+    pub(crate) cjk: cjk::State,
     /// Units, measurements and measurement formatters.
     pub(crate) measurements: measurement::State,
     pub(crate) calendars: calendar::State,
@@ -493,6 +496,7 @@ impl Emu {
             metal: Default::default(),
             pointer_arrays: Default::default(),
             locales: Default::default(),
+            cjk: Default::default(),
             measurements: Default::default(),
             calendars: Default::default(),
             scanners: Default::default(),

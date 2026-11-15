@@ -333,6 +333,9 @@ fn create_for_string(emu: &mut Emu) -> Result<()> {
     };
     let face = if has(emu, f.face) {
         f.face
+    } else if let Some(fb) = crate::cjk::fallback(emu, ch, f.weight)? {
+        // Chinese, Japanese and Korean: the font iOS's cascade list gives.
+        fb.face
     } else {
         let n = faces(emu).len();
         (0..n).find(|&i| has(emu, i)).unwrap_or(f.face)
@@ -591,6 +594,17 @@ fn character_set(emu: &mut Emu) -> Result<()> {
         i += 1;
     }
     ret(emu, set)
+}
+
+/// A system fallback font (cjk.rs): a face at an instance of the font's axes,
+/// not answering to names. Its face number.
+pub(crate) fn register_fallback_face(emu: &mut Emu, family: &str, bytes: Rc<Vec<u8>>, coords: Vec<([u8; 4], f32)>) -> usize {
+    faces(emu);
+    let mut face = Face::system(family, family, family, bytes, false, false);
+    face.coords = coords;
+    face.available = false;
+    emu.coretext.faces.push(face);
+    emu.coretext.faces.len() - 1
 }
 
 /// Every face's font file, index and instance values, by face number (for drawing).
@@ -992,6 +1006,20 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         ret(e, o)
     }),
     ("_CTFontCreateForString", create_for_string),
+    // The fonts tried for characters a font lacks, in order: the CJK fonts
+    // (the phone's own script first) and the emoji font.
+    ("_CTFontCopyDefaultCascadeListForLanguages", |e| {
+        let mut list = crate::cjk::cascade(e)?;
+        if faces(e).len() > 1 {
+            list.push(1);
+        }
+        let mut descriptors = Vec::new();
+        for face in list {
+            descriptors.push(face_descriptor(e, face)?);
+        }
+        let a = foundation::new_array_of(e, &descriptors)?;
+        ret(e, a)
+    }),
     ("_CTFontCreateForStringWithLanguage", create_for_string),
     ("_CTFontCopyFontDescriptor", |e| {
         let Some(f) = font(e, e.arg(0)) else { return ret(e, 0) };

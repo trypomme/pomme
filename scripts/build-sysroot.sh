@@ -167,6 +167,15 @@ mkdir -p "$FONTS"
   'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf'
 [ -f "$FONTS/NotoColorEmoji-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoColorEmoji-OFL.txt" \
   'https://raw.githubusercontent.com/google/fonts/main/ofl/notocoloremoji/OFL.txt'
+# Chinese, Japanese and Korean: Noto Sans SC, TC, JP and KR (SIL OFL), variable
+# in weight, in place of PingFang, Hiragino and Apple SD Gothic Neo (pomme's cjk.rs).
+for f in JP SC TC KR; do
+  lower=$(echo "$f" | tr A-Z a-z)
+  [ -f "$FONTS/NotoSans$f.ttf" ] || curl -fsSL -o "$FONTS/NotoSans$f.ttf" \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans$lower/NotoSans$f%5Bwght%5D.ttf"
+  [ -f "$FONTS/NotoSans$f-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoSans$f-OFL.txt" \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans$lower/OFL.txt"
+done
 # SF Symbols' stand-in: Material Symbols Rounded (Apache 2.0), a variable font
 # with weight and fill axes, and its codepoints by name.
 MS='https://raw.githubusercontent.com/google/material-design-icons/master'

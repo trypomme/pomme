@@ -152,6 +152,11 @@ pub fn current_id(emu: &mut Emu) -> Result<String> {
     Ok(id)
 }
 
+/// The phone's first preferred language (`en-US` when there are none).
+pub(crate) fn first_preferred_language(emu: &mut Emu) -> Result<String> {
+    Ok(preferred_language_list(emu)?.into_iter().next().unwrap_or_else(|| "en-US".into()))
+}
+
 /// The preferred languages as Rust strings.
 fn preferred_language_list(emu: &mut Emu) -> Result<Vec<String>> {
     let a = preferred_languages(emu)?;

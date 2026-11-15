@@ -27,8 +27,10 @@ if [ -f "$FIXTURE/main.swift" ]; then
   xcrun --sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator -parse-as-library -O \
     "$FIXTURE/main.swift" -o "$APP/$EXE"
 else
+  # (Extra linker flags, as the tests take them: the fixture's ldflags file.)
+  # shellcheck disable=SC2046
   xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-arc \
-    -framework UIKit -framework Foundation "$FIXTURE/main.m" -o "$APP/$EXE"
+    -framework UIKit -framework Foundation $(cat "$FIXTURE/ldflags" 2>/dev/null) "$FIXTURE/main.m" -o "$APP/$EXE"
 fi
 cat >"$APP/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
