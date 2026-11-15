@@ -305,3 +305,50 @@ fn appearance_colours() {
         assert_eq!(rgb(badge.color), [0, 136, 255], "compat {compat}: blue badges");
     }
 }
+
+/// iOS 18's tabs (`UITab`s), as React Native's native tabs give them from
+/// iOS 26.1: the tabs' controllers, titles and badges, the delegate told of
+/// each new tab (a program's choice too), no `viewControllers`; and a search
+/// tab, under Liquid Glass on a circle of its own at the right, the capsule
+/// beside it from the left; before, an ordinary last tab.
+#[test]
+fn uitabs_and_a_search_tab() {
+    for compat in [false, true] {
+        let Some((mut emu, console)) = run_variant("uitab", compat) else { return };
+        for prefix in ["UITAB controllers", "UITAB items", "UITAB after", "DELEGATE didSelectTab home", "DELEGATE didSelectTab com.apple"] {
+            assert_eq!(line(&console, prefix), measured_line("uitab", compat, prefix), "compat {compat}");
+        }
+        assert!(!console.contains("DELEGATE should"), "nobody tapped: {console}");
+        let wrong = reports_match(&console, &recording("uitab", compat));
+        assert!(wrong.is_empty(), "compat {compat}: {wrong:#?}");
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        assert_eq!(look.buttons.len(), 4);
+        let search = &look.buttons[3];
+        assert!(search.selected && search.title == "Search");
+        if compat {
+            assert!(look.search_platter.is_none() && !search.detached);
+            continue;
+        }
+        assert_eq!(look.platter, Some([21.0, 0.0, 278.0, 62.0]));
+        assert_eq!(look.search_platter, Some([307.0, 0.0, 62.0, 62.0]));
+        assert!(search.detached);
+        let [x, y, w, h] = search.image_frame;
+        assert!(((x + w / 2.0) - 338.0).abs() < 0.5 && ((y + h / 2.0) - 31.0).abs() < 0.5, "the magnifying glass in the middle: {:?}", search.image_frame);
+        // (Measured 94.7-pt buttons from 25, 112.7, 200.3; pomme's are 95.)
+        for (b, want) in look.buttons.iter().zip([25.0, 112.7, 200.3]) {
+            assert!((b.frame[0] - want).abs() <= 0.5, "{:?} at {want}", b.frame);
+        }
+    }
+    // Two other tabs fit: the capsule its own size, from the left. Four don't: it
+    // fills to the circle, its buttons narrower (a long title's wider).
+    for (variant, platter, xs) in [("uitab,two", [21.0, 0.0, 188.0, 62.0], &[25.0, 111.0][..]), ("uitab,four", [21.0, 0.0, 278.0, 62.0], &[25.0, 84.7, 152.0, 211.7][..])] {
+        let Some((mut emu, _)) = run_variant(variant, false) else { return };
+        let bar = pomme_hle::tabbar::bars(&emu)[0];
+        let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+        assert_eq!(look.platter, Some(platter), "{variant}");
+        for (b, &want) in look.buttons.iter().zip(xs) {
+            assert!((b.frame[0] - want).abs() <= 0.5, "{variant}: {:?} at {want}", b.frame);
+        }
+    }
+}

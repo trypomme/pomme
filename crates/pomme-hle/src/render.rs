@@ -1904,7 +1904,8 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
         // One device pixel (1/3 pt) along the top edge, above the bar.
         p.fill(&rect_els(0.0, -1.0 / 3.0, w, 1.0 / 3.0), line.map(|v| v as f32), alpha, false, t, mask);
     }
-    if let Some(platter) = look.platter {
+    // The capsule, and the search tab's circle if there's one.
+    for platter in look.platter.iter().chain(&look.search_platter).copied() {
         // The shadow, soft and mostly below: rings fading out (measured: about
         // 4% darker just below the capsule, nothing 10 pt out; none to see in the dark).
         if !dark {
@@ -1915,7 +1916,10 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
         // (Measured: the capsule 253 white, 19 in the dark; the lens 235, 53 in the dark.)
         let fill = if dark { [0.075, 0.075, 0.075, 1.0] } else { [0.992, 0.992, 0.992, 1.0] };
         p.fill(&capsule(platter, 0.0, 0.0), fill, alpha, false, t, mask);
-        if let Some(sel) = look.buttons.iter().find(|b| b.selected) {
+    }
+    if look.platter.is_some() {
+        // (The search tab, selected, shows its tint, no lens.)
+        if let Some(sel) = look.buttons.iter().find(|b| b.selected && !b.detached) {
             let lens = if dark { [0.208, 0.208, 0.208, 1.0] } else { [0.922, 0.922, 0.922, 1.0] };
             p.fill(&capsule(sel.frame, 0.0, 0.0), lens, alpha, false, t, mask);
         }
@@ -1929,7 +1933,7 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
             let [x, y, iw, ih] = b.image_frame.map(|v| v as f32);
             draw_contents(p, &img, [0.0, 0.0, 1.0, 1.0], iw, ih, alpha, &concat(&[1.0, 0.0, 0.0, 1.0, x, y], t), mask);
         }
-        if !b.title.is_empty() {
+        if !b.title.is_empty() && !b.detached {
             let [x, y, _, th] = b.title_frame;
             // (The baseline: four fifths of the way down the title's line.)
             let (glyphs, _) = crate::textkit::line_glyphs(emu, &b.title, b.title_size, b.title_weight, b.title_color, x, y + th * 0.8);

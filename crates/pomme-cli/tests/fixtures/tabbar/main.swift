@@ -13,7 +13,9 @@
 // `more`: seven tabs, so UIKit adds its More tab; the seventh selected, then More.
 // `push`: the first tab a navigation stack, pushing a screen that hides the bar.
 // `dark`: the dark appearance. `landscape`: the phone turned left.
-// `appearance`: colours from the bar's appearance. Variants combine: `landscape,more`.
+// `appearance`: colours from the bar's appearance. `uitab`: tabs through iOS 18's
+// UITab API (as React Native's native tabs on iOS 26.1+), a search tab among them;
+// the search tab selected (`uitab,two`, `uitab,four`: two or four other tabs). Variants combine: `landscape,more`.
 // Without one, the lens is followed as the selection moves.
 
 import Darwin
@@ -59,8 +61,32 @@ final class Screen: UIViewController {
   }
 }
 
+/// Says which of the delegate's methods UIKit calls.
+final class Watcher: NSObject, UITabBarControllerDelegate {
+  func tabBarController(_ c: UITabBarController, shouldSelect vc: UIViewController) -> Bool {
+    say("DELEGATE shouldSelectViewController \(vc.title ?? "-")")
+    return true
+  }
+
+  func tabBarController(_ c: UITabBarController, didSelect vc: UIViewController) {
+    say("DELEGATE didSelectViewController \(vc.title ?? "-")")
+  }
+
+  @available(iOS 18.0, *)
+  func tabBarController(_ c: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
+    say("DELEGATE shouldSelectTab \(tab.identifier)")
+    return true
+  }
+
+  @available(iOS 18.0, *)
+  func tabBarController(_ c: UITabBarController, didSelectTab tab: UITab, previousTab: UITab?) {
+    say("DELEGATE didSelectTab \(tab.identifier) previous \(previousTab?.identifier ?? "-")")
+  }
+}
+
 final class Tabs: UITabBarController {
   var reported = false
+  let watcher = Watcher()
 
   /// What's in the bar: its accessibility elements, and the text and images drawn in it.
   func describe(_ step: String) {
@@ -131,6 +157,16 @@ final class Tabs: UITabBarController {
     after(1) { [self] in
       describe("first")
       switch true {
+      case variant.contains("uitab"):
+        if #available(iOS 18.0, *) {
+          say("UITAB controllers \(viewControllers?.count ?? -1) selected \(selectedTab?.identifier ?? "-") vc \(selectedViewController?.title ?? "-") vctab \(selectedViewController?.tab?.identifier ?? "-") search \(tabs.last is UISearchTab) id \(tabs.last?.identifier ?? "-")")
+          say("UITAB items \(tabBar.items?.map { "\($0.title ?? "-")/\($0.badgeValue ?? "-")" }.joined(separator: ",") ?? "-")")
+          selectedTab = tabs.last
+          say("UITAB after selecting the search tab: selected \(selectedTab?.identifier ?? "-") index \(selectedIndex) vc \(selectedViewController?.title ?? "-")")
+          after(1) { [self] in
+            describe("second")
+          }
+        }
       case variant.contains("more"):
         selectedIndex = 6
         after(1) { [self] in
@@ -206,6 +242,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     let window = UIWindow(windowScene: scene as! UIWindowScene)
     let tabs = Tabs()
     switch true {
+    case variant.contains("uitab"):
+      if #available(iOS 18.0, *) {
+        tabs.delegate = tabs.watcher
+        var list = [
+          UITab(title: "Home", image: UIImage(systemName: "house.fill"), identifier: "home") { _ in Screen("HomeVC", "house.fill") },
+          UITab(title: "Messages", image: UIImage(systemName: "message"), identifier: "messages") { _ in Screen("MessagesVC", "message") },
+          UITab(title: "Settings", image: UIImage(systemName: "gear"), identifier: "settings") { _ in Screen("SettingsVC", "gear") },
+        ]
+        // (`two`, `four`: that many tabs besides search.)
+        if variant.contains("two") { list.removeLast() }
+        if variant.contains("four") { list.append(UITab(title: "Favourites", image: UIImage(systemName: "star"), identifier: "favourites") { _ in Screen("FavouritesVC", "star") }) }
+        tabs.tabs = list + [UISearchTab { _ in Screen("SearchVC", "magnifyingglass") }]
+        tabs.tabs[1].badgeValue = "3"
+      }
     case variant.contains("more"):
       tabs.viewControllers = [Screen("Home", "house.fill"), Screen("Search", "magnifyingglass"), Screen("Library", "books.vertical"), Screen("Favourites", "star"), Screen("Settings", "gear", badge: "3"), Screen("Downloads", "arrow.down.circle"), Screen("History", "clock")]
     case variant.contains("push"):

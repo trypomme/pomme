@@ -20,6 +20,7 @@ export default function RootLayout() {
         <Stack.Screen name="storage" options={{ title: 'Storage' }} />
         <Stack.Screen name="lock" options={{ title: 'Lock' }} />
         <Stack.Screen name="firebase" options={{ title: 'Firebase' }} />
+        <Stack.Screen name="tabs" options={{ headerShown: false }} />
       </Stack>
     </QueryClientProvider>
   );

@@ -49,6 +49,9 @@ struct Tabs {
     more_item: u64,
     /// The More tab is selected, showing its list (no tab of its own selected).
     more_selected: bool,
+    /// The tabs as iOS 18's `UITab`s, when they were given that way (`tabs`),
+    /// each standing for the controller at its index.
+    uitabs: Vec<u64>,
 }
 
 /// A tab bar shows at most five buttons; with more tabs, four and More.
@@ -528,9 +531,29 @@ fn select_more(emu: &mut Emu, tbc: u64) -> Result<()> {
 }
 
 /// Select a tab. From a tap (`by_user`), the delegate is asked first and told after.
+/// With `UITab`s it's asked about and told of tabs instead, and told of any
+/// change of tab, a program's too (as measured).
 fn select(emu: &mut Emu, tbc: u64, index: usize, by_user: bool) -> Result<()> {
     let t = tabs(emu, tbc);
     let Some(&vc) = t.controllers.get(index) else { return Ok(()) };
+    if let Some(&tab) = t.uitabs.get(index) {
+        if by_user && t.delegate != 0 {
+            let ask = objc::intern(emu, "tabBarController:shouldSelectTab:")?;
+            if objc::responds(emu, t.delegate, ask)? && send(emu, t.delegate, "tabBarController:shouldSelectTab:", &[tbc, tab])? & 0xff == 0 {
+                return Ok(());
+            }
+        }
+        let previous = selected_tab(&t);
+        let tm = tabs_mut(emu, tbc);
+        tm.selected = Some(index);
+        tm.more_selected = false;
+        sync_items(emu, tbc)?;
+        show_selected(emu, tbc)?;
+        if previous != tab {
+            did_select_tab(emu, tbc, tab, previous)?;
+        }
+        return Ok(());
+    }
     if by_user && t.delegate != 0 {
         let ask = objc::intern(emu, "tabBarController:shouldSelectViewController:")?;
         if objc::responds(emu, t.delegate, ask)? && send(emu, t.delegate, "tabBarController:shouldSelectViewController:", &[tbc, vc])? & 0xff == 0 {
@@ -550,6 +573,194 @@ fn select(emu: &mut Emu, tbc: u64, index: usize, by_user: bool) -> Result<()> {
     }
     Ok(())
 }
+
+// ---- iOS 18's UITab ----
+
+const TAB: &str = "UITab";
+const SEARCH_TAB: &str = "UISearchTab";
+
+fn selected_tab(t: &Tabs) -> u64 {
+    if t.more_selected { 0 } else { t.selected.and_then(|i| t.uitabs.get(i).copied()).unwrap_or(0) }
+}
+
+fn did_select_tab(emu: &mut Emu, tbc: u64, tab: u64, previous: u64) -> Result<()> {
+    let delegate = tabs(emu, tbc).delegate;
+    if delegate != 0 {
+        let did = objc::intern(emu, "tabBarController:didSelectTab:previousTab:")?;
+        if objc::responds(emu, delegate, did)? {
+            send(emu, delegate, "tabBarController:didSelectTab:previousTab:", &[tbc, tab, previous])?;
+        }
+    }
+    Ok(())
+}
+
+fn tab_init(emu: &mut Emu, tab: u64, title: u64, image: u64, identifier: u64, provider: u64) -> Result<()> {
+    set_object(emu, tab, "title", title, true)?;
+    set_object(emu, tab, "image", image, false)?;
+    set_object(emu, tab, "identifier", identifier, true)?;
+    // (The provider, a block, kept as a heap copy.)
+    set_object(emu, tab, "pommeProvider", provider, true)?;
+    ret(emu, tab)
+}
+
+/// A tab's view controller: its provider's, on first use.
+fn tab_controller(emu: &mut Emu, tab: u64) -> Result<u64> {
+    if let Some(vc) = bag_get(emu, tab, "viewController").filter(|&v| v != 0) {
+        return Ok(vc);
+    }
+    let provider = bag_get(emu, tab, "pommeProvider").unwrap_or(0);
+    if provider == 0 {
+        return Ok(0);
+    }
+    let vc = crate::libsystem::call_block(emu, provider, &[tab])?;
+    if vc == 0 {
+        return Ok(0);
+    }
+    send(emu, vc, "retain", &[])?;
+    bag_set(emu, tab, "viewController", vc);
+    bag_set(emu, vc, "pommeTab", tab);
+    let item = vc_item(emu, vc)?;
+    let search = host_class(emu, SEARCH_TAB)?;
+    if objc::is_kind_of(emu, tab, search)? {
+        // (Liquid Glass sets the search tab apart.)
+        bag_set(emu, item, "pommeSearchTab", 1);
+    }
+    for key in ["title", "image", "badgeValue"] {
+        tab_to_item(emu, tab, key)?;
+    }
+    Ok(vc)
+}
+
+/// The bar shows a tab through its controller's item (as measured, the
+/// tab's title, image and badge): what the tab has, the item gets.
+fn tab_to_item(emu: &mut Emu, tab: u64, key: &'static str) -> Result<()> {
+    let Some(vc) = bag_get(emu, tab, "viewController").filter(|&v| v != 0) else { return Ok(()) };
+    let item = vc_item(emu, vc)?;
+    let v = bag_get(emu, tab, key).unwrap_or(0);
+    // (A tab without a title or image leaves the item's: a system item's, say.)
+    if v != 0 || key == "badgeValue" {
+        set_object(emu, item, key, v, key != "image")?;
+    }
+    let tbc = bag_get(emu, tab, "pommeTabBarController").unwrap_or(0);
+    if tbc != 0 && emu.tabs.tabs.contains_key(&tbc) {
+        sync_items(emu, tbc)?;
+    }
+    Ok(())
+}
+
+/// `tabs`: each tab's controller becomes a child, in order; the delegate
+/// hears of a new selected tab (as measured).
+fn set_tabs(emu: &mut Emu) -> Result<()> {
+    let (tbc, a) = (emu.arg(0), emu.arg(2));
+    let list = if a == 0 { Vec::new() } else { foundation::array_values(emu, a)? };
+    let old = tabs(emu, tbc);
+    let previous = selected_tab(&old);
+    let mut controllers = Vec::with_capacity(list.len());
+    for &tab in &list {
+        if !old.uitabs.contains(&tab) {
+            send(emu, tab, "retain", &[])?;
+        }
+        bag_set(emu, tab, "pommeTabBarController", tbc);
+        let vc = tab_controller(emu, tab)?;
+        if vc != 0 {
+            controllers.push(vc);
+        }
+    }
+    for &tab in &old.uitabs {
+        if !list.contains(&tab) {
+            bag_set(emu, tab, "pommeTabBarController", 0);
+            objc::objc_release_obj(emu, tab)?;
+        }
+    }
+    tabs_mut(emu, tbc).uitabs = list;
+    set_controllers(emu, tbc, controllers)?;
+    let now = selected_tab(&tabs(emu, tbc));
+    if now != previous && now != 0 {
+        did_select_tab(emu, tbc, now, previous)?;
+    }
+    Ok(())
+}
+
+fn set_view_controllers(emu: &mut Emu) -> Result<()> {
+    let (tbc, a) = (emu.arg(0), emu.arg(2));
+    let list = if a == 0 { Vec::new() } else { foundation::array_values(emu, a)? };
+    for tab in std::mem::take(&mut tabs_mut(emu, tbc).uitabs) {
+        bag_set(emu, tab, "pommeTabBarController", 0);
+        objc::objc_release_obj(emu, tab)?;
+    }
+    set_controllers(emu, tbc, list)
+}
+
+macro_rules! tab_property {
+    ($get:literal, $set:literal) => {
+        [
+            (TAB, false, $get, (|e: &mut Emu| {
+                let v = bag_get(e, e.arg(0), $get).unwrap_or(0);
+                ret(e, v)
+            }) as HostFn),
+            (TAB, false, $set, (|e: &mut Emu| {
+                let (o, v) = (e.arg(0), e.arg(2));
+                set_object(e, o, $get, v, $get != "image")?;
+                tab_to_item(e, o, $get)
+            }) as HostFn),
+        ]
+    };
+}
+
+const TAB_PROPS: &[[(&str, bool, &str, HostFn); 2]] = &[
+    tab_property!("title", "setTitle:"),
+    tab_property!("image", "setImage:"),
+    tab_property!("badgeValue", "setBadgeValue:"),
+];
+
+const TAB_METHODS: &[(&str, bool, &str, HostFn)] = &[
+    (TAB, false, "initWithTitle:image:identifier:viewControllerProvider:", |e| {
+        let (t, title, image, id, provider) = (e.arg(0), e.arg(2), e.arg(3), e.arg(4), e.arg(5));
+        tab_init(e, t, title, image, id, provider)
+    }),
+    // The search tab: "Search", a magnifying glass, UIKit's own identifier (as measured).
+    (SEARCH_TAB, false, "initWithViewControllerProvider:", |e| {
+        let (t, provider) = (e.arg(0), e.arg(2));
+        let title = foundation::new_nsstring(e, "Search")?;
+        let image = crate::symbols::image(e, "magnifyingglass", Default::default())?;
+        let id = foundation::new_nsstring(e, "com.apple.UIKit.Search")?;
+        tab_init(e, t, title, image, id, provider)
+    }),
+    (TAB, false, "identifier", |e| {
+        let v = bag_get(e, e.arg(0), "identifier").unwrap_or(0);
+        ret(e, v)
+    }),
+    (TAB, false, "viewController", |e| {
+        let vc = tab_controller(e, e.arg(0))?;
+        ret(e, vc)
+    }),
+    (TAB, false, "tabBarController", |e| {
+        let v = bag_get(e, e.arg(0), "pommeTabBarController").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIViewController", false, "tab", |e| {
+        let v = bag_get(e, e.arg(0), "pommeTab").unwrap_or(0);
+        ret(e, v)
+    }),
+    (TBC, false, "tabs", |e| {
+        let list = tabs(e, e.arg(0)).uitabs;
+        let a = foundation::new_array_of(e, &list)?;
+        ret(e, a)
+    }),
+    (TBC, false, "setTabs:", set_tabs),
+    (TBC, false, "setTabs:animated:", set_tabs),
+    (TBC, false, "selectedTab", |e| {
+        let t = tabs(e, e.arg(0));
+        ret(e, selected_tab(&t))
+    }),
+    (TBC, false, "setSelectedTab:", |e| {
+        let (tbc, tab) = (e.arg(0), e.arg(2));
+        match tabs(e, tbc).uitabs.iter().position(|&t| t == tab) {
+            Some(i) => select(e, tbc, i, false),
+            None => Ok(()),
+        }
+    }),
+];
 
 const TBC: &str = "UITabBarController";
 const MORE_LIST: &str = "UIMoreListController";
@@ -673,6 +884,8 @@ pub struct Look {
     pub dark: bool,
     /// Liquid Glass's capsule the buttons sit on.
     pub platter: Option<[f64; 4]>,
+    /// And the search tab's circle, if it has one.
+    pub search_platter: Option<[f64; 4]>,
     /// The bar's fill (before iOS 26), and its hairline along the top.
     pub background: Option<[f64; 4]>,
     pub hairline: Option<[f64; 4]>,
@@ -696,6 +909,8 @@ pub struct Button {
     pub selected: bool,
     pub enabled: bool,
     pub badge: Option<Badge>,
+    /// The search tab on its own circle (Liquid Glass): its image only.
+    pub detached: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -942,33 +1157,52 @@ pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
     // Where the buttons go.
     let mut frames = Vec::with_capacity(n);
     let mut platter = None;
+    let mut search_platter = None;
+    // A search tab (`UISearchTab`) last: under Liquid Glass, upright, set apart.
+    let search_tab = glass && !side && bs.items.last().is_some_and(|&it| bag_get(emu, it, "pommeSearchTab").unwrap_or(0) == 1);
     match (glass, side) {
         (true, false) => {
-            let max_w = w - 42.0;
-            let fits = n == 0 || 8.0 + n as f64 * 94.0 - 8.0 * (n as f64 - 1.0) <= max_w;
+            // The tabs on the capsule (but a search tab, on its own circle at
+            // the right, 62 pt across and 8 from the capsule: measured).
+            let m = if search_tab { n - 1 } else { n };
+            let max_w = w - 42.0 - if search_tab { 70.0 } else { 0.0 };
+            // 94-pt buttons, 8 pt overlapping, if that leaves 8 pt spare; else
+            // narrower ones, fitted to the room (measured: 95 pt for four tabs
+            // in 340 pt, 74 for four in 270 or five in 340; three in 270 are
+            // 94.7, here 95).
+            let inner = max_w - 8.0;
+            let fits = m == 0 || m as f64 * 94.0 - 8.0 * (m as f64 - 1.0) <= inner - 8.0;
             let base: f64 = if fits {
                 94.0
-            } else if n == 4 {
+            } else if inner / m as f64 >= 80.0 {
                 95.0
             } else {
                 74.0
             };
-            let mut widths = Vec::with_capacity(n);
-            for t in &titles {
+            let mut widths = Vec::with_capacity(m);
+            for t in &titles[..m] {
                 widths.push(base.max(text_width(emu, t, TITLE_SIZE, GLASS_SELECTED_WEIGHT) + 32.0));
             }
             let sum: f64 = widths.iter().sum();
             let (px, pw, overlap) = if fits {
-                let pw = 8.0 + sum - 8.0 * (n.max(1) as f64 - 1.0);
-                ((w - pw) / 2.0, pw, 8.0)
+                let pw = 8.0 + sum - 8.0 * (m.max(1) as f64 - 1.0);
+                // (Beside a search tab, from the left; else centred.)
+                (if search_tab { 21.0 } else { (w - pw) / 2.0 }, pw, 8.0)
             } else {
-                (21.0, max_w, (sum - (max_w - 8.0)) / (n as f64 - 1.0).max(1.0))
+                (21.0, max_w, (sum - inner) / (m as f64 - 1.0).max(1.0))
             };
-            platter = Some([px, 0.0, pw, 62.0]);
+            if m > 0 {
+                platter = Some([px, 0.0, pw, 62.0]);
+            }
             let mut x = px + 4.0;
             for bw in widths {
                 frames.push([x, 4.0, bw, 54.0]);
                 x += bw - overlap;
+            }
+            if search_tab {
+                let circle = [w - 21.0 - 62.0, 0.0, 62.0, 62.0];
+                search_platter = Some(circle);
+                frames.push(circle);
             }
         }
         (true, true) => {
@@ -1016,8 +1250,10 @@ pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
             let img = [x0, mid - size[1] / 2.0, size[0], size[1]];
             (img, [x0 + size[0] + gap, mid - th / 2.0, tw, th])
         } else {
-            // Image centred 17.7 pt down the button (20 under Liquid Glass); title below.
-            let (image_mid, title_top) = if glass { (20.0, 35.0) } else { (17.7, 34.33) };
+            // Image centred 17.7 pt down the button (20 under Liquid Glass); title
+            // below. (The search tab's circle: its image in the middle, no title.)
+            let detached = search_tab && i == n - 1;
+            let (image_mid, title_top) = if detached { (31.0, 62.0) } else if glass { (20.0, 35.0) } else { (17.7, 34.33) };
             let img = [frame[0] + (frame[2] - size[0]) / 2.0, frame[1] + image_mid - size[1] / 2.0, size[0], size[1]];
             (img, [frame[0] + (frame[2] - tw) / 2.0, frame[1] + title_top, tw, th])
         };
@@ -1052,10 +1288,11 @@ pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
             }
             None => None,
         };
-        buttons.push(Button { item, frame, title: titles[i].clone(), title_color, title_frame, title_weight: weight, title_size, image, image_frame, color, selected, enabled, badge });
+        let detached = search_tab && i == n - 1;
+        buttons.push(Button { item, frame, title: titles[i].clone(), title_color, title_frame, title_weight: weight, title_size, image, image_frame, color, selected, enabled, badge, detached });
     }
     let (background, hairline) = if glass { (None, None) } else { background(emu, b) };
-    Ok(Some(Look { glass, dark, platter, background, hairline, buttons }))
+    Ok(Some(Look { glass, dark, platter, search_platter, background, hairline, buttons }))
 }
 
 /// A tab bar's selected button and count, for accessibility.
@@ -1066,8 +1303,9 @@ pub fn buttons(emu: &mut Emu, b: u64) -> Result<Vec<Button>> {
 // ---- methods ----
 
 pub(crate) fn methods() -> Vec<(&'static str, bool, &'static str, HostFn)> {
-    let mut m: Vec<_> = ITEM_PROPS.iter().chain(APPEARANCE_PROPS).flatten().copied().collect();
+    let mut m: Vec<_> = ITEM_PROPS.iter().chain(APPEARANCE_PROPS).chain(TAB_PROPS).flatten().copied().collect();
     m.extend_from_slice(METHODS);
+    m.extend_from_slice(TAB_METHODS);
     m
 }
 
@@ -1167,20 +1405,14 @@ const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, b)
     }),
     (TBC, false, "viewControllers", |e| {
-        let list = tabs(e, e.arg(0)).controllers;
+        let t = tabs(e, e.arg(0));
+        // (Measured: none, when the tabs are `UITab`s.)
+        let list = if t.uitabs.is_empty() { t.controllers } else { Vec::new() };
         let a = if list.is_empty() { 0 } else { foundation::new_array_of(e, &list)? };
         ret(e, a)
     }),
-    (TBC, false, "setViewControllers:", |e| {
-        let (tbc, a) = (e.arg(0), e.arg(2));
-        let list = if a == 0 { Vec::new() } else { foundation::array_values(e, a)? };
-        set_controllers(e, tbc, list)
-    }),
-    (TBC, false, "setViewControllers:animated:", |e| {
-        let (tbc, a) = (e.arg(0), e.arg(2));
-        let list = if a == 0 { Vec::new() } else { foundation::array_values(e, a)? };
-        set_controllers(e, tbc, list)
-    }),
+    (TBC, false, "setViewControllers:", set_view_controllers),
+    (TBC, false, "setViewControllers:animated:", set_view_controllers),
     (TBC, false, "selectedIndex", |e| {
         // (NSNotFound with no tabs.)
         let i = tabs(e, e.arg(0)).selected.map_or(i64::MAX as u64, |i| i as u64);

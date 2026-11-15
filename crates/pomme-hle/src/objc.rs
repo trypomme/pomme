@@ -153,6 +153,10 @@ const PERMISSIVE: &[&str] = &[
     // A tab bar item's appearance: what tabbar.rs draws with is kept explicitly; the rest generically.
     "UITabBarItemAppearance",
     "UITabBarItemStateAppearance",
+    // iOS 18's tabs: what tabbar.rs uses is kept explicitly; the rest (subtitle,
+    // placement, search activation) generically.
+    "UITab",
+    "UISearchTab",
     "UIBarButtonItem",
     "UIBarButtonItemAppearance",
     "UIBarButtonItemStateAppearance",
@@ -394,6 +398,8 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UITabBarAppearance", "UIBarAppearance"),
     ("UITabBarItemAppearance", "NSObject"),
     ("UITabBarItemStateAppearance", "NSObject"),
+    ("UITab", "NSObject"),
+    ("UISearchTab", "UITab"),
     ("UIBarItem", "NSObject"),
     ("UIBarButtonItem", "UIBarItem"),
     ("UIBarButtonItemAppearance", "NSObject"),
@@ -846,8 +852,12 @@ fn read_methods(emu: &mut Emu, list: u64, out: &mut HashMap<Sel, Imp>) -> Result
             (emu.cstr(emu.read_u64(e)?)?, emu.read_u64(e + 8)?, emu.read_u64(e + 16)?)
         };
         if imp != 0 {
+            // Within one list the first entry wins, as in the runtime's lookup:
+            // the linker merges a category's methods into its class's list
+            // ahead of the class's own (ld's category merging), so a
+            // category's override comes first.
             let sel = intern(emu, &name)?;
-            out.insert(sel, Imp::Guest(imp));
+            out.entry(sel).or_insert(Imp::Guest(imp));
             emu.objc.types.entry(sel).or_insert(types);
         }
     }

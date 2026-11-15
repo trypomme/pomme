@@ -43,7 +43,7 @@ fn run_for(emu: &mut Emu, secs: f64) -> String {
     emu.time_limit_ns = Some((secs * 1e9) as u64);
     match emu.run_main() {
         Err(Stop::TimeLimit(_)) => {}
-        other => panic!("expected the app to idle until the time limit, got {other:?}"),
+        other => panic!("expected the app to idle until the time limit, got {other:?} (last exception: {:?}; console: {})", emu.last_exception, emu.console.lines().rev().take(15).collect::<Vec<_>>().join("\n")),
     }
     emu.time_limit_ns = None;
     emu.describe_views()
@@ -833,4 +833,38 @@ fn lock_screen_face_id_refused() {
     assert!(status.ends_with("\"Face ID failed: authentication_failed\""), "{status}");
     let status = lock_screen(Biometry::NotEnrolled, &taps).unwrap();
     assert!(status.ends_with("\"Face ID isn't set up\""), "{status}");
+}
+
+/// Expo Router's native tabs (react-native-screens' Tabs, pommehello:///tabs):
+/// the system's tab bar with the tabs' titles, symbols and badge, the first
+/// tab's screen, and tapping a tab (as VoiceOver would, by its name) shows
+/// its screen. On iOS 26.0 they're given as view controllers; from 26.1 as
+/// `UITab`s, the search tab on a circle of its own (Liquid Glass).
+#[test]
+fn native_tabs() {
+    use pomme_hle::driver::{self, text};
+    for (minor, detached) in [(0, false), (2, true)] {
+        let Some(mut emu) = boot() else { return };
+        emu.system.os = pomme_hle::system::Version::new(26, minor, 0);
+        emu.ui.launch_url = Some("pommehello:///tabs".into());
+        let run = driver::drive(&mut emu, move |app| {
+            app.wait_for(&text("Home tab"))?;
+            let look = app.with(|emu| {
+                let bar = pomme_hle::tabbar::bars(emu)[0];
+                Ok(pomme_hle::tabbar::look(emu, bar)?.unwrap())
+            })?;
+            let titles: Vec<_> = look.buttons.iter().map(|b| b.title.as_str()).collect();
+            assert_eq!(titles, ["Home", "Messages", "Settings", "Search"], "26.{minor}");
+            assert!(look.buttons[0].selected);
+            assert_eq!(look.buttons[1].badge.as_ref().map(|b| b.text.as_str()), Some("3"));
+            assert_eq!(look.buttons[3].detached, detached, "26.{minor}: the search tab");
+            assert_eq!(look.search_platter.is_some(), detached);
+            app.tap(&text("Messages"))?;
+            app.wait_for(&text("Messages tab"))?;
+            Ok(())
+        });
+        if let Err(e) = run {
+            panic!("26.{minor}: {e}");
+        }
+    }
 }
