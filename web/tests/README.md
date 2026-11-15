@@ -28,6 +28,7 @@ scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,2
 NO_BUILD=1 scripts/web-test.sh …      # reuse the last build
 QUERY=stats scripts/web-test.sh …     # add page options (?stats, ?nojspi)
 scripts/web-test.sh hello-skia --compare   # the browser's frame against the command line's
+scripts/web-test.sh all               # every browser test (the apps must be built)
 ```
 
 `--compare` takes the same app's screenshot with `pomme run` first (the
@@ -38,7 +39,7 @@ for each app are in `scripts/web-test.sh`.
 Steps run in order: `--wait TEXT` (the page's status or log), `--see TEXT`
 (the app's accessibility tree, which the page mirrors as ARIA), `--tap X,Y` (in
 points), `--sleep MS`. `--out FILE` saves the screen at the end. `--no-jspi`
-starts Chromium without JSPI. The page's log is printed at the end, and the
+starts Chromium without JSPI, `--no-webgpu` without WebGPU. The page's log is printed at the end, and the
 script exits 1 when a step fails.
 
 ## What JSPI costs
@@ -62,3 +63,20 @@ hello-expo's home screen and its `repo/` screens load from GitHub's API,
 which allows 60 calls an hour without signing in. Many runs in an hour use
 them up, and those screens then stay on "Loading…": test with text that
 doesn't need the network (the counter, screen titles).
+
+## Browsers
+
+Metal (and so Flutter and React Native Skia) needs JSPI and WebGPU in a
+worker: pomme's GPU work runs in the emulator's worker, and frames come back
+to the page as pixels.
+
+| Browser | JSPI | WebGPU in a worker | Checked |
+| --- | --- | --- | --- |
+| Chrome / Chromium | yes (137+) | yes | tested: headless Chromium 141 (`scripts/web-test.sh all`) |
+| Safari | yes (27+) | yes (26+) | not tested yet: see task 4.4 of `add-flutter-in-browser` |
+| Firefox | yes (153+, on by default) | not sure: behind `dom.webgpu.workers.enabled` (default unknown) | from release notes and bug reports, 2026-11-15; not tested |
+
+Sources for Firefox: the [Firefox 153 release notes](https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/153)
+(JSPI on by default), and Mozilla's [WebGPU in workers](https://bugzilla.mozilla.org/show_bug.cgi?id=1818042)
+bug. In a Firefox without WebGPU in workers, apps run and Metal draws
+nothing, as in any browser without it.

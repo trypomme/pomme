@@ -25,9 +25,9 @@
 
 ## 4. Integration checks
 
-- [ ] 4.1 Run every browser test in `web/tests/run.mjs` together (hello-expo, hello-skia, hello-flutter, and without JSPI). Check: all pass.
-- [ ] 4.2 Run `cargo test` on the Mac. Check: native tests are unchanged.
-- [ ] 4.3 Check Firefox: does it have JSPI and WebGPU in workers? Write the answer in `web/tests/README.md`. Check: the README says which Firefox version was checked.
+- [x] 4.1 Run every browser test in `web/tests/run.mjs` together (hello-expo, hello-skia, hello-flutter, and without JSPI). Check: all pass.
+- [x] 4.2 Run `cargo test` on the Mac. Check: native tests are unchanged.
+- [x] 4.3 Check Firefox: does it have JSPI and WebGPU in workers? Write the answer in `web/tests/README.md`. Check: the README says which Firefox version was checked.
 - [ ] 4.4 Open hello-flutter by hand in Safari 27 or later, and tap the circle. Check: it draws and counts the tap; write the Safari version in `web/tests/README.md`.
 
 No new visual oracles: this change draws the same frames as the command line. The browser tests compare with the command-line frames and with the existing Simulator references.

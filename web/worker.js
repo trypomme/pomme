@@ -76,6 +76,11 @@ self.onmessage = async (e) => {
   const jspi = e.data.jspi !== false && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   try {
     self.pommeLog(jspi ? 'JSPI: on' : 'JSPI: off. Apps run, but Metal apps (such as Flutter apps) cannot draw.');
+    if (jspi) {
+      // Metal needs WebGPU here, in the worker: say so now if there's none.
+      const adapter = self.navigator.gpu ? await self.navigator.gpu.requestAdapter().catch(() => null) : null;
+      if (!adapter) self.pommeLog('WebGPU: off. Apps run, but Metal apps (such as Flutter apps) cannot draw.');
+    }
     useJspi(jspi);
     self.pommeLog('Downloading the app…');
     await wasm_bindgen('pkg/pomme_web_bg.wasm');

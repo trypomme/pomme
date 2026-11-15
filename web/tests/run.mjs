@@ -12,6 +12,7 @@
 //   --out FILE       save the screen (the canvas) as a PNG at the end
 //   --timeout S      seconds for each wait (default 60)
 //   --no-jspi        start the browser without JSPI
+//   --no-webgpu      start the browser without WebGPU
 //   --compare REF    at the end, compare the screen with REF (a PNG, e.g. from
 //                    `pomme run --screenshot`) at --points "x,y x,y…" (in points),
 //                    each channel within --tolerance (default 12); REF is at
@@ -22,13 +23,14 @@ import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const args = process.argv.slice(2);
-const opt = { url: null, out: null, timeout: 60, jspi: true, steps: [], compare: null, points: [], tolerance: 12, refScale: 3 };
+const opt = { url: null, out: null, timeout: 60, jspi: true, webgpu: true, steps: [], compare: null, points: [], tolerance: 12, refScale: 3 };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--url') opt.url = args[++i];
   else if (a === '--out') opt.out = args[++i];
   else if (a === '--timeout') opt.timeout = Number(args[++i]);
   else if (a === '--no-jspi') opt.jspi = false;
+  else if (a === '--no-webgpu') opt.webgpu = false;
   else if (a === '--compare') opt.compare = args[++i];
   else if (a === '--points') opt.points = args[++i].trim().split(/\s+/).map((p) => p.split(',').map(Number));
   else if (a === '--tolerance') opt.tolerance = Number(args[++i]);
@@ -38,7 +40,7 @@ for (let i = 0; i < args.length; i++) {
 }
 if (!opt.url) throw new Error('--url is required');
 
-const flags = ['--enable-unsafe-webgpu'];
+const flags = opt.webgpu ? ['--enable-unsafe-webgpu'] : ['--disable-features=WebGPU,WebGPUService', '--disable-gpu'];
 if (!opt.jspi) flags.push('--js-flags=--no-experimental-wasm-jspi', '--disable-features=WebAssemblyJSPromiseIntegration');
 const browser = await chromium.launch({ args: flags });
 const page = await browser.newPage({ viewport: { width: 480, height: 1000 } });

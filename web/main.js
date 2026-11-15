@@ -54,6 +54,7 @@ worker.onmessage = (e) => {
     WebViews.command(JSON.parse(m.json));
   } else if (m.type === 'log') {
     if (m.text.startsWith('JSPI: off')) notice = 'This browser has no JSPI, so Metal apps (such as Flutter apps) cannot draw.'; // stays on the page
+    if (m.text.startsWith('WebGPU: off')) notice = 'This browser has no WebGPU in workers, so Metal apps (such as Flutter apps) cannot draw.';
     if (!frames) status.textContent = m.text;
     console.log('[pomme]', m.text);
   } else if (m.type === 'stopped') {

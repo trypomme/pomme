@@ -3,7 +3,8 @@
 # and drive the page in headless Chromium (web/tests/run.mjs). See web/tests/README.md.
 #
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
-#   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app
+#   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app;
+#   `all` runs every browser test (the apps must be built)
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
 #   --compare (alone): compare with the same app's frame on the command line
 #   (hello-skia, hello-flutter).
@@ -13,6 +14,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:?usage: $0 <app> [steps…]}"
 shift
+if [ "$APP" = all ]; then
+  # Every browser test: hello-expo (with JSPI and without), hello-skia (and without WebGPU), hello-flutter.
+  T="$ROOT/scripts/web-test.sh"; FAILED=0
+  run() { echo "== $*"; "$@" > "$ROOT/web/tests/out/last.log" 2>&1 && echo ok || { FAILED=1; tail -20 "$ROOT/web/tests/out/last.log"; }; }
+  mkdir -p "$ROOT/web/tests/out"
+  run "$T" hello-expo --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+  run env NO_BUILD=1 QUERY=nojspi "$T" hello-expo --timeout 240 --wait "has no JSPI" --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+  run "$T" hello-skia --compare
+  run env NO_BUILD=1 "$T" hello-skia --no-webgpu --timeout 120 --wait "has no WebGPU" --see "Hello from Skia"
+  run "$T" hello-flutter --compare
+  run env NO_BUILD=1 "$T" hello-flutter --timeout 120 --wait "[metal] running on" --see "Tapped 0" --tap 195,422 --see "Tapped 1" --tap 60,300 --see "Tapped 2"
+  exit $FAILED
+fi
 case "$APP" in
   hello-expo)    PATH_APP="$ROOT/apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app" ;;
   hello-skia)    PATH_APP="$ROOT/apps/hello-skia/ios/build/Build/Products/Release-iphoneos/helloskia.app" ;;
