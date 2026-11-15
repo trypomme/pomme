@@ -18,6 +18,18 @@ internal func _pommeObjC(_ string: String) -> AnyObject
 
 // MARK: String
 
+// In a format (`String(format: "%@", name)`): a Swift string goes to the
+// formatter as the NSString it bridges to, as Apple's Foundation overlay
+// passes it. (The NSString is autoreleased, so it outlives the format that
+// reads it; the stdlib's way to keep it, _CVarArgObject, isn't public.)
+extension String: @retroactive CVarArg {
+    public var _cVarArgEncoding: [Int] {
+        let object = _bridgeToObjectiveC()
+        _ = Unmanaged.passRetained(object).autorelease()
+        return object._cVarArgEncoding
+    }
+}
+
 extension String: _ObjectiveCBridgeable {
     public func _bridgeToObjectiveC() -> NSString {
         unsafeBitCast(_pommeObjC(self), to: NSString.self)
@@ -333,3 +345,8 @@ extension URL: _ObjectiveCBridgeable {
         return result!
     }
 }
+
+// MARK: Constants
+
+/// `NSNotFound`: "no such index" for Objective-C APIs (`NSInteger.max`).
+public var NSNotFound: Int { Int.max }

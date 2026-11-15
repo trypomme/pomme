@@ -50,7 +50,7 @@ overlay() {
     -emit-library -o "$LIB/lib$lib.dylib" \
     -Xlinker -install_name -Xlinker "/usr/lib/swift/lib$lib.dylib" \
     -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
-    "${flags[@]}" "$@"
+    ${flags[@]+"${flags[@]}"} "$@"
 }
 
 overlay ObjectiveC swiftObjectiveC -import-underlying-module -- "$OLD/ObjectiveC/ObjectiveC.swift"
@@ -89,13 +89,24 @@ overlay os swiftos -import-underlying-module -- "$HERE/overlays/os/os.swift"
 # CoreGraphics, keeping its CoreGraphics mangled names (@_originallyDefinedIn).
 PYTHONPATH="$VENDOR/swift/utils" python3 "$VENDOR/swift/utils/gyb" -DCMAKE_SIZEOF_VOID_P=8 --line-directive '' \
   -o "$OUT/CGFloat.swift.in" "$OLD/CoreGraphics/CGFloat.swift.gyb"
-sed -e 's|^@_exported import CoreGraphics$||' \
-    -e 's|^public struct CGFloat {|@available(macOS 10.15, iOS 13.0, *)\
-@_originallyDefinedIn(module: "CoreGraphics", macOS 10.15, iOS 13.0)\
-public struct CGFloat: Hashable {|' \
-    -e 's|^extension CGFloat : Hashable {|extension CGFloat {|' "$OUT/CGFloat.swift.in" > "$OUT/CGFloat.swift"
-# (Hashable is declared on the struct itself so its conformance, too, keeps the
-# CoreGraphics mangling the app links against.)
+# Every conformance is declared on the struct itself, so the conformances
+# too keep the CoreGraphics mangling apps link against (one declared in an
+# extension is mangled as the extension's module's: CoreFoundation's, which
+# apps don't look for; String(format:) with a CGFloat needs its CVarArg).
+python3 - "$OUT/CGFloat.swift.in" "$OUT/CGFloat.swift" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read().replace("@_exported import CoreGraphics\n", "")
+protocols = []
+def take(m):
+    protocols.extend(p.strip() for p in m.group(1).split(","))
+    return "extension CGFloat {"
+s = re.sub(r"^extension CGFloat : ([^{]+)\{", take, s, flags=re.M)
+head = ("@available(macOS 10.15, iOS 13.0, *)\n"
+        "@_originallyDefinedIn(module: \"CoreGraphics\", macOS 10.15, iOS 13.0)\n"
+        "public struct CGFloat: " + ", ".join(protocols) + " {")
+assert "public struct CGFloat {" in s and "Hashable" in protocols
+open(sys.argv[2], "w").write(s.replace("public struct CGFloat {", head, 1))
+PY
 # Today's SDK types CFEqual's result as Boolean (UInt8).
 sed -e 's|return CFEqual(left, right)$|return CFEqual(left, right) != 0|' "$OLD/CoreFoundation/CoreFoundation.swift" > "$OUT/CoreFoundation.swift"
 overlay CoreFoundation swiftCoreFoundation -import-underlying-module -- "$OUT/CoreFoundation.swift" "$OUT/CGFloat.swift"
@@ -156,7 +167,7 @@ stdlib_module() {
     -emit-library -o "$LIB/lib$lib.dylib" \
     -Xlinker -install_name -Xlinker "/usr/lib/swift/lib$lib.dylib" \
     -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
-    "${flags[@]}" "$@"
+    ${flags[@]+"${flags[@]}"} "$@"
 }
 for c in UnicodeData UnicodeScalarProps; do
   xcrun --sdk iphoneos clang -target "$IOS_TARGET" -isysroot "$IOS_SDK" -Os -I "$SP/Sources/_CUnicode/include" \
