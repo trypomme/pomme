@@ -91,6 +91,16 @@ cargo run -- run App.app --language ar --region SA --screenshot ar.png   # right
   React Native's `I18nManager` follows the app's localization too. Not yet:
   moving the caret with arrow keys.
 
+### Tables and bar buttons
+
+- **Table views**: `UITableView` asks its data source for rows, in the plain,
+  grouped and inset grouped styles, with the standard cell styles, reused
+  cells, headers, footers and selection; `UITableViewController` too.
+- **Bar button items**: in the navigation bar and the navigation
+  controller's toolbar, each on its own glass capsule under Liquid Glass (Done
+  in blue), or as tinted buttons in the design before iOS 26; flexible spaces,
+  titles, symbols, images and custom views; a tap sends the item's action.
+
 A bundle for the browser (`pomme bundle`) carries the Chinese, Japanese and
 Korean fonts only for the app's own localizations, or those `--fonts ja,ko`
 names.

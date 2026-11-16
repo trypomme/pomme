@@ -24,7 +24,7 @@
 - [x] 4.1 Add items to the accessibility tree as buttons with their labels (system items use iOS's names, for example "Add"). Check: `pomme run … --elements` lists them.
 - [x] 4.2 Add `crates/pomme-cli/tests/bar_items.rs` that checks every case in both designs. Check: `cargo test --test bar_items` passes.
 - [ ] 4.3 Check hello-expo: Expo Router's `Stack.Screen` `headerRight` shows its button. Check: a screenshot.
-- [ ] 4.4 Add bar button items to `README.md`. Check: the README is updated.
+- [x] 4.4 Add bar button items to `README.md`. Check: the README is updated.
 
 ## 5. Visual oracles
 
