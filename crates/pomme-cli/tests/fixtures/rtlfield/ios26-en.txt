@@ -1,0 +1,37 @@
+# The rtlfield fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+METRIC field1.caret0 285.00 10.00 2.00 22.00
+METRIC field1.caret1 276.67 10.00 2.00 22.00
+METRIC field1.caret10 234.67 10.00 2.00 22.00
+METRIC field1.caret11 244.00 10.00 2.00 22.00
+METRIC field1.caret2 270.00 10.00 2.00 22.00
+METRIC field1.caret3 258.67 10.00 2.00 22.00
+METRIC field1.caret4 253.00 10.00 2.00 22.00
+METRIC field1.caret5 248.33 10.00 2.00 22.00
+METRIC field1.caret6 244.00 10.00 2.00 22.00
+METRIC field1.caret7 196.33 10.00 2.00 22.00
+METRIC field1.caret8 206.00 10.00 2.00 22.00
+METRIC field1.caret9 220.33 10.00 2.00 22.00
+METRIC field1.textRect 7.00 2.00 286.00 36.00
+METRIC field2.caret0 0.00 10.00 2.00 22.00
+METRIC field2.caret1 9.33 10.00 2.00 22.00
+METRIC field2.caret10 66.00 10.00 2.00 22.00
+METRIC field2.caret11 61.00 10.00 2.00 22.00
+METRIC field2.caret2 18.67 10.00 2.00 22.00
+METRIC field2.caret3 33.00 10.00 2.00 22.00
+METRIC field2.caret4 47.33 10.00 2.00 22.00
+METRIC field2.caret5 56.67 10.00 2.00 22.00
+METRIC field2.caret6 61.00 10.00 2.00 22.00
+METRIC field2.caret7 89.67 10.00 2.00 22.00
+METRIC field2.caret8 82.67 10.00 2.00 22.00
+METRIC field2.caret9 71.33 10.00 2.00 22.00
+METRIC field2.textRect 7.00 2.00 286.00 36.00
+METRIC field3.caret0 0.00 7.00 2.00 22.00
+METRIC field3.caret1 11.33 7.00 2.00 22.00
+METRIC field3.caret2 20.33 7.00 2.00 22.00
+METRIC field3.caret3 24.33 7.00 2.00 22.00
+METRIC field3.caret4 28.33 7.00 2.00 22.00
+METRIC field3.caret5 37.67 7.00 2.00 22.00
+METRIC field3.textRect 7.00 2.00 286.00 36.00
+VALUE field1.textAlignment 4
+VALUE field2.textAlignment 4
+VALUE field3.textAlignment 4

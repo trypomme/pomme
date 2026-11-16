@@ -60,6 +60,40 @@ cargo run -- coverage apps/hello-expo/ios/build/Build/Products/Release-iphoneos/
 It takes every `run` option (taps, `--window` to use the app by hand, `--device`
 …). `--all` lists every missing symbol; `--json` writes the full report.
 
+### Languages, regions and right to left
+
+Run an app as a phone set to another language and region, as Settings ▸
+General ▸ Language & Region sets them:
+
+```bash
+cargo run -- run App.app --language ja-JP --region JP --screenshot ja.png
+cargo run -- run App.app --language ar --region SA --screenshot ar.png   # right to left
+```
+
+- **Formats**: dates, numbers, money, units and calendars follow the region,
+  with Apple's ICU code (`NSLocale`, the formatters, Swift's `FormatStyle`,
+  expo-localization, `Intl` in Hermes); `--24-hour on` / `--24-hour off`
+  moves the clock away from the region's choice.
+- **The app's translations**: the bundle picks its localization as iOS does
+  (CoreFoundation's own matching, `en-AU` → `en`, `zh-HK` → `zh-Hant`), and
+  reads `.strings`, `.stringsdict` plurals and `InfoPlist.strings`, for
+  `NSLocalizedString`, `String(localized:)` and SwiftUI's `Text("key")`.
+- **Other scripts**: Chinese, Japanese, Korean, Arabic, Hebrew and Thai are
+  drawn with the Noto fonts in the order iOS falls back, shaped (Arabic
+  joined), in bidi order, and wrap by Unicode's rules. Widths are the Noto
+  fonts' own, as Latin text is Inter's, not Apple's.
+- **Right to left**: an app whose chosen localization is Arabic or Hebrew lays
+  out right to left, as on iOS (one without such a localization doesn't):
+  Auto Layout's leading and trailing, stack views, table views, the
+  navigation bar and its back swipe, the tab bar, switches, sliders,
+  segmented controls, text alignment, images that flip, SwiftUI and Flutter.
+  Not yet: React Native's `I18nManager` checked in an app, and moving the
+  caret with arrow keys.
+
+A bundle for the browser (`pomme bundle`) carries the Chinese, Japanese and
+Korean fonts only for the app's own localizations, or those `--fonts ja,ko`
+names.
+
 ## MVP
 
 Open hello-expo's `.app` on a machine with **no Apple software behind it**

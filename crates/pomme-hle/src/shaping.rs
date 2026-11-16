@@ -38,6 +38,8 @@ pub(crate) struct Shaped {
     /// How far the pen moves after it, and where it's drawn from the pen (y down), in points.
     pub advance: f64,
     pub offset: [f64; 2],
+    /// It's in a right-to-left run.
+    pub rtl: bool,
 }
 
 /// Where a character's glyph comes from.
@@ -87,7 +89,7 @@ fn chars(text: &[u16], range: Range<usize>) -> Vec<(usize, char)> {
 
 /// Shape one segment (one source, one font); `rtl`: its direction, None to guess it from its script.
 fn shape_segment(emu: &mut Emu, chars: &[(usize, char)], src: Source, font: &TextFont, rtl: Option<bool>) -> Vec<Shaped> {
-    let plain = |emu: &mut Emu| chars.iter().map(|&(unit, ch)| Shaped { unit, ch, gid: None, face: 0, advance: crate::textkit::advance_in(emu, ch, font), offset: [0.0; 2] }).collect();
+    let plain = |emu: &mut Emu| chars.iter().map(|&(unit, ch)| Shaped { unit, ch, gid: None, face: 0, advance: crate::textkit::advance_in(emu, ch, font), offset: [0.0; 2], rtl: rtl == Some(true) }).collect();
     let (bytes, index, coords, face) = match src {
         Source::Plain => return plain(emu),
         Source::System => {
@@ -129,7 +131,7 @@ fn shape_segment(emu: &mut Emu, chars: &[(usize, char)], src: Source, font: &Tex
         .map(|(info, pos)| {
             let k = starts.partition_point(|&x| x <= info.cluster as usize).saturating_sub(1);
             let (unit, ch) = chars[k];
-            Shaped { unit, ch, gid: Some(info.glyph_id as u16), face, advance: pos.x_advance as f64 * scale, offset: [pos.x_offset as f64 * scale, -pos.y_offset as f64 * scale] }
+            Shaped { unit, ch, gid: Some(info.glyph_id as u16), face, advance: pos.x_advance as f64 * scale, offset: [pos.x_offset as f64 * scale, -pos.y_offset as f64 * scale], rtl: rtl == Some(true) }
         })
         .collect()
 }
@@ -253,6 +255,36 @@ pub(crate) fn line_visual(emu: &mut Emu, text: &[u16], line: Range<usize>, font_
         }
     }
     out
+}
+
+/// Where a caret goes at each position (0 ..= len) of the one-line `text`
+/// shaped as shown, from the line's start: after a character, at its far
+/// edge in its own direction (the right of a left-to-right one, the left of
+/// a right-to-left one); at the start, at the first character's near edge
+/// (as iOS puts it: fixtures/rtlfield). And the line's width.
+pub(crate) fn caret_edges(shaped: &[(Shaped, f64)], len: usize, rtl_paragraph: bool) -> (Vec<f64>, f64) {
+    let width = shaped.iter().map(|(g, pen)| pen + g.advance).fold(0.0, f64::max);
+    // Each cluster's span and direction, by its first unit.
+    let mut spans: std::collections::BTreeMap<usize, (f64, f64, bool)> = std::collections::BTreeMap::new();
+    for (g, pen) in shaped {
+        let e = spans.entry(g.unit).or_insert((f64::MAX, f64::MIN, g.rtl));
+        e.0 = e.0.min(*pen);
+        e.1 = e.1.max(pen + g.advance);
+    }
+    let start = if rtl_paragraph { width } else { 0.0 };
+    let mut out = Vec::with_capacity(len + 1);
+    for k in 0..=len {
+        let x = if k == 0 {
+            spans.values().next().map_or(start, |&(l, r, rtl)| if rtl { r } else { l })
+        } else {
+            match spans.range(..k).next_back() {
+                Some((_, &(l, r, rtl))) => if rtl { l } else { r },
+                None => start,
+            }
+        };
+        out.push(x);
+    }
+    (out, width)
 }
 
 #[cfg(test)]

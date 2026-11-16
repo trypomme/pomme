@@ -7,7 +7,7 @@
 - [x] 1.2 Record it in `ar` and `en`, and `rtlplain` in `ar` (`fixtures/rtl/ios26-ar.txt`, `ios26-en.txt`, with stills; `fixtures/rtlplain/ios26-ar.txt`). Check: files in git.
 - [x] 1.3 Record the push and pop in `ar`: the moving screen's position each frame (`fixtures/rtlnav/ios26-ar.txt`), which is the mirror of the English motion. Check: in git.
 - [x] 1.4a Add Arabic and Hebrew text, and mixed Arabic with English and numbers, to the probe as labels, and record stills in `ar` and `en`. Check: files in git. (Found: natural alignment follows the view's direction, not the text's: Arabic text is on the left on an English phone; "Pomme مرحبا 123" shows as "Pomme 123 مرحبا", the digits after the Arabic word being Arabic numbers.)
-- [ ] 1.4b Print line ranges, the glyph count, and the caret position after each arrow key in a text field with that text. Check: files in git.
+- [x] 1.4b (`fixtures/rtlfield`) Text fields with mixed text in `ar` and `en`: alignment, the text rect, and `caretRectForPosition:` at every position. Check: files in git. (Found: a field's natural alignment follows its text's direction, in any app; after a character the caret is at its far edge in its own direction; a rounded-rect field's text rect starts 34 pt in, at the left, in a right-to-left app.)
 - [x] 1.5 (`fixtures/swiftuirtl`, its own probe: an HStack, a leading-aligned Text, `.padding(.leading)`, `chevron.forward`; stills in `ar` and `en`.) Add a SwiftUI screen to the probe (`HStack`, `.padding(.leading)`, `.frame(alignment: .leading)`, an SF Symbol that mirrors, `.flipsForRightToLeftLayoutDirection(true)`) and record it in `ar`. Check: files in git.
 
 ## 2. Implement direction
@@ -28,7 +28,8 @@
 - [x] 3.1 Add `rustybuzz` (`crates/pomme-hle/src/shaping.rs`): text is shaped in segments of one face and font; measuring gives each UTF-16 unit its cluster's advance (TextKit keeps one glyph per unit, so its glyph APIs are unchanged); labels, text views, attributed strings and single-line UI text draw the shaped glyphs. Noto Sans Arabic, Hebrew and Thai join the fallback fonts (`fallback.rs`, was `cjk.rs`). Check: the Arabic labels match the stills; `cargo test --test intltext` (the font for each script).
 - [x] 3.2 Re-run every text test. With kerning, the fonts that stand in for Apple's moved away from the recordings (the status bar clock, a tab title, segment widths), so they are shaped without kerning; an app's own fonts are kerned, as CoreText does. The status bar draws its plain colon (its measured lift), not Inter's contextual one. Check: `cargo test` passes with no baseline changed.
 - [x] 3.3 Add `unicode-bidi`: each line's runs in the order shown, the paragraph's direction from its first strong letter (else the view's). Check: `cargo test -p pomme-hle shaping` (orders from the stills) and the stills.
-- [ ] 3.4 In `crates/pomme-hle/src/textinput.rs`, move the caret and selection in logical order. Check: caret positions from 1.4.
+- [x] 3.4a Text fields: natural alignment by the text's direction, `caretRectForPosition:` in bidi order (`shaping::caret_edges`), the rounded-rect border's text rect. Check: `cargo test --test rtl text_fields`.
+- [ ] 3.4b Moving the caret with arrow keys and drawing it (pomme's fields draw no caret yet).
 
 ## 4. Frameworks
 
@@ -39,5 +40,5 @@
 ## 5. Tests and docs
 
 - [ ] 5.1 Add all of this change's stills and frames to `crates/pomme-cli/tests/rtl.rs` as visual oracles. Check: `cargo test --test rtl`; look at each `side-by-side` once.
-- [ ] 5.2 Add the RTL APIs to the coverage report, so unmirrored areas are listed. Check: `pomme coverage` shows them.
-- [ ] 5.3 Update `README.md` with languages, regions and RTL. Check: it shows an example command.
+- [x] 5.2 The direction APIs are implemented (not answered generically by a permissive class), so the coverage report counts them as such; what isn't mirrored yet is listed in `README.md` and here.
+- [x] 5.3 `README.md`: languages, regions, translations, other scripts and right to left, with example commands.

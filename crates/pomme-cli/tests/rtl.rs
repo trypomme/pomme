@@ -366,3 +366,55 @@ fn swiftui_mirrors() {
         assert!((a.0 as i32 - b.0 as i32).abs() <= 3 && (a.1 as i32 - b.1 as i32).abs() <= 3, "{name}: pomme x {a:?}, iOS {b:?}");
     }
 }
+
+// ---- Text fields (tests/fixtures/rtlfield) ----
+
+/// Text fields with mixed Arabic and English, against the Simulator: the
+/// text rect, where the line starts (natural alignment by the text's own
+/// direction, even in an English app), and the carets' order across the line
+/// at every position, with the positions that share a place sharing it
+/// (widths aside: Noto isn't SF Arabic).
+fn fields_match(variant: &str, language: &str) {
+    let Some(mut emu) = common::boot("rtlfield") else { return };
+    emu.locales.settings.languages = vec![language.into()];
+    common::views(&mut emu, 2.0);
+    let recording = std::fs::read_to_string(format!("{}/tests/fixtures/rtlfield/ios26-{variant}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let (ours, ios) = (common::parse_metrics(&emu.console), common::parse_metrics(&recording));
+    let mut wrong = Vec::new();
+    for field in 1..=3 {
+        let rect = format!("field{field}.textRect");
+        if ours.get(&rect).zip(ios.get(&rect)).is_none_or(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 0.5)) {
+            wrong.push(format!("{rect}: {:?}, iOS {:?}", ours.get(&rect), ios.get(&rect)));
+        }
+        let xs = |m: &std::collections::BTreeMap<String, [f64; 4]>| -> Vec<f64> { (0..).map_while(|k| m.get(&format!("field{field}.caret{k}")).map(|r| r[0])).collect() };
+        let (a, b) = (xs(&ours), xs(&ios));
+        if a.len() != b.len() || a.is_empty() {
+            wrong.push(format!("field{field}: {} carets, iOS {}", a.len(), b.len()));
+            continue;
+        }
+        if (a[0] - b[0]).abs() > 1.5 {
+            wrong.push(format!("field{field}: the line starts at {:.2}, iOS {:.2}", a[0], b[0]));
+        }
+        // Order and ties: each pair the same way round (or level) as iOS has it.
+        for i in 0..a.len() {
+            for j in 0..a.len() {
+                let (da, db) = (a[i] - a[j], b[i] - b[j]);
+                let side = |d: f64| if d.abs() < 0.5 { 0 } else { d.signum() as i32 };
+                if side(da) != side(db) {
+                    wrong.push(format!("field{field}: carets {i} and {j}: {:.2} vs {:.2}, iOS {:.2} vs {:.2}", a[i], a[j], b[i], b[j]));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{variant}:\n  {}", wrong.join("\n  "));
+}
+
+#[test]
+fn text_fields_in_an_arabic_app() {
+    fields_match("ar", "ar");
+}
+
+#[test]
+fn text_fields_in_an_english_app() {
+    fields_match("en", "en-US");
+}

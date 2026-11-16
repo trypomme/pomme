@@ -561,6 +561,54 @@ fn offset_of(emu: &Emu, p: u64) -> usize {
     objc::bag_get(emu, p, "offset").unwrap_or(0) as usize
 }
 
+/// A text field's text rect within `r` (its bounds): inset by a rounded-rect
+/// border as iOS insets it (7 pt at the sides, 2 at the top and bottom; in a
+/// right-to-left app 34 at the left: fixtures/rtlfield), else `r`.
+fn border_text_rect(emu: &mut Emu, f: u64, r: [f64; 4]) -> Result<[f64; 4]> {
+    // UITextBorderStyleRoundedRect (3).
+    if objc::bag_get(emu, f, "borderStyle").unwrap_or(0) != 3 {
+        return Ok(r);
+    }
+    let left = if crate::direction::app_rtl(emu)? { 34.0 } else { 7.0 };
+    Ok([r[0] + left, r[1] + 2.0, (r[2] - left - 7.0).max(0.0), (r[3] - 4.0).max(0.0)])
+}
+
+/// A text field's one line as shown: its glyphs from the line's start, the
+/// caret's x at each position, and where the line starts in the text rect
+/// (`width` wide): natural alignment follows the text's own direction (its
+/// first strong letter), as iOS aligns a field (fixtures/rtlfield: an Arabic
+/// line on the right in an English app too), a right-aligned line ending
+/// 1 pt short of the edge.
+pub(crate) fn field_line(emu: &mut Emu, f: u64, text: &str, font: &crate::textkit::TextFont, width: f64) -> Result<(Vec<(crate::shaping::Shaped, f64)>, Vec<f64>, f64)> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let view_rtl = crate::direction::view_rtl(emu, f)?;
+    let rtl = crate::shaping::paragraph_rtl(&units, 0..units.len(), view_rtl);
+    let fo = *font;
+    let shaped = crate::shaping::line_visual(emu, &units, 0..units.len(), &|_| fo, rtl, &|_| 0.0);
+    let (edges, line) = crate::shaping::caret_edges(&shaped, units.len(), rtl);
+    let alignment = objc::bag_get(emu, f, "textAlignment").unwrap_or(4) & 0xff;
+    let x0 = match alignment {
+        1 => (width - line) / 2.0,
+        2 => width - 1.0 - line,
+        4 | 3 if rtl => width - 1.0 - line,
+        _ => 0.0,
+    };
+    Ok((shaped, edges, x0))
+}
+
+/// `caretRectForPosition:` (offset `k`): in the text rect, 2 pt wide, as tall
+/// as iOS's caret for the font (22 pt at 17), centred.
+fn caret_rect(emu: &mut Emu, f: u64, k: usize) -> Result<[f64; 4]> {
+    let b = crate::uiview::view(emu, f).bounds;
+    let r = border_text_rect(emu, f, b)?;
+    let text = tf_text(emu, f);
+    let font = appearance(emu, f)?.map_or(crate::textkit::TextFont::system(17.0, 0.0), |a| a.1);
+    let (_, edges, x0) = field_line(emu, f, &text, &font, r[2])?;
+    let x = x0 + edges.get(k.min(edges.len().saturating_sub(1))).copied().unwrap_or(0.0);
+    let h = 22.0 * font.size / 17.0;
+    Ok([x, (r[3] - h) / 2.0, 2.0, h])
+}
+
 fn text_range(emu: &mut Emu, a: usize, b: usize) -> Result<u64> {
     let (a, b) = (a.min(b), a.max(b));
     let (pa, pb) = (position(emu, a)?, position(emu, b)?);
@@ -654,8 +702,10 @@ macro_rules! text_methods {
         ($c, false, "insertText:", tf_insert_text),
         ($c, false, "deleteBackward", tf_delete_backward),
         ($c, false, "caretRectForPosition:", |e| {
-            let b = crate::uiview::view(e, e.arg(0)).bounds;
-            ret_rect(e, [0.0, 0.0, 2.0, b[3]])
+            let (f, p) = (e.arg(0), e.arg(2));
+            let k = offset_of(e, p);
+            let r = caret_rect(e, f, k)?;
+            ret_rect(e, r)
         }),
         ($c, false, "firstRectForRange:", |e| {
             let b = crate::uiview::view(e, e.arg(0)).bounds;
@@ -786,13 +836,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let d = foundation::new_dict_of(e, &pairs)?;
         ret(e, d)
     }),
-    // UITextField: geometry (no border, no side views: the bounds)
+    // UITextField: geometry (the bounds; a rounded-rect border's insets)
     (TF, false, "textRectForBounds:", |e| {
-        let r = rect_arg(e);
+        let (f, r) = (e.arg(0), rect_arg(e));
+        let r = border_text_rect(e, f, r)?;
         ret_rect(e, r)
     }),
     (TF, false, "editingRectForBounds:", |e| {
-        let r = rect_arg(e);
+        let (f, r) = (e.arg(0), rect_arg(e));
+        let r = border_text_rect(e, f, r)?;
         ret_rect(e, r)
     }),
     (TF, false, "placeholderRectForBounds:", |e| {

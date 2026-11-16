@@ -2267,7 +2267,13 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
     let sel = if crate::textinput::is_editing(emu, v) { "editingRectForBounds:" } else { "textRectForBounds:" };
     let r = objc::send_fp(emu, v, sel, &[], &bounds)?;
     let baseline = r[1] + r[3] / 2.0 + font.size * 0.35;
-    let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &font, color, r[0], baseline);
+    // (Where the line starts: its alignment, natural by the text's direction.)
+    let (shaped, _, x0) = crate::textinput::field_line(emu, v, &text, &font, r[2])?;
+    let glyphs: Vec<Glyph> = shaped
+        .into_iter()
+        .filter(|(g, _)| !g.ch.is_whitespace())
+        .map(|(g, pen)| Glyph { ch: g.ch, gid: g.gid, x: r[0] + x0 + pen + g.offset[0], y: baseline + g.offset[1], size: font.size, weight: font.weight, face: g.face, color, skew: font.skew(), shadow: None })
+        .collect();
     p.sync_faces(emu, &glyphs);
     p.glyphs(&glyphs, alpha, t, mask);
     Ok(())
