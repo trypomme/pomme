@@ -734,8 +734,8 @@ fn http_message(emu: &Emu, m: u64) -> HttpMessage {
 
 /// A new message: a CF object to stand for it.
 fn new_http_message(emu: &mut Emu, msg: HttpMessage) -> Result<u64> {
-    let kcb = crate::foundation::cf_data_sym(emu, "_kCFTypeDictionaryKeyCallBacks")?;
-    let vcb = crate::foundation::cf_data_sym(emu, "_kCFTypeDictionaryValueCallBacks")?;
+    let kcb = crate::foundation::cf_sym(emu, "_kCFTypeDictionaryKeyCallBacks")?;
+    let vcb = crate::foundation::cf_sym(emu, "_kCFTypeDictionaryValueCallBacks")?;
     let m = crate::foundation::cf_call(emu, "_CFDictionaryCreateMutable", &[0, 0, kcb, vcb])?;
     emu.cfnetwork.messages.insert(m, msg);
     Ok(m)

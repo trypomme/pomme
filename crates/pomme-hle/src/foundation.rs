@@ -87,11 +87,6 @@ pub fn cf_call(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
     cf(emu, name, args)
 }
 
-/// A CF data symbol's address (for callbacks structs such as `kCFTypeDictionaryKeyCallBacks`).
-pub(crate) fn cf_data_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
-    cf_sym(emu, name)
-}
-
 pub fn cf_data_pub(emu: &mut Emu, name: &'static str) -> Result<u64> {
     cf_data(emu, name)
 }
@@ -1834,12 +1829,14 @@ pub(crate) fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
     if crate::objc::is_native_swift(emu, s) {
         let e = send(emu, s, "objectEnumerator", &[])?;
         let mut v = Vec::new();
-        while e != 0 {
-            let o = send(emu, e, "nextObject", &[])?;
-            if o == 0 {
-                break;
+        if e != 0 {
+            loop {
+                let o = send(emu, e, "nextObject", &[])?;
+                if o == 0 {
+                    break;
+                }
+                v.push(o);
             }
-            v.push(o);
         }
         return Ok(v);
     }

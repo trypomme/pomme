@@ -646,15 +646,6 @@ fn strerror(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn tolower(emu: &mut Emu) -> Result<()> {
-    emu.ret((emu.arg(0) as u8).to_ascii_lowercase() as u64);
-    Ok(())
-}
-
-fn toupper(emu: &mut Emu) -> Result<()> {
-    emu.ret((emu.arg(0) as u8).to_ascii_uppercase() as u64);
-    Ok(())
-}
 
 /// `__maskrune(c, mask)`: ctype classification against the C locale.
 /// `isspace(c)` and friends: nonzero (the class's bit) if `c` is in the class.
@@ -665,15 +656,16 @@ fn ctype_is(emu: &mut Emu, mask: u64) -> Result<()> {
     Ok(())
 }
 
-/// `tolower(c)` / `toupper(c)`: only ASCII letters change; EOF and others pass through.
-fn tolower_c(emu: &mut Emu) -> Result<()> {
+/// `tolower(c)` / `toupper(c)` (and `__tolower`, `___tolower_l`): only ASCII
+/// letters change; EOF (-1) and the rest pass through as they are.
+fn tolower(emu: &mut Emu) -> Result<()> {
     let c = emu.arg(0) as i32;
     let r = if (b'A' as i32..=b'Z' as i32).contains(&c) { c + 32 } else { c };
     emu.ret(r as i64 as u64);
     Ok(())
 }
 
-fn toupper_c(emu: &mut Emu) -> Result<()> {
+fn toupper(emu: &mut Emu) -> Result<()> {
     let c = emu.arg(0) as i32;
     let r = if (b'a' as i32..=b'z' as i32).contains(&c) { c - 32 } else { c };
     emu.ret(r as i64 as u64);
@@ -2122,8 +2114,8 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         e.ret((c < 128) as u64);
         Ok(())
     }),
-    ("_tolower", tolower_c),
-    ("_toupper", toupper_c),
+    ("_tolower", tolower),
+    ("_toupper", toupper),
     ("_sin", m_sin),
     ("_cos", m_cos),
     ("_tan", m_tan),

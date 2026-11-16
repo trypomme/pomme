@@ -11,6 +11,7 @@
 //!   `%C3%A9`, `#` → `%23`, `%` → `%25`).
 
 use crate::foundation;
+use crate::net::percent_decode;
 use crate::objc::{self, host_class, send};
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
@@ -74,25 +75,6 @@ fn encode(s: &str, keep: fn(u8) -> bool) -> String {
         }
     }
     out
-}
-
-/// Undo `%XX` escapes (left as they are where they aren't valid UTF-8).
-fn decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Whether text is already a valid (percent-encoded) URL: the URL characters and well-formed escapes.
@@ -219,8 +201,8 @@ pub(crate) fn query_from_items(items: &[(String, Option<String>)]) -> String {
 pub(crate) fn items_from_query(q: &str) -> Vec<(String, Option<String>)> {
     q.split('&')
         .map(|part| match part.split_once('=') {
-            Some((n, v)) => (decode(n), Some(decode(v))),
-            None => (decode(part), None),
+            Some((n, v)) => (percent_decode(n), Some(percent_decode(v))),
+            None => (percent_decode(part), None),
         })
         .collect()
 }
@@ -351,7 +333,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "user", |e| {
-        let v = parts(e, e.arg(0)).user.map(|s| decode(&s));
+        let v = parts(e, e.arg(0)).user.map(|s| percent_decode(&s));
         ret_str(e, v)
     }),
     (C, false, "setUser:", |e| {
@@ -360,7 +342,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "password", |e| {
-        let v = parts(e, e.arg(0)).password.map(|s| decode(&s));
+        let v = parts(e, e.arg(0)).password.map(|s| percent_decode(&s));
         ret_str(e, v)
     }),
     (C, false, "setPassword:", |e| {
@@ -369,7 +351,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "host", |e| {
-        let v = parts(e, e.arg(0)).host.map(|s| decode(&s));
+        let v = parts(e, e.arg(0)).host.map(|s| percent_decode(&s));
         ret_str(e, v)
     }),
     (C, false, "setHost:", |e| {
@@ -394,7 +376,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "path", |e| {
-        let v = decode(&parts(e, e.arg(0)).path);
+        let v = percent_decode(&parts(e, e.arg(0)).path);
         ret_str(e, Some(v))
     }),
     (C, false, "setPath:", |e| {
@@ -412,7 +394,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "query", |e| {
-        let v = parts(e, e.arg(0)).query.map(|s| decode(&s));
+        let v = parts(e, e.arg(0)).query.map(|s| percent_decode(&s));
         ret_str(e, v)
     }),
     (C, false, "setQuery:", |e| {
@@ -430,7 +412,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     (C, false, "fragment", |e| {
-        let v = parts(e, e.arg(0)).fragment.map(|s| decode(&s));
+        let v = parts(e, e.arg(0)).fragment.map(|s| percent_decode(&s));
         ret_str(e, v)
     }),
     (C, false, "setFragment:", |e| {
@@ -553,7 +535,7 @@ mod tests {
         assert_eq!((p.user.as_deref(), p.password.as_deref()), (Some("user"), Some("pw")));
         assert_eq!((p.host.as_deref(), p.port), (Some("example.com"), Some(8081)));
         assert_eq!(p.path, "/a/b%20c");
-        assert_eq!(decode(&p.path), "/a/b c");
+        assert_eq!(percent_decode(&p.path), "/a/b c");
         assert_eq!(items_from_query("x=1&y=&z"), vec![("x".into(), Some("1".into())), ("y".into(), Some("".into())), ("z".into(), None)]);
         assert_eq!(string(&p), "http://user:pw@example.com:8081/a/b%20c?x=1&y=two%20words#frag");
         assert!(parse("http://exa mple.com").is_none());
