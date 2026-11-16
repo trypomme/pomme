@@ -1,5 +1,6 @@
 //! The Simulator's menus, as far as pomme has them: File ▸ Save Screen /
-//! Record Screen, Device ▸ Rotate Left / Rotate Right, and Features ▸ Face ID
+//! Record Screen, Device ▸ Rotate Left / Rotate Right / Relaunch App (pomme's
+//! own: quit the app and start it again, keeping its data), and Features ▸ Face ID
 //! ▸ Enrolled / Matching Face / Non-matching Face. On macOS they're the menu bar, with the Simulator's
 //! shortcuts. On Windows the window has no frame to hang a menu bar on, so
 //! they're a right-click menu on the phone's bezel (the shortcuts work there
@@ -30,6 +31,7 @@ impl Menus {
         let item = |text: &str, accel| MenuItem::new(text, true, accel);
         let rotate_left = item("Rotate Left", key(CMD_OR_CTRL, Code::ArrowLeft));
         let rotate_right = item("Rotate Right", key(CMD_OR_CTRL, Code::ArrowRight));
+        let relaunch = item("Relaunch App", key(CMD_OR_CTRL | Modifiers::SHIFT, Code::KeyR));
         let face = CMD_OR_CTRL | Modifiers::ALT;
         let enrolled = CheckMenuItem::new("Enrolled", true, enrolled, key(face, Code::KeyE));
         let matching = item("Matching Face", key(face, Code::KeyM));
@@ -41,6 +43,7 @@ impl Menus {
         let mut actions = vec![
             (rotate_left.id().clone(), Action::Rotate(true)),
             (rotate_right.id().clone(), Action::Rotate(false)),
+            (relaunch.id().clone(), Action::Relaunch),
             (enrolled.id().clone(), Action::Face(Face::ToggleEnrolled)),
             (matching.id().clone(), Action::Face(Face::Matching)),
             (non_matching.id().clone(), Action::Face(Face::NonMatching)),
@@ -49,7 +52,7 @@ impl Menus {
             (record.id().clone(), Action::Record),
         ];
         let face_id = Submenu::with_items("Face ID", true, &[&enrolled, &sep, &matching, &non_matching]).expect("menu");
-        let device = Submenu::with_items("Device", true, &[&rotate_left, &rotate_right]).expect("menu");
+        let device = Submenu::with_items("Device", true, &[&rotate_left, &rotate_right, &sep, &relaunch]).expect("menu");
         let features = Submenu::with_items("Features", true, &[&face_id]).expect("menu");
 
         let menu = Menu::new();

@@ -67,6 +67,8 @@ enum Action {
     SaveScreen,
     /// File ▸ Record Screen / Stop Recording.
     Record,
+    /// Device ▸ Relaunch App: quit the app and start it again, keeping what it saved.
+    Relaunch,
 }
 
 /// The emulator thread's side: a frame for the window, or the run ended.
@@ -411,6 +413,7 @@ impl App {
             Action::Face(f) => self.send(Event::Face(f)),
             Action::Close => self.close(event_loop),
             Action::SaveScreen => self.send(Event::SaveScreen),
+            Action::Relaunch => self.send(Event::Relaunch),
             Action::Record => {
                 self.recording = !self.recording;
                 if let Some(m) = &self.menus {
@@ -758,6 +761,7 @@ impl ApplicationHandler<ToWindow> for App {
                     // No title bar to close it with: ⌘W / ⌘Q.
                     Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
                     Key::Character(c) if command && c.as_str() == "s" => self.act(event_loop, Action::SaveScreen),
+                    Key::Character(c) if command && self.modifiers.shift_key() && c.eq_ignore_ascii_case("r") => self.act(event_loop, Action::Relaunch),
                     Key::Character(c) if command && c.as_str() == "r" => self.act(event_loop, Action::Record),
                     _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),

@@ -1003,7 +1003,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         if s.liquid_glass() { "Liquid Glass" } else { "pre-iOS 26" }
     );
     emu.time_limit_ns = Some((seconds * 1e9) as u64);
-    // Live in a window: until it closes.
+    // Live in a window: until it closes (Device ▸ Relaunch App starts the app again).
+    let relaunchable = live.is_some();
     if let Some((host, scale)) = live {
         *emu.live.host = Some(host);
         emu.live.scale = scale;
@@ -1061,7 +1062,7 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
     );
 
     let start = std::time::Instant::now();
-    let result = emu.run_main();
+    let result = if relaunchable { emu.run_main_relaunching() } else { emu.run_main() };
     let elapsed = start.elapsed();
     let steps = emu.cpu.steps;
     let mips = steps as f64 / elapsed.as_secs_f64() / 1e6;

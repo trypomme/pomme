@@ -1,0 +1,42 @@
+//! Relaunching the app within a run (tests/fixtures/relaunch/main.m, run
+//! three times on the Simulator: launch counts 1, 2, 3, the file each last
+//! launch wrote, `inMemory` 1 each time): the new launch finds what the last one saved (a default, a file in
+//! Documents, a keychain item, the defaults file in Library/Preferences)
+//! but none of its memory (a global variable starts over). Built with the
+//! iOS SDK; skipped without Xcode or the sysroot.
+
+mod common;
+
+use pomme_hle::driver::drive;
+
+fn values(console: &str, name: &str) -> Vec<String> {
+    console.lines().filter_map(|l| l.strip_prefix(&format!("VALUE {name} ")).map(str::to_string)).collect()
+}
+
+#[test]
+fn a_relaunch_keeps_what_the_app_saved() {
+    let Some(mut emu) = common::boot("relaunch") else { return };
+    let started = std::time::Instant::now();
+    drive(&mut emu, |app| {
+        app.run_for(0.5)?;
+        let first = app.now();
+        app.relaunch()?;
+        // (Virtual time starts again.)
+        assert!(app.now() <= first, "{} after {first}", app.now());
+        app.run_for(0.5)?;
+        app.relaunch()?;
+        app.run_for(0.5)
+    })
+    .unwrap();
+    eprintln!("three launches in {:?}", started.elapsed());
+    let c = &emu.console;
+    assert_eq!(values(c, "launch"), ["1", "2", "3"], "{c}");
+    assert_eq!(values(c, "inMemory"), ["1", "1", "1"], "{c}");
+    assert_eq!(values(c, "file"), ["(none)", "written at launch 1", "written at launch 2"], "{c}");
+    // (The app synchronizes, so its file holds the launch it's in.)
+    assert_eq!(values(c, "prefsFile"), ["1", "2", "3"], "{c}");
+    // (On the Simulator the probe can't use the keychain, unsigned: -34018.
+    // A phone keeps keychain items across launches, and reinstalls too.)
+    assert_eq!(values(c, "keychain"), ["(none)", "secret", "secret"], "{c}");
+    assert_eq!(values(c, "keychainAdd"), ["0"], "{c}");
+}

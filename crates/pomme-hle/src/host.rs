@@ -41,6 +41,8 @@ pub enum Event {
     /// every frame also comes at the phone's own resolution in [`Host::recorded`],
     /// and [`Host::recording_stopped`] says when it ends.
     Record(bool),
+    /// Relaunch the app, keeping what it saved (only under [`Emu::run_main_relaunching`]).
+    Relaunch,
     /// The screen reader did something to an element of the last tree the host got (by its id).
     Accessibility { id: u64, action: Action },
 }
@@ -388,6 +390,7 @@ fn deliver(emu: &mut Emu) -> Result<()> {
                 accessibility_changed(emu);
                 r?
             }
+            Event::Relaunch => return crate::relaunch::request(emu),
             Event::SaveScreen | Event::Record(_) => {}
         }
     }

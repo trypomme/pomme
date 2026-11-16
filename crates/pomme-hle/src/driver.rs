@@ -45,6 +45,8 @@ enum Command {
     /// at the screen runs app code, which takes time too), then take the next
     /// turn when it's idle.
     Resume(u64),
+    /// Relaunch the app, keeping what it saved.
+    Relaunch,
 }
 
 /// The emulator's side of a drive.
@@ -223,6 +225,16 @@ impl App {
         Ok(())
     }
 
+    /// Quit the app and launch it again, as `XCUIApplication.terminate()`
+    /// then `launch()` do: it starts from the beginning, launched as the
+    /// first time (the same arguments and URL), keeping what it saved (its
+    /// files, defaults and keychain items); the rest starts fresh, virtual
+    /// time too. Returns once the new launch is idle.
+    pub fn relaunch(&mut self) -> std::result::Result<(), Error> {
+        self.commands.send(Command::Relaunch).map_err(|_| self.stopped())?;
+        self.await_turn()
+    }
+
     /// Let the app run for `secs` of virtual time (then until it's next idle).
     pub fn run_for(&mut self, secs: f64) -> std::result::Result<(), Error> {
         let ns = (secs.max(0.0) * 1e9) as u64;
@@ -377,7 +389,7 @@ pub fn drive<R: Send>(emu: &mut Emu, test: impl FnOnce(&mut App) -> std::result:
             app.await_turn()?;
             test(&mut app)
         });
-        let run = emu.run_main();
+        let run = emu.run_main_relaunching();
         // The test finishing ends the run as exit(0) does; anything else is why the app stopped.
         *ended.lock().unwrap() = Some(match &run {
             Ok(code) => format!("it exited ({code})"),
@@ -393,6 +405,13 @@ pub fn drive<R: Send>(emu: &mut Emu, test: impl FnOnce(&mut App) -> std::result:
             Err(panic) => std::panic::resume_unwind(panic),
         }
     })
+}
+
+/// The app relaunched: the next turn comes once the new launch is idle.
+pub(crate) fn relaunched(emu: &mut Emu) {
+    if let Some(d) = emu.driver.as_mut() {
+        (d.resume_at, d.signalled, d.in_turn) = (0, false, false);
+    }
 }
 
 /// Whether a test is driving this run.
@@ -437,6 +456,10 @@ pub(crate) fn turn(emu: &mut Emu) -> Result<()> {
         let next = emu.driver.as_ref().map(|d| d.commands.recv());
         match next {
             Some(Ok(Command::Exec(work))) => work(emu)?,
+            Some(Ok(Command::Relaunch)) => {
+                emu.driver.as_mut().unwrap().in_turn = false;
+                return crate::relaunch::request(emu);
+            }
             Some(Ok(Command::Resume(ns))) => {
                 let until = crate::threads::now_ns(emu) + ns;
                 let d = emu.driver.as_mut().unwrap();

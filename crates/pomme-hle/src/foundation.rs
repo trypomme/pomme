@@ -2432,6 +2432,23 @@ fn sort_with(emu: &mut Emu, block_reg: Option<usize>, sel_reg: Option<usize>, in
     Ok(())
 }
 
+/// `sortUsingFunction:context:` / `sortedArrayUsingFunction:context:`: a
+/// stable sort by function(a, b, context) → NSComparisonResult.
+fn sort_with_function(emu: &mut Emu, in_place: bool) -> Result<()> {
+    let (a, f, ctx) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let objs = array_values(emu, a)?;
+    let sorted = merge_sort(emu, objs, &mut |e, x, y| Ok(e.call(f, &[x, y, ctx])? as i64))?;
+    if in_place {
+        for (i, o) in sorted.into_iter().enumerate() {
+            cf(emu, "_CFArraySetValueAtIndex", &[a, i as u64, o])?;
+        }
+    } else {
+        let r = array_from(emu, &sorted)?;
+        emu.ret(r);
+    }
+    Ok(())
+}
+
 /// `-[NSArray valueForKey:]`: each element's value (nil → NSNull); `@count` is the count.
 fn array_value_for_key(emu: &mut Emu) -> Result<()> {
     let (a, key) = (emu.arg(0), emu.arg(2));
@@ -4457,6 +4474,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMutableArray", false, "sortUsingComparator:", |e| sort_with(e, Some(2), None, true)),
     ("NSMutableArray", false, "sortWithOptions:usingComparator:", |e| sort_with(e, Some(3), None, true)),
     ("NSMutableArray", false, "sortUsingSelector:", |e| sort_with(e, None, Some(2), true)),
+    ("NSMutableArray", false, "sortUsingFunction:context:", |e| sort_with_function(e, true)),
+    ("NSArray", false, "sortedArrayUsingFunction:context:", |e| sort_with_function(e, false)),
     ("NSSortDescriptor", false, "initWithKey:ascending:", sort_descriptor_init),
     ("NSSortDescriptor", false, "initWithKey:ascending:selector:", sort_descriptor_init_selector),
     ("NSSortDescriptor", true, "sortDescriptorWithKey:ascending:", sort_descriptor_new),

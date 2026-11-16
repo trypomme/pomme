@@ -158,6 +158,12 @@ Debugging:
   snapshot, so one can't be taken while the app holds an open connection or pages in a live web
   engine. Part of a running app's state is on pomme's own stack (host functions that called into
   the app), so a snapshot restores only under the same frames: in a later turn of the same drive.
+- Relaunching: `app.relaunch()` in a test, or Device ▸ Relaunch App (⇧⌘R) in the window,
+  quits the app and starts it again, as `XCUIApplication.terminate()` then `launch()` do. It
+  keeps what the app saved (its files, its defaults, written to `Library/Preferences` as iOS
+  keeps them, and its keychain items) and starts everything else fresh, so a second launch can
+  be tested: React Native's `I18nManager.forceRTL` applies, a login stays. Each `pomme run`
+  still starts as a fresh install.
 - Screen readers: the app's UIAccessibility tree reaches the host's assistive technology, so
   someone using VoiceOver, NVDA, Narrator or Orca can use an iOS app running in pomme. A host
   that wants it (`Host::wants_accessibility`) gets the screen as VoiceOver presents it

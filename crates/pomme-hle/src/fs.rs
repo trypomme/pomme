@@ -208,6 +208,16 @@ fn parent(p: &str) -> &str {
     p.rsplit_once('/').map_or("/", |(a, _)| if a.is_empty() { "/" } else { a })
 }
 
+/// The data container as it is (None: not used yet), to keep across a relaunch.
+pub(crate) fn take_container(emu: &mut Emu) -> Option<Container> {
+    emu.fs.data.take()
+}
+
+/// Put a kept data container back (a relaunch).
+pub(crate) fn put_container(emu: &mut Emu, c: Option<Container>) {
+    emu.fs.data = c;
+}
+
 /// A data-container file's contents.
 pub fn data_file(emu: &mut Emu, path: &str) -> Option<Vec<u8>> {
     let p = data_path(path)?;

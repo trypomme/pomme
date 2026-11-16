@@ -1,0 +1,7 @@
+# The relaunch fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE file written at launch 2
+VALUE inMemory 1
+VALUE keychain (none)
+VALUE keychainAdd -34018
+VALUE launch 3
+VALUE prefsFile 2

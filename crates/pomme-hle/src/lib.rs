@@ -12,6 +12,7 @@ pub mod accessibility;
 pub mod coverage;
 pub mod driver;
 pub mod snapshot;
+mod relaunch;
 pub mod heap;
 pub mod profile;
 mod bundle;
@@ -178,6 +179,8 @@ pub enum Stop {
     Idle(String),
     /// Virtual time reached [`Emu::time_limit_ns`] with every thread waiting.
     TimeLimit(u64),
+    /// The app is being relaunched (see relaunch.rs): its run unwinds to start again.
+    Relaunch,
 }
 
 impl From<MemError> for Stop {
@@ -204,6 +207,7 @@ impl fmt::Display for Stop {
             Stop::Blocked => write!(f, "thread blocked"),
             Stop::Idle(what) => write!(f, "idle: {what}"),
             Stop::TimeLimit(ns) => write!(f, "reached the time limit ({:.1} s of virtual time), idle", *ns as f64 / 1e9),
+            Stop::Relaunch => write!(f, "relaunching"),
         }
     }
 }
@@ -405,6 +409,8 @@ pub struct Emu {
     /// serial never used twice: a snapshot is restored only under the same frames.
     pub(crate) frames: Vec<u64>,
     frame_serial: u64,
+    /// What a relaunch keeps, between its request and the new launch.
+    pub(crate) kept: Option<relaunch::Kept>,
 }
 
 impl Emu {
@@ -543,6 +549,7 @@ impl Emu {
             driver: External(None),
             frames: Vec::new(),
             frame_serial: 0,
+            kept: None,
         };
         let thunks = emu.p.memory.map(THUNK_BASE, THUNK_SLOTS * 4, Prot::RX, "[host thunks]")?;
         for slot in thunks.data.chunks_exact_mut(4) {

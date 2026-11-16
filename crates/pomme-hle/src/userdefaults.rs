@@ -3,7 +3,10 @@
 //! suite's), shared by every object that names it; lookups fall back to the
 //! global domain (the device's language and locale) and then the registration
 //! domain, which `registerDefaults:` fills for the whole process. Values live
-//! in memory for the run.
+//! in memory while the app runs; a relaunch writes each domain as iOS keeps
+//! it, a binary property list at `Library/Preferences/<domain>.plist` in the
+//! data container, and the next launch reads a domain from there when it
+//! first uses it.
 //!
 //! CFPreferences is the same store, as on iOS (NSUserDefaults is built on it):
 //! an application ID names a domain (`kCFPreferencesCurrentApplication` the
@@ -47,12 +50,59 @@ fn domain(emu: &mut Emu, name: &str) -> Result<u64> {
     if let Some(&d) = emu.defaults.domains.get(name) {
         return Ok(d);
     }
-    let d = foundation::new_dict(emu)?;
+    let d = match read_file(emu, name)? {
+        Some(d) => d,
+        None => foundation::new_dict(emu)?,
+    };
     if name == GLOBAL {
         write_device_settings(emu, d)?;
     }
     emu.defaults.domains.insert(name.to_string(), d);
     Ok(d)
+}
+
+/// Where a domain's file is (the global domain is the device's, never kept).
+fn file_path(name: &str) -> String {
+    format!("{}/Library/Preferences/{name}.plist", foundation::DATA_CONTAINER)
+}
+
+/// A domain from its file, as a mutable dictionary, if there's one.
+fn read_file(emu: &mut Emu, name: &str) -> Result<Option<u64>> {
+    if name == GLOBAL {
+        return Ok(None);
+    }
+    let Some(bytes) = crate::fs::data_file(emu, &file_path(name)) else { return Ok(None) };
+    let data = foundation::new_data(emu, &bytes)?;
+    // (kCFPropertyListMutableContainers: the domain is changed in place.)
+    let d = cf(emu, "_CFPropertyListCreateWithData", &[0, data, 1, 0, 0])?;
+    Ok((d != 0).then_some(d))
+}
+
+/// `synchronize` (and CFPreferences'): the domains to their files now, as
+/// iOS's cfprefsd writes them soon after a change (there, when isn't fixed;
+/// here, when the app asks, and at a relaunch).
+fn synchronize(emu: &mut Emu) -> Result<()> {
+    save_files(emu)?;
+    ret(emu, 1)
+}
+
+/// Write every domain the app used to its file (before a relaunch).
+pub(crate) fn save_files(emu: &mut Emu) -> Result<()> {
+    let mut names: Vec<(String, u64)> = emu.defaults.domains.iter().map(|(k, &v)| (k.clone(), v)).collect();
+    names.sort();
+    for (name, d) in names {
+        if name == GLOBAL {
+            continue;
+        }
+        // (kCFPropertyListBinaryFormat_v1_0)
+        let data = cf(emu, "_CFPropertyListCreateData", &[0, d, 200, 0, 0])?;
+        if data == 0 {
+            continue;
+        }
+        let bytes = foundation::data_bytes(emu, data)?;
+        crate::fs::write_data_file(emu, &file_path(&name), &bytes);
+    }
+    Ok(())
 }
 
 /// The global domain's language and region keys, as iOS keeps them
@@ -382,8 +432,8 @@ pub(crate) fn hook_cf_preferences(emu: &mut Emu) -> Result<()> {
         ("_CFPreferencesGetAppBooleanValue", |e| cf_get_app_number(e, true)),
         ("_CFPreferencesGetAppIntegerValue", |e| cf_get_app_number(e, false)),
         // Values are in memory: synchronizing always succeeds.
-        ("_CFPreferencesAppSynchronize", |e| ret(e, 1)),
-        ("_CFPreferencesSynchronize", |e| ret(e, 1)),
+        ("_CFPreferencesAppSynchronize", synchronize),
+        ("_CFPreferencesSynchronize", synchronize),
         ("_CFPreferencesAddSuitePreferencesToApp", |_| Ok(())),
         ("_CFPreferencesRemoveSuitePreferencesFromApp", |_| Ok(())),
     ];
@@ -602,5 +652,5 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         }
         Ok(())
     }),
-    (UD, false, "synchronize", |e| ret(e, 1)),
+    (UD, false, "synchronize", synchronize),
 ];

@@ -1,7 +1,8 @@
 //! The Keychain (Security's SecItem API) and LocalAuthentication.
 //!
 //! Items live in memory for the run, like the data container (a fresh
-//! install each time). An item is its class (generic or internet password,
+//! install each time); a relaunch keeps them (as property lists, made back
+//! into objects when the next launch first uses the keychain). An item is its class (generic or internet password,
 //! …), its attributes and its data. Generic passwords are unique by service,
 //! account and access group; internet passwords also by server, protocol,
 //! port and path. A query matches an item of its class whose attributes equal
@@ -87,9 +88,74 @@ struct Item {
     needs_auth: bool,
 }
 
+/// An item as a relaunch keeps it: its values as binary property lists.
+#[derive(Clone, Debug)]
+pub(crate) struct Saved {
+    class: String,
+    attrs: Vec<(String, Vec<u8>)>,
+    data: Option<Vec<u8>>,
+    needs_auth: bool,
+}
+
+fn to_plist(emu: &mut Emu, v: u64) -> Result<Vec<u8>> {
+    let data = foundation::cf(emu, "_CFPropertyListCreateData", &[0, v, 200, 0, 0])?;
+    if data == 0 {
+        return Ok(Vec::new());
+    }
+    foundation::data_bytes(emu, data)
+}
+
+fn from_plist(emu: &mut Emu, bytes: &[u8]) -> Result<u64> {
+    let data = foundation::new_data(emu, bytes)?;
+    foundation::cf(emu, "_CFPropertyListCreateWithData", &[0, data, 0, 0, 0])
+}
+
+/// The items, to keep across a relaunch.
+pub(crate) fn save(emu: &mut Emu) -> Result<Vec<Saved>> {
+    let mut out = emu.keychain.saved.clone();
+    for it in emu.keychain.items.clone() {
+        let mut attrs = Vec::new();
+        for (k, v) in &it.attrs {
+            let b = to_plist(emu, *v)?;
+            if !b.is_empty() {
+                attrs.push((k.clone(), b));
+            }
+        }
+        let data = if it.data == 0 { None } else { Some(to_plist(emu, it.data)?) };
+        out.push(Saved { class: it.class, attrs, data, needs_auth: it.needs_auth });
+    }
+    Ok(out)
+}
+
+/// Put kept items back (made into objects when first used).
+pub(crate) fn keep(emu: &mut Emu, saved: Vec<Saved>) {
+    emu.keychain.saved = saved;
+}
+
+/// Make kept items objects again.
+fn load_saved(emu: &mut Emu) -> Result<()> {
+    for s in std::mem::take(&mut emu.keychain.saved) {
+        let mut attrs = Vec::new();
+        for (k, b) in &s.attrs {
+            let v = from_plist(emu, b)?;
+            if v != 0 {
+                attrs.push((k.clone(), v));
+            }
+        }
+        let data = match &s.data {
+            Some(b) => from_plist(emu, b)?,
+            None => 0,
+        };
+        emu.keychain.items.push(Item { class: s.class, attrs, data, needs_auth: s.needs_auth });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default)]
 pub struct State {
     items: Vec<Item>,
+    /// Items kept across a relaunch, not yet made back into objects.
+    saved: Vec<Saved>,
     pub biometry: Biometry,
     /// SecAccessControl objects → whether they ask for biometry.
     access_controls: HashMap<u64, bool>,
@@ -318,6 +384,7 @@ fn find(emu: &mut Emu, query: &[(String, u64)]) -> Result<Option<(String, Vec<us
 
 /// `SecItemAdd(attributes, &result)`.
 fn item_add(emu: &mut Emu) -> Result<()> {
+    load_saved(emu)?;
     let (attrs, result) = (emu.arg(0), emu.arg(1));
     let a = pairs(emu, attrs)?;
     let Some(class) = class_of(emu, &a)? else { return ret(emu, PARAM) };
@@ -382,6 +449,7 @@ fn result_for(emu: &mut Emu, it: &Item, data: bool, attrs: bool) -> Result<u64> 
 
 /// `SecItemCopyMatching(query, &result)`.
 fn copy_matching(emu: &mut Emu) -> Result<()> {
+    load_saved(emu)?;
     let (query, result) = (emu.arg(0), emu.arg(1));
     let q = pairs(emu, query)?;
     let Some((_, hits)) = find(emu, &q)? else { return ret(emu, PARAM) };
@@ -433,6 +501,7 @@ fn copy_matching(emu: &mut Emu) -> Result<()> {
 
 /// `SecItemUpdate(query, attributesToUpdate)`.
 fn item_update(emu: &mut Emu) -> Result<()> {
+    load_saved(emu)?;
     let (query, changes) = (emu.arg(0), emu.arg(1));
     let q = pairs(emu, query)?;
     let c = pairs(emu, changes)?;
@@ -460,6 +529,7 @@ fn item_update(emu: &mut Emu) -> Result<()> {
 
 /// `SecItemDelete(query)`: every item it matches.
 fn item_delete(emu: &mut Emu) -> Result<()> {
+    load_saved(emu)?;
     let q = pairs(emu, emu.arg(0))?;
     let Some((_, hits)) = find(emu, &q)? else { return ret(emu, PARAM) };
     if hits.is_empty() {

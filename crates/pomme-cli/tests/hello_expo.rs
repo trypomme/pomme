@@ -1022,14 +1022,28 @@ fn i18n_manager_follows_the_apps_localization() {
 }
 
 /// `I18nManager.forceRTL(true)` saves `RCTI18nUtil_forceRTL` in the app's
-/// defaults, for the next launch: launched with it set (as a launch
-/// argument stands in for what the last run saved; each pomme run starts
-/// from a fresh install), an English phone lays the app out right to left;
-/// `allowRTL(false)` keeps an Arabic one left to right.
+/// defaults for the next launch: on an English phone the localization
+/// screen's button forces it, nothing changes until the app is relaunched,
+/// then it lays out right to left. And `allowRTL(false)` (launched with it
+/// saved) keeps an Arabic phone left to right.
 #[test]
 fn force_rtl_takes_effect_at_the_next_launch() {
-    let Some(forced) = localization_screen_with(&["en-US"], "US", "America/Los_Angeles", None, &["-RCTI18nUtil_forceRTL", "YES"]) else { return };
-    assert_eq!(forced.get("I18nManager.isRTL").map(String::as_str), Some("true"), "{forced:?}");
+    use pomme_hle::driver::{drive, id, text, text_containing};
+    let Some(mut emu) = boot() else { return };
+    emu.locales.settings.languages = vec!["en-US".into()];
+    emu.ui.launch_url = Some("pommehello:///localization".into());
+    drive(&mut emu, |app| {
+        app.wait_for(&text_containing("I18nManager.isRTL false"))?;
+        app.tap(&id("forceRTL"))?;
+        app.wait_for(&text("Right to left at the next launch"))?;
+        assert!(app.find(&text_containing("I18nManager.isRTL false"))?.is_some(), "not before a relaunch");
+        app.relaunch()?;
+        app.wait_for(&text_containing("I18nManager.isRTL true"))?;
+        // (A fresh launch: the button shows its first title again.)
+        app.wait_for(&text("Force right to left"))?;
+        Ok(())
+    })
+    .unwrap();
     let Some(denied) = localization_screen_with(&["ar"], "SA", "Asia/Riyadh", None, &["-RCTI18nUtil_allowRTL", "NO"]) else { return };
     assert_eq!(denied.get("I18nManager.isRTL").map(String::as_str), Some("false"), "{denied:?}");
 }
