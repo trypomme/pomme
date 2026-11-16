@@ -349,7 +349,7 @@ fn create_for_string(emu: &mut Emu) -> Result<()> {
     };
     let face = if has(emu, f.face) {
         f.face
-    } else if let Some(fb) = crate::cjk::fallback(emu, ch, f.weight)? {
+    } else if let Some(fb) = crate::fallback::fallback(emu, ch, f.weight)? {
         // Chinese, Japanese and Korean: the font iOS's cascade list gives.
         fb.face
     } else {
@@ -1025,7 +1025,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     // The fonts tried for characters a font lacks, in order: the CJK fonts
     // (the phone's own script first) and the emoji font.
     ("_CTFontCopyDefaultCascadeListForLanguages", |e| {
-        let mut list = crate::cjk::cascade(e)?;
+        let mut list = crate::fallback::cascade(e)?;
         if faces(e).len() > 1 {
             list.push(1);
         }

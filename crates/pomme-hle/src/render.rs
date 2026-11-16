@@ -30,6 +30,8 @@ pub enum El {
 #[derive(Clone, Debug)]
 pub struct Glyph {
     pub ch: char,
+    /// The glyph in its face, as shaped (None: `ch`'s glyph, looked up).
+    pub gid: Option<u16>,
     pub x: f64,
     pub y: f64,
     pub size: f64,
@@ -1113,6 +1115,14 @@ impl Painter<'_> {
         }
     }
 
+    /// Take the faces coretext has now, if `glyphs` use one registered since
+    /// this painter began (a fallback font, found while laying the text out).
+    fn sync_faces(&mut self, emu: &mut Emu, glyphs: &[Glyph]) {
+        if glyphs.iter().any(|g| g.face >= self.faces.len()) {
+            self.faces = crate::coretext::draw_faces(emu);
+        }
+    }
+
     fn glyphs(&mut self, glyphs: &[Glyph], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
         // Text shadows first, under the text.
         let mut shadows: Vec<TextShadow> = Vec::new();
@@ -1144,7 +1154,7 @@ impl Painter<'_> {
                     });
                 }
                 if let Some((_, f)) = &app
-                    && let Some(gid) = f.glyph_index(g.ch)
+                    && let Some(gid) = g.gid.map(ttf_parser::GlyphId).or_else(|| f.glyph_index(g.ch))
                 {
                     let font = faces.get(g.face).map_or((0, 0), |(bytes, index, coords)| {
                         let vars = coords.iter().fold(*index as u64, |h, (tag, v)| h.rotate_left(13) ^ u32::from_be_bytes(*tag) as u64 ^ (v.to_bits() as u64) << 7);
@@ -1161,7 +1171,7 @@ impl Painter<'_> {
                 face.set_variation(ttf_parser::Tag::from_bytes(b"opsz"), opsz as f32);
                 current = Some((wght, opsz));
             }
-            let Some(gid) = face.glyph_index(g.ch) else {
+            let Some(gid) = g.gid.map(ttf_parser::GlyphId).or_else(|| face.glyph_index(g.ch)) else {
                 self.emoji_glyph(g, alpha, t, mask);
                 continue;
             };
@@ -2247,6 +2257,7 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
     let r = objc::send_fp(emu, v, sel, &[], &bounds)?;
     let baseline = r[1] + r[3] / 2.0 + font.size * 0.35;
     let (glyphs, _) = crate::textkit::line_glyphs_in(emu, &text, &font, color, r[0], baseline);
+    p.sync_faces(emu, &glyphs);
     p.glyphs(&glyphs, alpha, t, mask);
     Ok(())
 }
@@ -2262,7 +2273,9 @@ fn draw_text_view(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
             _ => 0.0,
         };
         let baseline = laid.origin.1 + l.y + l.ascent;
-        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, laid.origin.0 + dx, baseline);
+        let rtl = crate::direction::view_rtl(emu, v)?;
+        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, laid.origin.0 + dx, baseline, rtl);
+        p.sync_faces(emu, &glyphs);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())
@@ -2278,7 +2291,9 @@ fn draw_label(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alpha: f
             2 => bounds[2] - l.width,
             _ => 0.0,
         };
-        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, bounds[0] + dx, top + l.y + l.ascent);
+        let rtl = crate::direction::view_rtl(emu, v)?;
+        let glyphs = crate::textkit::laid_line_glyphs(emu, &laid.text, l, &laid.font, laid.color, bounds[0] + dx, top + l.y + l.ascent, rtl);
+        p.sync_faces(emu, &glyphs);
         p.glyphs(&glyphs, alpha, t, mask);
     }
     Ok(())
@@ -2336,6 +2351,7 @@ fn draw_more_list(emu: &mut Emu, p: &mut Painter, list: &crate::tabbar::MoreList
         }
         let baseline = mid + 17.0 * 0.35;
         let (glyphs, _) = crate::textkit::line_glyphs(emu, &row.title, 17.0, 0.0, label, 52.0, baseline);
+        p.sync_faces(emu, &glyphs);
         p.glyphs(&glyphs, alpha, t, mask);
         // The chevron: tertiary, 369.3 pt from the left on a 390-pt screen.
         let cx = right - 4.7 - if list.glass { 0.0 } else { 16.0 };
@@ -2347,6 +2363,7 @@ fn draw_more_list(emu: &mut Emu, p: &mut Painter, list: &crate::tabbar::MoreList
         if let Some(badge) = &row.badge {
             let (_, bw) = crate::textkit::line_glyphs(emu, badge, 17.0, 0.0, secondary, 0.0, 0.0);
             let (glyphs, _) = crate::textkit::line_glyphs(emu, badge, 17.0, 0.0, secondary, cx as f64 - 14.0 - bw, baseline);
+            p.sync_faces(emu, &glyphs);
             p.glyphs(&glyphs, alpha, t, mask);
         }
     }
@@ -2404,6 +2421,7 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
             let [x, y, _, th] = b.title_frame;
             // (The baseline: four fifths of the way down the title's line.)
             let (glyphs, _) = crate::textkit::line_glyphs(emu, &b.title, b.title_size, b.title_weight, b.title_color, x, y + th * 0.8);
+            p.sync_faces(emu, &glyphs);
             p.glyphs(&glyphs, alpha, t, mask);
         }
         if let Some(badge) = &b.badge {
@@ -2411,6 +2429,7 @@ fn draw_tab_bar(emu: &mut Emu, p: &mut Painter, look: &crate::tabbar::Look, w: f
             let (_, tw) = crate::textkit::line_glyphs(emu, &badge.text, badge.size, badge.weight, [1.0; 4], 0.0, 0.0);
             let [bx, by, bw, bh] = badge.frame;
             let (glyphs, _) = crate::textkit::line_glyphs(emu, &badge.text, badge.size, badge.weight, [1.0, 1.0, 1.0, 1.0], bx + (bw - tw) / 2.0, by + bh / 2.0 + badge.size * 0.35);
+            p.sync_faces(emu, &glyphs);
             p.glyphs(&glyphs, alpha, t, mask);
         }
     }
@@ -2427,6 +2446,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, crate::appearance::label(emu), 0.0, baseline);
         let x = (w as f64 - width) / 2.0 + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.sync_faces(emu, &placed);
         p.glyphs(&placed, alpha, t, mask);
         return;
     }
@@ -2446,11 +2466,13 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         let (glyphs, _) = crate::textkit::line_glyphs(emu, &look.title, LARGE_TITLE_SIZE, LARGE_TITLE_WEIGHT, crate::appearance::label(emu), 0.0, large_baseline);
         let x = look.leading + LARGE_TITLE_X + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.sync_faces(emu, &placed);
         p.glyphs(&placed, alpha, t, mask);
     } else {
         let (glyphs, width) = crate::textkit::line_glyphs(emu, &look.title, TITLE_SIZE, TITLE_WEIGHT, crate::appearance::label(emu), 0.0, baseline);
         let x = (w as f64 - width) / 2.0 + title_dx as f64;
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + x, ..g }).collect();
+        p.sync_faces(emu, &placed);
         p.glyphs(&placed, alpha, t, mask);
     }
     let Some(back) = &look.back else { return };
@@ -2478,6 +2500,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         chevron(p, 8.0 + 6.0, row / 2.0, 10.5, 10.0, TINT, 3.0);
         if let Some(label) = &back.label {
             let (glyphs, _) = crate::textkit::line_glyphs(emu, label, TITLE_SIZE, 0.0, TINT, BACK_LABEL_X, baseline);
+            p.sync_faces(emu, &glyphs);
             p.glyphs(&glyphs, alpha, t, mask);
         }
     }
@@ -2636,6 +2659,7 @@ fn draw_status_bar(emu: &mut Emu, p: &mut Painter, scale: f32) -> Result<()> {
     let text = |emu: &mut Emu, p: &mut Painter, s: &str, cx: f64, baseline: f64, height: f64| {
         let (glyphs, width) = crate::textkit::line_glyphs(emu, s, height / cap, STATUS_WEIGHT, fg.map(|v| v as f64), 0.0, baseline);
         let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + cx - width / 2.0, ..g }).collect();
+        p.sync_faces(emu, &placed);
         p.glyphs(&placed, 1.0, &t, None);
     };
     let (cx, baseline, digits) = layout.time;
@@ -2653,7 +2677,10 @@ fn draw_status_bar(emu: &mut Emu, p: &mut Painter, scale: f32) -> Result<()> {
             width += w;
         }
         let lift = digits * 1.67 / 11.0;
-        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| Glyph { x: g.x + cx - width / 2.0, y: if g.ch == ':' { g.y - lift } else { g.y }, ..g }).collect();
+        // (The plain colon, lifted: not Inter's contextual time colon, which
+        // shaping picks between digits.)
+        let placed: Vec<Glyph> = glyphs.into_iter().map(|g| if g.ch == ':' { Glyph { x: g.x + cx - width / 2.0, y: g.y - lift, gid: None, ..g } } else { Glyph { x: g.x + cx - width / 2.0, ..g } }).collect();
+        p.sync_faces(emu, &placed);
         p.glyphs(&placed, 1.0, &t, None);
     }
 

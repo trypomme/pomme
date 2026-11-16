@@ -42,6 +42,12 @@ fn noto_for(apple: &str) -> Option<&'static str> {
         Some("Noto Sans SC")
     } else if apple.ends_with(" TC") {
         Some("Noto Sans TC")
+    } else if apple.contains("SF Arabic") {
+        Some("Noto Sans Arabic")
+    } else if apple.contains("SF Hebrew") {
+        Some("Noto Sans Hebrew")
+    } else if apple.contains("Thonburi") {
+        Some("Noto Sans Thai")
     } else {
         None
     }
@@ -78,7 +84,7 @@ fn differences(variant: &str, languages: &[&str], region: &str) -> Option<Vec<St
     let mut wrong = Vec::new();
 
     // The font for each sample: the Noto font for iOS's.
-    for sample in ["hiragana", "katakana", "kanji", "hangul", "fullwidthComma", "ideographicStop"] {
+    for sample in ["hiragana", "katakana", "kanji", "hangul", "fullwidthComma", "ideographicStop", "arabic", "hebrew", "thai"] {
         let name = format!("font.{sample}");
         let Some(want) = ios.get(&name).and_then(|f| noto_for(f)) else { continue };
         let got = ours.get(&name).map_or("", String::as_str);

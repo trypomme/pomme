@@ -37,10 +37,11 @@ mod textkit;
 mod nsvalue;
 mod json;
 mod calendar;
-mod cjk;
+mod fallback;
 mod localizable;
 pub mod direction;
 mod stackview;
+mod shaping;
 mod ctframe;
 mod scanner;
 mod sysctl;
@@ -361,7 +362,7 @@ pub struct Emu {
     pub(crate) pointer_arrays: pointer_array::State,
     pub locales: locale::State,
     /// Fallback fonts for Chinese, Japanese and Korean.
-    pub(crate) cjk: cjk::State,
+    pub(crate) fallback: fallback::State,
     pub(crate) localizable: localizable::State,
     pub(crate) direction: direction::State,
     pub(crate) stacks: stackview::State,
@@ -505,7 +506,7 @@ impl Emu {
             metal: Default::default(),
             pointer_arrays: Default::default(),
             locales: Default::default(),
-            cjk: Default::default(),
+            fallback: Default::default(),
             localizable: Default::default(),
             direction: Default::default(),
             stacks: Default::default(),

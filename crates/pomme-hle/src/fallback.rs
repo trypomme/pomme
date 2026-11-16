@@ -1,5 +1,9 @@
-//! Fonts for Chinese, Japanese and Korean text, which the system font (Inter)
-//! doesn't have.
+//! Fonts for the scripts the system font (Inter) doesn't have: Arabic,
+//! Hebrew and Thai, and Chinese, Japanese and Korean.
+//!
+//! Arabic, Hebrew and Thai each have one font, Noto Sans Arabic, Hebrew and
+//! Thai, for iOS's SF Arabic, SF Hebrew and Thonburi (fixtures/intltext,
+//! `font.*`); text in them is shaped (shaping.rs).
 //!
 //! iOS falls back from the system font through a cascade list, and the
 //! phone's first language decides which CJK font comes first
@@ -27,6 +31,9 @@ enum Kind {
     SimplifiedChinese,
     TraditionalChinese,
     Korean,
+    Arabic,
+    Hebrew,
+    Thai,
 }
 
 impl Kind {
@@ -36,6 +43,9 @@ impl Kind {
             Kind::SimplifiedChinese => "NotoSansSC.ttf",
             Kind::TraditionalChinese => "NotoSansTC.ttf",
             Kind::Korean => "NotoSansKR.ttf",
+            Kind::Arabic => "NotoSansArabic.ttf",
+            Kind::Hebrew => "NotoSansHebrew.ttf",
+            Kind::Thai => "NotoSansThai.ttf",
         }
     }
 
@@ -45,8 +55,21 @@ impl Kind {
             Kind::SimplifiedChinese => "Noto Sans SC",
             Kind::TraditionalChinese => "Noto Sans TC",
             Kind::Korean => "Noto Sans KR",
+            Kind::Arabic => "Noto Sans Arabic",
+            Kind::Hebrew => "Noto Sans Hebrew",
+            Kind::Thai => "Noto Sans Thai",
         }
     }
+}
+
+/// The font for a character of one of the scripts with a font of its own.
+fn script_kind(ch: char) -> Option<Kind> {
+    Some(match ch {
+        '\u{0600}'..='\u{06ff}' | '\u{0750}'..='\u{077f}' | '\u{0870}'..='\u{08ff}' | '\u{fb50}'..='\u{fdff}' | '\u{fe70}'..='\u{feff}' => Kind::Arabic,
+        '\u{0590}'..='\u{05ff}' | '\u{fb1d}'..='\u{fb4f}' => Kind::Hebrew,
+        '\u{0e00}'..='\u{0e7f}' => Kind::Thai,
+        _ => return None,
+    })
 }
 
 /// The cascade's CJK fonts in iOS's order for the phone's first language
@@ -90,24 +113,24 @@ fn is_bold(weight: f64) -> bool {
 
 /// The face for a kind of font at a weight, registered on first use.
 fn face(emu: &mut Emu, kind: Kind, bold: bool) -> Option<usize> {
-    if let Some(f) = emu.cjk.faces.get(&(kind, bold)) {
+    if let Some(f) = emu.fallback.faces.get(&(kind, bold)) {
         return *f;
     }
     let f = crate::textkit::system_font(emu, kind.file()).map(|bytes| {
         let wght = if bold { 700.0 } else { 400.0 };
         coretext::register_fallback_face(emu, kind.family(), bytes, vec![(*b"wght", wght)])
     });
-    emu.cjk.faces.insert((kind, bold), f);
+    emu.fallback.faces.insert((kind, bold), f);
     f
 }
 
 /// Whether the system font (Inter) has a glyph for `ch`.
-fn system_has(emu: &mut Emu, ch: char) -> bool {
-    if let Some(&has) = emu.cjk.in_system.get(&ch) {
+pub(crate) fn system_has(emu: &mut Emu, ch: char) -> bool {
+    if let Some(&has) = emu.fallback.in_system.get(&ch) {
         return has;
     }
     let has = crate::textkit::font_bytes(emu).is_some_and(|b| ttf_parser::Face::parse(&b, 0).ok().and_then(|f| f.glyph_index(ch)).is_some());
-    emu.cjk.in_system.insert(ch, has);
+    emu.fallback.in_system.insert(ch, has);
     has
 }
 
@@ -115,13 +138,13 @@ fn system_has(emu: &mut Emu, ch: char) -> bool {
 /// or one no CJK font has.
 pub(crate) fn fallback(emu: &mut Emu, ch: char, weight: f64) -> Result<Option<Fallback>> {
     let bold = is_bold(weight);
-    if let Some(f) = emu.cjk.found.get(&(ch, bold)) {
+    if let Some(f) = emu.fallback.found.get(&(ch, bold)) {
         return Ok(*f);
     }
     let mut found = None;
     if !ch.is_ascii() && !system_has(emu, ch) {
         let first = crate::locale::first_preferred_language(emu)?;
-        for kind in order(&first) {
+        for kind in script_kind(ch).into_iter().chain(order(&first)) {
             let Some(face) = face(emu, kind, bold) else { continue };
             if let Some(advance) = face_advance(emu, face, ch) {
                 found = Some(Fallback { face, advance });
@@ -129,7 +152,7 @@ pub(crate) fn fallback(emu: &mut Emu, ch: char, weight: f64) -> Result<Option<Fa
             }
         }
     }
-    emu.cjk.found.insert((ch, bold), found);
+    emu.fallback.found.insert((ch, bold), found);
     Ok(found)
 }
 
@@ -145,7 +168,9 @@ fn face_advance(emu: &mut Emu, face: usize, ch: char) -> Option<f64> {
 /// (at regular weight; those with a font file).
 pub(crate) fn cascade(emu: &mut Emu) -> Result<Vec<usize>> {
     let first = crate::locale::first_preferred_language(emu)?;
-    Ok(order(&first).into_iter().filter_map(|k| face(emu, k, false)).collect())
+    // (iOS's order: SF Arabic, the CJK fonts, Thonburi, SF Hebrew.)
+    let kinds = std::iter::once(Kind::Arabic).chain(order(&first)).chain([Kind::Thai, Kind::Hebrew]);
+    Ok(kinds.filter_map(|k| face(emu, k, false)).collect())
 }
 
 /// Draw each glyph the system font (or the glyph's own app font) lacks from its fallback face.
@@ -172,5 +197,9 @@ mod tests {
         assert_eq!(order("zh-Hans-CN")[0], Kind::SimplifiedChinese);
         assert_eq!(order("zh-Hant-TW")[0], Kind::TraditionalChinese);
         assert_eq!(order("ko")[0], Kind::Korean);
+        assert_eq!(script_kind('م'), Some(Kind::Arabic));
+        assert_eq!(script_kind('ש'), Some(Kind::Hebrew));
+        assert_eq!(script_kind('ก'), Some(Kind::Thai));
+        assert_eq!(script_kind('a'), None);
     }
 }

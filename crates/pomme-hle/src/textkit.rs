@@ -92,48 +92,67 @@ fn emoji_advance(emu: &mut Emu, ch: char) -> Option<f64> {
     Some(face.glyph_hor_advance(g)? as f64 / face.units_per_em() as f64)
 }
 
+/// Glyphs for shaped glyphs placed from `x` on `baseline` (whitespace left out).
+fn placed(shaped: Vec<(crate::shaping::Shaped, f64)>, font_of: &dyn Fn(usize) -> TextFont, color: [f64; 4], x: f64, baseline: f64) -> Vec<crate::render::Glyph> {
+    shaped
+        .into_iter()
+        .filter(|(g, _)| !g.ch.is_whitespace())
+        .map(|(g, pen)| {
+            let f = font_of(g.unit);
+            crate::render::Glyph { ch: g.ch, gid: g.gid, x: x + pen + g.offset[0], y: baseline + g.offset[1], size: f.size, weight: f.weight, face: g.face, color, skew: f.skew(), shadow: None }
+        })
+        .collect()
+}
+
 /// One line of text as glyphs from `x` along `baseline`, and its width.
 pub(crate) fn line_glyphs(emu: &mut Emu, text: &str, size: f64, weight: f64, color: [f64; 4], x: f64, baseline: f64) -> (Vec<crate::render::Glyph>, f64) {
-    let mut pen = x;
-    let mut out = Vec::new();
-    for ch in text.chars() {
-        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size, weight, face: 0, color, skew: 0.0, shadow: None });
-        pen += advance(emu, ch, size, weight);
-    }
-    let _ = crate::cjk::assign(emu, &mut out);
-    (out, pen - x)
+    line_glyphs_in(emu, text, &TextFont::system(size, weight), color, x, baseline)
 }
 
 /// One line of text in `font`, as glyphs from `x` along `baseline`, and its width.
 pub(crate) fn line_glyphs_in(emu: &mut Emu, text: &str, font: &TextFont, color: [f64; 4], x: f64, baseline: f64) -> (Vec<crate::render::Glyph>, f64) {
-    let mut pen = x;
-    let mut out = Vec::new();
-    for ch in text.chars() {
-        out.push(crate::render::Glyph { ch, x: pen, y: baseline, size: font.size, weight: font.weight, face: font.face, color, skew: font.skew(), shadow: None });
-        pen += advance_in(emu, ch, font);
-    }
-    let _ = crate::cjk::assign(emu, &mut out);
-    (out, pen - x)
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let rtl = crate::direction::app_rtl(emu).unwrap_or(false);
+    let f = *font;
+    let shaped = crate::shaping::line_visual(emu, &units, 0..units.len(), &|_| f, rtl, &|_| 0.0);
+    let width = shaped.last().map_or(0.0, |(g, pen)| pen + g.advance);
+    (placed(shaped, &|_| f, color, x, baseline), width)
 }
 
-/// One laid-out line of `text` (all in `font`) as glyphs, each where the
-/// layout put it, the line's origin at `x` on `baseline`.
-pub(crate) fn laid_line_glyphs(emu: &mut Emu, text: &[u16], line: &Line, font: &TextFont, color: [f64; 4], x: f64, baseline: f64) -> Vec<crate::render::Glyph> {
-    let mut out = Vec::new();
-    let mut k = line.start;
-    while k < (line.start + line.len).min(text.len()) {
-        let (ch, units) = match char::decode_utf16([text[k], text.get(k + 1).copied().unwrap_or(0)]).next() {
-            Some(Ok(c)) => (c, c.len_utf16()),
-            _ => ('\u{fffd}', 1),
-        };
-        if !ch.is_whitespace() {
-            let gx = x + line.xs.get(k - line.start).copied().unwrap_or(0.0);
-            out.push(crate::render::Glyph { ch, x: gx, y: baseline, size: font.size, weight: font.weight, face: font.face, color, skew: font.skew(), shadow: None });
-        }
-        k += units;
+/// One laid-out line of `text` (all in `font`) as glyphs, in the order
+/// they're shown, the line's origin at `x` on `baseline`; `rtl`: the view's
+/// direction (a paragraph with no strong character reads in it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn laid_line_glyphs(emu: &mut Emu, text: &[u16], line: &Line, font: &TextFont, color: [f64; 4], x: f64, baseline: f64, rtl: bool) -> Vec<crate::render::Glyph> {
+    let f = *font;
+    let shaped = crate::shaping::line_visual(emu, text, line_ink(text, line), &|_| f, rtl, &|_| 0.0);
+    placed(shaped, &|_| f, color, x, baseline)
+}
+
+/// A line's units without its trailing whitespace and line break.
+fn line_ink(text: &[u16], line: &Line) -> std::ops::Range<usize> {
+    let mut end = (line.start + line.len).min(text.len());
+    while end > line.start && char::from_u32(text[end - 1] as u32).is_some_and(char::is_whitespace) {
+        end -= 1;
     }
-    let _ = crate::cjk::assign(emu, &mut out);
-    out
+    line.start..end
+}
+
+/// The font of unit `u` in `runs`.
+pub(crate) fn font_in(runs: &[Run], u: usize) -> TextFont {
+    let mut end = 0;
+    for r in runs {
+        end += r.len;
+        if u < end {
+            return r.font;
+        }
+    }
+    runs.last().map_or(TextFont::system(DEFAULT_SIZE, 0.0), |r| r.font)
+}
+
+/// Each unit's shaped advance in `text` set in `runs` (for `layout`).
+pub(crate) fn shaped_advances(emu: &mut Emu, text: &[u16], runs: &[Run]) -> Vec<f64> {
+    crate::shaping::unit_advances(emu, text, &|u| font_in(runs, u))
 }
 
 /// A font as text is set in it: a size, a weight (for the system font's
@@ -213,7 +232,7 @@ pub(crate) fn advance_in(emu: &mut Emu, ch: char, f: &TextFont) -> f64 {
                 None if !axis_weight => advance(emu, ch, size, weight) / size,
                 // Not in the text font: Chinese, Japanese and Korean from their
                 // fonts (at their own widths); emoji and other symbols from the emoji font.
-                None => match crate::cjk::fallback(emu, ch, weight).ok().flatten() {
+                None => match crate::fallback::fallback(emu, ch, weight).ok().flatten() {
                     Some(f) => f.advance,
                     None => emoji_advance(emu, ch).unwrap_or_else(|| {
                     face.glyph_index('\u{fffd}').and_then(|g| face.glyph_hor_advance(g)).map_or(0.55, |a| a as f64 / upem)
@@ -353,10 +372,10 @@ fn break_lines(items: &[Item], total_units: usize, width: f64, height: f64, max_
     lines
 }
 
-/// Lay out UTF-16 text with per-run fonts; `adv(ch, font)` measures a
+/// Lay out UTF-16 text with per-run fonts; `adv(unit, ch, font)` measures a
 /// character. Lines break where Unicode's line breaking algorithm allows,
 /// and characters are set solid at their fonts' widths (for CJK text too).
-pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -> f64, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
+pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(usize, char, &TextFont) -> f64, width: f64, height: f64, max_lines: usize) -> Vec<Line> {
     let mut items = Vec::new();
     let mut unit = 0;
     let mut run_iter = runs.iter();
@@ -379,7 +398,7 @@ pub fn layout(text: &[u16], runs: &[Run], mut adv: impl FnMut(char, &TextFont) -
         let metrics = run.map_or((DEFAULT_SIZE * LINE_HEIGHT, DEFAULT_SIZE * ASCENT), |r| (r.line_height, r.ascent));
         let (kern, para) = run.map_or((0.0, [0.0; 2]), |r| (r.kern, r.para));
         let units = ch.len_utf16();
-        let a = if is_newline(ch) { 0.0 } else { adv(ch, &font) + kern };
+        let a = if is_newline(ch) { 0.0 } else { adv(unit, ch, &font) + kern };
         items.push(Item { unit, units, ch, adv: a, break_before: false, metrics, para });
         unit += units;
     }
@@ -454,7 +473,8 @@ fn bounding_rect_with_size(emu: &mut Emu) -> Result<()> {
     let f = font_info(emu, font)?;
     let runs = [Run::new(emu, text.len(), f)];
     let (width, height, max_lines) = if options & 1 != 0 { (w, h, 0) } else { (f64::INFINITY, f64::INFINITY, 1) };
-    let lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    let shaped = shaped_advances(emu, &text, &runs);
+    let lines = layout(&text, &runs, |u, _, _| shaped[u], width, height, max_lines);
     let used_w = lines.iter().map(|l| l.width).fold(0.0, f64::max);
     let used_h = lines.last().map_or(0.0, |l| l.y + l.height);
     ret_rect(emu, [0.0, 0.0, used_w, used_h]);
@@ -503,12 +523,14 @@ pub(crate) struct Style {
     pub underline: Option<Decoration>,
     pub strike: Option<Decoration>,
     pub shadow: Option<crate::render::TextShadow>,
+    /// Space after each character (NSKern), in points.
+    pub kern: f64,
 }
 
 type Styles = Vec<Style>;
 
 fn plain_style() -> Style {
-    Style { start: 0, end: 0, font: TextFont::system(DEFAULT_SIZE, 0.0), color: [0.0, 0.0, 0.0, 1.0], baseline: 0.0, underline: None, strike: None, shadow: None }
+    Style { start: 0, end: 0, font: TextFont::system(DEFAULT_SIZE, 0.0), color: [0.0, 0.0, 0.0, 1.0], baseline: 0.0, underline: None, strike: None, shadow: None, kern: 0.0 }
 }
 
 fn attributed_runs(emu: &mut Emu, s: u64) -> Result<(Vec<u16>, Vec<Run>, Styles)> {
@@ -534,7 +556,7 @@ fn attributed_runs(emu: &mut Emu, s: u64) -> Result<(Vec<u16>, Vec<Run>, Styles)
             run.para = [line("minimumLineHeight"), line("maximumLineHeight")];
         }
         runs.push(run);
-        let mut style = Style { start: i, end, font: f, color: rgba, ..plain_style() };
+        let mut style = Style { start: i, end, font: f, color: rgba, kern: run.kern, ..plain_style() };
         style.baseline = a.number(emu, "NSBaselineOffsetAttributeName")?.unwrap_or(0.0);
         for (key, color_key, slot) in [("NSUnderlineStyleAttributeName", "NSUnderlineColorAttributeName", 0), ("NSStrikethroughStyleAttributeName", "NSStrikethroughColorAttributeName", 1)] {
             let v = a.number(emu, key)?.unwrap_or(0.0) as u64;
@@ -555,38 +577,40 @@ fn attributed_runs(emu: &mut Emu, s: u64) -> Result<(Vec<u16>, Vec<Run>, Styles)
     Ok((text, runs, styles))
 }
 
-/// The glyphs of laid-out lines, the first line's top-left at (x, y).
-fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, range: (usize, usize)) -> Vec<crate::render::Glyph> {
+/// The glyphs of laid-out lines (those of units in `range`), shaped and in
+/// the order they're shown, the first line's top-left at (x, y).
+fn glyphs_of(emu: &mut Emu, text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, range: (usize, usize)) -> Vec<crate::render::Glyph> {
+    let style_at = |k: usize| styles.iter().find(|s| k >= s.start && k < s.end).copied().unwrap_or_else(plain_style);
+    let rtl = crate::direction::app_rtl(emu).unwrap_or(false);
     let mut glyphs = Vec::new();
     for line in lines {
-        let mut k = line.start.max(range.0);
-        while k < (line.start + line.len).min(range.1) {
-            let (ch, units) = match char::decode_utf16([text[k], text.get(k + 1).copied().unwrap_or(0)]).next() {
-                Some(Ok(c)) => (c, c.len_utf16()),
-                _ => ('\u{fffd}', 1),
-            };
-            if !ch.is_whitespace() {
-                let st = styles.iter().find(|s| k >= s.start && k < s.end).copied().unwrap_or_else(plain_style);
-                let f = st.font;
-                glyphs.push(crate::render::Glyph {
-                    ch,
-                    x: x + line.xs[k - line.start],
-                    y: y + line.y + line.ascent - st.baseline,
-                    size: f.size,
-                    weight: f.weight,
-                    face: f.face,
-                    color: st.color,
-                    skew: f.skew(),
-                    shadow: st.shadow,
-                });
+        // (The line's first position carries its alignment.)
+        let x0 = x + line.xs.first().copied().unwrap_or(0.0);
+        let shaped = crate::shaping::line_visual(emu, text, line_ink(text, line), &|u| style_at(u).font, rtl, &|u| style_at(u).kern);
+        for (g, pen) in shaped {
+            if g.ch.is_whitespace() || g.unit < range.0 || g.unit >= range.1 {
+                continue;
             }
-            k += units;
+            let st = style_at(g.unit);
+            let f = st.font;
+            glyphs.push(crate::render::Glyph {
+                ch: g.ch,
+                gid: g.gid,
+                x: x0 + pen + g.offset[0],
+                y: y + line.y + line.ascent - st.baseline + g.offset[1],
+                size: f.size,
+                weight: f.weight,
+                face: g.face,
+                color: st.color,
+                skew: f.skew(),
+                shadow: st.shadow,
+            });
         }
         if let Some(ex) = line.ellipsis {
             let at = (line.start + line.len).saturating_sub(1);
-            let st = styles.iter().find(|s| at >= s.start && at < s.end).copied().unwrap_or_else(plain_style);
+            let st = style_at(at);
             let f = st.font;
-            glyphs.push(crate::render::Glyph { ch: '\u{2026}', x: x + ex, y: y + line.y + line.ascent - st.baseline, size: f.size, weight: f.weight, face: f.face, color: st.color, skew: f.skew(), shadow: st.shadow });
+            glyphs.push(crate::render::Glyph { ch: '\u{2026}', gid: None, x: x + ex, y: y + line.y + line.ascent - st.baseline, size: f.size, weight: f.weight, face: f.face, color: st.color, skew: f.skew(), shadow: st.shadow });
         }
     }
     glyphs
@@ -596,7 +620,8 @@ fn glyphs_of(text: &[u16], styles: &Styles, lines: &[Line], x: f64, y: f64, rang
 /// newlines), as NSString drawing and CoreText set it.
 pub(crate) fn attributed_lines(emu: &mut Emu, s: u64, width: f64, height: f64, max_lines: usize) -> Result<(Vec<u16>, Styles, Vec<Line>)> {
     let (text, runs, styles) = attributed_runs(emu, s)?;
-    let mut lines = layout(&text, &runs, |ch, f| advance_in(emu, ch, f), width, height, max_lines);
+    let shaped = shaped_advances(emu, &text, &runs);
+    let mut lines = layout(&text, &runs, |u, _, _| shaped[u], width, height, max_lines);
     align_lines(emu, s, &mut lines, width)?;
     Ok((text, styles, lines))
 }
@@ -604,7 +629,8 @@ pub(crate) fn attributed_lines(emu: &mut Emu, s: u64, width: f64, height: f64, m
 /// Tail truncation: if text goes on past the last line, that line is laid
 /// out again from its start, character by character (not at word breaks),
 /// with as much as fits before an ellipsis ("…") in its last run's font.
-fn truncate_tail(text: &[u16], runs: &[Run], lines: &mut [Line], width: f64, adv: &mut impl FnMut(char, &TextFont) -> f64) {
+/// (`adv` measures a unit, or, at `usize::MAX`, the ellipsis.)
+fn truncate_tail(text: &[u16], runs: &[Run], lines: &mut [Line], width: f64, adv: &mut impl FnMut(usize, char, &TextFont) -> f64) {
     let Some(last) = lines.last_mut() else { return };
     let end = last.start + last.len;
     let rest_is_newline = text.get(end - 1).is_some_and(|&u| char::from_u32(u as u32).is_some_and(is_newline));
@@ -625,7 +651,7 @@ fn truncate_tail(text: &[u16], runs: &[Run], lines: &mut [Line], width: f64, adv
         runs.last().copied()
     };
     let font_end = run_at(end.saturating_sub(1)).map_or(TextFont::system(DEFAULT_SIZE, 0.0), |r| r.font);
-    let ell = adv('\u{2026}', &font_end);
+    let ell = adv(usize::MAX, '\u{2026}', &font_end);
     let mut xs = vec![0.0];
     let mut x = 0.0;
     let mut k = last.start;
@@ -635,7 +661,7 @@ fn truncate_tail(text: &[u16], runs: &[Run], lines: &mut [Line], width: f64, adv
             break;
         }
         let r = run_at(k);
-        let a = adv(ch, &r.map_or(font_end, |r| r.font)) + r.map_or(0.0, |r| r.kern);
+        let a = adv(k, ch, &r.map_or(font_end, |r| r.font)) + r.map_or(0.0, |r| r.kern);
         if x + a + ell > width + 1e-9 {
             break;
         }
@@ -719,8 +745,8 @@ fn attributed_bounding_rect(emu: &mut Emu) -> Result<()> {
 
 fn draw_attributed(emu: &mut Emu, s: u64, rect: [f64; 4]) -> Result<()> {
     let (text, styles, lines) = attributed_lines(emu, s, rect[2], rect[3], 0)?;
-    let mut glyphs = glyphs_of(&text, &styles, &lines, rect[0], rect[1], (0, text.len()));
-    crate::cjk::assign(emu, &mut glyphs)?;
+    let mut glyphs = glyphs_of(emu, &text, &styles, &lines, rect[0], rect[1], (0, text.len()));
+    crate::fallback::assign(emu, &mut glyphs)?;
     crate::render::draw_glyphs(emu, glyphs);
     draw_decorations(emu, &text, &styles, &lines, rect[0], rect[1], (0, text.len()))
 }
@@ -760,15 +786,8 @@ fn laid_out(emu: &mut Emu, lm: u64) -> Result<Laid> {
     }
     let (text, runs, styles) = attributed_runs(emu, s)?;
     let width = (w - 2.0 * padding).max(0.0);
-    let mut cache: Vec<(char, TextFont, f64)> = Vec::new();
-    let mut measure = |ch: char, f: &TextFont| {
-        if let Some(&(_, _, a)) = cache.iter().find(|(c, cf, _)| *c == ch && cf == f) {
-            return a;
-        }
-        let a = advance_in(emu, ch, f);
-        cache.push((ch, *f, a));
-        a
-    };
+    let shaped = shaped_advances(emu, &text, &runs);
+    let mut measure = |u: usize, ch: char, f: &TextFont| shaped.get(u).copied().unwrap_or_else(|| advance_in(emu, ch, f));
     let mut lines = layout(&text, &runs, &mut measure, width, h, max_lines);
     // NSLineBreakByTruncatingTail (4): the last line that fits, if text goes on past it, ends in "…".
     if mode == 4 {
@@ -1056,8 +1075,8 @@ fn lm_draw_glyphs(emu: &mut Emu) -> Result<()> {
     let (lm, loc, len) = (emu.arg(0), emu.arg(2) as usize, emu.arg(3) as usize);
     let (ox, oy) = (d(emu, 0), d(emu, 1));
     let l = laid_out(emu, lm)?;
-    let mut glyphs = glyphs_of(&l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len));
-    crate::cjk::assign(emu, &mut glyphs)?;
+    let mut glyphs = glyphs_of(emu, &l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len));
+    crate::fallback::assign(emu, &mut glyphs)?;
     crate::render::draw_glyphs(emu, glyphs);
     draw_decorations(emu, &l.text, &l.styles, &l.lines, ox + l.padding, oy, (loc, loc + len))
 }
@@ -1353,7 +1372,7 @@ mod tests {
     fn lay(s: &str, width: f64) -> Vec<(String, f64)> {
         let units: Vec<u16> = s.encode_utf16().collect();
         let runs = [Run { len: units.len(), font: TextFont::system(10.0, 0.0), line_height: 10.0 * LINE_HEIGHT, ascent: 10.0 * ASCENT, kern: 0.0, para: [0.0; 2] }];
-        layout(&units, &runs, |c, _| if c == ' ' { 5.0 } else { 10.0 }, width, f64::MAX, 0)
+        layout(&units, &runs, |_, c, _| if c == ' ' { 5.0 } else { 10.0 }, width, f64::MAX, 0)
             .iter()
             .map(|l| (String::from_utf16_lossy(&units[l.start..l.start + l.len]), l.width))
             .collect()
@@ -1373,7 +1392,7 @@ mod tests {
     #[test]
     fn line_metrics() {
         let units: Vec<u16> = "hi".encode_utf16().collect();
-        let l = layout(&units, &[Run { len: 2, font: TextFont::system(20.0, 0.0), line_height: 20.0 * LINE_HEIGHT, ascent: 20.0 * ASCENT, kern: 0.0, para: [0.0; 2] }], |_, _| 7.0, 1e9, f64::MAX, 0);
+        let l = layout(&units, &[Run { len: 2, font: TextFont::system(20.0, 0.0), line_height: 20.0 * LINE_HEIGHT, ascent: 20.0 * ASCENT, kern: 0.0, para: [0.0; 2] }], |_, _, _| 7.0, 1e9, f64::MAX, 0);
         assert_eq!(l.len(), 1);
         assert!((l[0].height - 20.0 * LINE_HEIGHT).abs() < 1e-9);
         assert_eq!(l[0].xs, vec![0.0, 7.0, 14.0]);

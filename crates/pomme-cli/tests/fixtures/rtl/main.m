@@ -138,6 +138,18 @@ static UIStackView *stack(NSString *name, UIStackViewDistribution d, UIStackView
     label.frame = CGRectMake(20, 450, 300, 30);
     [root addSubview:label];
     views[@"label"] = label;
+
+    // Text in Arabic and Hebrew, and mixed with English and numbers.
+    NSArray *texts = @[ @"مرحبا بالعالم", @"שלום עולם", @"مرحبا Pomme 123", @"Pomme مرحبا 123" ];
+    NSArray *textNames = @[ @"text.arabic", @"text.hebrew", @"text.mixedArabicFirst", @"text.mixedLatinFirst" ];
+    for (NSUInteger i = 0; i < texts.count; i++) {
+        UILabel *l = [UILabel new];
+        l.text = texts[i];
+        l.backgroundColor = UIColor.systemTealColor;
+        l.frame = CGRectMake(20, 500 + 40 * i, 300, 30);
+        [root addSubview:l];
+        views[textNames[i]] = l;
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated {

@@ -181,6 +181,15 @@ for f in JP SC TC KR; do
   [ -f "$FONTS/NotoSans$f-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoSans$f-OFL.txt" \
     "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans$lower/OFL.txt"
 done
+# Arabic, Hebrew and Thai: Noto Sans Arabic, Hebrew and Thai (SIL OFL), variable in width
+# and weight, in place of SF Arabic, SF Hebrew and Thonburi (small: in every bundle).
+for f in Arabic Hebrew Thai; do
+  lower=$(echo "$f" | tr A-Z a-z)
+  [ -f "$FONTS/NotoSans$f.ttf" ] || curl -fsSL -o "$FONTS/NotoSans$f.ttf" \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans$lower/NotoSans$f%5Bwdth,wght%5D.ttf"
+  [ -f "$FONTS/NotoSans$f-OFL.txt" ] || curl -fsSL -o "$FONTS/NotoSans$f-OFL.txt" \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans$lower/OFL.txt"
+done
 # SF Symbols' stand-in: Material Symbols Rounded (Apache 2.0), a variable font
 # with weight and fill axes, and its codepoints by name.
 MS='https://raw.githubusercontent.com/google/material-design-icons/master'

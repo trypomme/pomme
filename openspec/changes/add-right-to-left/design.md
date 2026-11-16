@@ -69,9 +69,10 @@ and 2 and the text parts, not the UIKit mirroring.
 glyphs with advances and offsets. From then on a glyph is not the same as a
 character. TextKit's glyph APIs keep a map from glyph index to character
 index (as `NSLayoutManager` does), so code that asks for the glyph at a
-character still works. Latin text gains kerning and ligatures; existing
-text pixel tests will need new baselines, which we compare against the
-Simulator.
+character still works. An app's own fonts gain kerning, as CoreText
+kerns them. The fonts that stand in for Apple's (Inter, Noto) are shaped
+without kerning: with it, the recordings matched less well (their kerning
+isn't Apple's), so no baselines changed.
 
 ### 3. Bidi
 

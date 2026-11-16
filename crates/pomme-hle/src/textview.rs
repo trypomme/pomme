@@ -143,7 +143,8 @@ pub fn lay_out(emu: &mut Emu, v: u64) -> Result<Laid> {
     let b = view(emu, v).bounds;
     let width = (b[2] - inset[1] - inset[3] - 2.0 * pad).max(0.0);
     let runs = [Run::new(emu, text.len(), f)];
-    let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), width, f64::INFINITY, 0);
+    let shaped = textkit::shaped_advances(emu, &text, &runs);
+    let lines = textkit::layout(&text, &runs, |u, _, _| shaped[u], width, f64::INFINITY, 0);
     let line_height = runs[0].line_height;
     let ends_in_newline = text.last().is_some_and(|&c| c == '\n' as u16 || c == '\r' as u16);
     let text_height = match lines.last() {

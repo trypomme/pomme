@@ -20,6 +20,10 @@ METRIC stack.equalSpacing 20.00 310.00 300.00 30.00
 METRIC stack.fill 20.00 230.00 300.00 30.00
 METRIC stack.fillEqually 20.00 270.00 300.00 30.00
 METRIC stack.vertical 20.00 350.00 300.00 48.00
+METRIC text.arabic 20.00 500.00 300.00 30.00
+METRIC text.hebrew 20.00 540.00 300.00 30.00
+METRIC text.mixedArabicFirst 20.00 580.00 300.00 30.00
+METRIC text.mixedLatinFirst 20.00 620.00 300.00 30.00
 METRIC trailing 240.00 110.00 60.00 20.00
 METRIC vertical.a 20.00 350.00 80.00 20.00
 METRIC vertical.b 20.00 378.00 140.00 20.00
