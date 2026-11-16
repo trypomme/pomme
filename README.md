@@ -26,11 +26,19 @@ scripts/build-sysroot.sh               # Swift runtime, libc++, CoreFoundation +
 cargo run -- inspect apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- load    apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
 cargo run -- run     apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app --tap 195,438@3 --views --screenshot hello.png
+cargo run -- run    path/to/App.ipa                                   # an .ipa works anywhere a .app does (EAS, ad hoc, development builds)
 scripts/build-web.sh && scripts/serve-web.py   # the same app in the browser: http://127.0.0.1:8787
 scripts/build-web.sh apps/hello-flutter/build/ios/iphoneos/Runner.app   # a Flutter app: open ?app=Runner.pfs
 scripts/web-test.sh hello-flutter --compare     # it, in headless Chromium, against the command line (web/tests/)
 cargo test           # fixture tests build tiny iOS binaries; need Xcode + iOS SDK
 ```
+
+Every command takes an `.ipa` as well as a `.app`: pomme unpacks
+`Payload/<Name>.app` once into a cache folder (`~/Library/Caches/pomme/ipa`,
+`%LOCALAPPDATA%`, `~/.cache`; `POMME_CACHE` moves it), named by a hash of the
+file, and runs it from there. Signed builds run as unsigned ones do: pomme
+doesn't check signatures. Apps from the App Store or TestFlight are encrypted
+and can't run.
 
 `inspect` lists every image in the bundle and the **HLE surface**: the system
 libraries and symbols pomme has to implement for the app to run.

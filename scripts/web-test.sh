@@ -3,7 +3,7 @@
 # and drive the page in headless Chromium (web/tests/run.mjs). See web/tests/README.md.
 #
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
-#   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app;
+#   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app or .ipa;
 #   `all` runs every browser test (the apps must be built)
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
 #   --compare (alone): compare with the same app's frame on the command line
@@ -32,11 +32,12 @@ case "$APP" in
   hello-skia)    PATH_APP="$ROOT/apps/hello-skia/ios/build/Build/Products/Release-iphoneos/helloskia.app" ;;
   hello-flutter) PATH_APP="$ROOT/apps/hello-flutter/build/ios/iphoneos/Runner.app" ;;
   *.app)         PATH_APP="$APP"; APP="$(basename "$APP" .app)" ;;
+  *.ipa)         PATH_APP="$APP"; APP="$(basename "$APP" .ipa)" ;;
   *) echo "unknown app: $APP" >&2; exit 1 ;;
 esac
-[ -d "$PATH_APP" ] || { echo "not built: $PATH_APP" >&2; exit 1; }
+[ -e "$PATH_APP" ] || { echo "not built: $PATH_APP" >&2; exit 1; }
 [ -d "$ROOT/web/tests/node_modules/playwright" ] || { echo "install Playwright first (see web/tests/README.md)" >&2; exit 1; }
-BUNDLE="$(basename "$PATH_APP" .app).pfs"
+BUNDLE="$(basename "$PATH_APP")"; BUNDLE="${BUNDLE%.app}"; BUNDLE="${BUNDLE%.ipa}.pfs"
 
 [ -n "${NO_BUILD:-}" ] || "$ROOT/scripts/build-web.sh" "$PATH_APP"
 

@@ -9,6 +9,8 @@
 //! Not done yet: running initializers, ObjC/Swift runtime registration, TLS.
 
 pub mod vfs;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ipa;
 use pomme_mem::{Memory, PAGE_SIZE, page_align_up};
 use pomme_macho::{Dylib, DylibKind, ExportKind, FileType, Fixup, Image, LibOrdinal};
 use std::collections::{HashMap, VecDeque};

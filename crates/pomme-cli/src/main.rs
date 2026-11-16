@@ -13,14 +13,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Inspect a .app bundle (or bare Mach-O) and report what it needs from iOS.
+    /// Inspect a .app bundle or .ipa (or bare Mach-O) and report what it needs from iOS.
     Inspect {
         path: PathBuf,
         /// List every imported symbol, not just per-library counts.
         #[arg(long)]
         symbols: bool,
     },
-    /// Load a .app and run it: main() on the arm64 interpreter, system libraries in HLE.
+    /// Load a .app (or .ipa) and run it: main() on the arm64 interpreter, system libraries in HLE.
     Run(RunArgs),
     /// How much of iOS the app needs and how much of it pomme provides: every system
     /// symbol it binds (implemented, data, or missing), then a run (taking `run`'s
@@ -32,7 +32,7 @@ enum Cmd {
         #[command(flatten)]
         run: RunArgs,
     },
-    /// Pack a .app and the sysroot files it loads into one bundle, for the browser host.
+    /// Pack a .app (or .ipa) and the sysroot files it loads into one bundle, for the browser host.
     Bundle {
         path: PathBuf,
         /// Where to write the bundle.
@@ -46,7 +46,7 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         fonts: Vec<String>,
     },
-    /// Load and link a .app into guest memory, and report the result.
+    /// Load and link a .app (or .ipa) into guest memory, and report the result.
     Load {
         path: PathBuf,
         /// List every HLE stub that was bound.
@@ -492,12 +492,20 @@ fn parse_paste(s: &str) -> std::result::Result<(Option<String>, f64), String> {
 }
 
 fn main() -> Result<()> {
+    // An .ipa becomes the .app inside it (unpacked once into a cache folder).
+    let app = |path: PathBuf| pomme_loader::ipa::open_app(&path).map_err(anyhow::Error::from);
     match Cli::parse().cmd {
-        Cmd::Inspect { path, symbols } => inspect(&path, symbols),
-        Cmd::Load { path, stubs } => load(&path, stubs),
-        Cmd::Bundle { path, out, sysroot, fonts } => make_bundle(&path, &sysroot, &out, &fonts),
-        Cmd::Run(args) => run_command(args, None),
-        Cmd::Coverage { coverage, run } => run_command(run, Some(coverage)),
+        Cmd::Inspect { path, symbols } => inspect(&app(path)?, symbols),
+        Cmd::Load { path, stubs } => load(&app(path)?, stubs),
+        Cmd::Bundle { path, out, sysroot, fonts } => make_bundle(&app(path)?, &sysroot, &out, &fonts),
+        Cmd::Run(mut args) => {
+            args.path = app(args.path)?;
+            run_command(args, None)
+        }
+        Cmd::Coverage { coverage, mut run } => {
+            run.path = app(run.path)?;
+            run_command(run, Some(coverage))
+        }
     }
 }
 

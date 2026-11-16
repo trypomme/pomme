@@ -9,3 +9,8 @@ plist = "1.10.3"
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }
 pomme-mem = { version = "0.1.0", path = "../pomme-mem" }
 thiserror = "2.0.21"
+
+# Opening `.ipa` files (unpacked to a cache folder on disk: not in the browser).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"

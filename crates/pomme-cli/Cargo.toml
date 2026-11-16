@@ -18,6 +18,7 @@ ureq = "3.5.1"
 pomme-webview = { version = "0.1.0", path = "../pomme-webview" }
 
 [dev-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tiny-skia = "0.12"
 pomme-video = { path = "../pomme-video" }
 mp4 = "0.14.0"
