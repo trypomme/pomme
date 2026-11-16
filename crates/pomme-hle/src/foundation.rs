@@ -41,6 +41,9 @@ pub struct State {
     /// The CoreFoundation image, once loaded.
     cf: Option<usize>,
     syms: HashMap<&'static str, u64>,
+    /// Per thread, where each `runMode:beforeDate:` in progress returns to
+    /// (it tail-calls CFRunLoopRunInMode; see run_loop_run_mode).
+    run_mode_returns: HashMap<usize, Vec<u64>>,
     /// Classes CF objects can have as their isa.
     cf_classes: HashSet<u64>,
     const_string_class: u64,
@@ -82,6 +85,11 @@ pub(crate) fn cf(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64>
 /// Call a CoreFoundation function (for other modules).
 pub fn cf_call(emu: &mut Emu, name: &'static str, args: &[u64]) -> Result<u64> {
     cf(emu, name, args)
+}
+
+/// A CF data symbol's address (for callbacks structs such as `kCFTypeDictionaryKeyCallBacks`).
+pub(crate) fn cf_data_sym(emu: &mut Emu, name: &'static str) -> Result<u64> {
+    cf_sym(emu, name)
 }
 
 pub fn cf_data_pub(emu: &mut Emu, name: &'static str) -> Result<u64> {
@@ -149,7 +157,7 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         ("_CFURLGetTypeID", "NSURL"),
         ("_CFCharacterSetGetTypeID", "__NSCFCharacterSet"),
     ];
-    for &(type_fn, class) in types {
+    for &(type_fn, class) in types.iter().chain(crate::streams::BRIDGED) {
         let id = cf(emu, type_fn, &[])?;
         let cls = host_class(emu, class)?;
         emu.call(bridge_fn, &[id, cls])?;
@@ -163,7 +171,11 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
         let cls = host_class(emu, class)?;
         emu.write_u64(obj, cls)?;
     }
-    // Foundation's NSString constants that are CF's under another name.
+    crate::constants::bind(emu)?;
+    // Foundation's NSString constants that are CF's under another name
+    // (after constants::bind, whose stand-ins by name would replace them:
+    // NSDefaultRunLoopMode is kCFRunLoopDefaultMode, so CF's run loop finds
+    // what was added in either's name).
     for (ns, cfname) in [("_NSDefaultRunLoopMode", "_kCFRunLoopDefaultMode"), ("_NSRunLoopCommonModes", "_kCFRunLoopCommonModes")] {
         let stubs = emu.p.stubs.find(ns);
         if stubs.is_empty() {
@@ -176,7 +188,6 @@ pub(crate) fn bridge(emu: &mut Emu, image: usize) -> Result<()> {
             emu.p.rebind(s, cell).map_err(|e| Stop::Unsupported(e.to_string()))?;
         }
     }
-    crate::constants::bind(emu)?;
     // `@[]` and friends compile to references to Apple's empty-collection
     // singletons: the object itself (`__NSArray0__struct`) or a pointer to it
     // (`__NSArray0__`), depending on the compiler.
@@ -2191,6 +2202,14 @@ fn number_char(emu: &mut Emu) -> Result<()> {
     ret_number(emu, NUMBER_SINT32, emu.arg(2) as i8 as i32 as u32 as u64)
 }
 
+fn number_unsigned_char(emu: &mut Emu) -> Result<()> {
+    ret_number(emu, NUMBER_SINT32, emu.arg(2) as u8 as u64)
+}
+
+fn number_unsigned_short(emu: &mut Emu) -> Result<()> {
+    ret_number(emu, NUMBER_SINT32, emu.arg(2) as u16 as u64)
+}
+
 fn number_double(emu: &mut Emu) -> Result<()> {
     ret_number(emu, NUMBER_FLOAT64, emu.cpu.q[0] as u64)
 }
@@ -3110,30 +3129,53 @@ fn run_loop_get_cf(emu: &mut Emu) -> Result<()> {
 }
 
 /// `-runMode:beforeDate:` → YES if the run loop ran (it had sources).
+/// `-[NSRunLoop runMode:beforeDate:]`: CFRunLoopRunInMode(mode, until the
+/// date, return after a source), YES unless the mode had nothing to run
+/// (kCFRunLoopRunFinished). It's a tail call into CF, not a call: a thread
+/// that then waits in its run loop (SocketRocket's network thread waits
+/// forever) waits in guest code, where pomme can switch threads, rather than
+/// under this host frame, which would hold every other thread's turn,
+/// the main thread's included. CF returns to [`run_mode_result`].
 fn run_loop_run_mode(emu: &mut Emu) -> Result<()> {
     let (mode, date) = (emu.arg(2), emu.arg(3));
     let secs = if date == 0 { 0.0 } else { (date_value(emu, date)? - absolute_now(emu)).max(0.0) };
+    let f = cf_sym(emu, "_CFRunLoopRunInMode")?;
+    let back = emu.host_thunk(run_mode_result)?;
+    let caller = emu.cpu.x[30];
+    emu.fnd.run_mode_returns.entry(emu.th.current).or_default().push(caller);
+    emu.cpu.x[0] = mode;
+    emu.cpu.x[1] = 1;
     emu.cpu.q[0] = secs.to_bits() as u128;
-    let r = cf(emu, "_CFRunLoopRunInMode", &[mode, 1])?;
-    ret_bool(emu, r != 1) // kCFRunLoopRunFinished → NO
+    emu.cpu.x[30] = back;
+    emu.cpu.pc = f;
+    Ok(())
 }
 
+/// Where CFRunLoopRunInMode returns for `runMode:beforeDate:`: its result as
+/// the method's (NO for kCFRunLoopRunFinished), back to the method's caller.
+fn run_mode_result(emu: &mut Emu) -> Result<()> {
+    let r = emu.cpu.x[0] as u32;
+    let caller = emu.fnd.run_mode_returns.get_mut(&emu.th.current).and_then(Vec::pop).ok_or_else(|| Stop::Unsupported("runMode:beforeDate: returned with no caller".into()))?;
+    emu.cpu.x[0] = (r != 1) as u64;
+    emu.cpu.pc = caller;
+    Ok(())
+}
+
+/// `-[NSRunLoop run]`: CFRunLoopRun(), tail-called (see run_loop_run_mode).
 fn run_loop_run(emu: &mut Emu) -> Result<()> {
-    let mode = cf_data(emu, "_kCFRunLoopDefaultMode")?;
-    loop {
-        emu.cpu.q[0] = 1.0e10f64.to_bits() as u128;
-        if cf(emu, "_CFRunLoopRunInMode", &[mode, 0])? == 1 {
-            return Ok(());
-        }
-    }
+    emu.cpu.pc = cf_sym(emu, "_CFRunLoopRun")?;
+    Ok(())
 }
 
+/// `-[NSRunLoop runUntilDate:]`: CFRunLoopRunInMode(default, until the date), tail-called.
 fn run_loop_run_until(emu: &mut Emu) -> Result<()> {
     let date = emu.arg(2);
     let mode = cf_data(emu, "_kCFRunLoopDefaultMode")?;
     let secs = (date_value(emu, date)? - absolute_now(emu)).max(0.0);
+    emu.cpu.x[0] = mode;
+    emu.cpu.x[1] = 0;
     emu.cpu.q[0] = secs.to_bits() as u128;
-    cf(emu, "_CFRunLoopRunInMode", &[mode, 0])?;
+    emu.cpu.pc = cf_sym(emu, "_CFRunLoopRunInMode")?;
     Ok(())
 }
 
@@ -3665,6 +3707,25 @@ fn data_get_bytes(emu: &mut Emu) -> Result<()> {
     let bytes = data_bytes(emu, d)?;
     let n = (n as usize).min(bytes.len());
     emu.p.memory.write(buf, &bytes[..n])?;
+    Ok(())
+}
+
+/// `-getBytes:range:` (NSRange in x3, x4): out of the data's bounds, NSRangeException.
+fn data_get_bytes_range(emu: &mut Emu) -> Result<()> {
+    let (d, buf, loc, len) = (emu.arg(0), emu.arg(2), emu.arg(3) as usize, emu.arg(4) as usize);
+    let bytes = data_bytes(emu, d)?;
+    if loc.checked_add(len).is_none_or(|end| end > bytes.len()) {
+        return Err(Stop::Unsupported(format!("NSRangeException: -[NSData getBytes:range:]: range {{{loc}, {len}}} exceeds data length {}", bytes.len())));
+    }
+    emu.p.memory.write(buf, &bytes[loc..loc + len])?;
+    Ok(())
+}
+
+/// `-getBytes:` (all of them).
+fn data_get_all_bytes(emu: &mut Emu) -> Result<()> {
+    let (d, buf) = (emu.arg(0), emu.arg(2));
+    let bytes = data_bytes(emu, d)?;
+    emu.p.memory.write(buf, &bytes)?;
     Ok(())
 }
 
@@ -4277,6 +4338,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("NSData", false, "bytes", data_bytes_ptr),
     ("NSData", false, "getBytes:length:", data_get_bytes),
+    ("NSData", false, "getBytes:range:", data_get_bytes_range),
+    ("NSData", false, "getBytes:", data_get_all_bytes),
     ("NSData", false, "subdataWithRange:", data_subdata),
     ("NSData", false, "isEqualToData:", data_is_equal),
     ("NSData", false, "isEqual:", data_is_equal),
@@ -5158,6 +5221,17 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSNumber", true, "numberWithUnsignedLongLong:", number_long),
     ("NSNumber", true, "numberWithShort:", number_short),
     ("NSNumber", true, "numberWithChar:", number_char),
+    ("NSNumber", true, "numberWithUnsignedChar:", number_unsigned_char),
+    ("NSNumber", true, "numberWithUnsignedShort:", number_unsigned_short),
+    ("NSNumber", false, "initWithChar:", number_char),
+    ("NSNumber", false, "initWithUnsignedChar:", number_unsigned_char),
+    ("NSNumber", false, "initWithShort:", number_short),
+    ("NSNumber", false, "initWithUnsignedShort:", number_unsigned_short),
+    ("NSNumber", false, "initWithUnsignedInt:", number_unsigned_int),
+    ("NSNumber", false, "initWithLong:", number_long),
+    ("NSNumber", false, "initWithUnsignedLong:", number_long),
+    ("NSNumber", false, "initWithUnsignedInteger:", number_long),
+    ("NSNumber", false, "initWithUnsignedLongLong:", number_long),
     ("NSNumber", true, "numberWithDouble:", number_double),
     ("NSNumber", false, "initWithDouble:", number_double),
     ("NSNumber", true, "numberWithFloat:", number_float),

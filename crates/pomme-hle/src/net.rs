@@ -10,6 +10,12 @@
 //! the session delegate (`didReceiveResponse`, `didReceiveData`,
 //! `didCompleteWithError`) or the task's completion handler. So a run with
 //! the same responses is the same run.
+//!
+//! One exception, as on iOS: a completion handler on a session with no
+//! delegate queue of its own (the shared session, or `delegateQueue:nil`)
+//! runs on a background queue, at once. Code that waits on the main thread
+//! for the answer (a semaphore, as React Native's packager check does) gets
+//! it, instead of waiting for a main run loop that can't turn.
 
 use crate::foundation;
 use crate::objc::{self, host_class, send};
@@ -241,11 +247,19 @@ pub struct State {
     responses: HashMap<u64, UrlResponse>,
     /// session → (delegate, configuration)
     sessions: HashMap<u64, (u64, u64)>,
+    /// Sessions given a delegate queue of their own (`delegateQueue:` not nil).
+    own_queue: std::collections::HashSet<u64>,
     shared: u64,
     tasks: HashMap<u64, Task>,
     next_id: u64,
     /// The block passed as `completionHandler:` to delegate methods that need one.
     allow_block: u64,
+    /// The disposition the delegate last gave that block (didReceiveResponse).
+    disposition: Option<u64>,
+    /// Stream tasks a data task became: stream task → (session, delegate, body data).
+    stream_tasks: HashMap<u64, (u64, u64, u64)>,
+    /// Stream tasks whose streams were asked for (`captureStreams`), not yet handed over.
+    captured: std::collections::HashSet<u64>,
     /// NSURLProtocol properties: (request, key) → value.
     properties: HashMap<(u64, String), u64>,
 }
@@ -456,18 +470,21 @@ fn opt_string(emu: &mut Emu, s: Option<String>) -> Result<()> {
 
 // ---- NSURLSession ----
 
-fn new_session(emu: &mut Emu, config: u64, delegate: u64) -> Result<u64> {
+fn new_session(emu: &mut Emu, config: u64, delegate: u64, queue: u64) -> Result<u64> {
     let s = new_object(emu, "NSURLSession")?;
     if delegate != 0 {
         send(emu, delegate, "retain", &[])?;
     }
     emu.net.sessions.insert(s, (delegate, config));
+    if queue != 0 {
+        emu.net.own_queue.insert(s);
+    }
     Ok(s)
 }
 
 fn shared_session(emu: &mut Emu) -> Result<()> {
     if emu.net.shared == 0 {
-        emu.net.shared = new_session(emu, 0, 0)?;
+        emu.net.shared = new_session(emu, 0, 0, 0)?;
     }
     ret(emu, emu.net.shared)
 }
@@ -568,7 +585,19 @@ fn resume(emu: &mut Emu) -> Result<()> {
         x.result = Some(result);
     }
     send(emu, t, "retain", &[])?;
+    let tk = task(emu, t);
+    if tk.completion != 0 && !emu.net.own_queue.contains(&tk.session) {
+        // A completion handler with no queue of the session's own: a background queue, now.
+        let q = crate::libsystem::global_queue(emu)?;
+        return crate::libsystem::submit_host(emu, q, deliver_from_queue, t);
+    }
     crate::uikit::after_on_main(emu, LATENCY_S, deliver, t)
+}
+
+/// [`deliver`], run as dispatch work (its context is the task).
+fn deliver_from_queue(emu: &mut Emu) -> Result<()> {
+    let t = emu.arg(0);
+    deliver_task(emu, t)
 }
 
 /// A file URL, read as the URL loading system does on iOS: the file's bytes
@@ -642,9 +671,40 @@ fn url_error(emu: &mut Emu, what: &str, url: u64) -> Result<u64> {
 
 fn allow_block(emu: &mut Emu) -> Result<u64> {
     if emu.net.allow_block == 0 {
-        emu.net.allow_block = crate::libsystem::host_block(emu, |_| Ok(()))?;
+        // (Its argument is the disposition: allow, cancel, become a download or a stream.)
+        emu.net.allow_block = crate::libsystem::host_block(emu, |e| {
+            e.net.disposition = Some(e.arg(1));
+            Ok(())
+        })?;
     }
     Ok(emu.net.allow_block)
+}
+
+/// `NSURLSessionResponseBecomeStream`.
+const BECOME_STREAM: u64 = 3;
+
+/// The delegate asked for the response as a stream (React Native does, for
+/// Metro's multipart bundle): the data task becomes a stream task
+/// (`didBecomeStreamTask:`); when the delegate captures its streams, it gets
+/// an input stream over the response's body (`didBecomeInputStream:outputStream:`).
+/// Then the data task completes.
+fn become_stream(emu: &mut Emu, t: u64, s: u64, delegate: u64) -> Result<()> {
+    let tk = task(emu, t);
+    let st = new_object(emu, "NSURLSessionStreamTask")?;
+    emu.net.stream_tasks.insert(st, (s, delegate, tk.data));
+    delegate_call(emu, delegate, "URLSession:dataTask:didBecomeStreamTask:", &[s, t, st])?;
+    if emu.net.captured.remove(&st) {
+        let bytes = if tk.data == 0 { Vec::new() } else { foundation::data_bytes(emu, tk.data)? };
+        let input = crate::streams::input_stream_with_bytes(emu, &bytes)?;
+        let output = foundation::cf(emu, "_CFWriteStreamCreateWithAllocatedBuffers", &[0, 0])?;
+        delegate_call(emu, delegate, "URLSession:streamTask:didBecomeInputStream:outputStream:", &[s, st, input, output])?;
+    }
+    if let Some(x) = emu.net.tasks.get_mut(&t) {
+        x.state = 3;
+    }
+    delegate_call(emu, delegate, "URLSession:task:didCompleteWithError:", &[s, t, 0])?;
+    send(emu, t, "release", &[])
+        .map(|_| ())
 }
 
 fn delegate_call(emu: &mut Emu, delegate: u64, sel: &str, args: &[u64]) -> Result<()> {
@@ -664,6 +724,10 @@ const CALLBACK_GAP_S: f64 = 0.001;
 /// the response, then the data, then completion (or the completion handler, at once).
 fn deliver(emu: &mut Emu) -> Result<()> {
     let t = emu.arg(1);
+    deliver_task(emu, t)
+}
+
+fn deliver_task(emu: &mut Emu, t: u64) -> Result<()> {
     let tk = task(emu, t);
     if tk.state >= 3 {
         return Ok(());
@@ -722,7 +786,11 @@ fn deliver(emu: &mut Emu) -> Result<()> {
         }
         0 => {
             let allow = allow_block(emu)?;
+            emu.net.disposition = None;
             delegate_call(emu, delegate, "URLSession:dataTask:didReceiveResponse:completionHandler:", &[s, t, tk.response, allow])?;
+            if emu.net.disposition == Some(BECOME_STREAM) {
+                return become_stream(emu, t, s, delegate);
+            }
             stage = if tk.received > 0 { 1 } else { 2 };
         }
         1 => {
@@ -873,13 +941,41 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let s = string(e, &format!("status {}", e.arg(2)))?;
         ret(e, s)
     }),
+    // The headers for sending cookies: none, an empty dictionary; else
+    // `Cookie: name=value; name=value`.
+    ("NSHTTPCookie", true, "requestHeaderFieldsWithCookies:", |e| {
+        let list = e.arg(2);
+        let cookies = if list == 0 { Vec::new() } else { foundation::array_values(e, list)? };
+        let mut parts = Vec::new();
+        for c in cookies {
+            let (n, v) = (send(e, c, "name", &[])?, send(e, c, "value", &[])?);
+            let n = if n == 0 { String::new() } else { foundation::nsstring(e, n)? };
+            let v = if v == 0 { String::new() } else { foundation::nsstring(e, v)? };
+            parts.push(format!("{n}={v}"));
+        }
+        let d = if parts.is_empty() {
+            foundation::new_dict_of(e, &[])?
+        } else {
+            let k = string(e, "Cookie")?;
+            let v = string(e, &parts.join("; "))?;
+            foundation::new_dict_of(e, &[(k, v)])?
+        };
+        let d = send(e, d, "autorelease", &[])?;
+        ret(e, d)
+    }),
+    // A data task turned into a stream (see become_stream): its streams, on request.
+    ("NSURLSessionStreamTask", false, "captureStreams", |e| {
+        let st = e.arg(0);
+        e.net.captured.insert(st);
+        Ok(())
+    }),
     (S, true, "sharedSession", shared_session),
     (S, true, "sessionWithConfiguration:", |e| {
-        let s = new_session(e, e.arg(2), 0)?;
+        let s = new_session(e, e.arg(2), 0, 0)?;
         ret(e, s)
     }),
     (S, true, "sessionWithConfiguration:delegate:delegateQueue:", |e| {
-        let s = new_session(e, e.arg(2), e.arg(3))?;
+        let s = new_session(e, e.arg(2), e.arg(3), e.arg(4))?;
         ret(e, s)
     }),
     (S, false, "dataTaskWithRequest:", |e| data_task(e, false)),

@@ -103,6 +103,16 @@ show UIKit's, Foundation's and the other system libraries' frames, but in
 pomme those are pomme's own code, so there are none to show. The frames
 that are there have iOS's shape (index, image, address, symbol + offset).
 
+### Network callbacks
+
+A session's delegate callbacks (`didReceiveResponse`, `didReceiveData`,
+`didCompleteWithError`) arrive on the main run loop, a little later in
+virtual time, rather than on the session's delegate queue. That keeps runs
+repeatable. A completion handler on a session with no delegate queue of
+its own (the shared session, or `delegateQueue:nil`) does run on a
+background queue, as on iOS, so code that waits on the main thread for the
+answer (React Native's check for Metro) gets it.
+
 ### Generic answers
 
 When an app sends a message pomme doesn't know, pomme answers 0 (nil) and

@@ -319,6 +319,53 @@ fn new_dispatch_data(emu: &mut Emu, bytes: &[u8]) -> Result<u64> {
     Ok(d)
 }
 
+/// A dispatch_data object as NSData: on iOS a `dispatch_data_t` is an NSData
+/// to Objective-C (SocketRocket reads WebSocket frames from them this way).
+/// Its bytes are contiguous here, so `bytes` is a pointer to them.
+pub(crate) const DISPATCH_DATA_METHODS: &[(&str, bool, &str, crate::HostFn)] = &[
+    ("OS_dispatch_data", false, "length", |e| {
+        let (_, n) = data_bytes_of(e, e.arg(0));
+        e.ret(n);
+        Ok(())
+    }),
+    ("OS_dispatch_data", false, "bytes", |e| {
+        let (p, _) = data_bytes_of(e, e.arg(0));
+        e.ret(p);
+        Ok(())
+    }),
+    ("OS_dispatch_data", false, "getBytes:length:", |e| {
+        let (d, out, len) = (e.arg(0), e.arg(2), e.arg(3));
+        let bytes = read_data(e, d)?;
+        let n = (len as usize).min(bytes.len());
+        e.p.memory.write(out, &bytes[..n])?;
+        Ok(())
+    }),
+    ("OS_dispatch_data", false, "getBytes:range:", |e| {
+        let (d, out, loc, len) = (e.arg(0), e.arg(2), e.arg(3) as usize, e.arg(4) as usize);
+        let bytes = read_data(e, d)?;
+        let end = (loc + len).min(bytes.len());
+        if loc < end {
+            e.p.memory.write(out, &bytes[loc..end])?;
+        }
+        Ok(())
+    }),
+    ("OS_dispatch_data", false, "subdataWithRange:", |e| {
+        let (d, loc, len) = (e.arg(0), e.arg(2) as usize, e.arg(3) as usize);
+        let bytes = read_data(e, d)?;
+        let end = (loc + len).min(bytes.len());
+        let sub = crate::foundation::new_data(e, if loc < end { &bytes[loc..end] } else { &[] })?;
+        let sub = crate::objc::send(e, sub, "autorelease", &[])?;
+        e.ret(sub);
+        Ok(())
+    }),
+    ("OS_dispatch_data", false, "copy", |e| {
+        let d = e.arg(0);
+        let d = crate::objc::send(e, d, "retain", &[])?;
+        e.ret(d);
+        Ok(())
+    }),
+];
+
 /// A dispatch_data object's bytes.
 pub(crate) fn dispatch_data_bytes(emu: &Emu, d: u64) -> Result<Vec<u8>> {
     read_data(emu, d)
@@ -610,6 +657,29 @@ fn toupper(emu: &mut Emu) -> Result<()> {
 }
 
 /// `__maskrune(c, mask)`: ctype classification against the C locale.
+/// `isspace(c)` and friends: nonzero (the class's bit) if `c` is in the class.
+fn ctype_is(emu: &mut Emu, mask: u64) -> Result<()> {
+    let c = emu.arg(0) as i32;
+    let r = if (0..256).contains(&c) { ctype_bits(c as u32) & mask } else { 0 };
+    emu.ret(r);
+    Ok(())
+}
+
+/// `tolower(c)` / `toupper(c)`: only ASCII letters change; EOF and others pass through.
+fn tolower_c(emu: &mut Emu) -> Result<()> {
+    let c = emu.arg(0) as i32;
+    let r = if (b'A' as i32..=b'Z' as i32).contains(&c) { c + 32 } else { c };
+    emu.ret(r as i64 as u64);
+    Ok(())
+}
+
+fn toupper_c(emu: &mut Emu) -> Result<()> {
+    let c = emu.arg(0) as i32;
+    let r = if (b'a' as i32..=b'z' as i32).contains(&c) { c - 32 } else { c };
+    emu.ret(r as i64 as u64);
+    Ok(())
+}
+
 fn maskrune(emu: &mut Emu) -> Result<()> {
     let (c, mask) = (emu.arg(0) as u32, emu.arg(1));
     emu.ret(ctype_bits(c) & mask);
@@ -631,7 +701,8 @@ pub(crate) fn ctype_bits(c: u32) -> u64 {
     set(ch.is_ascii_graphic(), 0x800, &mut bits); // _CTYPE_G
     set(ch.is_ascii_lowercase(), 0x1000, &mut bits); // _CTYPE_L
     set(ch.is_ascii_punctuation(), 0x2000, &mut bits); // _CTYPE_P
-    set(ch.is_ascii_whitespace(), 0x4000, &mut bits); // _CTYPE_S
+    // (C's space class has vertical tab too; Rust's ASCII whitespace doesn't.)
+    set(ch.is_ascii_whitespace() || ch == '\x0b', 0x4000, &mut bits); // _CTYPE_S
     set(ch.is_ascii_uppercase(), 0x8000, &mut bits); // _CTYPE_U
     set(ch.is_ascii_hexdigit(), 0x10000, &mut bits); // _CTYPE_X
     set(ch == ' ' || ch == '\t', 0x20000, &mut bits); // _CTYPE_B
@@ -1280,6 +1351,12 @@ fn copied_block(emu: &mut Emu, block: u64) -> Result<(u64, u64)> {
 /// threads in order (one at a time when serial; barriers alone); the main
 /// queue (and queues targeting it) is serviced by the main thread. Work for
 /// `group` counts toward it.
+/// Run a host function as work on a dispatch queue (it gets `ctx` as its first argument).
+pub(crate) fn submit_host(emu: &mut Emu, queue: u64, f: crate::HostFn, ctx: u64) -> Result<()> {
+    let f = emu.host_thunk(f)?;
+    submit(emu, queue, f, ctx, None)
+}
+
 fn submit(emu: &mut Emu, queue: u64, f: u64, ctx: u64, group: Option<u64>) -> Result<()> {
     submit_work(emu, queue, Work { f, ctx, group, barrier: false, turn: 0 })
 }
@@ -2027,6 +2104,26 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("___tolower", tolower),
     ("___toupper", toupper),
     ("___maskrune", maskrune),
+    // <ctype.h> as functions (code built without the inline macros calls these), C locale.
+    ("_isalnum", |e| ctype_is(e, 0x100 | 0x400)),
+    ("_isalpha", |e| ctype_is(e, 0x100)),
+    ("_isblank", |e| ctype_is(e, 0x20000)),
+    ("_iscntrl", |e| ctype_is(e, 0x200)),
+    ("_isdigit", |e| ctype_is(e, 0x400)),
+    ("_isgraph", |e| ctype_is(e, 0x800)),
+    ("_islower", |e| ctype_is(e, 0x1000)),
+    ("_isprint", |e| ctype_is(e, 0x40000)),
+    ("_ispunct", |e| ctype_is(e, 0x2000)),
+    ("_isspace", |e| ctype_is(e, 0x4000)),
+    ("_isupper", |e| ctype_is(e, 0x8000)),
+    ("_isxdigit", |e| ctype_is(e, 0x10000)),
+    ("_isascii", |e| {
+        let c = e.arg(0) as u32;
+        e.ret((c < 128) as u64);
+        Ok(())
+    }),
+    ("_tolower", tolower_c),
+    ("_toupper", toupper_c),
     ("_sin", m_sin),
     ("_cos", m_cos),
     ("_tan", m_tan),

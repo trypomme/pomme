@@ -1,0 +1,23 @@
+# The urlcomponents fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE build.percentEncodedQuery platform=ios&a%20b=c%26d%3De&plus=1+2&slash=x/y?z:w@v&novalue&empty=&accent=%C3%A9%23%25
+VALUE build.query platform=ios&a b=c&d=e&plus=1+2&slash=x/y?z:w@v&novalue&empty=&accent=é#%
+VALUE build.url http://localhost:8081/index.bundle?platform=ios&a%20b=c%26d%3De&plus=1+2&slash=x/y?z:w@v&novalue&empty=&accent=%C3%A9%23%25
+VALUE invalid (nil)
+VALUE item.equal 1
+VALUE items.read x:1,y:,z:(nil)
+VALUE noQuery.items (nil)
+VALUE parse.fragment frag
+VALUE parse.host example.com
+VALUE parse.item1 y=two words
+VALUE parse.items 2
+VALUE parse.password pw
+VALUE parse.path /a/b c
+VALUE parse.percentEncodedPath /a/b%20c
+VALUE parse.percentEncodedQuery x=1&y=two%20words
+VALUE parse.port 8081
+VALUE parse.query x=1&y=two words
+VALUE parse.scheme http
+VALUE parse.string http://user:pw@example.com:8081/a/b%20c?x=1&y=two%20words#frag
+VALUE parse.user user
+VALUE set.percentEncodedQuery k=v%20w&x=y+z
+VALUE set.string https://example.com/p%20q?k=v%20w&x=y+z

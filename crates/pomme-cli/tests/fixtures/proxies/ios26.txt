@@ -1,0 +1,25 @@
+# The proxies fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE kCFNetworkProxiesHTTPEnable HTTPEnable
+VALUE kCFNetworkProxiesHTTPPort HTTPPort
+VALUE kCFNetworkProxiesHTTPProxy HTTPProxy
+VALUE kCFNetworkProxiesProxyAutoConfigEnable ProxyAutoConfigEnable
+VALUE kCFNetworkProxiesProxyAutoConfigURLString ProxyAutoConfigURLString
+VALUE kCFProxyAutoConfigurationJavaScriptKey kCFProxyAutoConfigurationJavaScriptKey
+VALUE kCFProxyAutoConfigurationURLKey kCFProxyAutoConfigurationURLKey
+VALUE kCFProxyHostNameKey kCFProxyHostNameKey
+VALUE kCFProxyPasswordKey kCFProxyPasswordKey
+VALUE kCFProxyPortNumberKey kCFProxyPortNumberKey
+VALUE kCFProxyTypeAutoConfigurationJavaScript kCFProxyTypeAutoConfigurationJavaScript
+VALUE kCFProxyTypeAutoConfigurationURL kCFProxyTypeAutoConfigurationURL
+VALUE kCFProxyTypeFTP kCFProxyTypeFTP
+VALUE kCFProxyTypeHTTP kCFProxyTypeHTTP
+VALUE kCFProxyTypeHTTPS kCFProxyTypeHTTPS
+VALUE kCFProxyTypeKey kCFProxyTypeKey
+VALUE kCFProxyTypeNone kCFProxyTypeNone
+VALUE kCFProxyTypeSOCKS kCFProxyTypeSOCKS
+VALUE kCFProxyUsernameKey kCFProxyUsernameKey
+VALUE proxies.count 1
+VALUE proxies.first.keys 1
+VALUE proxies.first.type kCFProxyTypeNone
+VALUE settings.HTTPEnable (nil)
+VALUE settings.exists 1

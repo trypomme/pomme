@@ -79,6 +79,8 @@ struct Pair {
 #[derive(Clone, Default)]
 pub(crate) struct State {
     pairs: HashMap<u64, Pair>,
+    /// CFHTTPMessages, by the CF object that stands for each.
+    messages: HashMap<u64, HttpMessage>,
     read_callbacks: u64,
     write_callbacks: u64,
     pump_code: u64,
@@ -605,7 +607,295 @@ fn set_property(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `CFNetworkCopySystemProxySettings()`: the phone has no proxy. As measured
+/// (tests/fixtures/proxies), the dictionary is there but says nothing (no
+/// `HTTPEnable`).
+fn copy_system_proxy_settings(emu: &mut Emu) -> Result<()> {
+    let d = crate::foundation::new_dict_of(emu, &[])?;
+    emu.ret(d);
+    Ok(())
+}
+
+/// `CFNetworkCopyProxiesForURL(url, settings)`: one entry, no proxy
+/// (`kCFProxyTypeKey` = `kCFProxyTypeNone`), as measured.
+fn copy_proxies_for_url(emu: &mut Emu) -> Result<()> {
+    let k = crate::foundation::new_nsstring(emu, "kCFProxyTypeKey")?;
+    let v = crate::foundation::new_nsstring(emu, "kCFProxyTypeNone")?;
+    let entry = crate::foundation::new_dict_of(emu, &[(k, v)])?;
+    let list = crate::foundation::array_from(emu, &[entry])?;
+    let list = crate::objc::send(emu, list, "retain", &[])?;
+    emu.ret(list);
+    Ok(())
+}
+
+// ---- CFHTTPMessage ----
+//
+// An HTTP message, built (a request: method, URL, headers, body) or parsed
+// from bytes as they arrive (a response). As measured on the iOS 26
+// Simulator (tests/fixtures/httpmessage): header names compare without
+// regard to case and keep their first spelling; a request's line is the
+// URL's path (`/` if none) and query; a response's header is complete at the
+// blank line, and the bytes after it are the body. (iOS writes headers in a
+// hashed order; pomme writes them in the order they were set.) The CF object
+// standing for a message is a CFMutableDictionary, so CFRetain and CFRelease
+// work on it.
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct HttpMessage {
+    request: bool,
+    method: String,
+    url: String,
+    version: String,
+    status: u64,
+    status_line: String,
+    headers: Vec<(String, String)>,
+    /// Bytes appended and not yet parsed (until the header is complete).
+    raw: Vec<u8>,
+    header_complete: bool,
+    body: Vec<u8>,
+}
+
+impl HttpMessage {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    fn set_header(&mut self, name: &str, value: Option<String>) {
+        let at = self.headers.iter().position(|(k, _)| k.eq_ignore_ascii_case(name));
+        match (at, value) {
+            (Some(i), Some(v)) => self.headers[i].1 = v,
+            (Some(i), None) => {
+                self.headers.remove(i);
+            }
+            (None, Some(v)) => self.headers.push((name.to_string(), v)),
+            (None, None) => {}
+        }
+    }
+
+    /// A request's target: the URL's path (`/` if none) and query.
+    fn target(&self) -> String {
+        let after_scheme = self.url.split_once("://").map_or(self.url.as_str(), |(_, r)| r);
+        let path_and_query = after_scheme.find('/').map_or("", |i| &after_scheme[i..]);
+        let path_and_query = path_and_query.split('#').next().unwrap_or("");
+        if path_and_query.is_empty() || path_and_query.starts_with('?') { format!("/{path_and_query}") } else { path_and_query.to_string() }
+    }
+
+    fn serialized(&self) -> Vec<u8> {
+        let mut s = if self.request { format!("{} {} {}\r\n", self.method, self.target(), self.version) } else { format!("{}\r\n", self.status_line) };
+        for (k, v) in &self.headers {
+            s.push_str(&format!("{k}: {v}\r\n"));
+        }
+        s.push_str("\r\n");
+        let mut out = s.into_bytes();
+        out.extend_from_slice(&self.body);
+        out
+    }
+
+    /// Take in bytes; false if the header doesn't parse.
+    fn append(&mut self, bytes: &[u8]) -> bool {
+        if self.header_complete {
+            self.body.extend_from_slice(bytes);
+            return true;
+        }
+        self.raw.extend_from_slice(bytes);
+        let Some(end) = self.raw.windows(4).position(|w| w == b"\r\n\r\n") else { return true };
+        let head = String::from_utf8_lossy(&self.raw[..end]).into_owned();
+        self.body = self.raw[end + 4..].to_vec();
+        self.raw.clear();
+        self.header_complete = true;
+        let mut lines = head.split("\r\n");
+        let first = lines.next().unwrap_or("");
+        if self.request {
+            let mut parts = first.splitn(3, ' ');
+            self.method = parts.next().unwrap_or("").to_string();
+            self.url = parts.next().unwrap_or("").to_string();
+            self.version = parts.next().unwrap_or("").to_string();
+        } else {
+            self.status_line = first.to_string();
+            let mut parts = first.splitn(3, ' ');
+            self.version = parts.next().unwrap_or("").to_string();
+            match parts.next().and_then(|c| c.parse().ok()) {
+                Some(code) => self.status = code,
+                None => return false,
+            }
+        }
+        for line in lines {
+            if let Some((k, v)) = line.split_once(':') {
+                self.set_header(k.trim(), Some(v.trim().to_string()));
+            }
+        }
+        true
+    }
+}
+
+fn http_message(emu: &Emu, m: u64) -> HttpMessage {
+    emu.cfnetwork.messages.get(&m).cloned().unwrap_or_default()
+}
+
+/// A new message: a CF object to stand for it.
+fn new_http_message(emu: &mut Emu, msg: HttpMessage) -> Result<u64> {
+    let kcb = crate::foundation::cf_data_sym(emu, "_kCFTypeDictionaryKeyCallBacks")?;
+    let vcb = crate::foundation::cf_data_sym(emu, "_kCFTypeDictionaryValueCallBacks")?;
+    let m = crate::foundation::cf_call(emu, "_CFDictionaryCreateMutable", &[0, 0, kcb, vcb])?;
+    emu.cfnetwork.messages.insert(m, msg);
+    Ok(m)
+}
+
+fn cf_string_arg(emu: &mut Emu, v: u64) -> Result<String> {
+    if v == 0 { Ok(String::new()) } else { crate::foundation::nsstring(emu, v) }
+}
+
+fn url_string(emu: &mut Emu, url: u64) -> Result<String> {
+    if url == 0 {
+        return Ok(String::new());
+    }
+    let s = crate::objc::send(emu, url, "absoluteString", &[])?;
+    cf_string_arg(emu, s)
+}
+
+/// `CFHTTPMessageCreateRequest(alloc, method, url, version)`
+fn http_create_request(emu: &mut Emu) -> Result<()> {
+    let (method, url, version) = (emu.arg(1), emu.arg(2), emu.arg(3));
+    let msg = HttpMessage { request: true, method: cf_string_arg(emu, method)?, url: url_string(emu, url)?, version: cf_string_arg(emu, version)?, header_complete: true, ..Default::default() };
+    let m = new_http_message(emu, msg)?;
+    emu.ret(m);
+    Ok(())
+}
+
+/// `CFHTTPMessageCreateResponse(alloc, status, description, version)`
+fn http_create_response(emu: &mut Emu) -> Result<()> {
+    let (status, desc, version) = (emu.arg(1), emu.arg(2), emu.arg(3));
+    let version = cf_string_arg(emu, version)?;
+    let desc = cf_string_arg(emu, desc)?;
+    let msg = HttpMessage { request: false, status, status_line: format!("{version} {status} {desc}"), version, header_complete: true, ..Default::default() };
+    let m = new_http_message(emu, msg)?;
+    emu.ret(m);
+    Ok(())
+}
+
+/// `CFHTTPMessageCreateEmpty(alloc, isRequest)`: to be filled by AppendBytes.
+fn http_create_empty(emu: &mut Emu) -> Result<()> {
+    let request = emu.arg(1) & 0xff != 0;
+    let m = new_http_message(emu, HttpMessage { request, ..Default::default() })?;
+    emu.ret(m);
+    Ok(())
+}
+
+fn http_set_header(emu: &mut Emu) -> Result<()> {
+    let (m, k, v) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let k = cf_string_arg(emu, k)?;
+    let v = if v == 0 { None } else { Some(cf_string_arg(emu, v)?) };
+    if let Some(msg) = emu.cfnetwork.messages.get_mut(&m) {
+        msg.set_header(&k, v);
+    }
+    Ok(())
+}
+
+fn http_copy_header(emu: &mut Emu) -> Result<()> {
+    let (m, k) = (emu.arg(0), emu.arg(1));
+    let k = cf_string_arg(emu, k)?;
+    let v = http_message(emu, m).header(&k).map(str::to_string);
+    let r = match v {
+        Some(v) => crate::foundation::new_nsstring(emu, &v)?,
+        None => 0,
+    };
+    emu.ret(r);
+    Ok(())
+}
+
+fn http_copy_all_headers(emu: &mut Emu) -> Result<()> {
+    let m = emu.arg(0);
+    let mut pairs = Vec::new();
+    for (k, v) in http_message(emu, m).headers {
+        pairs.push((crate::foundation::new_nsstring(emu, &k)?, crate::foundation::new_nsstring(emu, &v)?));
+    }
+    let d = crate::foundation::new_dict_of(emu, &pairs)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn http_copy_serialized(emu: &mut Emu) -> Result<()> {
+    let m = emu.arg(0);
+    let bytes = http_message(emu, m).serialized();
+    let d = crate::foundation::new_data(emu, &bytes)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn http_append_bytes(emu: &mut Emu) -> Result<()> {
+    let (m, p, n) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let bytes = emu.p.memory.read(p, n as usize)?.to_vec();
+    let ok = emu.cfnetwork.messages.get_mut(&m).is_some_and(|msg| msg.append(&bytes));
+    emu.ret(ok as u64);
+    Ok(())
+}
+
+fn http_copy_body(emu: &mut Emu) -> Result<()> {
+    let m = emu.arg(0);
+    let body = http_message(emu, m).body;
+    let d = crate::foundation::new_data(emu, &body)?;
+    emu.ret(d);
+    Ok(())
+}
+
+fn http_set_body(emu: &mut Emu) -> Result<()> {
+    let (m, d) = (emu.arg(0), emu.arg(1));
+    let body = if d == 0 { Vec::new() } else { crate::foundation::data_bytes(emu, d)? };
+    if let Some(msg) = emu.cfnetwork.messages.get_mut(&m) {
+        msg.body = body;
+    }
+    Ok(())
+}
+
+fn http_string_field(emu: &mut Emu, f: fn(&HttpMessage) -> String) -> Result<()> {
+    let m = emu.arg(0);
+    let v = f(&http_message(emu, m));
+    let r = crate::foundation::new_nsstring(emu, &v)?;
+    emu.ret(r);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_CFHTTPMessageCreateRequest", http_create_request),
+    ("_CFHTTPMessageCreateResponse", http_create_response),
+    ("_CFHTTPMessageCreateEmpty", http_create_empty),
+    ("_CFHTTPMessageSetHeaderFieldValue", http_set_header),
+    ("_CFHTTPMessageCopyHeaderFieldValue", http_copy_header),
+    ("_CFHTTPMessageCopyAllHeaderFields", http_copy_all_headers),
+    ("_CFHTTPMessageCopySerializedMessage", http_copy_serialized),
+    ("_CFHTTPMessageAppendBytes", http_append_bytes),
+    ("_CFHTTPMessageCopyBody", http_copy_body),
+    ("_CFHTTPMessageSetBody", http_set_body),
+    ("_CFHTTPMessageIsHeaderComplete", |e| {
+        let v = http_message(e, e.arg(0)).header_complete as u64;
+        e.ret(v);
+        Ok(())
+    }),
+    ("_CFHTTPMessageIsRequest", |e| {
+        let v = http_message(e, e.arg(0)).request as u64;
+        e.ret(v);
+        Ok(())
+    }),
+    ("_CFHTTPMessageGetResponseStatusCode", |e| {
+        let v = http_message(e, e.arg(0)).status;
+        e.ret(v);
+        Ok(())
+    }),
+    ("_CFHTTPMessageCopyResponseStatusLine", |e| http_string_field(e, |m| m.status_line.clone())),
+    ("_CFHTTPMessageCopyRequestMethod", |e| http_string_field(e, |m| m.method.clone())),
+    ("_CFHTTPMessageCopyVersion", |e| http_string_field(e, |m| m.version.clone())),
+    ("_CFHTTPMessageCopyRequestURL", |e| {
+        let m = e.arg(0);
+        let url = http_message(e, m).url;
+        let s = crate::foundation::new_nsstring(e, &url)?;
+        let cls = crate::objc::host_class(e, "NSURL")?;
+        let u = crate::objc::send(e, cls, "URLWithString:", &[s])?;
+        let u = crate::objc::send(e, u, "retain", &[])?;
+        e.ret(u);
+        Ok(())
+    }),
+    ("_CFNetworkCopySystemProxySettings", copy_system_proxy_settings),
+    ("_CFNetworkCopyProxiesForURL", copy_proxies_for_url),
     ("__CFSocketStreamCreatePair", create_pair),
     ("__CFErrorCreateWithStreamError", error_from_stream_error),
     ("__CFStreamErrorFromCFError", stream_error_from_error),

@@ -20,15 +20,15 @@ mode), the app installed and launched with `xcrun simctl`.
 - Editing `components/Home.tsx` ("Hello from pomme 🍎" → "Hello again from
   pomme 🍏") changes the text on screen within a few seconds, with no new
   bundle request and no restart. The LogBox toast is gone afterwards.
-- Not measured: whether the tap count survives a refresh. The Simulator
-  can't be tapped from a script here (no `simctl` tap). React's documented
-  behaviour is that a function component's state is kept.
+- The app's state survives: tapped twice (with AXe, `axe tap --id
+  tap-button`), the button still says "Tapped 2 times" after the refresh.
 
 ## Reload (`ios26-reload.png`)
 
 - A reload is Metro's `reload` broadcast on its `/message` WebSocket
   (`{"version":2,"method":"reload"}`), as pressing `r` in Metro's terminal
   sends. The app requests the bundle again (a second `GET` of the same URL)
-  and starts its JavaScript over: the screen shows the file as it is now.
+  and starts its JavaScript over: the screen shows the file as it is now,
+  and the state is gone ("Tapped 2 times" becomes "Tapped 0 times").
 - `POST /reload` answers 200 on Expo's dev server but does **not** reload
   the app.

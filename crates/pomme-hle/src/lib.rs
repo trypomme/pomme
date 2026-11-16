@@ -74,6 +74,8 @@ mod kvo;
 pub mod system;
 mod coretext;
 mod pointer_array;
+mod urlcomponents;
+mod streams;
 pub mod storyboard;
 pub mod locale;
 mod measurement;
@@ -366,6 +368,8 @@ pub struct Emu {
     pub system: system::System,
     pub metal: metal::State,
     pub(crate) pointer_arrays: pointer_array::State,
+    pub(crate) url_components: urlcomponents::State,
+    pub(crate) streams: streams::State,
     pub locales: locale::State,
     /// Fallback fonts for Chinese, Japanese and Korean.
     pub(crate) fallback: fallback::State,
@@ -515,6 +519,8 @@ impl Emu {
             system: Default::default(),
             metal: Default::default(),
             pointer_arrays: Default::default(),
+            url_components: Default::default(),
+            streams: Default::default(),
             locales: Default::default(),
             fallback: Default::default(),
             localizable: Default::default(),

@@ -875,7 +875,9 @@ impl pomme_hle::net::Net for LiveNet {
         let mut response = self.agent.run(request).map_err(|e| e.to_string())?;
         let status = response.status().as_u16();
         let headers = response.headers().iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
-        let body = response.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        // No 10 MB cap (ureq's default): iOS has none, and a development
+        // bundle from Metro is bigger than that.
+        let body = response.body_mut().with_config().limit(1 << 30).read_to_vec().map_err(|e| e.to_string())?;
         Ok(pomme_hle::net::Response { status, headers, body })
     }
 

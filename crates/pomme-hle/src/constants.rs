@@ -43,6 +43,28 @@ const STRING_PREFIXES: &[&str] = &[
 
 /// String constants whose values aren't their names: (name, value).
 const STRINGS: &[(&str, &str)] = &[
+    // CFNetwork's proxy keys (tests/fixtures/proxies, iOS 26 Simulator).
+    ("kCFHTTPVersion1_0", "HTTP/1.0"),
+    ("kCFHTTPVersion1_1", "HTTP/1.1"),
+    ("kCFProxyTypeKey", "kCFProxyTypeKey"),
+    ("kCFProxyTypeNone", "kCFProxyTypeNone"),
+    ("kCFProxyTypeHTTP", "kCFProxyTypeHTTP"),
+    ("kCFProxyHostNameKey", "kCFProxyHostNameKey"),
+    ("kCFProxyPortNumberKey", "kCFProxyPortNumberKey"),
+    ("kCFNetworkProxiesHTTPEnable", "HTTPEnable"),
+    ("kCFNetworkProxiesHTTPPort", "HTTPPort"),
+    ("kCFNetworkProxiesHTTPProxy", "HTTPProxy"),
+    ("kCFNetworkProxiesProxyAutoConfigEnable", "ProxyAutoConfigEnable"),
+    ("kCFNetworkProxiesProxyAutoConfigURLString", "ProxyAutoConfigURLString"),
+    ("kCFProxyTypeHTTPS", "kCFProxyTypeHTTPS"),
+    ("kCFProxyTypeSOCKS", "kCFProxyTypeSOCKS"),
+    ("kCFProxyTypeFTP", "kCFProxyTypeFTP"),
+    ("kCFProxyTypeAutoConfigurationURL", "kCFProxyTypeAutoConfigurationURL"),
+    ("kCFProxyTypeAutoConfigurationJavaScript", "kCFProxyTypeAutoConfigurationJavaScript"),
+    ("kCFProxyAutoConfigurationURLKey", "kCFProxyAutoConfigurationURLKey"),
+    ("kCFProxyAutoConfigurationJavaScriptKey", "kCFProxyAutoConfigurationJavaScriptKey"),
+    ("kCFProxyUsernameKey", "kCFProxyUsernameKey"),
+    ("kCFProxyPasswordKey", "kCFProxyPasswordKey"),
     // Key-value observing's change dictionary keys (kvo.rs uses these).
     ("NSKeyValueChangeKindKey", "kind"),
     ("NSKeyValueChangeNewKey", "new"),

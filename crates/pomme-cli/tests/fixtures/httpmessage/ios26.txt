@@ -1,0 +1,18 @@
+# The httpmessage fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE append1 1
+VALUE append2 1
+VALUE body EXTRA
+VALUE complete1 0
+VALUE complete2 1
+VALUE header.accept s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+VALUE header.missing (nil)
+VALUE header.upgrade websocket
+VALUE headers.count 3
+VALUE request GET /message?device=x&app=y HTTP/1.1\r\nHost: localhost:8081\r\nSec-WebSocket-Version: 13\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nConnection: Upgrade, keep-alive\r\n\r\n
+VALUE request.bare GET / HTTP/1.1\r\n\r\n
+VALUE request.isRequest 1
+VALUE request.method GET
+VALUE request.url http://localhost:8081/message?device=x&app=y
+VALUE response.isRequest 0
+VALUE status 101
+VALUE statusLine HTTP/1.1 101 Switching Protocols
