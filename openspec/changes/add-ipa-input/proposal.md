@@ -59,7 +59,6 @@ Out of scope:
 
 - `crates/pomme-cli/src/main.rs`: resolve an `.ipa` argument to a `.app`
   path before any command runs.
-- New module for unpacking (in `crates/pomme-loader`, so the device server
-  can reuse it to install apps).
+- New module for unpacking, in `crates/pomme-loader`.
 - New dependency: the `zip` crate (pure Rust, deflate only).
 - README: "Try it" shows an `.ipa`.

@@ -11,8 +11,8 @@ the CLI also read the `.app` with `std::fs` directly (`bundle_images`,
 
 So pomme unpacks the `.ipa` into a folder on disk and passes that folder's
 `.app` path to the existing code. Nothing after that step changes. This is
-the smallest change, and every later feature (device server installs,
-`pomme bundle`) gets `.ipa` support for free.
+the smallest change, and everything that takes an app (`pomme bundle`
+included) gets `.ipa` support for free.
 
 ## Where the cache lives
 
@@ -42,8 +42,7 @@ whole; nothing is written.
 - `crates/pomme-loader/src/ipa.rs`: `fn open_app(path: &Path) -> Result<PathBuf>`.
   Given a `.app`, it returns the path unchanged. Given an `.ipa` (by
   extension, or a zip's `PK` signature), it returns the cached `.app`.
-  It lives in the loader so `pomme-server` (see `add-device-server`) can
-  install apps with it.
+  It lives in the loader, next to the code that reads the app.
 - `crates/pomme-cli/src/main.rs`: call `open_app` on the path argument at
   the top of each command.
 - `crates/pomme-loader/Cargo.toml`: `zip` with only the `deflate` feature,
