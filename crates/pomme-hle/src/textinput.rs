@@ -465,6 +465,7 @@ pub fn key(emu: &mut Emu, ch: char) -> Result<()> {
         return Ok(());
     }
     match ch {
+        KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT => arrow(emu, f, ch)?,
         // Return starts a new line in a text view.
         '\n' if k == Kind::View => {
             let sel = field(emu, f).sel;
@@ -598,7 +599,7 @@ pub(crate) fn field_line(emu: &mut Emu, f: u64, text: &str, font: &crate::textki
 
 /// `caretRectForPosition:` (offset `k`): in the text rect, 2 pt wide, as tall
 /// as iOS's caret for the font (22 pt at 17), centred.
-fn caret_rect(emu: &mut Emu, f: u64, k: usize) -> Result<[f64; 4]> {
+pub(crate) fn caret_rect(emu: &mut Emu, f: u64, k: usize) -> Result<[f64; 4]> {
     let b = crate::uiview::view(emu, f).bounds;
     let r = border_text_rect(emu, f, b)?;
     let text = tf_text(emu, f);
@@ -653,14 +654,113 @@ fn tf_position_offset(emu: &mut Emu) -> Result<()> {
     ret(emu, r)
 }
 
-/// `positionFromPosition:inDirection:offset:`: right/down (0, 3) forward, left/up back.
+// The arrow keys (as a hardware keyboard sends them: AppKit's function-key characters).
+pub const KEY_UP: char = '\u{F700}';
+pub const KEY_DOWN: char = '\u{F701}';
+pub const KEY_LEFT: char = '\u{F702}';
+pub const KEY_RIGHT: char = '\u{F703}';
+
+/// Where the caret goes from offset `k` moving `off` steps in `dir`
+/// (UITextStorageDirection 0 forward, 1 backward; UITextLayoutDirection 2
+/// right, 3 left, 4 up, 5 down). Recorded (fixtures/rtlfield, `VALUE
+/// fieldN.leftK`): left and right step a character at a time through the
+/// text, forward the way the text runs (its first strong letter's
+/// direction, not the app's), even across a run in the other direction; in
+/// a field, up goes to the start and down to the end. (A text view's up and
+/// down move a line, at the same offset into it.)
+fn step(emu: &mut Emu, f: u64, k: usize, dir: u64, off: usize) -> Result<usize> {
+    let units = text_units(emu, f);
+    let n = units.len();
+    let view = kind(emu, f) == Some(Kind::View);
+    let forward = match dir {
+        0 => true,
+        1 => false,
+        2 | 3 => {
+            let rtl = crate::shaping::paragraph_rtl(&units, 0..n, crate::direction::view_rtl(emu, f)?);
+            (dir == 2) != rtl
+        }
+        4 | 5 if !view => return Ok(if dir == 4 { 0 } else { n }),
+        _ => return line_step(emu, f, k, dir == 5, off),
+    };
+    let mut o = k.min(n);
+    for _ in 0..off {
+        // (A surrogate pair is one character.)
+        let pair = |i: usize| i + 1 < n && (0xD800..0xDC00).contains(&units[i]) && (0xDC00..0xE000).contains(&units[i + 1]);
+        o = if forward {
+            if o >= n { n } else if pair(o) { o + 2 } else { o + 1 }
+        } else if o == 0 {
+            0
+        } else if o >= 2 && pair(o - 2) {
+            o - 2
+        } else {
+            o - 1
+        };
+    }
+    Ok(o)
+}
+
+/// A text view's caret a line up or down, as far into it as it was.
+fn line_step(emu: &mut Emu, v: u64, k: usize, down: bool, off: usize) -> Result<usize> {
+    let laid = crate::textview::lay_out(emu, v)?;
+    let lines: Vec<(usize, usize)> = laid.lines.iter().map(|l| (l.start, l.len)).collect();
+    if lines.is_empty() {
+        return Ok(k);
+    }
+    let mut i = lines.iter().position(|&(s, l)| k < s + l).unwrap_or(lines.len() - 1);
+    let col = k.saturating_sub(lines[i].0);
+    for _ in 0..off {
+        if down {
+            if i + 1 >= lines.len() {
+                return Ok(laid.text.len());
+            }
+            i += 1;
+        } else {
+            if i == 0 {
+                return Ok(0);
+            }
+            i -= 1;
+        }
+    }
+    let (s, l) = lines[i];
+    // (Not past the line's own end: before its newline.)
+    let end = if s + l > s && laid.text.get(s + l - 1).is_some_and(|&c| c == '\n' as u16) { s + l - 1 } else { s + l };
+    Ok((s + col).min(end))
+}
+
+/// `positionFromPosition:inDirection:offset:`.
 fn tf_position_direction(emu: &mut Emu) -> Result<()> {
-    let (f, p, dir, off) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4) as i64);
-    let n = field(emu, f).text.len() as i64;
-    let step = if matches!(dir, 0 | 3) { off } else { -off };
-    let o = (offset_of(emu, p) as i64 + step).clamp(0, n);
-    let r = position(emu, o as usize)?;
+    let (f, p, dir, off) = (emu.arg(0), emu.arg(2), emu.arg(3), emu.arg(4) as usize);
+    if p == 0 {
+        return ret(emu, 0);
+    }
+    let k = offset_of(emu, p);
+    let o = step(emu, f, k, dir, off)?;
+    let r = position(emu, o)?;
     ret(emu, r)
+}
+
+/// An arrow key: the caret moves a step (a selection collapses to the end
+/// it moves toward); the delegate hears of it.
+fn arrow(emu: &mut Emu, f: u64, ch: char) -> Result<()> {
+    let dir = match ch {
+        KEY_RIGHT => 2,
+        KEY_LEFT => 3,
+        KEY_UP => 4,
+        _ => 5,
+    };
+    let (a, b) = field(emu, f).sel;
+    let o = if a != b && matches!(dir, 2 | 3) {
+        // Toward the end the step would move to.
+        if step(emu, f, a, dir, 1)? > a { b } else { a }
+    } else {
+        step(emu, f, if a != b && dir == 5 { b } else { a }, dir, 1)?
+    };
+    set_selection(emu, f, o, o);
+    let delegate = send(emu, f, "delegate", &[])?;
+    let sel = if kind(emu, f) == Some(Kind::View) { "textViewDidChangeSelection:" } else { "textFieldDidChangeSelection:" };
+    tell(emu, delegate, sel, &[f])?;
+    crate::host::frame_changed(emu);
+    Ok(())
 }
 
 const TF: &str = "UITextField";

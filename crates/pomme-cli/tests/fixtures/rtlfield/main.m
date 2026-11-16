@@ -1,7 +1,8 @@
 // Text fields with mixed Arabic and English, for tests/rtl.rs: where each
 // field draws its text (its alignment) and where the caret goes at each
-// position (`caretRectForPosition:`, in the field), in an app with an
-// Arabic localization (VARIANT=ar, en with scripts/swiftui/metrics-simulator.sh).
+// position (`caretRectForPosition:`, in the field) and where it moves a step
+// left, right, up or down from each (`VALUE fieldN.leftK`), in an app with an
+// Arabic localization (`focus`: the third field edited; VARIANT=ar, en with scripts/swiftui/metrics-simulator.sh).
 #import <UIKit/UIKit.h>
 
 @interface Root : UIViewController
@@ -17,8 +18,14 @@
         f.text = texts[i];
         f.borderStyle = UITextBorderStyleRoundedRect;
         f.tag = i + 1;
+        [f addTarget:self action:@selector(changed:) forControlEvents:UIControlEventEditingChanged];
         [self.view addSubview:f];
     }
+}
+// (When typed into: the text, as tests/rtl.rs types with the arrow keys.)
+- (void)changed:(UITextField *)f {
+    printf("TYPED field%ld %s\n", (long)f.tag, f.text.UTF8String);
+    fflush(stdout);
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -31,9 +38,24 @@
             UITextPosition *p = [f positionFromPosition:f.beginningOfDocument offset:k];
             CGRect r = [f caretRectForPosition:p];
             printf("METRIC field%ld.caret%ld %.2f %.2f %.2f %.2f\n", (long)tag, (long)k, r.origin.x, r.origin.y, r.size.width, r.size.height);
+            // Where the caret goes from here moving one step left, right,
+            // up and down on screen (as the arrow keys move it).
+            const char *names[] = {"right", "left", "up", "down"};
+            for (NSInteger d = 0; d < 4; d++) {
+                UITextPosition *q = [f positionFromPosition:p inDirection:(UITextLayoutDirection)(UITextLayoutDirectionRight + d) offset:1];
+                printf("VALUE field%ld.%s%ld %ld\n", (long)tag, names[d], (long)k, q ? (long)[f offsetFromPosition:f.beginningOfDocument toPosition:q] : -1L);
+            }
         }
     }
     fflush(stdout);
+    // The `focus` case: "Hello" edited, its caret after "He" (for the caret's look).
+    const char *v = getenv("PROBE_VARIANT");
+    if (v && !strcmp(v, "focus")) {
+        UITextField *f = [self.view viewWithTag:3];
+        [f becomeFirstResponder];
+        UITextPosition *p = [f positionFromPosition:f.beginningOfDocument offset:2];
+        f.selectedTextRange = [f textRangeFromPosition:p toPosition:p];
+    }
 }
 @end
 

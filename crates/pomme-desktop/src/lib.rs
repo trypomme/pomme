@@ -762,6 +762,10 @@ impl ApplicationHandler<ToWindow> for App {
                     _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),
                     Key::Named(NamedKey::Backspace) => self.send(Event::Key('\u{8}')),
+                    Key::Named(NamedKey::ArrowLeft) => self.send(Event::Key(pomme_hle::textinput::KEY_LEFT)),
+                    Key::Named(NamedKey::ArrowRight) => self.send(Event::Key(pomme_hle::textinput::KEY_RIGHT)),
+                    Key::Named(NamedKey::ArrowUp) => self.send(Event::Key(pomme_hle::textinput::KEY_UP)),
+                    Key::Named(NamedKey::ArrowDown) => self.send(Event::Key(pomme_hle::textinput::KEY_DOWN)),
                     _ => {
                         if let Some(text) = &event.text {
                             for ch in text.chars().filter(|c| !c.is_control()) {

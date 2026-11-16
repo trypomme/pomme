@@ -2282,6 +2282,21 @@ fn draw_text_field(emu: &mut Emu, p: &mut Painter, v: u64, bounds: [f64; 4], alp
         .collect();
     p.sync_faces(emu, &glyphs);
     p.glyphs(&glyphs, alpha, t, mask);
+    // The caret while it's being edited with nothing selected: 2 pt wide,
+    // rounded, in the tint; with the default tint iOS 26's own blue
+    // (fixtures/rtlfield/ios26-focus.png). It doesn't blink here.
+    let (a, b) = crate::textinput::selection(emu, v);
+    if crate::textinput::is_editing(emu, v) && emu.input.first_responder == v && a == b {
+        let c = crate::textinput::caret_rect(emu, v, a)?;
+        let tint = crate::uiview::tint_color(emu, v)?;
+        let mut color = rgba(emu, tint);
+        let default = [0.0, 136.0 / 255.0, 1.0, 1.0];
+        if color.iter().zip(default).all(|(x, y)| (x - y).abs() < 0.01) {
+            color = [66.0 / 255.0, 107.0 / 255.0, 242.0 / 255.0, 1.0];
+        }
+        let els = transform_els(&rounded_rect(c[2] as f32, c[3] as f32, 1.0), &[1.0, 0.0, 0.0, 1.0, (r[0] + c[0]) as f32, (r[1] + c[1]) as f32]);
+        p.fill(&els, color, alpha, false, t, mask);
+    }
     Ok(())
 }
 

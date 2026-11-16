@@ -418,3 +418,67 @@ fn text_fields_in_an_arabic_app() {
 fn text_fields_in_an_english_app() {
     fields_match("en", "en-US");
 }
+
+/// Where the caret moves a step left, right, up or down from each position
+/// (`positionFromPosition:inDirection:offset:`, as the arrow keys move it):
+/// as the Simulator answers (`VALUE fieldN.leftK` lines).
+fn steps_match(variant: &str, language: &str) {
+    let Some(mut emu) = common::boot("rtlfield") else { return };
+    emu.locales.settings.languages = vec![language.into()];
+    common::views(&mut emu, 2.0);
+    let recording = std::fs::read_to_string(format!("{}/tests/fixtures/rtlfield/ios26-{variant}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let steps = |text: &str| -> std::collections::BTreeSet<String> {
+        text.lines().filter(|l| l.starts_with("VALUE field") && ["left", "right", "up", "down"].iter().any(|d| l.contains(&format!(".{d}")))).map(|l| l.trim().to_string()).collect()
+    };
+    let (ours, ios) = (steps(&emu.console), steps(&recording));
+    assert!(ios.len() > 100, "{} recorded steps", ios.len());
+    let wrong: Vec<_> = ios.symmetric_difference(&ours).collect();
+    assert!(wrong.is_empty(), "{variant}: {wrong:?}");
+}
+
+#[test]
+fn caret_steps_in_an_arabic_app() {
+    steps_match("ar", "ar");
+}
+
+#[test]
+fn caret_steps_in_an_english_app() {
+    steps_match("en", "en-US");
+}
+
+/// The arrow keys move the caret: in "Hello" two to the left of the end; in
+/// "مرحبا Pomme" (right to left) left goes forward through the text, so from
+/// the start, two steps in.
+#[test]
+fn arrow_keys_move_the_caret() {
+    use pomme_hle::textinput::{KeyInput, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP};
+    for (y, keys, want) in [(260.0, format!("{KEY_LEFT}{KEY_LEFT}X"), "field3 HelXlo"), (140.0, format!("{KEY_UP}{KEY_LEFT}{KEY_LEFT}{KEY_RIGHT}{KEY_LEFT}X"), "field1 مرXحبا Pomme"), (200.0, format!("{KEY_UP}{KEY_DOWN}X"), "field2 Pomme مرحباX")] {
+        let Some(mut emu) = common::boot("rtlfield") else { return };
+        emu.locales.settings.languages = vec!["ar".into()];
+        pomme_hle::touch::swipe(&mut emu.touch.script, 1_500_000_000, (170.0, y), (170.0, y), 50_000_000);
+        emu.input.script.push(KeyInput { at_ns: 2_500_000_000, text: keys.clone() });
+        common::views(&mut emu, 4.0);
+        assert!(emu.console.contains(&format!("TYPED {want}\n")), "{want}: {}", emu.console);
+    }
+}
+
+/// The caret drawn where iOS draws it (fixtures/rtlfield/ios26-focus.png:
+/// after "He" in the third field, x 47.33–49.33, y 249–271, in iOS 26's
+/// caret blue; across loosely, as Inter's "He" isn't SF Pro's).
+#[test]
+fn the_caret_is_drawn() {
+    let Some(mut emu) = common::boot("rtlfield") else { return };
+    pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", "focus");
+    let frames: Frames = Default::default();
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
+    emu.live.scale = 1.0;
+    common::views(&mut emu, 2.0);
+    let f = frames.lock().unwrap().last().cloned().unwrap();
+    let caret = |c: [u8; 3]| (c[0] as i32 - 66).abs() < 24 && (c[1] as i32 - 107).abs() < 24 && (c[2] as i32 - 242).abs() < 24;
+    let ink: Vec<(u32, u32)> = (200..300).flat_map(|y| (0..390).map(move |x| (x, y))).filter(|&(x, y)| caret(px(&f, x, y))).collect();
+    assert!(!ink.is_empty(), "no caret");
+    let (x0, x1) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap() + 1);
+    let (y0, y1) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap() + 1);
+    assert!((x0 as f64 - 47.33).abs() <= 3.0 && x1 - x0 <= 3, "caret across {x0}..{x1}, iOS 47.33..49.33");
+    assert!((y0 as i32 - 249).abs() <= 1 && (y1 as i32 - 271).abs() <= 1, "caret down {y0}..{y1}, iOS 249..271");
+}

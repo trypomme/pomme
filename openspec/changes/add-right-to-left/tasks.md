@@ -29,7 +29,7 @@
 - [x] 3.2 Re-run every text test. With kerning, the fonts that stand in for Apple's moved away from the recordings (the status bar clock, a tab title, segment widths), so they are shaped without kerning; an app's own fonts are kerned, as CoreText does. The status bar draws its plain colon (its measured lift), not Inter's contextual one. Check: `cargo test` passes with no baseline changed.
 - [x] 3.3 Add `unicode-bidi`: each line's runs in the order shown, the paragraph's direction from its first strong letter (else the view's). Check: `cargo test -p pomme-hle shaping` (orders from the stills) and the stills.
 - [x] 3.4a Text fields: natural alignment by the text's direction, `caretRectForPosition:` in bidi order (`shaping::caret_edges`), the rounded-rect border's text rect. Check: `cargo test --test rtl text_fields`.
-- [ ] 3.4b Moving the caret with arrow keys and drawing it (pomme's fields draw no caret yet).
+- [x] 3.4b Moving the caret with arrow keys and drawing it. Check: `cargo test --test rtl caret arrow`.
 
 ## 4. Frameworks
 

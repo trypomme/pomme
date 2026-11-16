@@ -88,8 +88,8 @@ cargo run -- run App.app --language ar --region SA --screenshot ar.png   # right
   navigation bar and its back swipe, the tab bar, switches, sliders,
   segmented controls, text alignment, images that flip, SwiftUI, Flutter and
   React Native.
-  React Native's `I18nManager` follows the app's localization too. Not yet:
-  moving the caret with arrow keys.
+  React Native's `I18nManager` follows the app's localization too. In the
+  desktop window the arrow keys move a text field's caret as iOS moves it.
 
 ### Tables and bar buttons
 
