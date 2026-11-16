@@ -2,10 +2,10 @@
 
 ## 1. Measure on the Simulator
 
-- [ ] 1.1 `scripts/build-app.sh`: a `debug` kind (Debug configuration, no bundle inside). Build hello-expo for the iOS 26 Simulator that way, start Metro, run it, and save a screenshot and the console under `crates/pomme-cli/tests/fixtures/devbuild/`. Check: the screenshot shows hello-expo's first screen.
-- [ ] 1.2 On the Simulator: edit hello-expo's greeting while it runs (Fast Refresh), and press `r` in Metro (reload); note what the screen shows and whether the tap count is kept. Check: notes beside the probe.
+- [x] 1.1 `scripts/build-app.sh`: a `debug` kind (Debug configuration, no bundle inside). Build hello-expo for the iOS 26 Simulator that way, start Metro, run it, and save a screenshot and the console under `crates/pomme-cli/tests/fixtures/devbuild/`. Check: the screenshot shows hello-expo's first screen.
+- [ ] 1.2 On the Simulator: edit hello-expo's greeting while it runs (Fast Refresh), and press `r` in Metro (reload); note what the screen shows and whether the tap count is kept. Check: notes beside the probe. (Done except the tap count: the Simulator can't be tapped from a script here; see `fixtures/devbuild/notes.md`.)
 - [ ] 1.3 hello-expo with `expo-dev-client` on the Simulator: launch with the development link; record the screens on the way and what `checkLocalNetworkAccess` answers (from the console). Check: screenshots and notes in the fixture folder.
-- [ ] 1.4 A probe app that logs `motionBegan:` / `motionEnded:` (receiver, subtype) and run Device ▸ Shake on the Simulator. Check: `crates/pomme-cli/tests/fixtures/shake/ios26.txt`.
+- [x] 1.4 A probe app that logs `motionBegan:` / `motionEnded:` (receiver, subtype) and run Device ▸ Shake on the Simulator. Check: `crates/pomme-cli/tests/fixtures/shake/ios26.txt`.
 
 ## 2. Plain Debug builds
 
@@ -18,7 +18,7 @@
 ## 3. Shake and the developer menu
 
 - [x] 3.1 `UIResponder` motion methods, passing to the next responder (React Native's dev menu swaps `UIWindow`'s at startup). Check: the Debug build gets past `+[RCTDevMenu initialize]`.
-- [ ] 3.2 `Event::Shake` in `crates/pomme-hle/src/host.rs` delivering the motion events measured in 1.4; the driver's `shake()`. Check: the shake probe's output matches `ios26.txt`.
+- [x] 3.2 `Event::Shake` in `crates/pomme-hle/src/host.rs` delivering the motion events measured in 1.4; the driver's `shake()`. Check: the shake probe's output matches `ios26.txt`.
 - [ ] 3.3 Device ▸ Shake (⌃⌘Z / Ctrl+Alt+Z) in `crates/pomme-desktop`. Check: by hand, the dev menu appears.
 - [ ] 3.4 React Native's developer menu appears on a shake in a plain Debug build, and its Reload works. Check: a case in `development_builds.rs`.
 

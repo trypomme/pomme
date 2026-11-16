@@ -228,6 +228,9 @@ const DOUBLES: &[(&str, f64)] = &[
     ("UIScrollViewDecelerationRateNormal", 0.998),
     ("UIScrollViewDecelerationRateFast", 0.99),
     ("UINavigationControllerHideShowBarDuration", 0.33),
+    // Window levels (tests/fixtures/devmisc, iOS 26 Simulator).
+    ("UIWindowLevelNormal", 0.0),
+    ("UIWindowLevelAlert", 2000.0),
 ];
 
 /// `UIAccessibilityTraits` bits.

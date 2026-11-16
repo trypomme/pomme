@@ -45,6 +45,8 @@ pub enum Event {
     Relaunch,
     /// The screen reader did something to an element of the last tree the host got (by its id).
     Accessibility { id: u64, action: Action },
+    /// Device ▸ Shake: a shake motion event (see [`crate::control::shake`]).
+    Shake,
     /// File ▸ Open URL: a link opened in the running app (see [`crate::uikit::open_url`]).
     /// Whether the app took it comes back in [`Host::url_opened`].
     OpenUrl(String),
@@ -397,6 +399,7 @@ fn deliver(emu: &mut Emu) -> Result<()> {
                 r?
             }
             Event::Relaunch => return crate::relaunch::request(emu),
+            Event::Shake => crate::control::shake(emu)?,
             Event::OpenUrl(url) => {
                 let r = crate::uikit::open_url(emu, &url)?;
                 if let Some(host) = emu.live.host.as_mut() {

@@ -1817,6 +1817,7 @@ fn new_set(emu: &mut Emu) -> Result<u64> {
 }
 
 pub(crate) fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
+    let s = crate::objc::bag_get(emu, s, COUNTED_STORE).unwrap_or(s);
     // A Swift Set handed to Objective-C (`_SetStorage`) isn't a CFSet: ask it
     // for its objects as Objective-C code would (its objectEnumerator).
     if crate::objc::is_native_swift(emu, s) {
@@ -1906,6 +1907,102 @@ fn hash_is_count(emu: &mut Emu) -> Result<()> {
 fn set_count(emu: &mut Emu) -> Result<()> {
     let n = cf(emu, "_CFSetGetCount", &[emu.arg(0)])?;
     emu.ret(n);
+    Ok(())
+}
+
+// ---- NSCountedSet ----
+//
+// pomme's sets are CFSets, which can't count. A counted set is an object of
+// its own class (so it answers countForObject:), holding its members in a
+// CFSet ("countedStore") and how many times each was added in a CFDictionary
+// ("countedCounts", member -> NSNumber), both in guest memory. NSSet's
+// methods it doesn't override are passed to the members' set.
+
+const COUNTED_STORE: &str = "countedStore";
+const COUNTED_COUNTS: &str = "countedCounts";
+
+/// Give a counted set its storage (once), returning the members' CFSet.
+fn counted_storage(emu: &mut Emu, s: u64) -> Result<u64> {
+    if let Some(store) = crate::objc::bag_get(emu, s, COUNTED_STORE) {
+        return Ok(store);
+    }
+    let store = new_set(emu)?;
+    let kcb = cf_sym(emu, "_kCFTypeDictionaryKeyCallBacks")?;
+    let vcb = cf_sym(emu, "_kCFTypeDictionaryValueCallBacks")?;
+    let counts = cf(emu, "_CFDictionaryCreateMutable", &[0, 0, kcb, vcb])?;
+    crate::objc::bag_set(emu, s, COUNTED_STORE, store);
+    crate::objc::bag_set(emu, s, COUNTED_COUNTS, counts);
+    Ok(store)
+}
+
+fn counted_count_of(emu: &mut Emu, s: u64, o: u64) -> Result<u64> {
+    counted_storage(emu, s)?;
+    let counts = crate::objc::bag_get(emu, s, COUNTED_COUNTS).unwrap_or(0);
+    let n = cf(emu, "_CFDictionaryGetValue", &[counts, o])?;
+    Ok(if n == 0 { 0 } else { send(emu, n, "unsignedLongLongValue", &[])? })
+}
+
+fn counted_set_count(emu: &mut Emu, s: u64, o: u64, n: u64) -> Result<()> {
+    let store = counted_storage(emu, s)?;
+    let counts = crate::objc::bag_get(emu, s, COUNTED_COUNTS).unwrap_or(0);
+    if n == 0 {
+        cf(emu, "_CFDictionaryRemoveValue", &[counts, o])?;
+        cf(emu, "_CFSetRemoveValue", &[store, o])?;
+    } else {
+        let number = host_class(emu, "NSNumber")?;
+        let v = send(emu, number, "numberWithUnsignedLongLong:", &[n])?;
+        cf(emu, "_CFDictionarySetValue", &[counts, o, v])?;
+        cf(emu, "_CFSetAddValue", &[store, o])?;
+    }
+    Ok(())
+}
+
+fn counted_add(emu: &mut Emu, s: u64, o: u64) -> Result<()> {
+    if o != 0 {
+        let n = counted_count_of(emu, s, o)?;
+        counted_set_count(emu, s, o, n + 1)?;
+    }
+    Ok(())
+}
+
+/// +set, +setWithCapacity:, +new: a fresh counted set; +setWithArray:, +setWithSet:, +setWithObject: filled.
+fn counted_make(emu: &mut Emu, fill: u8) -> Result<()> {
+    let (cls, arg) = (emu.arg(0), emu.arg(2));
+    let s = crate::objc::create_instance(emu, cls, 0)?;
+    counted_fill(emu, s, arg, fill)?;
+    emu.ret(s);
+    Ok(())
+}
+
+/// -init…: storage, and the given objects (fill: 0 none, 1 an array or set, 2 one object).
+fn counted_init(emu: &mut Emu, fill: u8) -> Result<()> {
+    let (s, arg) = (emu.arg(0), emu.arg(2));
+    counted_fill(emu, s, arg, fill)?;
+    emu.ret(s);
+    Ok(())
+}
+
+fn counted_fill(emu: &mut Emu, s: u64, arg: u64, fill: u8) -> Result<()> {
+    counted_storage(emu, s)?;
+    match fill {
+        1 => {
+            for o in elements_of(emu, arg)? {
+                counted_add(emu, s, o)?;
+            }
+        }
+        2 => counted_add(emu, s, arg)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// An NSSet method a counted set leaves to its members' set: the same message, sent there.
+fn counted_forward(emu: &mut Emu, sel: &str) -> Result<()> {
+    let s = emu.arg(0);
+    let store = counted_storage(emu, s)?;
+    let args = [emu.cpu.x[2], emu.cpu.x[3], emu.cpu.x[4], emu.cpu.x[5]];
+    let r = send(emu, store, sel, &args)?;
+    emu.ret(r);
     Ok(())
 }
 
@@ -4083,6 +4180,28 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSConstantDictionary", false, "objectForKey:", constant_dict_object_for_key),
     ("NSConstantDictionary", false, "objectForKeyedSubscript:", constant_dict_object_for_key),
     ("NSCache", false, "objectForKey:", cache_get),
+    // The limits are kept and read back; pomme's cache never evicts (on iOS
+    // eviction is the system's choice, at no fixed time).
+    ("NSCache", false, "countLimit", |e| {
+        let v = crate::objc::bag_get(e, e.arg(0), "countLimit").unwrap_or(0);
+        e.ret(v);
+        Ok(())
+    }),
+    ("NSCache", false, "setCountLimit:", |e| {
+        let (c, v) = (e.arg(0), e.arg(2));
+        crate::objc::bag_set(e, c, "countLimit", v);
+        Ok(())
+    }),
+    ("NSCache", false, "totalCostLimit", |e| {
+        let v = crate::objc::bag_get(e, e.arg(0), "totalCostLimit").unwrap_or(0);
+        e.ret(v);
+        Ok(())
+    }),
+    ("NSCache", false, "setTotalCostLimit:", |e| {
+        let (c, v) = (e.arg(0), e.arg(2));
+        crate::objc::bag_set(e, c, "totalCostLimit", v);
+        Ok(())
+    }),
     ("NSCache", false, "setObject:forKey:", cache_set),
     ("NSCache", false, "setObject:forKey:cost:", cache_set),
     ("NSCache", false, "removeObjectForKey:", cache_remove),
@@ -4978,6 +5097,52 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSSet", false, "enumerateObjectsUsingBlock:", set_enumerate),
     ("NSMutableSet", false, "addObject:", set_add),
     ("NSMutableSet", false, "removeObject:", set_remove),
+    // NSCountedSet (above): its own class, counting; the rest goes to its members' set.
+    ("NSCountedSet", true, "set", |e| counted_make(e, 0)),
+    ("NSCountedSet", true, "new", |e| counted_make(e, 0)),
+    ("NSCountedSet", true, "setWithCapacity:", |e| counted_make(e, 0)),
+    ("NSCountedSet", true, "setWithArray:", |e| counted_make(e, 1)),
+    ("NSCountedSet", true, "setWithSet:", |e| counted_make(e, 1)),
+    ("NSCountedSet", true, "setWithObject:", |e| counted_make(e, 2)),
+    ("NSCountedSet", false, "init", |e| counted_init(e, 0)),
+    ("NSCountedSet", false, "initWithCapacity:", |e| counted_init(e, 0)),
+    ("NSCountedSet", false, "initWithArray:", |e| counted_init(e, 1)),
+    ("NSCountedSet", false, "initWithSet:", |e| counted_init(e, 1)),
+    ("NSCountedSet", false, "addObject:", |e| {
+        let (s, o) = (e.arg(0), e.arg(2));
+        counted_add(e, s, o)
+    }),
+    ("NSCountedSet", false, "removeObject:", |e| {
+        let (s, o) = (e.arg(0), e.arg(2));
+        let n = counted_count_of(e, s, o)?;
+        if n > 0 {
+            counted_set_count(e, s, o, n - 1)?;
+        }
+        Ok(())
+    }),
+    ("NSCountedSet", false, "countForObject:", |e| {
+        let (s, o) = (e.arg(0), e.arg(2));
+        let n = counted_count_of(e, s, o)?;
+        e.ret(n);
+        Ok(())
+    }),
+    ("NSCountedSet", false, "removeAllObjects", |e| {
+        let s = e.arg(0);
+        let store = counted_storage(e, s)?;
+        let counts = crate::objc::bag_get(e, s, COUNTED_COUNTS).unwrap_or(0);
+        cf(e, "_CFSetRemoveAllValues", &[store])?;
+        cf(e, "_CFDictionaryRemoveAllValues", &[counts])?;
+        Ok(())
+    }),
+    ("NSCountedSet", false, "count", |e| counted_forward(e, "count")),
+    ("NSCountedSet", false, "containsObject:", |e| counted_forward(e, "containsObject:")),
+    ("NSCountedSet", false, "member:", |e| counted_forward(e, "member:")),
+    ("NSCountedSet", false, "allObjects", |e| counted_forward(e, "allObjects")),
+    ("NSCountedSet", false, "anyObject", |e| counted_forward(e, "anyObject")),
+    ("NSCountedSet", false, "objectEnumerator", |e| counted_forward(e, "objectEnumerator")),
+    ("NSCountedSet", false, "countByEnumeratingWithState:objects:count:", |e| counted_forward(e, "countByEnumeratingWithState:objects:count:")),
+    ("NSCountedSet", false, "enumerateObjectsUsingBlock:", |e| counted_forward(e, "enumerateObjectsUsingBlock:")),
+    ("NSCountedSet", false, "description", |e| counted_forward(e, "description")),
     ("NSMutableSet", false, "removeAllObjects", set_remove_all),
     // NSNumber
     ("NSNumber", true, "numberWithInt:", number_int),

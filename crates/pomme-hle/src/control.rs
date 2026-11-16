@@ -210,6 +210,29 @@ fn add_ui_action(emu: &mut Emu, c: u64, a: u64, events: u64) -> Result<()> {
     Ok(())
 }
 
+/// Device ▸ Shake, as on the iOS 26 Simulator (tests/fixtures/shake,
+/// ios26.txt): `motionBegan:withEvent:` then `motionEnded:withEvent:`, a
+/// motion event of subtype shake, each sent to the first responder (else the
+/// key window) and passed up the responder chain as far as the application,
+/// which keeps it: the app delegate never hears a shake.
+pub(crate) fn shake(emu: &mut Emu) -> Result<()> {
+    const MOTION: u64 = 1;
+    const SHAKE: u64 = 1;
+    let first = emu.input.first_responder;
+    let target = if first != 0 { first } else { emu.ui.key_window };
+    if target == 0 {
+        return Ok(());
+    }
+    for sel in ["motionBegan:withEvent:", "motionEnded:withEvent:"] {
+        let cls = host_class(emu, "UIEvent")?;
+        let event = objc::create_instance(emu, cls, 0)?;
+        objc::bag_set(emu, event, "type", MOTION);
+        objc::bag_set(emu, event, "subtype", SHAKE);
+        send(emu, target, sel, &[SHAKE, event])?;
+    }
+    Ok(())
+}
+
 /// A motion event's default: on to the next responder, if there is one.
 fn pass_motion(emu: &mut Emu, sel: &str) -> Result<()> {
     let (r, motion, event) = (emu.arg(0), emu.arg(2), emu.arg(3));
@@ -756,6 +779,10 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIResponder", false, "motionBegan:withEvent:", |e| pass_motion(e, "motionBegan:withEvent:")),
     ("UIResponder", false, "motionEnded:withEvent:", |e| pass_motion(e, "motionEnded:withEvent:")),
     ("UIResponder", false, "motionCancelled:withEvent:", |e| pass_motion(e, "motionCancelled:withEvent:")),
+    // The application is where a motion event stops (its delegate doesn't get it).
+    ("UIApplication", false, "motionBegan:withEvent:", |e| ret(e, 0)),
+    ("UIApplication", false, "motionEnded:withEvent:", |e| ret(e, 0)),
+    ("UIApplication", false, "motionCancelled:withEvent:", |e| ret(e, 0)),
     // The chain's top: window → application → its delegate (when that's a responder).
     ("UIWindow", false, "nextResponder", |e| {
         let app = e.ui.app;

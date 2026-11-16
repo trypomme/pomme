@@ -1488,6 +1488,67 @@ fn nsthread_sleep(emu: &mut Emu) -> Result<()> {
     sleep_ns(emu, (secs * 1e9) as u64)
 }
 
+/// The calling guest code's frames, innermost first: the caller (in lr),
+/// then the frame-pointer chain. Frames of pomme's own functions (UIKit and
+/// the rest, which return to the host) are stepped over, not stopped at, so
+/// the app's frames further out are there too (as the profiler walks).
+fn guest_call_stack(emu: &Emu) -> Vec<u64> {
+    let mut out = Vec::new();
+    let (lr, mut fp) = (emu.cpu.x[30], emu.cpu.x[29]);
+    if lr != HOST_RETURN && lr > 4 {
+        out.push(lr - 4);
+    }
+    while out.len() < 128 && fp != 0 && fp % 8 == 0 {
+        let (Ok(next), Ok(ret)) = (emu.read_u64(fp), emu.read_u64(fp + 8)) else { break };
+        if ret == 0 {
+            break;
+        }
+        if ret != HOST_RETURN && out.last() != Some(&(ret - 4)) {
+            out.push(ret - 4);
+        }
+        if next <= fp {
+            break;
+        }
+        fp = next;
+    }
+    out
+}
+
+/// `+[NSThread callStackSymbols]`: the calling thread's frames, innermost
+/// first, in iOS's shape ("index  image  address  symbol + offset"). pomme's
+/// own functions (UIKit and the rest) aren't among them: they aren't guest code.
+fn nsthread_call_stack_symbols(emu: &mut Emu) -> Result<()> {
+    let lines: Vec<String> = guest_call_stack(emu)
+        .into_iter()
+        .enumerate()
+        .map(|(i, addr)| {
+            let sym = emu.symbolize(addr);
+            let (image, rest) = sym.split_once(' ').unwrap_or(("???", sym.as_str()));
+            let (name, off) = rest.rsplit_once('+').map_or((rest, 0), |(n, o)| (n, u64::from_str_radix(o.trim_start_matches("0x"), 16).unwrap_or(0)));
+            format!("{i:<4}{image:<36}0x{addr:016x} {name} + {off}")
+        })
+        .collect();
+    let mut strings = Vec::new();
+    for l in &lines {
+        strings.push(crate::foundation::new_nsstring(emu, l)?);
+    }
+    let a = crate::foundation::array_from(emu, &strings)?;
+    emu.ret(a);
+    Ok(())
+}
+
+/// `+[NSThread callStackReturnAddresses]`: the same frames, as NSNumbers.
+fn nsthread_call_stack_addresses(emu: &mut Emu) -> Result<()> {
+    let number = crate::objc::host_class(emu, "NSNumber")?;
+    let mut numbers = Vec::new();
+    for addr in guest_call_stack(emu) {
+        numbers.push(crate::objc::send(emu, number, "numberWithUnsignedLongLong:", &[addr])?);
+    }
+    let a = crate::foundation::array_from(emu, &numbers)?;
+    emu.ret(a);
+    Ok(())
+}
+
 fn noop(_: &mut Emu) -> Result<()> {
     Ok(())
 }
@@ -1595,6 +1656,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSThread", false, "stackSize", |e| ret(e, STACK)),
     ("NSThread", false, "setThreadPriority:", noop),
     ("NSThread", true, "currentThread", nsthread_current),
+    ("NSThread", true, "callStackSymbols", nsthread_call_stack_symbols),
+    ("NSThread", true, "callStackReturnAddresses", nsthread_call_stack_addresses),
     ("NSThread", true, "mainThread", nsthread_main),
     ("NSThread", true, "isMainThread", nsthread_class_is_main),
     ("NSThread", true, "isMultiThreaded", ret_yes),

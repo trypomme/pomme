@@ -12,7 +12,8 @@
 # ARGS: launch arguments (for example "-AppleLanguages (ja-JP) -AppleLocale
 # ja_JP"). TZ: the app's time zone. A probe may be main.swift or main.m.
 # OPEN_URL=url: open that link in the running probe (xcrun simctl openurl) at
-# OPEN_URL_AT seconds (default 2).
+# OPEN_URL_AT seconds (default 2). SHAKE=1: Device ▸ Shake at SHAKE_AT
+# seconds (default 3; the notification the Simulator's menu item posts).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PROBE=${1:-swiftuimetrics}
@@ -56,6 +57,9 @@ OUT=$(mktemp)
 env SIMCTL_CHILD_PROBE_VARIANT="${VARIANT:-}" ${TZ:+SIMCTL_CHILD_TZ="$TZ"} xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE ${ARGS:-} >"$OUT" 2>&1 &
 if [ -n "${OPEN_URL:-}" ]; then
   (sleep "${OPEN_URL_AT:-2}"; xcrun simctl openurl "$DEVICE" "$OPEN_URL") &
+fi
+if [ -n "${SHAKE:-}" ]; then
+  (sleep "${SHAKE_AT:-3}"; xcrun simctl spawn "$DEVICE" notifyutil -p com.apple.UIKit.SimulatorShake) &
 fi
 if [ -n "${SHOT:-}" ]; then
   sleep 5

@@ -95,6 +95,14 @@ solver). It handles pinning, centring and fixed or proportional sizes,
 which is what apps use most. Unusual constraint systems may lay out
 differently.
 
+### Call stacks
+
+`+[NSThread callStackSymbols]` and `callStackReturnAddresses` list only the
+app's own frames (and the libraries it runs as guest code). On iOS they also
+show UIKit's, Foundation's and the other system libraries' frames, but in
+pomme those are pomme's own code, so there are none to show. The frames
+that are there have iOS's shape (index, image, address, symbol + offset).
+
 ### Generic answers
 
 When an app sends a message pomme doesn't know, pomme answers 0 (nil) and

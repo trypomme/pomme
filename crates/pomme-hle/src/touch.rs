@@ -971,8 +971,15 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIEvent", false, "touchesForView:", |e| event_touches_for(e, 0)),
     ("UIEvent", false, "touchesForGestureRecognizer:", |e| event_touches_for(e, 1)),
     ("UIEvent", false, "touchesForWindow:", |e| event_touches_for(e, 2)),
-    ("UIEvent", false, "type", |e| ret(e, 0)),
-    ("UIEvent", false, "subtype", |e| ret(e, 0)),
+    // Touch events are type 0 (touches), subtype 0; a shake's says otherwise (control.rs).
+    ("UIEvent", false, "type", |e| {
+        let v = objc::bag_get(e, e.arg(0), "type").unwrap_or(0);
+        ret(e, v)
+    }),
+    ("UIEvent", false, "subtype", |e| {
+        let v = objc::bag_get(e, e.arg(0), "subtype").unwrap_or(0);
+        ret(e, v)
+    }),
     // A finger, not a pointer: no buttons or modifier keys.
     ("UIEvent", false, "buttonMask", |e| ret(e, 0)),
     ("UIEvent", false, "modifierFlags", |e| ret(e, 0)),

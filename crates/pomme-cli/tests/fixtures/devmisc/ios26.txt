@@ -1,0 +1,16 @@
+# The devmisc fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE addressesMatch 1
+VALUE alertLevel 2000
+VALUE cacheLimits 5 1000
+VALUE containsAAfterTwo 0
+VALUE countA 2
+VALUE countAAfterRemove 1
+VALUE countMissing 0
+VALUE countedClass NSCountedSet
+VALUE firstFrameHasPlus 1
+VALUE firstFrameImage Devmisc
+VALUE firstFrameIndex 0
+VALUE members 2
+VALUE normalLevel 0
+VALUE stackHasFrames 1
+VALUE topWindow alert

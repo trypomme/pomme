@@ -244,6 +244,13 @@ impl App {
         self.run_for(0.0)
     }
 
+    /// Shake the phone, as the Simulator's Device ▸ Shake does (see
+    /// [`crate::control::shake`]), and return once the app is idle again.
+    pub fn shake(&mut self) -> std::result::Result<(), Error> {
+        self.with(crate::control::shake)?;
+        self.run_for(0.0)
+    }
+
     /// Let the app run for `secs` of virtual time (then until it's next idle).
     pub fn run_for(&mut self, secs: f64) -> std::result::Result<(), Error> {
         let ns = (secs.max(0.0) * 1e9) as u64;

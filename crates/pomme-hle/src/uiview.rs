@@ -671,6 +671,19 @@ fn ret_one(emu: &mut Emu) -> Result<()> {
 
 // ---- UIWindow ----
 
+/// Windows in the order they're drawn and hit-tested (last on top): by
+/// level, then (within a level) in the order they appeared, as on iOS, where
+/// a higher `windowLevel` (an alert's, the status bar's) is always above.
+pub(crate) fn order_windows(emu: &mut Emu) {
+    let mut ws = std::mem::take(&mut emu.ui.windows);
+    ws.sort_by(|&a, &b| {
+        let la = crate::objc::bag_get_f64(emu, a, "windowLevel").unwrap_or(0.0);
+        let lb = crate::objc::bag_get_f64(emu, b, "windowLevel").unwrap_or(0.0);
+        la.total_cmp(&lb)
+    });
+    emu.ui.windows = ws;
+}
+
 fn window_init_with_scene(emu: &mut Emu) -> Result<()> {
     let w = emu.arg(0);
     let (sw, sh) = crate::orientation::screen(emu);
@@ -678,6 +691,7 @@ fn window_init_with_scene(emu: &mut Emu) -> Result<()> {
     view_mut(emu, w).window = w;
     if !emu.ui.windows.contains(&w) {
         emu.ui.windows.push(w);
+        order_windows(emu);
     }
     Ok(())
 }
@@ -688,6 +702,7 @@ fn window_init_with_frame(emu: &mut Emu) -> Result<()> {
     view_mut(emu, w).window = w;
     if !emu.ui.windows.contains(&w) {
         emu.ui.windows.push(w);
+        order_windows(emu);
     }
     Ok(())
 }
@@ -1450,7 +1465,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIWindow", false, "setWindowScene:", noop),
     ("UIWindow", false, "screen", window_screen),
     ("UIWindow", false, "windowLevel", |e| {
-        ret_f64(e, 0.0);
+        let level = crate::objc::bag_get_f64(e, e.arg(0), "windowLevel").unwrap_or(0.0);
+        ret_f64(e, level);
+        Ok(())
+    }),
+    ("UIWindow", false, "setWindowLevel:", |e| {
+        let (w, level) = (e.arg(0), f64::from_bits(e.cpu.q[0] as u64));
+        crate::objc::bag_set_f64(e, w, "windowLevel", level);
+        order_windows(e);
         Ok(())
     }),
     // `init` goes through the designated initializer, as UIKit's does: Swift

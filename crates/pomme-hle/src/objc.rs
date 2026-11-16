@@ -240,6 +240,11 @@ pub(crate) fn bag_set(emu: &mut Emu, obj: u64, key: &str, value: u64) {
     emu.objc.bag.insert((obj, key.to_string()), (value, 0));
 }
 
+/// Store a floating-point property (read back with [`bag_get_f64`]).
+pub(crate) fn bag_set_f64(emu: &mut Emu, obj: u64, key: &str, value: f64) {
+    emu.objc.bag.insert((obj, key.to_string()), (0, value.to_bits() as u128));
+}
+
 /// Answer a missing message on a permissive class.
 fn permissive_answer(emu: &mut Emu, cls: u64, sel: &str) -> Result<()> {
     let meta = emu.objc.classes.get(&cls).is_some_and(|c| c.meta);
@@ -309,6 +314,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSMutableDictionary", "NSDictionary"),
     ("NSSet", "NSObject"),
     ("NSMutableSet", "NSSet"),
+    ("NSCountedSet", "NSMutableSet"),
     ("NSValue", "NSObject"),
     ("NSNumber", "NSValue"),
     ("NSData", "NSObject"),

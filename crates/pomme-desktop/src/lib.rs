@@ -72,6 +72,8 @@ enum Action {
     Relaunch,
     /// File ▸ Open URL…: the panel to type or paste a link into.
     OpenUrl,
+    /// Device ▸ Shake: a shake motion event, as the Simulator's (⌃⌘Z).
+    Shake,
     /// File ▸ Open Recent URL ▸ one of the recent links (its place in the list).
     OpenRecent(usize),
     /// File ▸ Open Recent URL ▸ Clear.
@@ -477,6 +479,7 @@ impl App {
             Action::Close => self.close(event_loop),
             Action::SaveScreen => self.send(Event::SaveScreen),
             Action::Relaunch => self.send(Event::Relaunch),
+            Action::Shake => self.send(Event::Shake),
             Action::OpenUrl => {
                 if let Some(p) = self.panel.as_mut() {
                     p.show();
@@ -881,6 +884,10 @@ impl ApplicationHandler<ToWindow> for App {
                 // to the menu or the window, never both: whichever gets it acts.
                 // ⌥ changes the character (⌥M is µ on a Mac): the Face ID shortcuts go by the key.
                 if command && self.modifiers.alt_key() {
+                    if !cfg!(target_os = "macos") && event.physical_key == PhysicalKey::Code(KeyCode::KeyZ) {
+                        self.send(Event::Shake);
+                        return;
+                    }
                     if let PhysicalKey::Code(code) = event.physical_key
                         && let Some(face) = face_shortcut(code)
                     {
@@ -900,6 +907,8 @@ impl ApplicationHandler<ToWindow> for App {
                     Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
                     Key::Character(c) if command && c.as_str() == "s" => self.act(event_loop, Action::SaveScreen),
                     Key::Character(c) if command && c.as_str() == "l" => self.act(event_loop, Action::OpenUrl),
+                    // ⌃⌘Z: Device ▸ Shake (macOS; elsewhere Ctrl+Alt+Z, above).
+                    Key::Character(c) if command && self.modifiers.control_key() && cfg!(target_os = "macos") && c.eq_ignore_ascii_case("z") => self.act(event_loop, Action::Shake),
                     Key::Character(c) if command && self.modifiers.shift_key() && c.eq_ignore_ascii_case("r") => self.act(event_loop, Action::Relaunch),
                     Key::Character(c) if command && c.as_str() == "r" => self.act(event_loop, Action::Record),
                     _ if command => {}
