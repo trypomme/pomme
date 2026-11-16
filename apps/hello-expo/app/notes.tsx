@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Stack } from 'expo-router';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Multiline text input: a TextInput with `multiline` (a UITextView on iOS)
 // that grows with its text up to a maximum height, then scrolls. Reached with
-// the pommehello:///notes link.
+// the pommehello:///notes link. A Clear button in the header (Expo Router's
+// `headerRight`: a bar button item holding React Native's view) empties it.
 
 export default function NotesScreen() {
   const [notes, setNotes] = useState('');
@@ -16,6 +18,15 @@ export default function NotesScreen() {
   const top = useSafeAreaInsets().top + HEADER_HEIGHT;
   return (
     <View style={[styles.container, { paddingTop: top + 16 }]}>
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <Pressable testID="clear" accessibilityRole="button" onPress={() => setNotes('')} hitSlop={8}>
+              <Text style={styles.clear}>Clear</Text>
+            </Pressable>
+          ),
+        }}
+      />
       <TextInput
         testID="notes"
         style={styles.input}
@@ -52,4 +63,5 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   summary: { fontSize: 15, color: '#475569' },
+  clear: { fontSize: 17, color: '#0088ff', paddingHorizontal: 8 },
 });

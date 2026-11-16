@@ -935,7 +935,13 @@ fn native_tabs_more() {
 /// The localization screen's facts (`name value`, one per text), with the
 /// phone set to `languages`, `region`, `zone` and the 24-hour switch.
 fn localization_screen(languages: &[&str], region: &str, zone: &str, hours: Option<bool>) -> Option<std::collections::BTreeMap<String, String>> {
+    localization_screen_with(languages, region, zone, hours, &[])
+}
+
+/// The same, launched with these arguments (`-key value` set defaults).
+fn localization_screen_with(languages: &[&str], region: &str, zone: &str, hours: Option<bool>, args: &[&str]) -> Option<std::collections::BTreeMap<String, String>> {
     let mut emu = boot()?;
+    emu.launch_args.extend(args.iter().map(|s| s.to_string()));
     emu.locales.settings = pomme_hle::locale::Settings {
         languages: languages.iter().map(|s| s.to_string()).collect(),
         region: region.into(),
@@ -1013,4 +1019,55 @@ fn i18n_manager_follows_the_apps_localization() {
     assert_eq!(ar.get("textDirection").map(String::as_str), Some("rtl"), "{ar:?}");
     let Some(en) = localization_screen(&["en-US"], "US", "America/Los_Angeles", None) else { return };
     assert_eq!(en.get("I18nManager.isRTL").map(String::as_str), Some("false"), "{en:?}");
+}
+
+/// `I18nManager.forceRTL(true)` saves `RCTI18nUtil_forceRTL` in the app's
+/// defaults, for the next launch: launched with it set (as a launch
+/// argument stands in for what the last run saved; each pomme run starts
+/// from a fresh install), an English phone lays the app out right to left;
+/// `allowRTL(false)` keeps an Arabic one left to right.
+#[test]
+fn force_rtl_takes_effect_at_the_next_launch() {
+    let Some(forced) = localization_screen_with(&["en-US"], "US", "America/Los_Angeles", None, &["-RCTI18nUtil_forceRTL", "YES"]) else { return };
+    assert_eq!(forced.get("I18nManager.isRTL").map(String::as_str), Some("true"), "{forced:?}");
+    let Some(denied) = localization_screen_with(&["ar"], "SA", "Asia/Riyadh", None, &["-RCTI18nUtil_allowRTL", "NO"]) else { return };
+    assert_eq!(denied.get("I18nManager.isRTL").map(String::as_str), Some("false"), "{denied:?}");
+}
+
+/// Expo Router's `headerRight` (the notes screen's Clear): React Native's
+/// view, held by a bar button item, in the navigation bar at its trailing
+/// side; a tap on it reaches React (the notes empty).
+#[test]
+fn header_right_button() {
+    let Some((_, views)) = notes_screen(|_| {}, 3.0) else { return };
+    let lines: Vec<&str> = views.lines().collect();
+    let bar = lines.iter().position(|l| l.trim_start().starts_with("RNSNavigationBar")).unwrap_or_else(|| panic!("no bar\n{views}"));
+    let clear = lines.iter().position(|l| l.contains("\"Clear\"")).unwrap_or_else(|| panic!("no Clear\n{views}"));
+    assert!(clear > bar, "Clear isn't in the bar\n{views}");
+    // Its item view: in the bar's trailing half, on its row.
+    let item = lines[bar + 1].trim_start();
+    let nums: Vec<f64> = item.split(['(', ',', '×', ')']).filter_map(|t| t.trim().parse().ok()).collect();
+    assert!(nums[0] > 195.0 && nums[0] + nums[2] <= 390.0 && nums[1] >= 0.0 && nums[1] + nums[3] <= 54.0, "{item}");
+    let (x, y) = (nums[0] + nums[2] / 2.0, 47.0 + nums[1] + nums[3] / 2.0);
+
+    let (_, after) = notes_screen(
+        |emu| {
+            tap(emu, NOTES, 3.0);
+            type_text(emu, "Shopping", 4.0);
+            tap(emu, (x, y), 5.0);
+        },
+        6.0,
+    )
+    .unwrap();
+    assert!(after.contains("· 0 lines · 0 characters\""), "{after}");
+    // (Without the tap, the note stays.)
+    let (_, kept) = notes_screen(
+        |emu| {
+            tap(emu, NOTES, 3.0);
+            type_text(emu, "Shopping", 4.0);
+        },
+        6.0,
+    )
+    .unwrap();
+    assert!(kept.contains("· 1 lines · 8 characters\""), "{kept}");
 }

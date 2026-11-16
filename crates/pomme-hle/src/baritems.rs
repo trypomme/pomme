@@ -147,8 +147,10 @@ fn content_size(emu: &mut Emu, c: &Content) -> [f64; 2] {
         Content::Symbol(_, s) | Content::Image(_, s) => *s,
         Content::Title(t, w) => [crate::navigation::text_width(emu, t, *w), 61.0 / 3.0],
         Content::Custom(v) => {
+            // (Sized by its constraints when it has no size of its own yet.)
             let b = crate::uiview::view(emu, *v).bounds;
-            [b[2], b[3]]
+            let size = |axis: usize| if b[2 + axis] > 0.0 { b[2 + axis] } else { crate::autolayout::own_size(emu, *v, axis).unwrap_or(0.0) };
+            [size(0), size(1)]
         }
     }
 }

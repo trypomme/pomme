@@ -346,6 +346,10 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h + stretch]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
     crate::baritems::layout_toolbar(emu, nc, container, n.stack.last().copied(), w, h)?;
+    // (The bar's custom item views go into it as it's laid out, not only when drawn.)
+    if !n.bar_hidden {
+        bar_look(emu, n.bar)?;
+    }
     if let Some(&top) = n.stack.last() {
         let v = send(emu, top, "view", &[])?;
         // The view runs under the bar unless the controller excludes the top edge.

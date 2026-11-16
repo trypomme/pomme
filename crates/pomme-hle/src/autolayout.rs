@@ -384,6 +384,23 @@ pub(crate) fn fixed_size(emu: &Emu, v: u64, axis: usize) -> Option<f64> {
     emu.layout.active.iter().filter_map(|c| emu.layout.constraints.get(c)).find(|c| c.first == v && c.a1 == want && c.second == 0 && c.relation == 0 && c.priority >= REQUIRED).map(|c| c.constant)
 }
 
+/// The width (axis 0) or height (axis 1) view `v`'s constraints alone give
+/// it, at any priority: a constant, or equal to (a multiple of) another
+/// view's own (its frame's, or what its constraints give it). As a bar
+/// button item's custom view sized by Auto Layout is measured: React Native
+/// Screens' wrapper, as wide and tall as the header view it centres.
+pub(crate) fn own_size(emu: &Emu, v: u64, axis: usize) -> Option<f64> {
+    let want = if axis == 0 { Width } else { Height };
+    let mine: Vec<&Constraint> = emu.layout.active.iter().filter_map(|c| emu.layout.constraints.get(c)).filter(|c| c.first == v && c.a1 == want && c.relation == 0).collect();
+    if let Some(c) = mine.iter().filter(|c| c.second == 0).max_by(|a, b| a.priority.total_cmp(&b.priority)) {
+        return Some(c.constant);
+    }
+    mine.iter().filter(|c| c.second != 0 && c.second != v && c.a2 == Some(want)).max_by(|a, b| a.priority.total_cmp(&b.priority)).and_then(|c| {
+        let other = emu.ui.views.views.get(&c.second).map(|o| o.bounds[2 + axis]).filter(|s| *s > 0.0).or_else(|| fixed_size(emu, c.second, axis))?;
+        Some(other * c.multiplier + c.constant)
+    })
+}
+
 /// Mark view `v` as laid out by constraints (`translatesAutoresizingMaskIntoConstraints` = NO).
 pub(crate) fn set_auto(emu: &mut Emu, v: u64) {
     emu.layout.auto.insert(v);
