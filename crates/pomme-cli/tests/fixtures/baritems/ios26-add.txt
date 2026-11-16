@@ -1,0 +1,25 @@
+# The baritems probe on the iOS 26.0 Simulator (iPhone 16e, light), case add: VIEW <class> <frame in the window> <text> [bg=RGBA] [radius=] [font=size/weight color=RGBA].
+VIEW UINavigationBar 0.00 47.00 390.00 54.00 
+VIEW _UIBarBackground 0.00 0.00 390.00 101.00 
+VIEW UIKit.NavigationBarContentView 0.00 47.00 390.00 54.00 
+VIEW UIKit.NavigationBarTransitionContainer 0.00 47.00 390.00 54.00 
+VIEW _UINavigationBarHostedViewContainer 0.00 47.00 390.00 54.00 
+VIEW _UINavigationBarHostedViewWrapper 172.67 58.83 44.67 20.33 
+VIEW _UINavigationBarTitleControl 172.67 58.83 44.67 20.33 
+VIEW _UIIntrinsicContentSizeInvalidationForwardingWrapperView 172.67 58.83 44.67 20.33 
+VIEW UILabel 172.67 58.83 44.67 20.33 Items bg=0,0,0,0 font=17.0/0.30 color=0,0,0,255
+VIEW UIView 0.00 47.00 390.00 54.00 
+VIEW UIKit.NavigationBarPlatterContainer 0.00 47.00 390.00 54.00 
+VIEW _UINavigationBarPlatterView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterAnimationView 327.90 44.90 48.20 48.20 
+VIEW _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterContentView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterGlassView 330.00 47.00 44.00 44.00  radius=22.00
+VIEW _UINavigationBarPlatterSubviewContainerView 330.00 47.00 44.00 44.00 
+VIEW _UINavigationBarPlatterItemView 334.00 51.00 36.00 36.00 
+VIEW _TtCC5UIKit19NavigationButtonBar15ItemWrapperView 334.00 51.00 36.00 36.00 
+VIEW _UIButtonBarButton 334.00 51.00 36.00 36.00 
+VIEW _UIModernBarButton 336.00 58.33 32.00 22.00 
+VIEW UIImageView 340.33 58.33 23.33 22.00 

@@ -555,6 +555,12 @@ fn bar_elements(emu: &mut Emu, bar: u64) -> Result<Vec<u64>> {
         };
         parts.push(Part { key: 1, label: look.title.clone(), value: None, traits: TRAIT_HEADER, frame });
     }
+    // Its button items, each a button by its title or name (a custom view is its own).
+    for (i, item) in look.items.iter().enumerate() {
+        let Some(label) = crate::baritems::accessibility_label(emu, item)? else { continue };
+        let traits = if item.enabled { TRAIT_BUTTON } else { TRAIT_BUTTON | TRAIT_NOT_ENABLED };
+        parts.push(Part { key: 10 + i as u32, label, value: None, traits, frame: item.area });
+    }
     drawn_elements(emu, bar, parts)
 }
 

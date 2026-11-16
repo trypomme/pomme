@@ -1,0 +1,17 @@
+# The baritems probe on the iOS 26.0 Simulator (iPhone 16e, light) in the design before iOS 26 (UIDesignRequiresCompatibility), case both: VIEW <class> <frame in the window> <text> [bg=RGBA] [radius=] [font=size/weight color=RGBA].
+VIEW UINavigationBar 0.00 47.00 390.00 44.00 
+VIEW _UIBarBackground 0.00 0.00 390.00 91.00 
+VIEW _UIVisualEffectBackdropView 0.00 0.00 390.00 91.00 
+VIEW _UIBarBackgroundShadowView 0.00 91.00 390.00 0.33 
+VIEW _UINavigationBarContentView 0.00 47.00 390.00 44.00 
+VIEW _UIButtonBarStackView 8.00 47.00 63.67 44.00 
+VIEW _UIButtonBarButton 8.00 47.00 63.67 44.00 
+VIEW _UIModernBarButton 16.00 57.67 55.67 21.33 
+VIEW UIButtonLabel 16.00 58.67 52.67 20.33 Cancel font=17.0/0.00 color=0,136,255,255
+VIEW _UIButtonBarStackView 332.33 47.00 49.67 44.00 
+VIEW _UIButtonBarButton 332.33 47.00 49.67 44.00 
+VIEW _UIModernBarButton 332.33 57.67 41.67 21.33 
+VIEW UIButtonLabel 332.33 58.67 41.67 20.33 Done font=17.0/0.30 color=0,136,255,255
+VIEW _UINavigationBarTitleControl 172.67 58.67 44.67 20.33 
+VIEW _UIIntrinsicContentSizeInvalidationForwardingWrapperView 172.67 58.67 44.67 20.33 
+VIEW UILabel 172.67 58.67 44.67 20.33 Items bg=0,0,0,0 font=17.0/0.30 color=0,0,0,255

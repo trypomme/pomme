@@ -2486,6 +2486,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         p.sync_faces(emu, &placed);
         p.glyphs(&placed, alpha, t, mask);
     }
+    draw_bar_items(emu, p, look, alpha, t, mask);
     let Some(back) = &look.back else { return };
     let alpha = alpha * back_alpha;
     // The back button sits inside the bar's leading safe-area inset; in
@@ -2521,6 +2522,48 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
             };
             p.sync_faces(emu, &glyphs);
             p.glyphs(&glyphs, alpha, if look.rtl { &bar_t } else { t }, mask);
+        }
+    }
+}
+
+/// A navigation bar's button items (baritems.rs): each on its glass capsule
+/// (blue when prominent) under Liquid Glass, its symbol, image or title in
+/// the content colour (light cyan on blue), or before iOS 26 in the tint.
+fn draw_bar_items(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    use crate::baritems::{Content, GLASS_CONTENT, GLASS_FILL, PROMINENT_CONTENT, PROMINENT_FILL, TINT};
+    for item in &look.items {
+        let a = if item.enabled { alpha } else { alpha * 0.35 };
+        if let Some(c) = item.capsule {
+            let els = transform_els(&rounded_rect(c[2] as f32, c[3] as f32, (c[3] / 2.0) as f32), &[1.0, 0.0, 0.0, 1.0, c[0] as f32, c[1] as f32]);
+            p.fill(&els, (if item.prominent { PROMINENT_FILL } else { GLASS_FILL }).map(|v| v as f32), a, false, t, mask);
+            p.stroke(&els, [0.0, 0.0, 0.0, 0.06], a, 0.5, t, mask);
+        }
+        let color = if item.prominent { PROMINENT_CONTENT } else if look.glass { GLASS_CONTENT } else { TINT };
+        let f = item.content_frame;
+        let at = concat(&[1.0, 0.0, 0.0, 1.0, f[0] as f32, f[1] as f32], t);
+        match &item.content {
+            Content::Symbol(name, size) => {
+                let scale = emu.device.scale;
+                if let Some(pix) = crate::symbols::draw(emu, name, &Default::default(), *size, scale) {
+                    let img = Image { pix: std::rc::Rc::new(pix), size: *size, scale, caps: [0.0; 4], orientation: 0, look: Default::default() };
+                    let img = tinted(&img, color.map(|v| v as f32));
+                    draw_contents(p, &img, [0.0; 4], f[2] as f32, f[3] as f32, a, &at, mask);
+                }
+            }
+            Content::Image(id, _) => {
+                if let Some(img) = emu.render.images.get(id).cloned() {
+                    let img = if img.look.is_template() { tinted(&img, color.map(|v| v as f32)) } else { img };
+                    draw_contents(p, &img, [0.0; 4], f[2] as f32, f[3] as f32, a, &at, mask);
+                }
+            }
+            Content::Title(text, weight) => {
+                let baseline = look.row / 2.0 + crate::navigation::TITLE_SIZE * 0.35;
+                let (glyphs, _) = crate::textkit::line_glyphs(emu, text, crate::navigation::TITLE_SIZE, *weight, color, f[0], baseline);
+                p.sync_faces(emu, &glyphs);
+                p.glyphs(&glyphs, a, t, mask);
+            }
+            // (The app's view draws itself.)
+            Content::Custom(_) => {}
         }
     }
 }

@@ -178,7 +178,7 @@ fn glyph_path(emu: &mut Emu, material: &str, wght: f64, fill: bool, points: f64)
 
 /// A symbol's pixels: its glyph fitted to its size, centered, in black (a
 /// template's alpha).
-fn draw(emu: &mut Emu, name: &str, config: &Config, size: [f64; 2], scale: f64) -> Option<Pixmap> {
+pub(crate) fn draw(emu: &mut Emu, name: &str, config: &Config, size: [f64; 2], scale: f64) -> Option<Pixmap> {
     let (w, h) = ((size[0] * scale).round().max(1.0) as u32, (size[1] * scale).round().max(1.0) as u32);
     let mut pix = Pixmap::new(w, h)?;
     let mut paint = Paint::default();

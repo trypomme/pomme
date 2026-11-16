@@ -18,10 +18,10 @@ toolbar. So most navigation-based apps are missing their buttons.
   views. Taps call their action.
 - The navigation controller shows a toolbar when `isToolbarHidden` is false
   and the top screen has `toolbarItems`.
-- Under Liquid Glass, items sit on glass capsules. Items next to each other
-  share one capsule, except where a fixed space or
-  `hidesSharedBackground` / `sharesBackground` separates them. `.prominent`
-  items are tinted glass.
+- Under Liquid Glass, items sit on glass capsules: on iOS 26.0 each item on
+  its own (recorded: two items are two capsules, 12 pt apart);
+  `hidesSharedBackground` leaves an item none. `.prominent` items, and the
+  system Done item, are blue glass.
 - Before iOS 26, items are drawn as tinted text or images with no
   background, as on iOS 18.
 - VoiceOver sees each item as a button.

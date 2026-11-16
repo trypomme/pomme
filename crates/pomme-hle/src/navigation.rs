@@ -877,6 +877,8 @@ pub struct BarLook {
     pub row: f64,
     /// Right to left: the back button on the right, its chevron pointing right.
     pub rtl: bool,
+    /// The top screen's bar button items (baritems.rs), in the bar's coordinates.
+    pub items: Vec<crate::baritems::BarItem>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -989,6 +991,13 @@ pub fn bar_parts(emu: &mut Emu, bar: u64) -> Result<Vec<BarPart>> {
     })
 }
 
+/// The navigation bars there are (for tests and tools).
+pub fn bars(emu: &Emu) -> Vec<u64> {
+    let mut b: Vec<u64> = emu.nav.bars.keys().copied().collect();
+    b.sort();
+    b
+}
+
 pub fn bar_look(emu: &mut Emu, bar: u64) -> Result<Option<BarLook>> {
     let Some(&nc) = emu.nav.bars.get(&bar) else { return Ok(None) };
     let stack = nav(emu, nc).stack;
@@ -1042,7 +1051,17 @@ fn look_for(emu: &mut Emu, bar: u64, stack: &[u64]) -> Result<Option<BarLook>> {
         // (Mirrored: fixtures/rtlnav, the glass button at 330 on a 390-pt bar.)
         b.hit.0 = bar_width(emu, bar) - b.hit.0 - b.hit.1;
     }
-    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large, row, rtl }))
+    let width = bar_width(emu, bar);
+    let mut items = crate::baritems::layout(emu, top_item, width, leading, back.is_some(), glass)?;
+    if rtl {
+        crate::baritems::mirror(&mut items, width);
+    }
+    // (The custom views of the screen the bar shows now are in it.)
+    let nc = emu.nav.bars.get(&bar).copied();
+    if nc.is_some_and(|nc| nav(emu, nc).stack.last() == Some(&top)) {
+        crate::baritems::place_custom(emu, bar, &items, 0.0)?;
+    }
+    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large, row, rtl, items }))
 }
 
 fn bar_width(emu: &mut Emu, bar: u64) -> f64 {
@@ -1056,7 +1075,13 @@ fn bar_touches_ended(emu: &mut Emu) -> Result<()> {
     let Some(p) = crate::touch::active_location(emu) else { return Ok(()) };
     let o = crate::uiview::window_origin(emu, bar);
     let (x, y) = (p[0] - o[0], p[1] - o[1]);
-    let Some(Back { hit: (bx, bw), .. }) = bar_look(emu, bar)?.and_then(|l| l.back) else { return Ok(()) };
+    let look = bar_look(emu, bar)?;
+    if let Some(l) = &look
+        && crate::baritems::tap(emu, &l.items, x, y)?
+    {
+        return Ok(());
+    }
+    let Some(Back { hit: (bx, bw), .. }) = look.and_then(|l| l.back) else { return Ok(()) };
     let h = view(emu, bar).bounds[3];
     if x >= bx && x < bx + bw && (0.0..h).contains(&y) {
         send(emu, nc, "popViewControllerAnimated:", &[1])?;
