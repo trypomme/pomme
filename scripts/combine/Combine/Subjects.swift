@@ -233,3 +233,10 @@ extension ObservableObject where ObjectWillChangePublisher == ObservableObjectPu
     }
   }
 }
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, *)
+extension Subject where Output == Void {
+  // pomme: replaces extension Combine.Subject where Self.Output == () :: public func send()
+  /// A subject of nothing but signals: send one.
+  public func send() { send(()) }
+}

@@ -210,6 +210,17 @@ fn add_ui_action(emu: &mut Emu, c: u64, a: u64, events: u64) -> Result<()> {
     Ok(())
 }
 
+/// A motion event's default: on to the next responder, if there is one.
+fn pass_motion(emu: &mut Emu, sel: &str) -> Result<()> {
+    let (r, motion, event) = (emu.arg(0), emu.arg(2), emu.arg(3));
+    let next = objc::send(emu, r, "nextResponder", &[])?;
+    if next != 0 {
+        objc::send(emu, next, sel, &[motion, event])?;
+    }
+    emu.ret(0);
+    Ok(())
+}
+
 /// `-[UIResponder targetForAction:withSender:]`: the first responder up the
 /// chain from `r` that can perform the action.
 fn target_for_action(emu: &mut Emu, mut r: u64, action: u64, sender: u64) -> Result<u64> {
@@ -739,6 +750,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     // UIResponder's default: the chain ends here (views, controllers, windows and the app override it).
     ("UIResponder", false, "nextResponder", |e| ret(e, 0)),
+    // Motion events (a shake): by default passed up the responder chain. React
+    // Native's developer menu swaps UIWindow's motionEnded:withEvent: for its
+    // own at startup in Debug builds, so the method has to be there.
+    ("UIResponder", false, "motionBegan:withEvent:", |e| pass_motion(e, "motionBegan:withEvent:")),
+    ("UIResponder", false, "motionEnded:withEvent:", |e| pass_motion(e, "motionEnded:withEvent:")),
+    ("UIResponder", false, "motionCancelled:withEvent:", |e| pass_motion(e, "motionCancelled:withEvent:")),
     // The chain's top: window → application → its delegate (when that's a responder).
     ("UIWindow", false, "nextResponder", |e| {
         let app = e.ui.app;

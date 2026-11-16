@@ -40,6 +40,9 @@ file, and runs it from there. Signed builds run as unsigned ones do: pomme
 doesn't check signatures. Apps from the App Store or TestFlight are encrypted
 and can't run.
 
+Where pomme deliberately behaves differently from iOS (fonts, no Home Screen, virtual
+time, …) is in [docs/differences-from-ios.md](docs/differences-from-ios.md).
+
 `inspect` lists every image in the bundle and the **HLE surface**: the system
 libraries and symbols pomme has to implement for the app to run.
 
