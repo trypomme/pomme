@@ -34,7 +34,7 @@
 ## 4. Frameworks
 
 - [x] 4.1 SwiftUI: `layoutDirection` is the app's (`Hosting.swift`); views are laid out from the leading edge and each placed view is mirrored in its parent in right to left (`Nodes.swift`), UIKit controls mirroring their own parts. Check: `cargo test --test rtl swiftui_mirrors` (the shapes where the still has them).
-- [ ] 4.2 (Not done: hello-expo needs a rebuild with an Arabic localization, and the disk had 9 GB free.) React Native: check `I18nManager.isRTL` in an `ar` run of `apps/hello-expo` with an Arabic localization, and that `forceRTL(true)` plus a reload makes it RTL. Store `allowRTL` and `forceRTL` across the relaunch. Check: a test in `hello_expo.rs`.
+- [x] 4.2 React Native: hello-expo declares English and Arabic (expo-localization's `supportedLocales`) and shows `I18nManager.isRTL`: true on an Arabic phone (React Native's own RCTI18nUtil, from the app's chosen localization; expo-localization allows right to left), false on an English one; the screen lays out right to left. react-native-screens sets the bar's direction through `appearanceWhenContainedInInstancesOfClasses:`, now answered (a proxy that keeps what's set). Check: `cargo test --test hello_expo i18n_manager_follows_the_apps_localization`. (`forceRTL` across a relaunch: not checked.)
 - [x] 4.3 Flutter: hello-flutter supports English, Arabic and Japanese (`flutter_localizations`) and prints its direction; on an Arabic phone it's right to left. Check: `cargo test --test hello_flutter text_direction_follows_the_language`.
 
 ## 5. Tests and docs

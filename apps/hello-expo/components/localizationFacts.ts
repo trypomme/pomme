@@ -1,5 +1,5 @@
 import { getCalendars, getLocales } from 'expo-localization';
-import { Settings } from 'react-native';
+import { I18nManager, Settings } from 'react-native';
 
 // The device's language and region as JavaScript sees them: expo-localization's
 // first locale and calendar, and Hermes's Intl and Date with no locale given.
@@ -48,6 +48,8 @@ export function localizationFacts(): [string, string][] {
     ['date.toLocaleString', intl(() => FIXED.toLocaleString())],
     ['date.offset', String(FIXED.getTimezoneOffset())],
     ['date.hours', String(FIXED.getHours())],
+    // React Native's layout direction: right to left in the app's Arabic localization.
+    ['I18nManager.isRTL', String(I18nManager.isRTL)],
   ];
 }
 

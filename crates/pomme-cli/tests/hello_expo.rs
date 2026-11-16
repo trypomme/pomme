@@ -1000,3 +1000,17 @@ fn expo_localization_and_intl_follow_the_device() {
     }
     assert!(report.is_empty(), "differences from iOS 26:\n{report}");
 }
+
+/// React Native's layout direction: hello-expo has an Arabic localization
+/// (expo-localization's `supportedLocales`), so on an Arabic phone
+/// `I18nManager.isRTL` is true, as React Native's own RCTI18nUtil decides
+/// from the app's chosen localization (right to left allowed, as
+/// expo-localization allows it by default); on an English phone, false.
+#[test]
+fn i18n_manager_follows_the_apps_localization() {
+    let Some(ar) = localization_screen(&["ar"], "SA", "Asia/Riyadh", None) else { return };
+    assert_eq!(ar.get("I18nManager.isRTL").map(String::as_str), Some("true"), "{ar:?}");
+    assert_eq!(ar.get("textDirection").map(String::as_str), Some("rtl"), "{ar:?}");
+    let Some(en) = localization_screen(&["en-US"], "US", "America/Los_Angeles", None) else { return };
+    assert_eq!(en.get("I18nManager.isRTL").map(String::as_str), Some("false"), "{en:?}");
+}

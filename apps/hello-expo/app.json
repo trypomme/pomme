@@ -45,7 +45,17 @@
           }
         }
       ],
-      "expo-localization"
+      [
+        "expo-localization",
+        {
+          "supportedLocales": {
+            "ios": [
+              "en",
+              "ar"
+            ]
+          }
+        }
+      ]
     ],
     "scheme": "pommehello"
   }

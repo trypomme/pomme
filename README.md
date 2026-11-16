@@ -86,9 +86,10 @@ cargo run -- run App.app --language ar --region SA --screenshot ar.png   # right
   out right to left, as on iOS (one without such a localization doesn't):
   Auto Layout's leading and trailing, stack views, table views, the
   navigation bar and its back swipe, the tab bar, switches, sliders,
-  segmented controls, text alignment, images that flip, SwiftUI and Flutter.
-  Not yet: React Native's `I18nManager` checked in an app, and moving the
-  caret with arrow keys.
+  segmented controls, text alignment, images that flip, SwiftUI, Flutter and
+  React Native.
+  React Native's `I18nManager` follows the app's localization too. Not yet:
+  moving the caret with arrow keys.
 
 A bundle for the browser (`pomme bundle`) carries the Chinese, Japanese and
 Korean fonts only for the app's own localizations, or those `--fonts ja,ko`

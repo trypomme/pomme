@@ -127,6 +127,8 @@ const PERMISSIVE: &[&str] = &[
     "NSParagraphStyle",
     // Screen properties beyond bounds/scale (brightness, mirroring, ...).
     "UIScreen",
+    // An appearance proxy for views inside given containers: kept, not applied.
+    "_UIAppearanceContainedProxy",
     // No touch input yet: gesture recognizers are configured but never fire.
     "UIGestureRecognizer",
     // Swift KVO observations that never fire (see swift.rs): invalidate etc.
@@ -391,6 +393,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSLayoutConstraint", "NSObject"),
     ("UIImageView", "UIView"),
     ("UITableViewCell", "UIView"),
+    ("UISearchBar", "UIView"),
     ("UITableViewHeaderFooterView", "UIView"),
     ("UITableViewController", "UIViewController"),
     ("NSIndexPath", "NSObject"),

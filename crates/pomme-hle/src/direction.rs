@@ -142,6 +142,14 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let r = if e.arg(2) == 0 { e.arg(3) == RTL } else { for_semantic(e, e.arg(2))? };
         ret(e, dir(r))
     }),
+    // `+appearanceWhenContainedInInstancesOfClasses:` (react-native-screens
+    // sets a navigation bar's direction so in a right-to-left app): a proxy
+    // that keeps what's set; appearance by container isn't applied.
+    ("UIView", true, "appearanceWhenContainedInInstancesOfClasses:", |e| {
+        let cls = objc::host_class(e, "_UIAppearanceContainedProxy")?;
+        let p = objc::create_instance(e, cls, 0)?;
+        ret(e, p)
+    }),
     // Natural (4) unless the app set one.
     ("UILabel", false, "textAlignment", |e| {
         let a = objc::bag_get(e, e.arg(0), "textAlignment").unwrap_or(4);
