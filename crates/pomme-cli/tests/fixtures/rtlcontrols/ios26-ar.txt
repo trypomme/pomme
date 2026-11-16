@@ -1,0 +1,62 @@
+# The rtlcontrols probe on the iOS 26.0 Simulator (iPhone 16e), phone language ar: METRIC <control> <frame>; VIEW <control> <class> <frame in the control> <text>; VALUE <name> <value>.
+VALUE image.plain.flips 0
+VALUE image.flipped.flips 1
+VALUE symbol.chevronForward.flips 0
+VALUE symbol.chevronRight.flips 0
+METRIC segmented 40.00 250.00 300.00 32.00
+VIEW segmented UISegmentedControl 0.00 0.00 300.00 32.00 
+VIEW segmented UIView 0.00 0.00 300.00 32.00 
+VIEW segmented UIImageView 0.00 0.00 100.00 32.00 
+VIEW segmented UIImageView 100.00 0.00 100.00 32.00 
+VIEW segmented UIImageView 200.00 0.00 100.00 32.00 
+VIEW segmented UIView 0.00 0.00 300.00 32.00 
+VIEW segmented _UILiquidLensView 202.00 2.00 96.00 28.00 
+VIEW segmented UIView 202.00 2.00 96.00 28.00 
+VIEW segmented UIView 202.00 2.00 96.00 28.00 
+VIEW segmented UIView 0.00 0.00 300.00 32.00 
+VIEW segmented UISegment 200.00 0.00 100.00 32.00 
+VIEW segmented UISegmentLabel 237.33 8.33 25.33 15.67 One
+VIEW segmented UISegment 100.00 0.00 100.00 32.00 
+VIEW segmented UISegmentLabel 137.67 8.33 25.00 15.67 Two
+VIEW segmented UISegment 0.00 0.00 100.00 32.00 
+VIEW segmented UISegmentLabel 32.33 8.33 35.33 15.67 Three
+METRIC slider 40.00 200.00 300.00 30.00
+VIEW slider UISlider 0.00 0.00 300.00 30.00 
+VIEW slider UIKit._UISliderGlassVisualElement 0.00 0.00 300.00 30.00 
+VIEW slider UIView 0.00 12.00 300.00 6.00 
+VIEW slider UIView 0.00 12.00 300.00 6.00 
+VIEW slider UIView 215.75 12.00 84.25 6.00 
+VIEW slider _UILiquidLensView 197.00 3.00 37.00 24.00 
+VIEW slider UIView 197.00 3.00 37.00 24.00 
+VIEW slider UIView 197.00 3.00 37.00 24.00 
+METRIC switchOff 40.00 100.00 63.00 28.00
+VIEW switchOff UISwitch 0.00 0.00 63.00 28.00 
+VIEW switchOff UISwitchModernVisualElement 0.00 0.00 63.00 28.00 
+VIEW switchOff UIView 0.00 0.00 63.00 28.00 
+VIEW switchOff UIView 0.00 0.00 63.00 28.00 
+VIEW switchOff UIView 0.00 0.00 63.00 28.00 
+VIEW switchOff _UILiquidLensView 24.00 2.00 37.00 24.00 
+VIEW switchOff UIView 24.00 2.00 37.00 24.00 
+VIEW switchOff UIView 24.00 2.00 37.00 24.00 
+METRIC switchOn 40.00 150.00 63.00 28.00
+VIEW switchOn UISwitch 0.00 0.00 63.00 28.00 
+VIEW switchOn UISwitchModernVisualElement 0.00 0.00 63.00 28.00 
+VIEW switchOn UIView 0.00 0.00 63.00 28.00 
+VIEW switchOn UIView 0.00 0.00 63.00 28.00 
+VIEW switchOn UIView 0.00 0.00 63.00 28.00 
+VIEW switchOn _UILiquidLensView 2.00 2.00 37.00 24.00 
+VIEW switchOn UIView 2.00 2.00 37.00 24.00 
+VIEW switchOn UIView 2.00 2.00 37.00 24.00 
+METRIC table 0.00 320.00 390.00 200.00
+VIEW table UITableView 0.00 0.00 390.00 200.00 
+VIEW table UITableViewCell 0.00 0.00 390.00 54.00 
+VIEW table _UISystemBackgroundView 0.00 0.00 390.00 54.00 
+VIEW table UIView 0.00 0.00 390.00 54.00 
+VIEW table UITableViewCellContentView 26.33 0.00 363.67 54.00 
+VIEW table UITableViewLabel 34.33 0.00 300.67 54.00 Row
+VIEW table UIImageView 351.00 16.33 22.00 20.00 
+VIEW table _UITableCellAccessoryButton 16.00 19.67 10.33 14.00 
+VIEW table UIImageView 16.00 19.67 10.33 14.00 
+VIEW table _UITableViewCellSeparatorView 16.00 53.00 319.00 1.00 
+VIEW table UIView 3.00 190.00 3.00 7.00 
+VIEW table UIView 380.00 194.00 7.00 3.00 

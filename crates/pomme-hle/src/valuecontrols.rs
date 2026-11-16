@@ -111,8 +111,22 @@ fn part(emu: &mut Emu, parent: u64, key: &str) -> Result<u64> {
     Ok(p)
 }
 
+/// A part's frame as placed in `parent`: mirrored across it in a
+/// right-to-left layout (fixtures/rtlcontrols: a switch's thumb, a slider's
+/// fill and thumb, a segmented control's segments, all mirrored). The
+/// controls work in left-to-right terms; this and `touch_point` turn them.
+fn mirrored(emu: &mut Emu, parent: u64, frame: [f64; 4]) -> Result<[f64; 4]> {
+    if parent == 0 || !crate::direction::view_rtl(emu, parent)? {
+        return Ok(frame);
+    }
+    let w = view(emu, parent).bounds[2];
+    Ok([w - frame[0] - frame[2], frame[1], frame[2], frame[3]])
+}
+
 /// Place and paint a part: its frame, fill, and corner radius.
 fn shape(emu: &mut Emu, p: u64, frame: [f64; 4], fill: u64, radius: f64) -> Result<()> {
+    let parent = view(emu, p).superview;
+    let frame = mirrored(emu, parent, frame)?;
     objc::send_fp(emu, p, "setFrame:", &[], &frame)?;
     send(emu, p, "setBackgroundColor:", &[fill])?;
     let layer = send(emu, p, "layer", &[])?;
@@ -182,9 +196,15 @@ fn design(emu: &Emu) -> &'static Design {
     if emu.system.liquid_glass() { &IOS26 } else { &IOS18 }
 }
 
+/// Where the touch is in control `c`, in left-to-right terms (mirrored in a
+/// right-to-left layout).
 fn touch_point(emu: &mut Emu, c: u64) -> Option<[f64; 2]> {
     let touch = emu.arg(2);
-    crate::touch::location_in(emu, touch, c)
+    let p = crate::touch::location_in(emu, touch, c)?;
+    if crate::direction::view_rtl(emu, c).unwrap_or(false) {
+        return Some([view(emu, c).bounds[2] - p[0], p[1]]);
+    }
+    Some(p)
 }
 
 fn touch_inside(emu: &mut Emu, c: u64) -> Result<bool> {
@@ -515,7 +535,8 @@ fn draw_segmented(emu: &mut Emu, c: u64) -> Result<()> {
         let text_color = crate::uiview::new_color(emu, [LABEL[0], LABEL[1], LABEL[2], dim])?;
         objc::bag_set(emu, l, "textColor", text_color);
         send(emu, l, "setText:", &[seg.title])?;
-        objc::send_fp(emu, l, "setFrame:", &[], &[x, 0.0, w, b[3]])?;
+        let frame = mirrored(emu, c, [x, 0.0, w, b[3]])?;
+        objc::send_fp(emu, l, "setFrame:", &[], &frame)?;
     }
     crate::host::frame_changed(emu);
     Ok(())

@@ -89,6 +89,8 @@ pub struct State {
 #[derive(Clone, Copy, Debug)]
 struct Swipe {
     nc: u64,
+    /// Right to left: it starts at the right edge and goes left (fixtures/rtlnav).
+    rtl: bool,
     start: [f64; 2],
     /// It became the swipe (the pop is following the finger).
     tracking: bool,
@@ -489,9 +491,12 @@ fn chrome(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mu
     t.dim_fade = (dl, d0, d1);
     t.moving.push(dl);
     t.dim = dim;
-    // Each screen's offset (in widths) at the start and end.
+    // Each screen's offset (in widths) at the start and end: from the
+    // trailing side, the left one in right to left (fixtures/rtlnav).
     let moves = if forward { [(nv, 1.0, 0.0), (ov, 0.0, -PARALLAX)] } else { [(ov, 0.0, 1.0), (nv, -PARALLAX, 0.0)] };
+    let sign = if crate::direction::view_rtl(emu, container)? { -1.0 } else { 1.0 };
     for (v, at0, at1) in moves {
+        let (at0, at1) = (sign * at0, sign * at1);
         // Its card: the screen's shape, casting the shadow, just under it.
         let frame = crate::uiview::frame_of(emu, v);
         let card = new_view(emu, frame)?;
@@ -522,9 +527,7 @@ fn chrome(emu: &mut Emu, container: u64, ot: u64, nt: u64, forward: bool, t: &mu
 /// A finger went down at `p` (window coordinates): it may become a back swipe.
 pub(crate) fn swipe_began(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<()> {
     emu.nav.swipe = None;
-    if p[0] > SWIPE_EDGE {
-        return Ok(());
-    }
+    let rtl = crate::direction::app_rtl(emu)?;
     // The navigation controllers under the finger that can go back; the innermost wins.
     let mut best: Option<(u64, usize)> = None;
     let navs: Vec<(u64, Nav)> = emu.nav.navs.iter().map(|(&k, v)| (k, v.clone())).collect();
@@ -547,13 +550,16 @@ pub(crate) fn swipe_began(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<()> {
         }
         let o = crate::uiview::window_origin(emu, n.container);
         let inside = p[0] >= o[0] && p[1] >= o[1] && p[0] < o[0] + cv.bounds[2] && p[1] < o[1] + cv.bounds[3];
+        // From the leading edge: the left one, the right one in right to left.
+        let from_edge = if rtl { o[0] + cv.bounds[2] - p[0] } else { p[0] - o[0] };
+        let inside = inside && from_edge <= SWIPE_EDGE;
         let depth = depth_of(emu, n.container);
         if inside && best.is_none_or(|(_, d)| depth > d) {
             best = Some((nc, depth));
         }
     }
     if let Some((nc, _)) = best {
-        emu.nav.swipe = Some(Swipe { nc, start: p, tracking: false, last: (p[0], now), prev: (p[0], now) });
+        emu.nav.swipe = Some(Swipe { nc, rtl, start: p, tracking: false, last: (p[0], now), prev: (p[0], now) });
     }
     Ok(())
 }
@@ -588,6 +594,7 @@ pub(crate) fn swipe_moved(emu: &mut Emu, p: [f64; 2], now: f64) -> Result<bool> 
     sw.prev = sw.last;
     sw.last = (p[0], now);
     let (dx, dy) = (p[0] - sw.start[0], p[1] - sw.start[1]);
+    let dx = if sw.rtl { -dx } else { dx };
     let mut began = false;
     if !sw.tracking {
         if dx.abs() < SWIPE_SLOP && dy.abs() < SWIPE_SLOP {
@@ -621,9 +628,10 @@ pub(crate) fn swipe_ended(emu: &mut Emu, p: [f64; 2], now: f64, cancelled: bool)
     }
     let Some(t) = emu.nav.transitions.get(&sw.nc).cloned() else { return Ok(()) };
     let w = t.width.max(1.0);
-    let progress = ((p[0] - sw.start[0]) / w).clamp(0.0, 1.0);
+    let sign = if sw.rtl { -1.0 } else { 1.0 };
+    let progress = (sign * (p[0] - sw.start[0]) / w).clamp(0.0, 1.0);
     let (x0, t0) = if (now - sw.last.1).abs() > 1e-6 { sw.last } else { sw.prev };
-    let velocity = if now > t0 { (p[0] - x0) / (now - t0) } else { 0.0 };
+    let velocity = if now > t0 { sign * (p[0] - x0) / (now - t0) } else { 0.0 };
     let finish = !cancelled && progress + velocity / w * SWIPE_PROJECTION > 0.5;
     let (omega, zeta, _) = POP_SPRING;
     // The spring starts at the finger's speed, as a fraction of the distance left per second.
@@ -867,6 +875,8 @@ pub struct BarLook {
     pub large: bool,
     /// The height of the bar's usual row (the back button, a small title).
     pub row: f64,
+    /// Right to left: the back button on the right, its chevron pointing right.
+    pub rtl: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -967,7 +977,7 @@ pub fn bar_parts(emu: &mut Emu, bar: u64) -> Result<Vec<BarPart>> {
     };
     let (dx_old, dx_new) = (offset(emu, ot)?, offset(emu, nt)?);
     // How far along it is: the incoming card's travel on a push, the leaving one's on a pop.
-    let progress = if t.forward { 1.0 - dx_new / w } else { dx_old / w }.clamp(0.0, 1.0);
+    let progress = if t.forward { 1.0 - dx_new.abs() / w } else { dx_old.abs() / w }.clamp(0.0, 1.0);
     let (b0, b1) = (before.back.is_some() as u8 as f64, now.back.is_some() as u8 as f64);
     let back = b0 + (b1 - b0) * progress;
     // The upper screen's card edge: the incoming one on a push, the leaving one on a pop.
@@ -1027,7 +1037,12 @@ fn look_for(emu: &mut Emu, bar: u64, stack: &[u64]) -> Result<Option<BarLook>> {
     // (Under Liquid Glass the bar is 10 pt taller below its row, which is
     // still 44: measured, the small title's baseline 28 below the bar's top.)
     let row = if compact_bar(emu) { COMPACT_BAR_HEIGHT } else { BAR_HEIGHT };
-    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large, row }))
+    let rtl = crate::direction::view_rtl(emu, bar)?;
+    if rtl && let Some(b) = &mut back {
+        // (Mirrored: fixtures/rtlnav, the glass button at 330 on a 390-pt bar.)
+        b.hit.0 = bar_width(emu, bar) - b.hit.0 - b.hit.1;
+    }
+    Ok(Some(BarLook { title, back, glass, background, shadow, leading, large, row, rtl }))
 }
 
 fn bar_width(emu: &mut Emu, bar: u64) -> f64 {

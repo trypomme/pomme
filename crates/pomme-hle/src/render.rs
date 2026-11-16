@@ -227,9 +227,18 @@ pub struct ImageLook {
     pub baseline: Option<f64>,
     /// The symbol it is (`systemImageNamed:`), and its configuration.
     pub symbol: Option<crate::symbols::Symbol>,
+    /// Drawn mirrored in a right-to-left view (`imageFlippedForRightToLeftLayoutDirection`).
+    pub flips_rtl: bool,
 }
 
 impl ImageLook {
+    /// Whether it's drawn mirrored in a right-to-left view: flipped for it,
+    /// or a symbol that points forward or backward (`chevron.forward` points
+    /// left in right to left, `chevron.right` doesn't: fixtures/rtlcontrols).
+    pub fn mirrors_in_rtl(&self) -> bool {
+        self.flips_rtl || self.symbol.as_ref().is_some_and(|s| s.name.split('.').any(|p| p == "forward" || p == "backward"))
+    }
+
     /// Whether it's drawn as a template: its alpha in a tint color (a symbol
     /// is, unless it's made always original).
     pub fn is_template(&self) -> bool {
@@ -2210,7 +2219,9 @@ fn draw_view_body(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
             img = tinted(&img, color);
         }
         let r = contents_rect(emu, &ly, &img, w, h);
-        draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &vt), m);
+        let at = concat(&[1.0, 0.0, 0.0, 1.0, r[0], r[1]], &vt);
+        let at = if img.look.mirrors_in_rtl() && crate::direction::view_rtl(emu, v).unwrap_or(false) { concat(&[-1.0, 0.0, 0.0, 1.0, r[2], 0.0], &at) } else { at };
+        draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &at, m);
     }
     if let Some((ops, _)) = emu.render.content.get(&v).cloned() {
         p.ops(&ops, a, &inner, m);
@@ -2477,8 +2488,10 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
     }
     let Some(back) = &look.back else { return };
     let alpha = alpha * back_alpha;
-    // The back button sits inside the bar's leading safe-area inset.
-    let t = &concat(&[1.0, 0.0, 0.0, 1.0, look.leading as f32, 0.0], t);
+    // The back button sits inside the bar's leading safe-area inset; in
+    // right to left, mirrored across the bar (its text drawn unmirrored).
+    let bar_t = *t;
+    let t = &if look.rtl { concat(&[-1.0, 0.0, 0.0, 1.0, w as f32 - look.leading as f32, 0.0], t) } else { concat(&[1.0, 0.0, 0.0, 1.0, look.leading as f32, 0.0], t) };
     let round = Stroke { width: 2.6, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
     let chevron = |p: &mut Painter, cx: f32, cy: f32, half: f32, depth: f32, color: [f64; 4], width: f32| {
         let els = [El::Move(cx + depth / 2.0, cy - half), El::Line(cx - depth / 2.0, cy), El::Line(cx + depth / 2.0, cy + half)];
@@ -2499,9 +2512,15 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
     } else {
         chevron(p, 8.0 + 6.0, row / 2.0, 10.5, 10.0, TINT, 3.0);
         if let Some(label) = &back.label {
-            let (glyphs, _) = crate::textkit::line_glyphs(emu, label, TITLE_SIZE, 0.0, TINT, BACK_LABEL_X, baseline);
+            let (glyphs, width) = crate::textkit::line_glyphs(emu, label, TITLE_SIZE, 0.0, TINT, BACK_LABEL_X, baseline);
+            let glyphs = if look.rtl {
+                let x = w as f64 - look.leading - BACK_LABEL_X - width;
+                glyphs.into_iter().map(|g| Glyph { x: g.x - BACK_LABEL_X + x, ..g }).collect()
+            } else {
+                glyphs
+            };
             p.sync_faces(emu, &glyphs);
-            p.glyphs(&glyphs, alpha, t, mask);
+            p.glyphs(&glyphs, alpha, if look.rtl { &bar_t } else { t }, mask);
         }
     }
 }

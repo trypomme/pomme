@@ -1426,7 +1426,30 @@ pub fn look(emu: &mut Emu, b: u64) -> Result<Option<Look>> {
         buttons.push(Button { item, frame, title: titles[i].clone(), title_color, title_frame, title_weight: weight, title_size, image, image_frame, color, selected, enabled, badge, detached });
     }
     let (background, hairline) = if glass { (None, None) } else { background(emu, b) };
-    Ok(Some(Look { glass, dark, platter, search_platter, background, hairline, buttons }))
+    let mut look = Look { glass, dark, platter, search_platter, background, hairline, buttons };
+    if crate::direction::view_rtl(emu, b)? {
+        mirror(&mut look, w);
+    }
+    Ok(Some(look))
+}
+
+/// The bar in a right-to-left layout: everything mirrored across it, the
+/// tabs in reverse order (fixtures/tabbar/ios26-ar.txt). A badge sits at
+/// its image's top left, a point further in than a mirror puts it.
+fn mirror(look: &mut Look, w: f64) {
+    let flip = |r: &mut [f64; 4]| r[0] = w - r[0] - r[2];
+    for r in [&mut look.platter, &mut look.search_platter].into_iter().flatten() {
+        flip(r);
+    }
+    for b in &mut look.buttons {
+        flip(&mut b.frame);
+        flip(&mut b.title_frame);
+        flip(&mut b.image_frame);
+        if let Some(badge) = &mut b.badge {
+            flip(&mut badge.frame);
+            badge.frame[0] += 1.0;
+        }
+    }
 }
 
 /// A tab bar's selected button and count, for accessibility.

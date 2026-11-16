@@ -372,3 +372,32 @@ fn bottom_accessory() {
         assert_eq!(line(&console, "ACCESSORY environment"), measured_line("accessory", compat, "ACCESSORY environment"));
     }
 }
+
+/// In an app with an Arabic localization on an Arabic phone, the bar is
+/// mirrored: the tabs in reverse order, each title where iOS puts it, the
+/// badge at its image's top left (fixtures/tabbar/ios26-ar.txt).
+#[test]
+fn right_to_left_bar() {
+    let Some(mut emu) = boot(false) else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    common::views(&mut emu, 3.0);
+    let bar = pomme_hle::tabbar::bars(&emu)[0];
+    let look = pomme_hle::tabbar::look(&mut emu, bar).unwrap().unwrap();
+    let recording = recorded("ios26-ar.txt");
+    let mut wrong = Vec::new();
+    for (name, want) in &recording {
+        let Some(title) = name.strip_prefix("second.text.") else { continue };
+        let Some(b) = look.buttons.iter().find(|b| b.title == title) else { continue };
+        let [x, y, w, h] = b.title_frame;
+        if (x + w / 2.0 - (want[0] + want[2] / 2.0)).abs() > 1.0 || (y - want[1]).abs() > 0.5 || (h - want[3]).abs() > 0.5 {
+            wrong.push(format!("{name}: {:?}, iOS {want:?}", b.title_frame));
+        }
+    }
+    let badge = look.buttons[2].badge.as_ref().expect("a badge");
+    let want = recording.iter().find(|(n, _)| n == "second.text.3").unwrap().1;
+    if (badge.frame[0] + badge.frame[2] / 2.0 - (want[0] + want[2] / 2.0)).abs() > 1.5 {
+        wrong.push(format!("badge at {:?}, iOS's text at {want:?}", badge.frame));
+    }
+    assert!(wrong.is_empty(), "right to left: differences from iOS 26:\n  {}", wrong.join("\n  "));
+}

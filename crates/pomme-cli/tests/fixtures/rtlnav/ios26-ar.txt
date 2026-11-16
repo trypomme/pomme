@@ -1,0 +1,106 @@
+# The rtlnav probe on the iOS 26.0 Simulator (iPhone 16e), phone language ar: PUSH/POP <seconds since the transition began> <the moving screen's left edge, pt>; BAR <class> <frame in the window> <text>; VALUE <name> <value>.
+PUSH 0.094 -348.56
+PUSH 0.111 -289.50
+PUSH 0.128 -234.97
+PUSH 0.144 -187.45
+PUSH 0.161 -147.53
+PUSH 0.178 -114.86
+PUSH 0.194 -88.63
+PUSH 0.211 -67.89
+PUSH 0.228 -51.68
+PUSH 0.244 -39.12
+PUSH 0.261 -29.48
+PUSH 0.278 -22.13
+PUSH 0.294 -16.54
+PUSH 0.311 -12.33
+PUSH 0.328 -9.16
+PUSH 0.344 -6.79
+PUSH 0.361 -5.02
+PUSH 0.378 -3.71
+PUSH 0.394 -2.73
+PUSH 0.411 -2.01
+PUSH 0.428 -1.47
+PUSH 0.444 -1.08
+PUSH 0.461 -0.79
+PUSH 0.478 -0.58
+PUSH 0.494 -0.42
+PUSH 0.511 -0.31
+PUSH 0.528 -0.22
+PUSH 0.544 -0.16
+PUSH 0.561 0.00
+PUSH 0.578 0.00
+PUSH 0.594 0.00
+PUSH 0.611 0.00
+PUSH 0.628 0.00
+PUSH 0.644 0.00
+PUSH 0.661 0.00
+PUSH 0.678 0.00
+PUSH 0.694 0.00
+PUSH 0.711 0.00
+BAR UINavigationBar 0.00 47.00 390.00 54.00 
+BAR _UIBarBackground 0.00 0.00 390.00 101.00 
+BAR UIKit.NavigationBarContentView 0.00 47.00 390.00 54.00 
+BAR UIKit.NavigationBarTransitionContainer 0.00 47.00 390.00 54.00 
+BAR _UINavigationBarHostedViewContainer 0.00 47.00 390.00 54.00 
+BAR _UINavigationBarHostedViewWrapper 165.00 57.83 60.00 22.33 
+BAR _UINavigationBarTitleControl 165.00 57.83 60.00 22.33 
+BAR _UIIntrinsicContentSizeInvalidationForwardingWrapperView 165.00 57.83 60.00 22.33 
+BAR UILabel 165.00 57.83 60.00 22.33 Pushed
+BAR UIView 0.00 47.00 390.00 54.00 
+BAR UIKit.NavigationBarPlatterContainer 0.00 47.00 390.00 54.00 
+BAR _UINavigationBarPlatterView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterAnimationView 327.90 44.90 48.20 48.20 
+BAR _UINavigationBarPlatterAnimationView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterContentView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterGlassView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterSubviewContainerView 330.00 47.00 44.00 44.00 
+BAR _UINavigationBarPlatterItemView 330.00 47.00 44.00 44.00 
+BAR _UIButtonBarButton 330.00 47.00 44.00 44.00 
+BAR UIImageView 354.33 55.33 19.67 28.00 
+BAR _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button 330.00 58.00 44.00 22.33 
+BAR UIImageView 344.00 58.00 15.67 22.33 
+VALUE interactivePop.class _UIParallaxTransitionPanGestureRecognizer
+VALUE interactivePop.edges 8
+POP 0.033 0.00
+POP 0.050 -76.97
+POP 0.067 -133.77
+POP 0.083 -184.27
+POP 0.100 -227.26
+POP 0.117 -262.78
+POP 0.133 -291.49
+POP 0.150 -314.33
+POP 0.167 -332.26
+POP 0.183 -346.20
+POP 0.200 -356.93
+POP 0.217 -365.14
+POP 0.233 -371.39
+POP 0.250 -376.11
+POP 0.267 -379.67
+POP 0.283 -382.33
+POP 0.300 -384.32
+POP 0.317 -385.81
+POP 0.333 -386.91
+POP 0.350 -387.73
+POP 0.367 -388.33
+POP 0.383 -388.78
+POP 0.400 -389.10
+POP 0.417 -389.34
+POP 0.433 -389.52
+POP 0.450 -389.65
+POP 0.467 -389.75
+POP 0.483 -389.81
+POP 0.500 0.00
+POP 0.517 0.00
+POP 0.533 0.00
+POP 0.550 0.00
+POP 0.567 0.00
+POP 0.583 0.00
+POP 0.600 0.00
+POP 0.617 0.00
+POP 0.633 0.00
+POP 0.650 0.00
+POP 0.667 0.00
+POP 0.683 0.00
+POP 0.700 0.00

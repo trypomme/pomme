@@ -68,3 +68,228 @@ fn arabic_app_on_an_english_phone() {
 fn english_only_app_on_an_arabic_phone() {
     check("rtlplain", "ar", "ar", "SA");
 }
+
+// ---- Navigation (tests/fixtures/rtlnav: push at 0.5 s, pop at 2 s) ----
+
+use pomme_hle::host::{Frame, Host, Idle};
+use std::sync::{Arc, Mutex};
+
+type Frames = Arc<Mutex<Vec<(u64, u32, Vec<u8>)>>>;
+
+struct Recording(Frames);
+
+impl Host for Recording {
+    fn idle(&mut self, _: u64, _: Option<u64>) -> Idle {
+        Idle::Advance
+    }
+    fn frame(&mut self, f: Frame<'_>) {
+        self.0.lock().unwrap().push((f.at_ns, f.width, f.rgba.to_vec()));
+    }
+}
+
+const S: u64 = 1_000_000_000;
+const W: f64 = 390.0;
+
+/// The rtlnav probe on an Arabic phone, with these swipes ((from, to, at ns, for ns)), for `secs`.
+fn run_nav(swipes: &[((f64, f64), (f64, f64), u64, u64)], secs: f64) -> Option<Vec<(u64, u32, Vec<u8>)>> {
+    let mut emu = common::boot("rtlnav")?;
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    let frames: Frames = Default::default();
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
+    emu.live.scale = 1.0;
+    for &(from, to, at, duration) in swipes {
+        pomme_hle::touch::swipe(&mut emu.touch.script, at, from, to, duration);
+    }
+    common::views(&mut emu, secs);
+    let f = frames.lock().unwrap().clone();
+    Some(f)
+}
+
+fn px(f: &(u64, u32, Vec<u8>), x: u32, y: u32) -> [u8; 3] {
+    let i = ((y * f.1 + x) * 4) as usize;
+    [f.2[i], f.2[i + 1], f.2[i + 2]]
+}
+
+fn blue(c: [u8; 3]) -> bool {
+    c[2] > 200 && c[0] < 60
+}
+
+/// The blue screen's right edge in row `y` (0: none).
+fn right_edge(f: &(u64, u32, Vec<u8>), y: u32) -> f64 {
+    (0..f.1).rev().find(|&x| blue(px(f, x, y))).map_or(0.0, |x| x as f64 + 1.0)
+}
+
+/// iOS 26's push and pop on the iPhone 16e (tests/transitions.rs, measured
+/// from video): the moving screen's progress across the screen.
+const PUSH: &[(f64, f64)] = &[(0.0, 0.0), (0.017, 0.066), (0.034, 0.219), (0.067, 0.489), (0.083, 0.597), (0.1, 0.685), (0.117, 0.757), (0.133, 0.813), (0.15, 0.858), (0.167, 0.892), (0.2, 0.939), (0.25, 0.975), (0.3, 0.99), (0.4, 0.998), (0.5, 1.0)];
+const POP: &[(f64, f64)] = &[(0.0, 0.0), (0.017, 0.152), (0.033, 0.301), (0.05, 0.436), (0.067, 0.552), (0.083, 0.648), (0.1, 0.727), (0.117, 0.79), (0.133, 0.839), (0.15, 0.878), (0.167, 0.908), (0.2, 0.948), (0.25, 0.978), (0.3, 0.991), (0.4, 0.999), (0.5, 1.0)];
+
+fn progress(curve: &[(f64, f64)], t: f64) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    for w in curve.windows(2) {
+        let ((t0, p0), (t1, p1)) = (w[0], w[1]);
+        if t <= t1 {
+            return p0 + (p1 - p0) * (t - t0) / (t1 - t0);
+        }
+    }
+    1.0
+}
+
+/// In an Arabic app the pushed screen comes in from the left and a pop
+/// takes it back out to the left. fixtures/rtlnav/ios26-ar.txt (sampled each
+/// frame) shows iOS moves it as the mirror of the English push and pop
+/// (from −390 to 0, settled in half a second; ios26-en.txt from 390), so
+/// it's held to the measured English curves, mirrored.
+#[test]
+fn push_and_pop_from_the_left() {
+    let Some(frames) = run_nav(&[], 2.8) else { return };
+    let mut checked = 0;
+    for (start, curve, push) in [(0.5, PUSH, true), (2.0, POP, false)] {
+        for f in frames.iter().filter(|f| (0.0..0.35).contains(&(f.0 as f64 / 1e9 - start))) {
+            let t = f.0 as f64 / 1e9 - start;
+            let p = progress(curve, t);
+            let want = if push { W * p } else { W * (1.0 - p) };
+            let got = right_edge(f, 300);
+            assert!((got - want).abs() <= 0.03 * W, "{} at {t:.3}: blue's right edge {got}, iOS {want:.0}", if push { "push" } else { "pop" });
+            checked += 1;
+        }
+    }
+    assert!(checked > 10, "only {checked} frames");
+}
+
+/// The glass back button is on the right (fixtures/rtlnav: a 44-pt circle at x 330).
+#[test]
+fn back_button_on_the_right() {
+    let Some(frames) = run_nav(&[], 1.8) else { return };
+    let f = frames.last().unwrap();
+    let light = |c: [u8; 3]| c.iter().all(|&v| v > 200);
+    assert!(light(px(f, 352, 69)), "no back button at the right: {:?}", px(f, 352, 69));
+    assert!(blue(px(f, 38, 69)), "something at the left: {:?}", px(f, 38, 69));
+}
+
+/// The back swipe starts at the right edge (iOS's gesture: `edges` 8), not the left.
+#[test]
+fn back_swipe_from_the_right_edge() {
+    let Some(frames) = run_nav(&[((386.0, 400.0), (90.0, 400.0), 11 * S / 10, S / 4)], 1.95) else { return };
+    assert!(!blue(px(frames.last().unwrap(), 195, 400)), "the swipe from the right didn't pop");
+    let Some(frames) = run_nav(&[((4.0, 400.0), (300.0, 400.0), 11 * S / 10, S / 4)], 1.95) else { return };
+    assert!(blue(px(frames.last().unwrap(), 195, 400)), "a swipe from the left popped");
+}
+
+// ---- Controls (tests/fixtures/rtlcontrols) ----
+
+/// The frames of the views under the first line of `views` containing
+/// `header` (more indented, up to the next line that isn't), with their text.
+fn children(views: &str, header: &str) -> Vec<([f64; 4], String)> {
+    let mut lines = views.lines().skip_while(|l| !l.contains(header));
+    let Some(head) = lines.next() else { return Vec::new() };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let base = indent(head);
+    lines
+        .take_while(|l| indent(l) > base)
+        .filter_map(|l| {
+            let (_, rest) = l.split_once(" (")?;
+            let (frame, tail) = rest.split_once(')')?;
+            let nums: Vec<f64> = frame.split([',', '×']).filter_map(|v| v.trim().parse().ok()).collect();
+            (nums.len() == 4).then(|| ([nums[0], nums[1], nums[2], nums[3]], tail.to_string()))
+        })
+        .collect()
+}
+
+/// iOS's subview frames for a control (`VIEW control class x y w h text`).
+fn ios_views(control: &str) -> Vec<(String, [f64; 4], String)> {
+    let text = std::fs::read_to_string(format!("{}/tests/fixtures/rtlcontrols/ios26-ar.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split(' ');
+            (f.next()? == "VIEW" && f.next()? == control).then_some(())?;
+            let class = f.next()?.to_string();
+            let v: Vec<f64> = f.by_ref().take(4).filter_map(|x| x.parse().ok()).collect();
+            Some((class, [v[0], v[1], v[2], v[3]], f.collect::<Vec<_>>().join(" ")))
+        })
+        .collect()
+}
+
+/// A switch's thumb, a slider's fill and thumb and a segmented control's
+/// segments are mirrored in their control, as on iOS (the recording's frames).
+#[test]
+fn controls_mirror() {
+    let Some(mut emu) = common::boot("rtlcontrols") else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    let views = common::views(&mut emu, 2.5);
+    let close = |a: f64, b: f64| (a - b).abs() <= 1.0;
+    let lens_x = |c: &str| ios_views(c).iter().find(|v| v.0 == "_UILiquidLensView").map(|v| v.1[0]).unwrap();
+    let mut wrong = Vec::new();
+    // Thumbs: the 37 × 24 capsule.
+    for (header, control) in [("UISwitch (40.0, 100.0", "switchOff"), ("UISwitch (40.0, 150.0", "switchOn"), ("UISlider (", "slider")] {
+        let thumb = children(&views, header).into_iter().find(|c| close(c.0[2], 37.0) && close(c.0[3], 24.0)).map(|c| c.0[0]);
+        if !thumb.is_some_and(|x| close(x, lens_x(control))) {
+            wrong.push(format!("{control} thumb at {thumb:?}, iOS {}", lens_x(control)));
+        }
+    }
+    // The slider's fill: from its right end.
+    let fill = ios_views("slider").into_iter().find(|v| v.0 == "UIView" && close(v.1[3], 6.0) && v.1[0] > 0.0).unwrap().1;
+    if !children(&views, "UISlider (").iter().any(|c| c.1.contains("#0088ff") && close(c.0[0], fill[0]) && close(c.0[2], fill[2])) {
+        wrong.push(format!("slider fill not at {fill:?}"));
+    }
+    // The selection and the first segment's title on the right.
+    let seg = children(&views, "UISegmentedControl (");
+    let sel = lens_x("segmented");
+    if !seg.iter().any(|c| close(c.0[0], sel) && close(c.0[2], 96.0)) {
+        wrong.push(format!("segment selection not at {sel}"));
+    }
+    let one = ios_views("segmented").into_iter().find(|v| v.2 == "One").unwrap().1;
+    let ours = seg.iter().find(|c| c.1.contains("\"One\"")).map(|c| c.0);
+    if !ours.is_some_and(|r| r[0] <= one[0] && r[0] + r[2] >= one[0] + one[2]) {
+        wrong.push(format!("\"One\" at {ours:?}, iOS's label at {one:?}"));
+    }
+    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}\n{views}", wrong.join("\n  "));
+}
+
+/// A tap on a segment selects the segment shown there: the leftmost is the
+/// last one in right to left.
+#[test]
+fn tapping_the_leftmost_segment_selects_the_last() {
+    let Some(mut emu) = common::boot("rtlcontrols") else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    pomme_hle::touch::swipe(&mut emu.touch.script, 2 * S, (90.0, 266.0), (90.0, 266.0), S / 20);
+    let views = common::views(&mut emu, 2.8);
+    // The selection moved to the leftmost segment ("Three").
+    assert!(children(&views, "UISegmentedControl (").iter().any(|c| (c.0[0] - 2.0).abs() < 1.0 && (c.0[2] - 96.0).abs() < 1.0), "{views}");
+}
+
+/// Images: one flipped for right to left is drawn mirrored, a plain one
+/// isn't; the symbol `chevron.forward` points left, `chevron.right` still
+/// right; `flipsForRightToLeftLayoutDirection` as iOS answers it.
+#[test]
+fn images_that_flip() {
+    let Some(mut emu) = common::boot("rtlcontrols") else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    let frames: Frames = Default::default();
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
+    emu.live.scale = 1.0;
+    common::views(&mut emu, 2.5);
+    let recording = std::fs::read_to_string(format!("{}/tests/fixtures/rtlcontrols/ios26-ar.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    for (name, want) in values(&recording).into_iter().filter(|(n, _)| n.ends_with(".flips")) {
+        assert_eq!(values(&emu.console).get(&name), Some(&want), "{name}");
+    }
+    let frames = frames.lock().unwrap();
+    let f = frames.last().unwrap();
+    let red = |c: [u8; 3]| c[0] > 200 && c[2] < 60;
+    // Red on the left as drawn; flipped, blue on the left.
+    assert!(red(px(f, 50, 580)), "plain: {:?}", px(f, 50, 580));
+    assert!(blue(px(f, 130, 580)), "flipped: {:?}", px(f, 130, 580));
+    // A chevron's ink across its middle row: left of its centre when it points left.
+    let ink = |x0: u32| {
+        let xs: Vec<f64> = (x0..x0 + 40).filter(|&x| px(f, x, 580).iter().all(|&v| v < 100)).map(|x| x as f64).collect();
+        xs.iter().sum::<f64>() / xs.len().max(1) as f64 - (x0 + 20) as f64
+    };
+    assert!(ink(200) < -2.0, "chevron.forward should point left: ink {:.1} from its centre", ink(200));
+    assert!(ink(280) > 2.0, "chevron.right should point right: ink {:.1} from its centre", ink(280));
+}

@@ -443,7 +443,11 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
             l.rendering_mode = mode;
         })
     }),
-    (I, false, "imageFlippedForRightToLeftLayoutDirection", ret_self),
+    (I, false, "imageFlippedForRightToLeftLayoutDirection", |e| restyled(e, |l| l.flips_rtl = true)),
+    (I, false, "flipsForRightToLeftLayoutDirection", |e| {
+        let f = image(e, e.arg(0)).is_some_and(|i| i.look.flips_rtl);
+        ret(e, f as u64)
+    }),
     (I, false, "renderingMode", |e| {
         let m = image(e, e.arg(0)).map_or(0, |i| i.look.rendering_mode);
         ret(e, m as u64)

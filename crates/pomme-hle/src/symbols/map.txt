@@ -2,15 +2,19 @@
 # Material symbol that stands for it, and `fill` where it's drawn filled
 # (Material's FILL axis). Names SF writes `x.fill` are the same symbol
 # filled. Sizes come from iOS (ios26.txt, recorded on the simulator).
+# `forward` and `backward` symbols point right and left as drawn here, and
+# are mirrored in a right-to-left view (render.rs, ImageLook::mirrors_in_rtl).
 airplane flight
 antenna.radiowaves.left.and.right cell_tower
 archivebox inventory_2
 archivebox.fill inventory_2 fill
+arrow.backward arrow_back
 arrow.clockwise refresh
 arrow.counterclockwise undo
 arrow.down arrow_downward
 arrow.down.circle arrow_circle_down
 arrow.down.circle.fill arrow_circle_down fill
+arrow.forward arrow_forward
 arrow.left arrow_back
 arrow.right arrow_forward
 arrow.triangle.2.circlepath sync
@@ -47,7 +51,9 @@ checkmark.circle check_circle
 checkmark.circle.fill check_circle fill
 checkmark.square check_box
 checkmark.square.fill check_box fill
+chevron.backward chevron_left
 chevron.down keyboard_arrow_down
+chevron.forward chevron_right
 chevron.left chevron_left
 chevron.right chevron_right
 chevron.up keyboard_arrow_up
