@@ -11,6 +11,8 @@
 # ios26[-compat]-name.txt. SHOT=file: a screenshot of the screen at 5 s.
 # ARGS: launch arguments (for example "-AppleLanguages (ja-JP) -AppleLocale
 # ja_JP"). TZ: the app's time zone. A probe may be main.swift or main.m.
+# OPEN_URL=url: open that link in the running probe (xcrun simctl openurl) at
+# OPEN_URL_AT seconds (default 2).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PROBE=${1:-swiftuimetrics}
@@ -52,6 +54,9 @@ xcrun simctl install "$DEVICE" "$APP"
 OUT=$(mktemp)
 # shellcheck disable=SC2086 # (ARGS is split into arguments; TZ, when set, is one)
 env SIMCTL_CHILD_PROBE_VARIANT="${VARIANT:-}" ${TZ:+SIMCTL_CHILD_TZ="$TZ"} xcrun simctl launch --console-pty --terminate-running-process "$DEVICE" dev.pomme.$PROBE ${ARGS:-} >"$OUT" 2>&1 &
+if [ -n "${OPEN_URL:-}" ]; then
+  (sleep "${OPEN_URL_AT:-2}"; xcrun simctl openurl "$DEVICE" "$OPEN_URL") &
+fi
 if [ -n "${SHOT:-}" ]; then
   sleep 5
   xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1 || true

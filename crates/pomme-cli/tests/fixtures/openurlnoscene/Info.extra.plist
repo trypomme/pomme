@@ -1,0 +1,4 @@
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>dev.pomme.probe</string>
+<key>CFBundleURLSchemes</key><array><string>pommeprobenoscene</string></array>
+</dict></array>

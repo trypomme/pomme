@@ -39,7 +39,8 @@ handler (`crates/pomme-hle/src/uikit.rs`, next to the launch code):
    Not listed: refuse.
 3. With scenes: for each connected scene, builds the `UIOpenURLContext`
    (reusing what `url_contexts` builds, with the options measured in task
-   1.1) and calls `scene:openURLContexts:` if the delegate implements it.
+   1.1: no source application, no annotation, not open in place, no event
+   attribution) and calls `scene:openURLContexts:` if the delegate implements it.
    Without scenes: calls `application:openURL:options:` on the app
    delegate if it implements it.
 
@@ -88,6 +89,15 @@ A plain text file, one link per line, newest first:
 `%APPDATA%`, `$XDG_CONFIG_HOME` or `~/.config`). A link is added only when
 the app accepted it. Read at start, written on each change. An unreadable
 file is treated as empty.
+
+### No "Open in …?" prompt
+
+On the Simulator, `xcrun simctl openurl` first shows a system prompt
+("Open in "App"?", Cancel or Open), even when the app is in front. pomme
+does not: the user already chose to open the link in the panel. pomme
+delivers the link as iOS does when no prompt is shown (an app opening its
+own link): at once, with the app active throughout, and no lifecycle
+notifications.
 
 ## Risks / Trade-offs
 

@@ -1462,7 +1462,7 @@ fn ret_zero(emu: &mut Emu) -> Result<()> {
 /// Is `obj` an instance of a native Swift class (root `Swift._SwiftObject`, or one
 /// of Swift's bridging bases that count references the Swift way)?
 /// Those are reference-counted by the Swift runtime, which frees them.
-fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
+pub(crate) fn is_native_swift(emu: &mut Emu, obj: u64) -> bool {
     if obj == 0 || obj >> 63 != 0 {
         return false;
     }

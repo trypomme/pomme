@@ -75,6 +75,73 @@ fn url_contexts(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// A link opened while the app runs (the window's File ▸ Open URL, a test's
+/// `open_url`), delivered as iOS delivers one opened without a prompt
+/// (tests/fixtures/openurl, ios26-self.txt): to the scene delegate's
+/// `scene:openURLContexts:` (one context; no source application,
+/// annotation or event attribution, not open in place), or, without scenes,
+/// to the app delegate's `application:openURL:options:` with only
+/// `UIApplicationOpenURLOptionsOpenInPlaceKey` = NO. The app stays active:
+/// no lifecycle notifications. Err(why) when the app doesn't take it: text
+/// that isn't a URL, or a scheme its Info.plist doesn't list (there's no
+/// other app, such as Safari, to hand it to).
+pub fn open_url(emu: &mut Emu, text: &str) -> Result<std::result::Result<(), String>> {
+    let text = text.trim();
+    if !emu.ui.launched {
+        return Ok(Err("the app hasn't finished launching".into()));
+    }
+    let Some(scheme) = url_scheme(text) else {
+        return Ok(Err(format!("“{text}” isn't a URL")));
+    };
+    if !app_url_schemes(emu).iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
+        return Ok(Err(format!("the app doesn't handle {scheme}: links")));
+    }
+    let s = foundation::new_nsstring(emu, text)?;
+    let cls = host_class(emu, "NSURL")?;
+    let url = send(emu, cls, "URLWithString:", &[s])?;
+    if url == 0 {
+        return Ok(Err(format!("“{text}” isn't a URL")));
+    }
+    let (scene, scene_delegate) = (emu.ui.scene, emu.ui.scene_delegate);
+    if scene_delegate != 0 {
+        let ctx = new_object(emu, "UIOpenURLContext")?;
+        let options = new_object(emu, "UISceneOpenURLOptions")?;
+        objc::bag_set(emu, ctx, "URL", url);
+        objc::bag_set(emu, ctx, "options", options);
+        let nsset = host_class(emu, "NSSet")?;
+        let set = send(emu, nsset, "setWithObject:", &[ctx])?;
+        call_if_implemented(emu, scene_delegate, "scene:openURLContexts:", &[scene, set])?;
+    } else {
+        let key = foundation::new_nsstring(emu, "UIApplicationOpenURLOptionsOpenInPlaceKey")?;
+        let number = host_class(emu, "NSNumber")?;
+        let no = send(emu, number, "numberWithBool:", &[0])?;
+        let options = foundation::new_dict_of(emu, &[(key, no)])?;
+        let (app, delegate) = (emu.ui.app, emu.ui.delegate);
+        call_if_implemented(emu, delegate, "application:openURL:options:", &[app, url, options])?;
+    }
+    Ok(Ok(()))
+}
+
+/// A URL's scheme (RFC 3986: a letter, then letters, digits, `+`, `-` or `.`, then `:`).
+fn url_scheme(text: &str) -> Option<&str> {
+    let (scheme, _) = text.split_once(':')?;
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))).then_some(scheme)
+}
+
+/// The URL schemes the app's Info.plist lists (`CFBundleURLTypes`).
+fn app_url_schemes(emu: &Emu) -> Vec<String> {
+    let info = crate::bundle::host_info_plist(emu);
+    let types = info.as_ref().and_then(|v| v.as_dictionary()?.get("CFBundleURLTypes")?.as_array().cloned()).unwrap_or_default();
+    types
+        .iter()
+        .filter_map(|t| t.as_dictionary()?.get("CFBundleURLSchemes")?.as_array().cloned())
+        .flatten()
+        .filter_map(|v| v.as_string().map(str::to_string))
+        .collect()
+}
+
 fn class_named(emu: &mut Emu, name: &str) -> Result<u64> {
     let c = objc::class_by_name(emu, name)?;
     if c == 0 {
@@ -254,6 +321,10 @@ fn connect_scene(emu: &mut Emu, cls: u64) -> Result<Vec<u64>> {
     }
     call_if_implemented(emu, d, "sceneWillEnterForeground:", &[scene])?;
     foundation::post_named(emu, "UISceneWillEnterForegroundNotification", scene)?;
+    // The app hears it too, before it becomes active (tests/fixtures/openurl:
+    // willEnterForeground, then didBecomeActive, on the iOS 26 Simulator).
+    let app = emu.ui.app;
+    foundation::post_named(emu, "UIApplicationWillEnterForegroundNotification", app)?;
     call_if_implemented(emu, d, "sceneDidBecomeActive:", &[scene])?;
     foundation::post_named(emu, "UISceneDidActivateNotification", scene)?;
     Ok(roots)

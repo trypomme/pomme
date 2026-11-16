@@ -835,6 +835,21 @@ fn lock_screen_face_id_refused() {
     assert!(status.ends_with("\"Face ID isn't set up\""), "{status}");
 }
 
+/// A link opened while the app runs (the window's File ▸ Open URL): its
+/// scene delegate hands it to Expo's linking, and Expo Router goes to the
+/// tabs screen, as it does for the same link at launch.
+#[test]
+fn a_link_while_running() {
+    use pomme_hle::driver::{self, text};
+    let Some(mut emu) = boot() else { return };
+    driver::drive(&mut emu, |app| {
+        app.wait_for(&text("Hello from pomme 🍎"))?;
+        app.open_url("pommehello:///tabs")?;
+        app.wait_for(&text("Home tab"))
+    })
+    .unwrap();
+}
+
 /// Expo Router's native tabs (react-native-screens' Tabs, pommehello:///tabs):
 /// the system's tab bar with the tabs' titles, symbols and badge, the first
 /// tab's screen, its bottom accessory above the bar, and tapping a tab (as

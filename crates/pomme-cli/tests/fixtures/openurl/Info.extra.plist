@@ -1,0 +1,11 @@
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>dev.pomme.probe</string>
+<key>CFBundleURLSchemes</key><array><string>pommeprobe</string></array>
+</dict></array>
+<key>UIApplicationSceneManifest</key><dict>
+<key>UIApplicationSupportsMultipleScenes</key><false/>
+<key>UISceneConfigurations</key><dict>
+<key>UIWindowSceneSessionRoleApplication</key><array><dict>
+<key>UISceneConfigurationName</key><string>Default</string>
+<key>UISceneDelegateClassName</key><string>SceneDelegate</string>
+</dict></array></dict></dict>

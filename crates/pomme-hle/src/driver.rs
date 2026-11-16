@@ -235,6 +235,15 @@ impl App {
         self.await_turn()
     }
 
+    /// Open a link in the running app, as the window's File ▸ Open URL does
+    /// (see [`crate::uikit::open_url`]), and return once the app is idle again.
+    /// A link the app doesn't take fails with the reason.
+    pub fn open_url(&mut self, url: &str) -> std::result::Result<(), Error> {
+        let url = url.to_string();
+        self.with(move |emu| crate::uikit::open_url(emu, &url))?.map_err(Error::Failed)?;
+        self.run_for(0.0)
+    }
+
     /// Let the app run for `secs` of virtual time (then until it's next idle).
     pub fn run_for(&mut self, secs: f64) -> std::result::Result<(), Error> {
         let ns = (secs.max(0.0) * 1e9) as u64;

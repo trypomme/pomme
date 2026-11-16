@@ -2,14 +2,13 @@
 
 ## 1. Measure on the Simulator
 
-- [ ] 1.1 A probe app `crates/pomme-cli/tests/fixtures/openurl/` in two variants (with a scene delegate, without scenes) that prints which callback it got, the URL, and every key and value of the options (`UISceneOpenURLOptions`: `sourceApplication`, `annotation`, `openInPlace`, `eventAttribution`; or the options dictionary). Run it on the iOS 26 Simulator and open a link with `xcrun simctl openurl` while it runs; save the output beside the probe. Check: the output names the callback and all options for both variants.
-- [ ] 1.2 On the same Simulator, run hello-expo, open `pommehello:///tabs` with `xcrun simctl openurl`, and note what the screen shows. Check: a line in the probe's notes.
+- [x] 1.1 A probe app `crates/pomme-cli/tests/fixtures/openurl/` in two variants (`openurl` with a scene delegate, `openurlnoscene` without scenes) that prints which callback it got, the URL, every option, the app's state, and the lifecycle notifications around the link. On the iOS 26 Simulator the app opens its own link (`VARIANT=self`); saved as `ios26-self.txt`. Check: the output names the callback and all options for both variants. (Found: `xcrun simctl openurl` first shows an "Open in …?" prompt, even for the app in front; pomme opens links directly, as the panel is already the user's choice.)
 
 ## 2. Delivering links
 
-- [ ] 2.1 `crates/pomme-hle/src/host.rs`: `Event::OpenUrl(String)` and `Host::url_refused`; `crates/pomme-hle/src/uikit.rs`: parse, check the scheme, deliver to scenes or the app delegate with the measured options. Check: `crates/pomme-cli/tests/open_url.rs` runs both probe variants and compares with the saved output.
-- [ ] 2.2 Refusals: a scheme the app does not list, and text that is not a URL. Check: cases in `open_url.rs`.
-- [ ] 2.3 `crates/pomme-hle/src/driver.rs`: `App::open_url`. Check: a case in `crates/pomme-cli/tests/hello_expo.rs` opens `pommehello:///tabs` and waits for the tabs screen.
+- [x] 2.1 `crates/pomme-hle/src/host.rs`: `Event::OpenUrl(String)` and `Host::url_refused`; `crates/pomme-hle/src/uikit.rs`: parse, check the scheme, deliver to scenes or the app delegate with the measured options. Check: `crates/pomme-cli/tests/open_url.rs` runs both probe variants and compares with the saved output.
+- [x] 2.2 Refusals: a scheme the app does not list, and text that is not a URL. Check: cases in `open_url.rs`.
+- [x] 2.3 `crates/pomme-hle/src/driver.rs`: `App::open_url`. Check: a case in `crates/pomme-cli/tests/hello_expo.rs` opens `pommehello:///tabs` and waits for the tabs screen.
 
 ## 3. The window
 

@@ -4,23 +4,28 @@
 
 ### Requirement: Links reach a running app
 
-pomme SHALL deliver a link to the running app as iOS does when another app
-or `xcrun simctl openurl` opens it: to each connected scene's delegate
-through `scene:openURLContexts:`, with a set of one `UIOpenURLContext`
-holding the URL and its options; and, for an app without scenes, to the app
-delegate through `application:openURL:options:`. The options SHALL be those
-measured on the iOS 26 Simulator for a link opened with
-`xcrun simctl openurl`.
+pomme SHALL deliver a link to the running app at once, with no prompt, as
+iOS does when a link is opened without asking the user (measured on the
+iOS 26 Simulator with the app opening its own link): to each connected
+scene's delegate through `scene:openURLContexts:`, with a set of one
+`UIOpenURLContext` holding the URL and its options; and, for an app without
+scenes, to the app delegate through `application:openURL:options:`.
 
 #### Scenario: Expo Router opens a screen while running
 
 - **WHEN** hello-expo is running on its first screen and the link `pommehello:///tabs` is opened
-- **THEN** Expo Router shows the tabs screen, as on the iOS 26 Simulator after `xcrun simctl openurl`
+- **THEN** Expo Router shows the tabs screen
+
+### Requirement: A link's options and the app's state
+
+The options that come with a link, the app's state and the lifecycle
+notifications around it SHALL be those measured on the iOS 26 Simulator:
+the app stays active and gets no lifecycle notifications.
 
 #### Scenario: App without scenes
 
 - **WHEN** a probe app without scenes is running and a link with its scheme is opened
-- **THEN** its app delegate's `application:openURL:options:` is called with that URL and the measured options
+- **THEN** its app delegate's `application:openURL:options:` is called with that URL and the measured options, and the app stays active
 
 ### Requirement: Only the app's own schemes
 

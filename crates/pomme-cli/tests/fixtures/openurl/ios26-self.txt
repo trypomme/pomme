@@ -1,0 +1,17 @@
+# The openurl fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE annotation (nil)
+VALUE appState 0
+VALUE callback scene:openURLContexts:
+VALUE contextClass UIOpenURLContext
+VALUE contexts 1
+VALUE eventAttribution (nil)
+VALUE eventsAfterLink (none)
+VALUE eventsBeforeLink willEnterForeground,didBecomeActive
+VALUE launchContexts 0
+VALUE launchOptionsURL (nil)
+VALUE openInPlace 0
+VALUE optionsClass UISceneOpenURLOptions
+VALUE sceneState 0
+VALUE selfOpenSucceeded 1
+VALUE sourceApplication (nil)
+VALUE url pommeprobe://open/path?x=1

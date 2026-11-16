@@ -1817,6 +1817,20 @@ fn new_set(emu: &mut Emu) -> Result<u64> {
 }
 
 pub(crate) fn set_values(emu: &mut Emu, s: u64) -> Result<Vec<u64>> {
+    // A Swift Set handed to Objective-C (`_SetStorage`) isn't a CFSet: ask it
+    // for its objects as Objective-C code would (its objectEnumerator).
+    if crate::objc::is_native_swift(emu, s) {
+        let e = send(emu, s, "objectEnumerator", &[])?;
+        let mut v = Vec::new();
+        while e != 0 {
+            let o = send(emu, e, "nextObject", &[])?;
+            if o == 0 {
+                break;
+            }
+            v.push(o);
+        }
+        return Ok(v);
+    }
     let n = cf(emu, "_CFSetGetCount", &[s])?;
     let buf = emu.alloc(n * 8 + 8)?;
     cf(emu, "_CFSetGetValues", &[s, buf])?;

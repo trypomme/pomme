@@ -1,0 +1,10 @@
+# The openurlnoscene fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE appState 0
+VALUE callback application:openURL:options:
+VALUE eventsAfterLink (none)
+VALUE eventsBeforeLink didBecomeActive
+VALUE launchOptionsURL (nil)
+VALUE option.UIApplicationOpenURLOptionsOpenInPlaceKey __NSCFBoolean:0
+VALUE optionKeys UIApplicationOpenURLOptionsOpenInPlaceKey
+VALUE selfOpenSucceeded 1
+VALUE url pommeprobenoscene://open/path?x=1
