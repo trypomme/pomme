@@ -81,7 +81,9 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
     let runs = [Run::new(emu, text.len(), f)];
     // (A label sets its text as CoreText does.)
     let lines = textkit::layout(&text, &runs, |ch, f| textkit::advance_in(emu, ch, f), width, f64::INFINITY, max_lines);
-    let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(0) & 0xff;
+    // (Natural by default, as drawn in the view's direction.)
+    let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(4) & 0xff;
+    let alignment = crate::direction::resolve_alignment(emu, v, alignment)?;
     Ok(LabelText { text, lines, font: f, color, alignment })
 }
 

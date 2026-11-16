@@ -2,19 +2,20 @@
 
 ## 1. Measure on the Simulator
 
-- [ ] 1.1 In the `rtl` probe, build screens with: a horizontal `UIStackView`, views pinned with leading/trailing and with left/right constraints, a `UILabel` with natural alignment, a navigation controller with a pushed screen and bar buttons, a tab bar, a table with cells that have an image, text and a disclosure indicator, a `UISwitch`, a `UISlider`, a `UISegmentedControl`, a `UITextField`, and an image with `imageFlippedForRightToLeftLayoutDirection`. Print every frame. Check: it builds.
-- [ ] 1.2 Run it with `ar` (the app has an `ar.lproj`) and with `ar` when the app has no Arabic localization. Save frames as `fixtures/rtl/ar.txt` and `fixtures/rtl/ar-not-localized.txt`, with stills. Check: files in git.
+- [x] 1.1a Add the `rtl` probe (`crates/pomme-cli/tests/fixtures/rtl/`, with `en.lproj` and `ar.lproj`): views pinned with leading/trailing, left/right and center constraints, one after another, a subtree forced left to right, horizontal stack views (fill, fill equally, equal spacing) and a vertical one aligned to the leading edge, and a label with natural alignment; print every frame and the direction values. `fixtures/rtlplain` is the same app with no Arabic localization. (Found: a constraint's leading and trailing follow the direction of the view its items share, so a subtree forced left to right lays out left to right, though its views' own direction stays right to left; `forceRightToLeft` is right to left in any app.)
+- [ ] 1.1b In the `rtl` probe, add: a navigation controller with a pushed screen and bar buttons, a tab bar, a table with cells that have an image, text and a disclosure indicator, a `UISwitch`, a `UISlider`, a `UISegmentedControl`, a `UITextField`, and an image with `imageFlippedForRightToLeftLayoutDirection`. Print every frame. Check: it builds.
+- [x] 1.2 Record it in `ar` and `en`, and `rtlplain` in `ar` (`fixtures/rtl/ios26-ar.txt`, `ios26-en.txt`, with stills; `fixtures/rtlplain/ios26-ar.txt`). Check: files in git.
 - [ ] 1.3 Record the push animation and the swipe back in `ar` as frame sequences (`add-visual-oracles`). Check: frames in git, within the size budget.
 - [ ] 1.4 Add Arabic and Hebrew text, and mixed Arabic with English and numbers, to the probe. Print line ranges, the glyph count, and the caret position after each arrow key in a text field. Record stills. Check: files in git.
 - [ ] 1.5 Add a SwiftUI screen to the probe (`HStack`, `.padding(.leading)`, `.frame(alignment: .leading)`, an SF Symbol that mirrors, `.flipsForRightToLeftLayoutDirection(true)`) and record it in `ar`. Check: files in git.
 
 ## 2. Implement direction
 
-- [ ] 2.1 In `crates/pomme-hle/src/uikit.rs`, answer `userInterfaceLayoutDirection` from the app's chosen localization (decision 1). Check: unit test for both cases in 1.2.
-- [ ] 2.2 In `crates/pomme-hle/src/uiview.rs`, store `semanticContentAttribute`, and add `effectiveUserInterfaceLayoutDirection` and the class method. Set the trait collection's `layoutDirection`. Check: unit tests.
-- [ ] 2.3 Auto Layout: leading and trailing follow the view's direction; left and right do not. Check: frames from 1.2 for the constraint views.
-- [ ] 2.4 `UIStackView`: arrange from the leading side. Check: frames from 1.2.
-- [ ] 2.5 Natural text alignment and `NSWritingDirectionNatural` follow the direction. Check: label frames and a still.
+- [x] 2.1 In `crates/pomme-hle/src/direction.rs`, answer `userInterfaceLayoutDirection` and the trait collection's `layoutDirection` from the app's chosen localization (decision 1). Check: `cargo test --test rtl` (all three runs).
+- [x] 2.2 Store `semanticContentAttribute`; add `effectiveUserInterfaceLayoutDirection` and both `+userInterfaceLayoutDirectionForSemanticContentAttribute:` forms. Check: `cargo test --test rtl`.
+- [x] 2.3 Auto Layout: leading and trailing are attributes of their own, resolved when solving in the direction of the view the constraint's items share (the constant turns around in right to left); left, right and center do not mirror. Check: frames from 1.2.
+- [x] 2.4 `UIStackView` (`crates/pomme-hle/src/stackview.rs`; pomme had none): arranged subviews, axis, distribution (fill, fill equally, equal spacing, equal centering), alignment, spacing, its content size as its intrinsic size; rows run from the leading side. Check: frames from 1.2, and `cargo test -p pomme-hle stackview`.
+- [ ] 2.5 Natural text alignment and `NSWritingDirectionNatural` follow the direction. Labels and text views default to natural alignment, drawn right-aligned in a right-to-left view, and `defaultWritingDirectionForLanguage:` answers (done). Check the label against the still once Arabic text draws (3.1).
 - [ ] 2.6 Navigation bar, back button, push animation and swipe-back edge (`crates/pomme-hle/src/navigation.rs`). Check: frames from 1.2 and the motion oracles from 1.3.
 - [ ] 2.7 Tab bar, table cells and system controls. One task per control if needed. Check: frames from 1.2 and stills.
 - [ ] 2.8 Images that flip, and SF Symbols that mirror. Check: stills.

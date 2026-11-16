@@ -150,7 +150,8 @@ pub fn lay_out(emu: &mut Emu, v: u64) -> Result<Laid> {
         None => line_height,
         Some(l) => l.y + l.height + if ends_in_newline { line_height } else { 0.0 },
     };
-    let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(0) & 0xff;
+    let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(4) & 0xff;
+    let alignment = crate::direction::resolve_alignment(emu, v, alignment)?;
     Ok(Laid { text, lines, font: f, color, alignment, origin: (inset[1] + pad, inset[0]), width, text_height, line_height, inset })
 }
 

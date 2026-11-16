@@ -20,6 +20,10 @@ use std::collections::{HashMap, HashSet};
 pub enum Attr {
     Left,
     Right,
+    /// The leading and trailing edges: left and right, or right and left in a
+    /// right-to-left layout (resolved when solving).
+    Leading,
+    Trailing,
     Top,
     Bottom,
     Width,
@@ -32,15 +36,15 @@ use Attr::*;
 impl Attr {
     fn axis(self) -> usize {
         match self {
-            Left | Right | Width | CenterX => 0,
+            Left | Right | Leading | Trailing | Width | CenterX => 0,
             _ => 1,
         }
     }
     /// Index into an axis's [min, max, center, size].
     fn slot(self) -> usize {
         match self {
-            Left | Top => 0,
-            Right | Bottom => 1,
+            Left | Leading | Top => 0,
+            Right | Trailing | Bottom => 1,
             CenterX | CenterY => 2,
             Width | Height => 3,
         }
@@ -48,7 +52,7 @@ impl Attr {
     fn anchor_class(self) -> &'static str {
         match self {
             Width | Height => "NSLayoutDimension",
-            Left | Right | CenterX => "NSLayoutXAxisAnchor",
+            Left | Right | Leading | Trailing | CenterX => "NSLayoutXAxisAnchor",
             _ => "NSLayoutYAxisAnchor",
         }
     }
@@ -59,16 +63,20 @@ impl Attr {
 /// taken as the top and bottom edges.
 fn from_ns(a: u64) -> Option<(Attr, bool)> {
     Some(match a {
-        1 | 5 => (Left, false),
-        2 | 6 => (Right, false),
+        1 => (Left, false),
+        2 => (Right, false),
+        5 => (Leading, false),
+        6 => (Trailing, false),
         3 | 12 => (Top, false),
         4 | 11 => (Bottom, false),
         7 => (Width, false),
         8 => (Height, false),
         9 => (CenterX, false),
         10 => (CenterY, false),
-        13 | 17 => (Left, true),
-        14 | 18 => (Right, true),
+        13 => (Left, true),
+        14 => (Right, true),
+        17 => (Leading, true),
+        18 => (Trailing, true),
         15 => (Top, true),
         16 => (Bottom, true),
         19 => (CenterX, true),
@@ -79,8 +87,10 @@ fn from_ns(a: u64) -> Option<(Attr, bool)> {
 
 fn to_ns(a: Attr) -> u64 {
     match a {
-        Left => 5,
-        Right => 6,
+        Left => 1,
+        Right => 2,
+        Leading => 5,
+        Trailing => 6,
         Top => 3,
         Bottom => 4,
         Width => 7,
@@ -367,11 +377,52 @@ fn guide_axis(emu: &mut Emu, g: Guide, axis: usize, (min, size): (f64, f64)) -> 
 }
 
 /// Lay out every view and guide that constraints govern. Returns whether a frame changed.
+/// The width (axis 0) or height (axis 1) a required constraint gives view
+/// `v` outright (`widthAnchor.constraint(equalToConstant:)`), if one does.
+pub(crate) fn fixed_size(emu: &Emu, v: u64, axis: usize) -> Option<f64> {
+    let want = if axis == 0 { Width } else { Height };
+    emu.layout.active.iter().filter_map(|c| emu.layout.constraints.get(c)).find(|c| c.first == v && c.a1 == want && c.second == 0 && c.relation == 0 && c.priority >= REQUIRED).map(|c| c.constant)
+}
+
+/// Mark view `v` as laid out by constraints (`translatesAutoresizingMaskIntoConstraints` = NO).
+pub(crate) fn set_auto(emu: &mut Emu, v: u64) {
+    emu.layout.auto.insert(v);
+    mark_dirty(emu);
+}
+
+/// A constraint's leading and trailing edges as left and right, in the
+/// direction of the view its items share; in a right-to-left one, its
+/// constant (an offset toward the trailing edge) goes the other way.
+fn resolve_direction(emu: &mut Emu, c: &mut Constraint) -> Result<()> {
+    let directional = |a: Option<Attr>| matches!(a, Some(Leading | Trailing));
+    if !directional(Some(c.a1)) && !directional(c.a2) {
+        return Ok(());
+    }
+    let view_of = |emu: &Emu, i: u64| emu.layout.guides.get(&i).map_or(i, |g| g.owner);
+    let (a, b) = (view_of(emu, c.first), if c.second != 0 { view_of(emu, c.second) } else { 0 });
+    let rtl = crate::direction::constraint_rtl(emu, a, b)?;
+    let resolve = |x: Attr| match (x, rtl) {
+        (Leading, false) | (Trailing, true) => Left,
+        (Trailing, false) | (Leading, true) => Right,
+        (x, _) => x,
+    };
+    c.a1 = resolve(c.a1);
+    c.a2 = c.a2.map(resolve);
+    if rtl {
+        c.constant = -c.constant;
+    }
+    Ok(())
+}
+
 pub fn solve(emu: &mut Emu) -> Result<bool> {
     if emu.layout.active.is_empty() {
         return Ok(false);
     }
     let cs: Vec<Constraint> = emu.layout.active.iter().filter_map(|c| emu.layout.constraints.get(c).copied()).collect();
+    let mut cs = cs;
+    for c in &mut cs {
+        resolve_direction(emu, c)?;
+    }
     // Every item involved, and the owners of the guides among them.
     let mut todo: Vec<u64> = cs.iter().flat_map(|c| [c.first, c.second]).filter(|&i| i != 0).collect();
     let mut items = Vec::new();
@@ -745,9 +796,9 @@ const C: &str = "NSLayoutConstraint";
 macro_rules! anchors {
     ($class:expr, $f:ident) => {
         [
-            ($class, false, "leadingAnchor", (|e| $f(e, Left)) as HostFn),
+            ($class, false, "leadingAnchor", (|e| $f(e, Leading)) as HostFn),
             ($class, false, "leftAnchor", |e| $f(e, Left)),
-            ($class, false, "trailingAnchor", |e| $f(e, Right)),
+            ($class, false, "trailingAnchor", |e| $f(e, Trailing)),
             ($class, false, "rightAnchor", |e| $f(e, Right)),
             ($class, false, "topAnchor", |e| $f(e, Top)),
             ($class, false, "bottomAnchor", |e| $f(e, Bottom)),
@@ -1074,10 +1125,11 @@ mod tests {
 
     #[test]
     fn attributes_from_nslayoutattribute() {
-        assert_eq!(from_ns(5), Some((Left, false)));
-        assert_eq!(from_ns(18), Some((Right, true)));
+        assert_eq!(from_ns(5), Some((Leading, false)));
+        assert_eq!(from_ns(1), Some((Left, false)));
+        assert_eq!(from_ns(18), Some((Trailing, true)));
         assert_eq!(from_ns(0), None);
-        for a in [Left, Right, Top, Bottom, Width, Height, CenterX, CenterY] {
+        for a in [Left, Right, Leading, Trailing, Top, Bottom, Width, Height, CenterX, CenterY] {
             assert_eq!(from_ns(to_ns(a)), Some((a, false)));
         }
     }

@@ -1,0 +1,42 @@
+# The rtlplain fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+METRIC afterLeading 88.00 85.00 20.00 20.00
+METRIC centerOffset 195.00 160.00 30.00 20.00
+METRIC container 20.00 80.00 300.00 100.00
+METRIC equalSpacing.a 20.00 315.00 40.00 20.00
+METRIC equalSpacing.b 145.00 315.00 60.00 20.00
+METRIC equalSpacing.c 290.00 315.00 30.00 20.00
+METRIC fill.a 20.00 235.00 40.00 20.00
+METRIC fill.b 68.00 235.00 214.00 20.00
+METRIC fill.c 290.00 235.00 30.00 20.00
+METRIC fillEqually.a 20.00 275.00 94.67 20.00
+METRIC fillEqually.b 122.67 275.00 94.67 20.00
+METRIC fillEqually.c 225.33 275.00 94.67 20.00
+METRIC forcedLTR 20.00 190.00 300.00 30.00
+METRIC forcedLTR.leading 30.00 195.00 50.00 20.00
+METRIC label 20.00 450.00 300.00 30.00
+METRIC leading 30.00 85.00 50.00 20.00
+METRIC left 30.00 135.00 40.00 20.00
+METRIC stack.equalSpacing 20.00 310.00 300.00 30.00
+METRIC stack.fill 20.00 230.00 300.00 30.00
+METRIC stack.fillEqually 20.00 270.00 300.00 30.00
+METRIC stack.vertical 20.00 350.00 300.00 48.00
+METRIC trailing 240.00 110.00 60.00 20.00
+METRIC vertical.a 20.00 350.00 80.00 20.00
+METRIC vertical.b 20.00 378.00 140.00 20.00
+VALUE app.userInterfaceLayoutDirection 0
+VALUE bundle.preferredLocalizations en
+VALUE forSemantic.0 0
+VALUE forSemantic.1 0
+VALUE forSemantic.2 0
+VALUE forSemantic.3 0
+VALUE forSemantic.4 1
+VALUE forcedLTR.effective 0
+VALUE forcedLTR.leading.effective 0
+VALUE forcedLTR.leading.traitCollection.layoutDirection 0
+VALUE label.text Hello
+VALUE label.textAlignment 4
+VALUE locale.characterDirection.ar 2
+VALUE paragraph.defaultWritingDirection 0
+VALUE root.effectiveUserInterfaceLayoutDirection 0
+VALUE root.semanticContentAttribute 0
+VALUE root.traitCollection.layoutDirection 0

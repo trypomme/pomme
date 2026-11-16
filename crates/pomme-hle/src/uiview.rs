@@ -550,6 +550,7 @@ pub fn layout_windows(emu: &mut Emu) -> Result<bool> {
     // again (and constraints and safe areas follow): a few rounds at most.
     for _ in 0..3 {
         let mut round = crate::autolayout::solve(emu)?;
+        round |= crate::stackview::arrange(emu)?;
         round |= crate::autolayout::safe_area_changes(emu)?;
         for w in emu.ui.windows.clone() {
             round |= layout_tree(emu, w)?;
@@ -564,6 +565,7 @@ pub fn layout_windows(emu: &mut Emu) -> Result<bool> {
 
 fn layout_if_needed(emu: &mut Emu) -> Result<()> {
     crate::autolayout::solve(emu)?;
+    crate::stackview::arrange(emu)?;
     layout_tree(emu, emu.arg(0))?;
     Ok(())
 }
@@ -1204,8 +1206,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "contentScaleFactor", content_scale),
     ("UIView", false, "setContentScaleFactor:", noop),
     ("UIView", false, "updateConstraintsIfNeeded", noop),
-    ("UIView", false, "setSemanticContentAttribute:", noop),
-    ("UIView", false, "semanticContentAttribute", ret_zero),
     ("UIView", false, "setInsetsLayoutMarginsFromSafeArea:", noop),
     ("UIView", false, "setPreservesSuperviewLayoutMargins:", noop),
     // Its tint: its own, else its superview's, else the system's.
@@ -1428,7 +1428,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     ("UIView", true, "areAnimationsEnabled", ret_one),
     ("UIView", true, "setAnimationsEnabled:", noop),
-    ("UIView", true, "userInterfaceLayoutDirectionForSemanticContentAttribute:", ret_zero),
     ("UIWindow", false, "initWithWindowScene:", window_init_with_scene),
     ("UIWindow", false, "initWithFrame:", window_init_with_frame),
     ("UIWindow", false, "makeKeyAndVisible", make_key_and_visible),
@@ -1532,7 +1531,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         e.ret(s);
         Ok(())
     }),
-    ("UITraitCollection", false, "layoutDirection", ret_zero),
     // Phone (0) or pad (1): the screen the app sees (phone for an iPhone app on an iPad, measured).
     ("UITraitCollection", false, "userInterfaceIdiom", |e| {
         e.ret(e.device.idiom as u64);

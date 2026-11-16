@@ -844,7 +844,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIApplication", false, "applicationIconBadgeNumber", ret_zero),
     ("UIApplication", false, "isRegisteredForRemoteNotifications", ret_zero),
     ("UIApplication", false, "supportsMultipleScenes", ret_zero),
-    ("UIApplication", false, "userInterfaceLayoutDirection", ret_zero),
     ("UIApplication", false, "statusBarOrientation", interface_orientation),
     ("UIApplication", false, "beginIgnoringInteractionEvents", noop),
     ("UIApplication", false, "endIgnoringInteractionEvents", noop),
