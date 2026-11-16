@@ -2,6 +2,8 @@
 //! (scripts/build-flutter.sh hello-flutter), the sysroot and the Impeller MSL
 //! (scripts/flutter/impeller-msl.sh) have been built.
 
+mod cjk_lines;
+
 use pomme_hle::Emu;
 use std::path::Path;
 
@@ -460,53 +462,48 @@ fn runs_from_a_bundle_with_its_impeller_msl() {
     assert!(text.contains("cmd: pass"), "no render pass ran:\n{}", &text[text.len().saturating_sub(4000)..]);
 }
 
-/// Japanese in Flutter: Skia finds the fallback fonts through CoreText, and
-/// gets each glyph's width as iOS's own font gives it. What hello-flutter
-/// prints at launch (each character's width, and where the paragraph breaks
-/// at five widths) matches the iOS 26 Simulator's
-/// (fixtures/flutter-japanese/ios26-<language>.txt), on a Japanese and on an
-/// English phone. Known differences: on a Japanese phone Noto Sans JP kerns a
-/// few kana pairs that Hiragino doesn't (up to 1.4 pt a line), so "途中で" fits
-/// on one line at 220 pt; on an English phone the Latin word "Pomme" is wider
-/// in Inter than in SF Pro, and iOS's line at 180 pt has 0.04 pt to spare.
+/// Japanese in Flutter: Skia finds the fallback fonts through CoreText and
+/// shapes with them, so its widths are Noto's own (a full em, with Noto Sans
+/// JP's kerning). What hello-flutter prints at launch (each character's width,
+/// and where the paragraph breaks at five widths) keeps the line rules
+/// (cjk_lines), on a Japanese and on an English phone.
 #[test]
 fn japanese_text() {
-    let known = |variant: &str| -> &'static [&'static str] {
-        match variant {
-            "ja" => &["FLUTTER 220.1 ", "FLUTTER 220.2 "],
-            _ => &["FLUTTER 180.5 ", "FLUTTER 180.6 ", "FLUTTER 180.7 "],
-        }
-    };
-    for (variant, language, region) in [("ja", "ja-JP", "JP"), ("en", "en-US", "US")] {
+    for language in ["ja-JP", "en-US"] {
         let Some(mut emu) = boot() else { return };
         emu.locales.settings.languages = vec![language.into()];
-        emu.locales.settings.region = region.into();
+        emu.locales.settings.region = language[3..].into();
         emu.time_limit_ns = Some(3_000_000_000);
         let _ = emu.run_main();
         let ours: Vec<&str> = emu.console.lines().filter_map(|l| l.find("FLUTTER").map(|i| &l[i..])).collect();
-        let path = format!("{}/tests/fixtures/flutter-japanese/ios26-{variant}.txt", env!("CARGO_MANIFEST_DIR"));
-        let ios = std::fs::read_to_string(path).unwrap();
         let mut wrong = Vec::new();
-        for want in ios.lines().filter(|l| l.starts_with("FLUTTER")) {
-            if known(variant).iter().any(|k| want.starts_with(k)) {
-                continue;
-            }
-            // Lines: the same text, the width within the kerning difference (and
-            // Latin letters aside: Inter isn't SF Pro). Widths: within a hundredth.
-            let (key, rest) = want.rsplit_once(' ').unwrap();
-            let got = ours.iter().find(|l| l.rsplit_once(' ').is_some_and(|(k, _)| k == key));
-            match got {
-                None => wrong.push(format!("{want}: pomme has {:?}", ours.iter().find(|l| l.split(' ').nth(1) == want.split(' ').nth(1)))),
-                Some(g) => {
-                    let (w, gw): (f64, f64) = (rest.parse().unwrap(), g.rsplit_once(' ').unwrap().1.parse().unwrap());
-                    let tolerance = if want.starts_with("FLUTTERW") { 0.01 } else { 1.5 };
-                    if (w - gw).abs() > tolerance && !key.contains("Pomme") {
-                        wrong.push(format!("{want}: pomme {gw}"));
-                    }
-                }
+        // `FLUTTERW U+XXXX <width>`: a full em.
+        let widths: Vec<&str> = ours.iter().copied().filter(|l| l.starts_with("FLUTTERW ")).collect();
+        if widths.is_empty() {
+            wrong.push("no FLUTTERW lines".to_string());
+        }
+        for l in &widths {
+            let w: f64 = l.rsplit_once(' ').unwrap().1.parse().unwrap();
+            if (w - cjk_lines::SIZE).abs() > 0.01 {
+                wrong.push(format!("{l}: not a full em"));
             }
         }
-        assert!(wrong.is_empty(), "{variant}: differences from iOS 26:\n  {}", wrong.join("\n  "));
+        // `FLUTTER <width>.<line> <text> <line width>`.
+        for width in cjk_lines::WIDTHS {
+            let prefix = format!("FLUTTER {width}.");
+            let lines: Vec<(String, f64)> = ours
+                .iter()
+                .filter_map(|l| l.strip_prefix(&prefix))
+                .filter_map(|l| {
+                    let (_, rest) = l.split_once(' ')?;
+                    let (text, w) = rest.rsplit_once(' ')?;
+                    Some((text.to_string(), w.parse().ok()?))
+                })
+                .collect();
+            // (Kerning may take a few points from a line.)
+            wrong.extend(cjk_lines::faults(&format!("FLUTTER {width}"), &lines, width as f64, 3.0));
+        }
+        assert!(wrong.is_empty(), "{language}:\n  {}", wrong.join("\n  "));
     }
 }
 

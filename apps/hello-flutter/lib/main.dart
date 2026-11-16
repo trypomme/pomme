@@ -174,7 +174,7 @@ class _ListPageState extends State<ListPage> {
 /// paragraph in a 200 pt box, as Flutter sets it with the system font's
 /// fallback (Hiragino or PingFang on iOS). It also prints where Flutter breaks
 /// the paragraph at five widths, each line as `FLUTTER <width>.<line> <text>`,
-/// so a run on the Simulator can be compared with pomme (printed at launch).
+/// so pomme's tests can check the line rules (printed at launch).
 const japanese = '日本語の文章は、単語の間に空白がなくても行の途中で折り返されます。小さい「ょ」や「っ」、句読点は行の頭に来ません。Pommeでも同じように折り返されるはずです。';
 
 /// Where Flutter breaks the paragraph at five widths, and each of its

@@ -5,9 +5,7 @@
 ### Requirement: Flutter draws text in other scripts
 
 Flutter (Skia) SHALL find the fallback fonts through CoreText, as on iOS,
-and get each glyph's width as iOS's own font gives it to Skia, with no
-CoreText typesetting (`fixtures/flutter-japanese`: a full em on a Japanese
-phone; PingFang's widths elsewhere, with no kerning).
+and shape text with them, at their own widths and with their own kerning.
 
 #### Scenario: Japanese text
 
@@ -17,4 +15,4 @@ phone; PingFang's widths elsewhere, with no kerning).
 #### Scenario: Where Flutter breaks Japanese lines
 
 - **WHEN** hello-flutter lays out its Japanese paragraph at 180, 200, 220, 250 and 300 pt, on a Japanese and on an English phone
-- **THEN** each character's width and each line match `fixtures/flutter-japanese/ios26-<language>.txt` (but for the lines the test lists: Noto Sans JP's kerning, and Inter's Latin)
+- **THEN** each character is one em wide, and the lines keep the rules of text in other scripts: no line starts with `、。」』）` or small kana, no line ends with `「『（`, no line is wider than its width, and every line but the last is full

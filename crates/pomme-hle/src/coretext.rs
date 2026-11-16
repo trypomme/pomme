@@ -389,7 +389,6 @@ fn glyphs_for_characters(emu: &mut Emu) -> Result<()> {
         if g == 0 {
             all = false;
         }
-        crate::cjk::note_glyph(emu, f.face, g, ch);
         glyphs[i] = g;
         i += len;
     }
@@ -411,11 +410,7 @@ fn advances(emu: &mut Emu) -> Result<()> {
     .unwrap_or_default();
     let mut total = 0.0;
     for (i, a) in adv.iter().enumerate() {
-        // A CJK fallback glyph: its width as iOS's own font gives it to Skia.
-        let a = match crate::cjk::glyph_advance(emu, f.face, ids[i])? {
-            Some(em) if !vertical => em * f.size,
-            _ => a * s,
-        };
+        let a = a * s;
         total += a;
         if out != 0 {
             let (w, h) = if vertical { (0.0, a) } else { (a, 0.0) };
@@ -516,9 +511,6 @@ fn draw_glyphs(emu: &mut Emu) -> Result<()> {
 
 fn copy_table(emu: &mut Emu, src: u64, tag: u32) -> Result<u64> {
     let Some(f) = font(emu, src) else { return Ok(0) };
-    if crate::cjk::hides_table(emu, f.face, tag)? {
-        return Ok(0);
-    }
     let bytes = with_face(emu, &f, |p| p.raw_face().table(ttf_parser::Tag(tag)).map(<[u8]>::to_vec)).flatten();
     match bytes {
         Some(b) => foundation::new_data(emu, &b),
@@ -533,8 +525,7 @@ fn table_tags(emu: &mut Emu, f: &Font) -> Vec<u32> {
     // The sfnt table directory (a single face; collections start with 'ttcf').
     let base = if b.starts_with(b"ttcf") { u32::from_be_bytes(b[12..16].try_into().unwrap_or_default()) as usize } else { 0 };
     let n = b.get(base + 4..base + 6).map_or(0, |x| u16::from_be_bytes([x[0], x[1]]) as usize);
-    let tags: Vec<u32> = (0..n).filter_map(|i| b.get(base + 12 + i * 16..base + 16 + i * 16).map(|t| u32::from_be_bytes(t.try_into().unwrap()))).collect();
-    tags.into_iter().filter(|&t| !crate::cjk::hides_table(emu, f.face, t).unwrap_or(false)).collect()
+    (0..n).filter_map(|i| b.get(base + 12 + i * 16..base + 16 + i * 16).map(|t| u32::from_be_bytes(t.try_into().unwrap()))).collect()
 }
 
 fn names(emu: &mut Emu, src: u64) -> Option<Face> {

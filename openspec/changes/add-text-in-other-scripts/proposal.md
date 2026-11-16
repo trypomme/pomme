@@ -26,6 +26,8 @@ also be drawn and wrapped as iOS does.
 - Japanese and other non-Latin fonts in the sysroot (open-source Noto
   fonts), and font fallback in the order iOS uses.
 - Line breaking by the Unicode rules, which include the Japanese rules.
+- Characters take the Noto fonts' own widths, as Latin text takes Inter's.
+  Lines follow iOS's rules, but can break at other characters than on iOS.
 - The browser bundle includes a fallback font only when the app needs it.
 - Flutter's text uses the same fallback fonts.
 
@@ -36,8 +38,9 @@ Out of scope:
   letters are drawn after this part, but not yet joined or ordered.
 - Japanese keyboard input (the IME, which turns typed kana into kanji).
 - Vertical text, and ruby (small reading text above kanji).
-- Shipping Apple's fonts (Hiragino, SF Arabic). pomme uses open-source Noto
-  fonts, as it uses Inter for SF Pro.
+- Shipping Apple's fonts (Hiragino, SF Arabic), or copying their widths
+  and iOS's CJK punctuation spacing. pomme uses open-source Noto fonts as
+  they are, as it uses Inter for SF Pro.
 
 ## Capabilities
 

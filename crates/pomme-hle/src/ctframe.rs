@@ -1,7 +1,7 @@
 //! CoreText's line layout: CTFramesetter, CTFrame, CTLine and CTRun, as apps
 //! use them to lay out and measure attributed text. The lines come from
-//! TextKit's layout (textkit.rs) with CoreText's rules, as UILabel and
-//! NSString drawing set text; each line is one run.
+//! TextKit's layout (textkit.rs), as UILabel and NSString drawing set
+//! text; each line is one run.
 //!
 //! Coordinates are CoreText's: a frame's line origins are on the baselines,
 //! from the frame's bottom left, y up; a run's glyph positions are from its
@@ -126,9 +126,9 @@ fn line_of(emu: &Emu, o: u64) -> Option<Line> {
     emu.ctframes.lines.get(&o).map(|l| l.0.clone()).or_else(|| emu.ctframes.runs.get(&o).cloned())
 }
 
-/// Each unit's glyph position from the line's origin (its cell, and any space before it).
+/// Each unit's glyph position from the line's origin.
 fn positions(line: &Line) -> Vec<f64> {
-    (0..line.len).map(|k| line.xs.get(k).copied().unwrap_or(0.0) + line.leads.iter().find(|l| l.0 == line.start + k).map_or(0.0, |l| l.1)).collect()
+    (0..line.len).map(|k| line.xs.get(k).copied().unwrap_or(0.0)).collect()
 }
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[

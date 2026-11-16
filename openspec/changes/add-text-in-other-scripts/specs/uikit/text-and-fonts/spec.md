@@ -16,33 +16,16 @@ PingFang: Noto Sans SC and TC; Apple SD Gothic Neo: Noto Sans KR).
 - **WHEN** an app draws kanji with the system font, on a phone set to English and then to Japanese
 - **THEN** they are drawn with Noto Sans SC and then with Noto Sans JP, as iOS uses PingFang SC and then Hiragino
 
-### Requirement: Fallback characters take iOS's widths
+### Requirement: Fallback characters take their font's widths
 
-A character drawn from a fallback font SHALL take the width iOS gives it
-(`width.*`), not the Noto font's, and sit in it as Apple's font places it.
+A character drawn from a fallback font SHALL take that font's own width,
+with no extra spacing between characters. UILabel, NSString drawing,
+CoreText and TextKit SHALL lay out the same text in the same lines.
 
-#### Scenario: Widths on an English phone
+#### Scenario: Widths on any phone
 
-- **WHEN** the `intltext` probe runs with `--language en-US`
-- **THEN** every CJK character's width matches `fixtures/intltext/ios26-en.txt` (kanji 16.851, kana 16.126 at 17 pt)
-
-#### Scenario: Widths on a Japanese phone
-
-- **WHEN** the probe runs with `--language ja-JP`
-- **THEN** every CJK character's width matches `fixtures/intltext/ios26-ja.txt` (kana and kanji 15.903, brackets and `、。` 7.951)
-
-### Requirement: Japanese punctuation spacing
-
-On a phone whose first language is Japanese, pomme SHALL space pairs of
-characters as iOS does (the `pair.*` lines of `fixtures/intltext/ios26-ja.txt`:
-for example half an em after `、` before kana). The space after `、。` and
-closing brackets SHALL stay at the end of a line; the space before an
-opening bracket SHALL move to the next line with it.
-
-#### Scenario: Line widths
-
-- **WHEN** the probe's Japanese paragraph is laid out on a Japanese phone at 180, 200, 220, 250 and 300 pt
-- **THEN** each line's width matches the recording within half a point (lines with Latin letters aside: Inter is not SF Pro)
+- **WHEN** the `intltext` probe runs on a phone set to English, Japanese, Korean, Simplified Chinese or Traditional Chinese
+- **THEN** every kana, kanji and full-width punctuation character is one em wide (17 pt at 17 pt), and a line of them is one em per character
 
 ### Requirement: Lines break by Unicode's rules
 
@@ -54,4 +37,5 @@ line SHALL still break inside the word.
 #### Scenario: A Japanese paragraph
 
 - **WHEN** the `intltext` probe's Japanese paragraph is laid out in TextKit at 180, 200, 220, 250 and 300 pt wide, on an English and on a Japanese phone
-- **THEN** each line starts and ends at the character recorded in `fixtures/intltext/`
+- **THEN** no line starts with `、。」』）` or small kana, no line ends with `「『（`, no line is wider than the container, every line but the last is full (no more than four characters short), and the lines hold the whole paragraph
+- **AND** each line is as tall as iOS's (`fixtures/intltext/`: 20.29 pt on all but a Korean phone)

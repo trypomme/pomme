@@ -1,25 +1,25 @@
-//! Text in other scripts (tests/fixtures/intltext/main.m): the fonts iOS
-//! falls back to for Chinese, Japanese and Korean, held to what the iOS 26
-//! Simulator reports (fixtures/intltext/ios26-<language>.txt, recorded with
-//! scripts/swiftui/metrics-simulator.sh, VARIANT=en, ja, ko, zh-Hans and zh-Hant): each
-//! CJK character's advance, and where TextKit and CoreText (as UILabel sets
-//! text) break a Japanese paragraph at five widths, on phones set to five
-//! languages. Latin letters are left out of the widths: pomme draws
-//! Inter in place of SF Pro. Built with the iOS SDK; skipped without Xcode or
-//! the sysroot.
+//! Text in other scripts (tests/fixtures/intltext/main.m), on phones set to
+//! five languages. pomme draws Chinese, Japanese and Korean with the Noto
+//! Sans fonts at their own widths, as it draws Latin with Inter for SF Pro,
+//! so it doesn't match iOS's widths or break lines at the same characters.
+//! It does keep iOS's rules, which this checks:
+//!
+//! - the phone's language picks the font, as on iOS: the Noto font for the
+//!   Apple font iOS gives each sample (fixtures/intltext/ios26-<language>.txt,
+//!   recorded with scripts/swiftui/metrics-simulator.sh);
+//! - CJK characters are set solid, a full em each;
+//! - lines break by Unicode's rules (no `、。」` or small kana at a line's
+//!   start, no `「` at its end), fill the width, and lose no text;
+//! - TextKit and CoreText (UILabel) agree, and lines are as tall as on iOS.
+//!
+//! Built with the iOS SDK; skipped without Xcode or the sysroot.
 
+mod cjk_lines;
 mod common;
 
+use cjk_lines::{is_cjk, SIZE, WIDTHS};
+
 use std::collections::BTreeMap;
-
-/// Characters iOS draws from a font other than its CJK fonts (Helvetica
-/// Neue's ditto mark), which pomme draws from its CJK fonts.
-const OTHER_FONTS: &[char] = &['\u{3003}'];
-
-/// Lines that break one character earlier in pomme: they hold the Latin word
-/// "Pomme", which is wider in Inter than in SF Pro, and iOS's line has less
-/// than a point to spare (219.43 of 220, 298.95 of 300).
-const LATIN_WIDTH: &[&str] = &["ja.220.line4", "ja.220.line5", "ja.300.line3", "ja.300.line4"];
 
 /// `VALUE name text` lines, each name's last.
 fn values(text: &str) -> BTreeMap<String, String> {
@@ -32,11 +32,37 @@ fn values(text: &str) -> BTreeMap<String, String> {
     v
 }
 
-fn is_cjk(ch: char) -> bool {
-    matches!(ch, '\u{3000}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}' | '\u{ac00}'..='\u{d7a3}')
+/// The Noto font pomme uses for an Apple CJK font.
+fn noto_for(apple: &str) -> Option<&'static str> {
+    if apple.contains("Hiragino") {
+        Some("Noto Sans JP")
+    } else if apple.contains("Gothic Neo") {
+        Some("Noto Sans KR")
+    } else if apple.ends_with(" SC") {
+        Some("Noto Sans SC")
+    } else if apple.ends_with(" TC") {
+        Some("Noto Sans TC")
+    } else {
+        None
+    }
 }
 
-/// What the probe reports in pomme with `languages`, against the recording.
+fn num(v: &BTreeMap<String, String>, name: &str) -> f64 {
+    v.get(name).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN)
+}
+
+/// A layout's lines (`ja` for TextKit's, `ct` for CoreText's) at `width`.
+fn lines(v: &BTreeMap<String, String>, kind: &str, width: u32) -> Vec<(String, f64)> {
+    let n = num(v, &format!("{kind}.{width}.lines")) as usize;
+    (0..n)
+        .map(|i| {
+            let text = v.get(&format!("{kind}.{width}.line{i}.text")).cloned().unwrap_or_default();
+            (text, num(v, &format!("{kind}.{width}.line{i}.width")))
+        })
+        .collect()
+}
+
+/// What breaks a rule in pomme on a phone set to `languages`.
 fn differences(variant: &str, languages: &[&str], region: &str) -> Option<Vec<String>> {
     let mut emu = common::boot("intltext")?;
     emu.locales.settings.languages = languages.iter().map(|s| s.to_string()).collect();
@@ -50,95 +76,87 @@ fn differences(variant: &str, languages: &[&str], region: &str) -> Option<Vec<St
     let recording = std::fs::read_to_string(format!("{}/tests/fixtures/intltext/ios26-{variant}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let (ios, ios_metrics) = (values(&recording), common::parse_metrics(&recording));
     let mut wrong = Vec::new();
-    for (name, want) in &ios {
-        // Widths: CJK characters only.
-        if let Some(code) = name.strip_prefix("width.U+") {
-            let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap();
-            if !is_cjk(ch) || OTHER_FONTS.contains(&ch) {
-                continue;
-            }
-        } else if variant == "ja" && LATIN_WIDTH.iter().any(|l| name.starts_with(l) || name.starts_with(&l.replacen("ja.", "ct.", 1))) {
-            continue;
-        } else if name.starts_with("ct.") && name.ends_with(".x") {
-            // (Where a line's first glyph sits depends on the font's own glyph.)
-            continue;
-        } else if name.starts_with("ct.") && name.ends_with(".width") {
-            let line = &name[..name.len() - ".width".len()];
-            if ios.get(&format!("{line}.text")).is_some_and(|t| t.chars().any(|c| c.is_ascii())) {
-                continue;
-            }
-            let (g, w): (f64, f64) = (ours.get(name).and_then(|v| v.parse().ok()).unwrap_or(f64::NAN), want.parse().unwrap());
-            if !((g - w).abs() <= 0.5) {
-                wrong.push(format!("{name}: {g:.3}, iOS {want}"));
-            }
-            continue;
-        } else if !name.starts_with("ja.") && !name.starts_with("ct.") {
-            // (The cascade lists and font names are Apple's own.)
-            continue;
-        }
-        match ours.get(name) {
-            None => wrong.push(format!("{name}: not reported (iOS: {want:?})")),
-            Some(got) if name.starts_with("width.") => {
-                let (g, w): (f64, f64) = (got.parse().unwrap(), want.parse().unwrap());
-                if (g - w).abs() > 0.01 {
-                    wrong.push(format!("{name}: {got}, iOS {want}"));
-                }
-            }
-            Some(got) if got != want => wrong.push(format!("{name}: {got:?}, iOS {want:?}")),
-            _ => {}
+
+    // The font for each sample: the Noto font for iOS's.
+    for sample in ["hiragana", "katakana", "kanji", "hangul", "fullwidthComma", "ideographicStop"] {
+        let name = format!("font.{sample}");
+        let Some(want) = ios.get(&name).and_then(|f| noto_for(f)) else { continue };
+        let got = ours.get(&name).map_or("", String::as_str);
+        if got != want {
+            wrong.push(format!("{name}: {got:?}, want {want:?} (iOS {:?})", ios[&name]));
         }
     }
-    // Each line's place and height (not its width: Latin letters differ).
-    for (name, want) in &ios_metrics {
-        if variant == "ja" && LATIN_WIDTH.contains(&name.as_str()) {
-            continue;
+
+    // CJK characters: a full em each.
+    for (name, got) in &ours {
+        let Some(code) = name.strip_prefix("width.U+") else { continue };
+        let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap();
+        let got: f64 = got.parse().unwrap();
+        if is_cjk(ch) && (got - SIZE).abs() > 0.01 {
+            wrong.push(format!("{name} ({ch}): {got:.3}, want {SIZE}"));
         }
-        let Some(got) = ours_metrics.get(name) else {
-            wrong.push(format!("{name}: no frame (iOS {want:?})"));
-            continue;
-        };
-        for (i, what) in ["x", "y", "width", "height"].iter().enumerate() {
-            let text = ios.get(&format!("{name}.text")).map_or("", String::as_str);
-            if i == 2 && (name == "label" || text.chars().any(|c| c.is_ascii())) {
-                continue;
+    }
+
+    for width in WIDTHS {
+        let w = width as f64;
+        let textkit = lines(&ours, "ja", width);
+        let coretext = lines(&ours, "ct", width);
+        if textkit.iter().map(|l| &l.0).ne(coretext.iter().map(|l| &l.0)) {
+            wrong.push(format!("{width}: TextKit's lines {:?}, CoreText's {:?}", textkit.iter().map(|l| &l.0).collect::<Vec<_>>(), coretext.iter().map(|l| &l.0).collect::<Vec<_>>()));
+        }
+        wrong.extend(cjk_lines::faults(&format!("ct.{width}"), &coretext, w, 0.0));
+        for (i, (text, line_width)) in coretext.iter().enumerate() {
+            let name = format!("ct.{width}.line{i} {text:?}");
+            // Set solid: an all-CJK line is a full em per character.
+            if text.chars().all(is_cjk) && (line_width - SIZE * text.chars().count() as f64).abs() > 0.01 {
+                wrong.push(format!("{name}: {line_width:.2} wide, not {} ems", text.chars().count()));
             }
-            if (got[i] - want[i]).abs() > 0.5 {
-                wrong.push(format!("{name}: {what} {:.2}, iOS {:.2}", got[i], want[i]));
+        }
+        // Each line's place and height, as on iOS (but on a Korean phone,
+        // whose lines in Apple SD Gothic Neo are shorter: task 2.9).
+        if variant != "ko" {
+            for (i, _) in textkit.iter().enumerate() {
+                let name = format!("ja.{width}.line{i}");
+                let Some(got) = ours_metrics.get(&name) else {
+                    wrong.push(format!("{name}: no frame"));
+                    continue;
+                };
+                let height = ios_metrics.get(&format!("ja.{width}.line0")).map_or(f64::NAN, |m| m[3]);
+                if (got[1] - i as f64 * height).abs() > 0.5 || (got[3] - height).abs() > 0.5 {
+                    wrong.push(format!("{name}: y {:.2} height {:.2}, iOS's lines {height:.2} tall", got[1], got[3]));
+                }
             }
         }
     }
     Some(wrong)
 }
 
-#[test]
-fn japanese_on_a_japanese_phone() {
-    let Some(wrong) = differences("ja", &["ja-JP"], "JP") else { return };
-    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+fn check(variant: &str, languages: &[&str], region: &str) {
+    let Some(wrong) = differences(variant, languages, region) else { return };
+    assert!(wrong.is_empty(), "{variant}:\n  {}", wrong.join("\n  "));
 }
 
-/// On a Korean phone only the widths: iOS sets lines there by Apple SD
-/// Gothic Neo's coverage and line height (add-text-in-other-scripts, task 2.9).
+#[test]
+fn japanese_on_a_japanese_phone() {
+    check("ja", &["ja-JP"], "JP");
+}
+
 #[test]
 fn japanese_on_a_korean_phone() {
-    let Some(wrong) = differences("ko", &["ko-KR"], "KR") else { return };
-    let wrong: Vec<_> = wrong.into_iter().filter(|w| w.starts_with("width.")).collect();
-    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+    check("ko", &["ko-KR"], "KR");
 }
 
 #[test]
 fn japanese_on_a_simplified_chinese_phone() {
-    let Some(wrong) = differences("zh-Hans", &["zh-Hans-CN"], "CN") else { return };
-    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+    check("zh-Hans", &["zh-Hans-CN"], "CN");
 }
 
 #[test]
 fn japanese_on_a_traditional_chinese_phone() {
-    let Some(wrong) = differences("zh-Hant", &["zh-Hant-TW"], "TW") else { return };
-    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+    check("zh-Hant", &["zh-Hant-TW"], "TW");
 }
 
 #[test]
 fn japanese_on_an_english_phone() {
-    let Some(wrong) = differences("en", &["en-US"], "US") else { return };
-    assert!(wrong.is_empty(), "differences from iOS 26:\n  {}", wrong.join("\n  "));
+    check("en", &["en-US"], "US");
 }
