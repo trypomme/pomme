@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 // The same scene as apps/hello-skia, so Flutter (Impeller on Metal) and React
 // Native Skia (Ganesh on Metal) can be compared with each other and with the
@@ -12,6 +13,8 @@ void main() {
   runApp(const HelloApp());
 }
 
+bool _printedDirection = false;
+
 class HelloApp extends StatelessWidget {
   const HelloApp({super.key});
 
@@ -19,6 +22,17 @@ class HelloApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      // English, Arabic and Japanese: on an Arabic phone Flutter lays the app
+      // out right to left (it prints `FLUTTERDIR rtl` at launch).
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      supportedLocales: const [Locale('en'), Locale('ar'), Locale('ja')],
+      builder: (context, child) {
+        if (!_printedDirection) {
+          _printedDirection = true;
+          print('FLUTTERDIR ${Directionality.of(context) == TextDirection.rtl ? 'rtl' : 'ltr'} ${Localizations.localeOf(context)}');
+        }
+        return child!;
+      },
       home: const HelloPage(),
       routes: {'/list': (_) => const ListPage(), '/japanese': (_) => const JapanesePage()},
     );

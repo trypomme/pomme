@@ -119,6 +119,15 @@ final class Renderer {
       v.removeFromSuperview()
       views[path] = nil
     }
+    // Right to left: SwiftUI lays out from the leading edge, so each view
+    // placed now is mirrored in its parent (a UIKit control's own parts
+    // mirror themselves).
+    if UIApplication.shared.userInterfaceLayoutDirection == .rightToLeft {
+      for path in used {
+        guard let v = views[path], let parent = v.superview else { continue }
+        v.frame.origin.x = parent.bounds.width - v.frame.maxX
+      }
+    }
   }
 }
 

@@ -531,3 +531,18 @@ fn japanese_page_draws() {
         assert!(dark > 400, "line {line}: only {dark} dark pixels");
     }
 }
+
+/// On an Arabic phone Flutter lays hello-flutter out right to left (the app
+/// supports English, Arabic and Japanese and prints the direction it gets:
+/// `FLUTTERDIR rtl ar`), on an English one left to right. Flutter takes the
+/// phone's languages from NSLocale and picks the direction itself.
+#[test]
+fn text_direction_follows_the_language() {
+    for (language, want) in [("ar", "FLUTTERDIR rtl ar"), ("en-US", "FLUTTERDIR ltr en")] {
+        let Some(mut emu) = boot() else { return };
+        emu.locales.settings.languages = vec![language.into()];
+        emu.time_limit_ns = Some(3_000_000_000);
+        let _ = emu.run_main();
+        assert!(emu.console.contains(want), "{language}: {}", emu.console.lines().filter(|l| l.contains("FLUTTER")).take(3).collect::<Vec<_>>().join("\n"));
+    }
+}

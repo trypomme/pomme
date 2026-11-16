@@ -60,6 +60,8 @@ final class ViewHost {
     guard let view else { return }
     // The environment's colour scheme is the appearance's.
     EnvironmentValues.pommeDefaults["colorScheme"] = view.traitCollection.userInterfaceStyle == .dark ? ColorScheme.dark : ColorScheme.light
+    // And its layout direction, the app's (its localization's).
+    EnvironmentValues.pommeDefaults["layoutDirection"] = UIApplication.shared.userInterfaceLayoutDirection == .rightToLeft ? LayoutDirection.rightToLeft : LayoutDirection.leftToRight
     let (nodes, _) = graph.update(root)
     self.nodes = nodes
     if nodes.count == 1, let stack = nodes[0] as? NavigationStackNode {

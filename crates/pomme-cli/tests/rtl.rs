@@ -327,3 +327,42 @@ fn table_cell_mirrors() {
     }
     assert!(wrong.is_empty(), "not as iOS has them:\n  {}\npomme's: {ours:?}", wrong.join("\n  "));
 }
+
+// ---- SwiftUI (tests/fixtures/swiftuirtl) ----
+
+/// SwiftUI mirrors in an Arabic app as iOS does (fixtures/swiftuirtl/ios26-ar.png):
+/// the HStack runs from the right, padding from the leading edge is on the
+/// right, and the environment says right to left. Each coloured shape's
+/// first and last columns match the Simulator's within 3 pt.
+#[test]
+fn swiftui_mirrors() {
+    let Some(mut emu) = common::boot("swiftuirtl") else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    let frames: Frames = Default::default();
+    *emu.live.host = Some(Box::new(Recording(frames.clone())));
+    emu.live.scale = 1.0;
+    common::views(&mut emu, 2.0);
+    assert!(emu.console.contains("VALUE layoutDirection rightToLeft"), "{}", emu.console);
+    let frames = frames.lock().unwrap();
+    let f = frames.last().unwrap();
+    let ios = tiny_skia::Pixmap::decode_png(&std::fs::read(format!("{}/tests/fixtures/swiftuirtl/ios26-ar.png", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap();
+    let ios_px = |x: u32, y: u32| {
+        let c = ios.pixel(x * 3 + 1, y * 3 + 1).unwrap().demultiply();
+        [c.red(), c.green(), c.blue()]
+    };
+    let red = |c: [u8; 3]| c[0] > 200 && c[1] < 90 && c[2] < 90;
+    let purple = |c: [u8; 3]| c[0] > 150 && c[1] < 100 && c[2] > 180;
+    let first_span = |at: &dyn Fn(u32, u32) -> [u8; 3], is: &dyn Fn([u8; 3]) -> bool| {
+        (60..400).find_map(|y| {
+            let xs: Vec<u32> = (0..390).filter(|&x| is(at(x, y))).collect();
+            Some((*xs.first()?, *xs.last()?))
+        })
+    };
+    for (name, is) in [("red", &red as &dyn Fn([u8; 3]) -> bool), ("purple", &purple)] {
+        let ours = first_span(&|x, y| px(f, x, y), is);
+        let theirs = first_span(&ios_px, is);
+        let (Some(a), Some(b)) = (ours, theirs) else { panic!("{name}: pomme {ours:?}, iOS {theirs:?}") };
+        assert!((a.0 as i32 - b.0 as i32).abs() <= 3 && (a.1 as i32 - b.1 as i32).abs() <= 3, "{name}: pomme x {a:?}, iOS {b:?}");
+    }
+}
