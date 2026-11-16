@@ -1,0 +1,59 @@
+# The tableview probe on the iOS 26.0 Simulator (iPhone 16e, light), case styles: METRIC <rect> (in the table's content), VIEW <cell> <class> <frame in the cell> <text> [bg=RGBA] [radius= corners=] [font=size/weight color=RGBA], VALUE <name> <value>.
+VALUE rowHeight -1.00
+VALUE estimatedRowHeight -1.00
+VALUE sectionHeaderHeight -1.00
+VALUE sectionFooterHeight -1.00
+VALUE separatorInset 0.00 16.00 0.00 0.00
+VALUE separatorStyle 1
+VALUE backgroundColor 255,255,255,255
+VALUE separatorColor 60,60,67,31
+METRIC section0 0.00 0.00 390.00 218.00
+METRIC header0 0.00 0.00 390.00 0.00
+METRIC footer0 0.00 218.00 390.00 0.00
+METRIC row0.0 0.00 0.00 390.00 52.00
+METRIC row0.1 0.00 52.00 390.00 52.00
+METRIC row0.2 0.00 104.00 390.00 52.00
+METRIC row0.3 0.00 156.00 390.00 62.00
+VIEW cell0.0 UITableViewCell 0.00 0.00 390.00 52.00 
+VIEW cell0.0 _UISystemBackgroundView 0.00 0.00 390.00 52.00 
+VIEW cell0.0 UIView 0.00 0.00 390.00 52.00  bg=255,255,255,255
+VIEW cell0.0 UITableViewCellContentView 0.00 0.00 363.67 52.00 
+VIEW cell0.0 UIImageView 17.00 15.33 22.00 20.00 
+VIEW cell0.0 UITableViewLabel 55.00 0.00 300.67 52.00 Row 0 bg=0,0,0,0 font=17.0/0.00 color=0,0,0,255
+VIEW cell0.0 _UITableCellAccessoryButton 363.67 19.00 10.33 14.00 
+VIEW cell0.0 UIImageView 363.67 19.00 10.33 14.00 
+VIEW cell0.0 _UITableViewCellSeparatorView 55.00 51.00 319.00 1.00  bg=60,60,67,31
+VIEW cell0.1 UITableViewCell 0.00 0.00 390.00 52.00 
+VIEW cell0.1 _UISystemBackgroundView 0.00 0.00 390.00 52.00 
+VIEW cell0.1 UIView 0.00 0.00 390.00 52.00  bg=255,255,255,255
+VIEW cell0.1 UITableViewCellContentView 0.00 0.00 363.67 52.00 
+VIEW cell0.1 UITableViewLabel 312.00 16.00 43.67 20.33 Detail bg=0,0,0,0 font=17.0/0.00 color=60,60,67,153
+VIEW cell0.1 UIImageView 17.00 15.33 22.00 20.00 
+VIEW cell0.1 UITableViewLabel 55.00 16.00 44.33 20.33 Row 1 bg=0,0,0,0 font=17.0/0.00 color=0,0,0,255
+VIEW cell0.1 _UITableCellAccessoryButton 363.67 19.00 10.33 14.00 
+VIEW cell0.1 UIImageView 363.67 19.00 10.33 14.00 
+VIEW cell0.1 _UITableViewCellSeparatorView 55.00 51.00 319.00 1.00  bg=60,60,67,31
+VIEW cell0.2 UITableViewCell 0.00 0.00 390.00 52.00 
+VIEW cell0.2 _UISystemBackgroundView 0.00 0.00 390.00 52.00 
+VIEW cell0.2 UIView 0.00 0.00 390.00 52.00  bg=255,255,255,255
+VIEW cell0.2 UITableViewCellContentView 0.00 0.00 363.67 52.00 
+VIEW cell0.2 UITableViewLabel 113.00 19.00 35.00 15.67 Detail bg=0,0,0,0 font=13.0/0.00 color=0,0,0,255
+VIEW cell0.2 UITableViewLabel 16.00 19.00 91.00 15.67 Row 2 bg=0,0,0,0 font=13.0/0.00 color=0,136,255,255
+VIEW cell0.2 _UITableCellAccessoryButton 363.67 19.00 10.33 14.00 
+VIEW cell0.2 UIImageView 363.67 19.00 10.33 14.00 
+VIEW cell0.2 _UITableViewCellSeparatorView 16.00 51.00 358.00 1.00  bg=60,60,67,31
+VIEW cell0.3 UITableViewCell 0.00 0.00 390.00 62.00 
+VIEW cell0.3 _UISystemBackgroundView 0.00 0.00 390.00 62.00 
+VIEW cell0.3 UIView 0.00 0.00 390.00 62.00  bg=255,255,255,255
+VIEW cell0.3 UITableViewCellContentView 0.00 0.00 363.67 62.00 
+VIEW cell0.3 UITableViewLabel 55.00 32.33 39.33 18.00 Detail bg=0,0,0,0 font=15.0/0.00 color=60,60,67,153
+VIEW cell0.3 UIImageView 17.00 20.33 22.00 20.00 
+VIEW cell0.3 UITableViewLabel 55.00 9.00 47.33 20.33 Row 3 bg=0,0,0,0 font=17.0/0.00 color=0,0,0,255
+VIEW cell0.3 _UITableCellAccessoryButton 363.67 24.00 10.33 14.00 
+VIEW cell0.3 UIImageView 363.67 24.00 10.33 14.00 
+VIEW cell0.3 _UITableViewCellSeparatorView 55.00 61.00 319.00 1.00  bg=60,60,67,31
+VALUE start.contentSize 390.00 218.00
+VALUE start.contentOffset 0.00
+VALUE start.cellsAsked 4
+VALUE start.distinctCells 4
+VALUE start.visibleRows 0.0,0.1,0.2,0.3

@@ -243,6 +243,8 @@ pub(crate) fn set_offset(emu: &mut Emu, v: u64, offset: [f64; 2]) -> Result<()> 
     }
     vw.bounds[0] = offset[0];
     vw.bounds[1] = offset[1];
+    // A table lays out the rows now on screen.
+    crate::tableview::scrolled(emu, v);
     tell(emu, v, "scrollViewDidScroll:", &[v])?;
     // A navigation bar's large title follows its screen's content.
     crate::navigation::content_scrolled(emu, v)?;

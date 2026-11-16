@@ -293,3 +293,37 @@ fn images_that_flip() {
     assert!(ink(200) < -2.0, "chevron.forward should point left: ink {:.1} from its centre", ink(200));
     assert!(ink(280) > 2.0, "chevron.right should point right: ink {:.1} from its centre", ink(280));
 }
+
+/// A table cell in right to left: the image on the right, the text placed
+/// as iOS places it, the disclosure chevron on the left and the separator
+/// in from the right (fixtures/rtlcontrols: x and widths; the Arabic row is
+/// 2 pt taller on iOS, from the Arabic font's metrics).
+#[test]
+fn table_cell_mirrors() {
+    let Some(mut emu) = common::boot("rtlcontrols") else { return };
+    emu.locales.settings.languages = vec!["ar".into()];
+    emu.locales.settings.region = "SA".into();
+    common::views(&mut emu, 2.5);
+    let ours: Vec<(String, [f64; 4])> = emu
+        .console
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(' ').collect();
+            (f.len() >= 7 && f[0] == "VIEW" && f[1] == "table").then(|| (f[2].to_string(), [f[3], f[4], f[5], f[6]].map(|v| v.parse::<f64>().unwrap())))
+        })
+        .collect();
+    let has = |x: f64, w: f64, h: Option<f64>| ours.iter().any(|(_, r)| (r[0] - x).abs() <= 0.5 && (r[2] - w).abs() <= 3.0 && h.is_none_or(|h| (r[3] - h).abs() <= 0.5));
+    let mut wrong = Vec::new();
+    for (class, r, _) in ios_views("table") {
+        let what = match class.as_str() {
+            "UIImageView" => Some(r[3]),
+            "UITableViewLabel" => None,
+            "_UITableViewCellSeparatorView" if r[2] < 390.0 => Some(1.0),
+            _ => continue,
+        };
+        if !has(r[0], r[2], what) {
+            wrong.push(format!("{class} at x {} width {}", r[0], r[2]));
+        }
+    }
+    assert!(wrong.is_empty(), "not as iOS has them:\n  {}\npomme's: {ours:?}", wrong.join("\n  "));
+}

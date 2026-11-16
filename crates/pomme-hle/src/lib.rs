@@ -41,6 +41,7 @@ mod fallback;
 mod localizable;
 pub mod direction;
 mod stackview;
+mod tableview;
 mod shaping;
 mod ctframe;
 mod scanner;
@@ -366,6 +367,7 @@ pub struct Emu {
     pub(crate) localizable: localizable::State,
     pub(crate) direction: direction::State,
     pub(crate) stacks: stackview::State,
+    pub(crate) tables: tableview::State,
     /// CoreText framesetters, frames, lines and runs.
     pub(crate) ctframes: ctframe::State,
     /// Units, measurements and measurement formatters.
@@ -510,6 +512,7 @@ impl Emu {
             localizable: Default::default(),
             direction: Default::default(),
             stacks: Default::default(),
+            tables: Default::default(),
             ctframes: Default::default(),
             measurements: Default::default(),
             calendars: Default::default(),

@@ -372,6 +372,16 @@ fn bring_to_front(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+fn send_to_back(emu: &mut Emu) -> Result<()> {
+    let (p, c) = (emu.arg(0), emu.arg(2));
+    let subs = &mut view_mut(emu, p).subviews;
+    if let Some(i) = subs.iter().position(|&s| s == c) {
+        subs.remove(i);
+        subs.insert(0, c);
+    }
+    Ok(())
+}
+
 fn background_color(emu: &mut Emu) -> Result<()> {
     let c = view(emu, emu.arg(0)).background;
     emu.ret(c);
@@ -1374,6 +1384,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "insertSubview:belowSubview:", |e| insert_subview_relative(e, false)),
     ("UIView", false, "removeFromSuperview", remove_from_superview),
     ("UIView", false, "bringSubviewToFront:", bring_to_front),
+    ("UIView", false, "sendSubviewToBack:", send_to_back),
     ("UIView", false, "subviews", subviews),
     ("UIView", false, "superview", superview),
     ("UIView", false, "window", view_window),
