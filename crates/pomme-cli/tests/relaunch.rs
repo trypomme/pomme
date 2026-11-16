@@ -40,3 +40,32 @@ fn a_relaunch_keeps_what_the_app_saved() {
     assert_eq!(values(c, "keychain"), ["(none)", "secret", "secret"], "{c}");
     assert_eq!(values(c, "keychainAdd"), ["0"], "{c}");
 }
+
+/// The window's way (Device ▸ Relaunch App): the Relaunch event from the
+/// host, under `run_main_relaunching`, as `pomme run --window` runs.
+#[test]
+fn the_windows_relaunch_event() {
+    use pomme_hle::host::{Event, Frame, Host, Idle};
+    /// Waits half a second (as a window waits on the wall clock), relaunches,
+    /// waits half a second into the new launch and closes.
+    struct Window {
+        step: usize,
+    }
+    impl Host for Window {
+        fn idle(&mut self, now_ns: u64, _: Option<u64>) -> Idle {
+            self.step += 1;
+            match self.step {
+                1 | 3 => Idle::Input { at_ns: now_ns + 500_000_000, events: vec![] },
+                2 => Idle::Input { at_ns: now_ns, events: vec![Event::Relaunch] },
+                _ => Idle::Quit,
+            }
+        }
+        fn frame(&mut self, _: Frame<'_>) {}
+    }
+    let Some(mut emu) = common::boot("relaunch") else { return };
+    *emu.live.host = Some(Box::new(Window { step: 0 }));
+    let _ = emu.run_main_relaunching();
+    let c = &emu.console;
+    assert_eq!(values(c, "launch"), ["1", "2"], "{c}");
+    assert_eq!(values(c, "file"), ["(none)", "written at launch 1"], "{c}");
+}

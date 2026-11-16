@@ -8,7 +8,7 @@
 ## 2. Relaunch
 
 - [x] 2.1 `Stop::Relaunch`, the boot snapshot, and the relaunch steps in `drive`; `App::relaunch()`. Check: `cargo test --test relaunch`.
-- [ ] 2.2 The desktop window's Relaunch menu item (⌘⇧R). Check: by hand (not yet done: it builds).
+- [x] 2.2 The desktop window's Relaunch menu item (⌘⇧R). Check: `cargo test --test relaunch the_windows_relaunch_event` sends its event as the window does (the menu itself not clicked: no keyboard control here).
 
 ## 3. Tests and docs
 
