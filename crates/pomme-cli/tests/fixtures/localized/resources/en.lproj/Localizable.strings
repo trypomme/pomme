@@ -1,0 +1,6 @@
+/* The probe's strings, as text (UTF-8), the way an app's own .strings may ship. */
+"greeting" = "Hello";
+"only.en" = "Only in English";
+"escaped" = "Line\nTwo \"quoted\" \U00e9";
+// A line comment.
+"items" = "%d things (strings)";

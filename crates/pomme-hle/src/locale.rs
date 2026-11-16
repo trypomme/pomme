@@ -144,8 +144,7 @@ pub fn current_id(emu: &mut Emu) -> Result<String> {
     };
     let localizations = crate::bundle::main_localizations(emu);
     if !localizations.is_empty() {
-        let preferred = preferred_language_list(emu)?;
-        let chosen = best_localization(&preferred, &localizations).or_else(|| crate::bundle::main_development_region(emu)).unwrap_or_else(|| localizations[0].clone());
+        let chosen = crate::bundle::main_preferred_localization(emu)?.unwrap_or_else(|| localizations[0].clone());
         id = with_language(&id, &chosen);
     }
     emu.locales.current = Some(id.clone());
@@ -158,7 +157,7 @@ pub(crate) fn first_preferred_language(emu: &mut Emu) -> Result<String> {
 }
 
 /// The preferred languages as Rust strings.
-fn preferred_language_list(emu: &mut Emu) -> Result<Vec<String>> {
+pub(crate) fn preferred_language_list(emu: &mut Emu) -> Result<Vec<String>> {
     let a = preferred_languages(emu)?;
     let n = objc::send(emu, a, "count", &[])?;
     let mut out = Vec::new();
@@ -229,7 +228,7 @@ pub(crate) fn forced_hours(emu: &mut Emu) -> Result<Option<bool>> {
 }
 
 /// The preferred languages (an NSArray of strings), as `preferredLanguages` reports them.
-fn preferred_languages(emu: &mut Emu) -> Result<u64> {
+pub(crate) fn preferred_languages(emu: &mut Emu) -> Result<u64> {
     let v = crate::userdefaults::device_value(emu, "AppleLanguages")?;
     let cls = host_class(emu, "NSArray")?;
     if v != 0 && objc::send(emu, v, "isKindOfClass:", &[cls])? & 0xff != 0 {

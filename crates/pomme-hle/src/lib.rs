@@ -38,6 +38,7 @@ mod nsvalue;
 mod json;
 mod calendar;
 mod cjk;
+mod localizable;
 mod ctframe;
 mod scanner;
 mod sysctl;
@@ -359,6 +360,7 @@ pub struct Emu {
     pub locales: locale::State,
     /// Fallback fonts for Chinese, Japanese and Korean.
     pub(crate) cjk: cjk::State,
+    pub(crate) localizable: localizable::State,
     /// CoreText framesetters, frames, lines and runs.
     pub(crate) ctframes: ctframe::State,
     /// Units, measurements and measurement formatters.
@@ -500,6 +502,7 @@ impl Emu {
             pointer_arrays: Default::default(),
             locales: Default::default(),
             cjk: Default::default(),
+            localizable: Default::default(),
             ctframes: Default::default(),
             measurements: Default::default(),
             calendars: Default::default(),

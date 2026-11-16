@@ -50,7 +50,11 @@ Out of scope:
 
 ## Impact
 
-- `crates/pomme-hle/src/bundle.rs`, `storyboard.rs`: localizations.
-- The `locale` probe (`crates/pomme-cli/tests/fixtures/locale/`) gets
-  `.lproj` folders, and `locale.rs` tests them.
-- `apps/hello-swiftui` gets a Japanese localization.
+- `crates/pomme-hle/src/bundle.rs`, `localizable.rs`, `storyboard.rs`,
+  `printf.rs` (positional arguments): localizations.
+- `scripts/build-sysroot.sh`: CoreFoundation's language matching uses
+  Apple's ICU function, which the sysroot's ICU has.
+- `scripts/sysroot/swift-foundation-overlay/Localization.swift`:
+  `String(localized:)` and `NSLocalizedString` for Swift apps.
+- New probes `crates/pomme-cli/tests/fixtures/localized/` and
+  `swiftuilocalized/`, tested by `localized.rs`.

@@ -149,6 +149,12 @@ typedef NS_ENUM(unsigned long, NSLocaleLanguageDirection) {
     NSLocaleLanguageDirectionBottomToTop = 4,
 } __attribute__((swift_name("NSLocale.LanguageDirection")));
 
+// The app's bundle, for String(localized:) and NSLocalizedString (Localization.swift).
+@interface NSBundle : NSObject
+@property (class, readonly, strong) NSBundle *mainBundle;
+- (NSString *)localizedStringForKey:(NSString *)key value:(nullable NSString *)value table:(nullable NSString *)tableName;
+@end
+
 @interface NSLocale : NSObject
 - (instancetype)initWithLocaleIdentifier:(NSString *)string;
 @property (readonly, copy) NSString *localeIdentifier;

@@ -1,0 +1,162 @@
+# The localized fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE bundle.developmentLocalization en
+VALUE bundle.localizations Base,en,ja
+VALUE bundle.preferredLocalizations en
+VALUE info.camera To take photos
+VALUE info.displayName Localized
+VALUE info.localized.camera To take photos
+VALUE info.localized.displayName Localized
+VALUE info.localized.identifier nil
+VALUE info.plain.displayName Probe
+VALUE locale.identifier en_AU
+VALUE plural.files.0 0 files in Docs
+VALUE plural.files.1 1 file in Docs
+VALUE plural.files.2 2 files in Docs
+VALUE plural.files.5 5 files in Docs
+VALUE plural.format.0 No items
+VALUE plural.format.1 1 item
+VALUE plural.format.2 2 items
+VALUE plural.format.5 5 items
+VALUE plural.items.0 No items
+VALUE plural.items.1 1 item
+VALUE plural.items.2 2 items
+VALUE plural.items.5 5 items
+VALUE pref.A.current en
+VALUE pref.A.de en
+VALUE pref.A.de|fr en
+VALUE pref.A.en en
+VALUE pref.A.en-AU en
+VALUE pref.A.en-GB en
+VALUE pref.A.en-IN en
+VALUE pref.A.en-US en
+VALUE pref.A.es-ES en
+VALUE pref.A.es-MX en
+VALUE pref.A.fr-CA en
+VALUE pref.A.fr|ja ja
+VALUE pref.A.ja-JP ja
+VALUE pref.A.ja-JP|en-US ja
+VALUE pref.A.pt en
+VALUE pref.A.pt-BR en
+VALUE pref.A.pt-PT en
+VALUE pref.A.zh-HK en
+VALUE pref.A.zh-Hans en
+VALUE pref.A.zh-Hans-CN en
+VALUE pref.A.zh-Hant-HK en
+VALUE pref.A.zh-Hant-TW en
+VALUE pref.A.zh-TW en
+VALUE pref.B.current en
+VALUE pref.B.de en
+VALUE pref.B.de|fr fr
+VALUE pref.B.en en
+VALUE pref.B.en-AU en-AU,en-GB,en
+VALUE pref.B.en-GB en-GB,en
+VALUE pref.B.en-IN en-GB,en
+VALUE pref.B.en-US en
+VALUE pref.B.es-ES es
+VALUE pref.B.es-MX es-419,es
+VALUE pref.B.fr-CA fr-CA,fr
+VALUE pref.B.fr|ja fr
+VALUE pref.B.ja-JP ja
+VALUE pref.B.ja-JP|en-US ja
+VALUE pref.B.pt pt
+VALUE pref.B.pt-BR pt-BR,pt
+VALUE pref.B.pt-PT pt-PT,pt
+VALUE pref.B.zh-HK zh-HK,zh-Hant
+VALUE pref.B.zh-Hans zh-Hans
+VALUE pref.B.zh-Hans-CN zh-Hans
+VALUE pref.B.zh-Hant-HK zh-HK,zh-Hant
+VALUE pref.B.zh-Hant-TW zh-Hant
+VALUE pref.B.zh-TW zh-Hant
+VALUE pref.C.current English
+VALUE pref.C.de English
+VALUE pref.C.de|fr French
+VALUE pref.C.en English
+VALUE pref.C.en-AU English
+VALUE pref.C.en-GB English
+VALUE pref.C.en-IN English
+VALUE pref.C.en-US English
+VALUE pref.C.es-ES English
+VALUE pref.C.es-MX English
+VALUE pref.C.fr-CA French
+VALUE pref.C.fr|ja French
+VALUE pref.C.ja-JP Japanese
+VALUE pref.C.ja-JP|en-US Japanese
+VALUE pref.C.pt English
+VALUE pref.C.pt-BR English
+VALUE pref.C.pt-PT English
+VALUE pref.C.zh-HK English
+VALUE pref.C.zh-Hans English
+VALUE pref.C.zh-Hans-CN English
+VALUE pref.C.zh-Hant-HK English
+VALUE pref.C.zh-Hant-TW English
+VALUE pref.C.zh-TW English
+VALUE pref.D.current de
+VALUE pref.D.de de
+VALUE pref.D.de|fr de
+VALUE pref.D.en de
+VALUE pref.D.en-AU de
+VALUE pref.D.en-GB de
+VALUE pref.D.en-IN de
+VALUE pref.D.en-US de
+VALUE pref.D.es-ES de
+VALUE pref.D.es-MX de
+VALUE pref.D.fr-CA de
+VALUE pref.D.fr|ja de
+VALUE pref.D.ja-JP de
+VALUE pref.D.ja-JP|en-US de
+VALUE pref.D.pt de
+VALUE pref.D.pt-BR de
+VALUE pref.D.pt-PT de
+VALUE pref.D.zh-HK de
+VALUE pref.D.zh-Hans de
+VALUE pref.D.zh-Hans-CN de
+VALUE pref.D.zh-Hant-HK de
+VALUE pref.D.zh-Hant-TW de
+VALUE pref.D.zh-TW de
+VALUE pref.E.current en-US
+VALUE pref.E.de en-US
+VALUE pref.E.de|fr en-US
+VALUE pref.E.en en-US
+VALUE pref.E.en-AU en-US
+VALUE pref.E.en-GB en-US
+VALUE pref.E.en-IN en-US
+VALUE pref.E.en-US en-US
+VALUE pref.E.es-ES en-US
+VALUE pref.E.es-MX en-US
+VALUE pref.E.fr-CA en-US
+VALUE pref.E.fr|ja ja-JP
+VALUE pref.E.ja-JP ja-JP
+VALUE pref.E.ja-JP|en-US ja-JP
+VALUE pref.E.pt en-US
+VALUE pref.E.pt-BR en-US
+VALUE pref.E.pt-PT en-US
+VALUE pref.E.zh-HK zh_TW
+VALUE pref.E.zh-Hans zh_CN
+VALUE pref.E.zh-Hans-CN zh_CN
+VALUE pref.E.zh-Hant-HK zh_TW
+VALUE pref.E.zh-Hant-TW zh_TW
+VALUE pref.E.zh-TW zh_TW
+VALUE resource.Localizable en.lproj/Localizable.strings
+VALUE resource.base Base.lproj/base.txt
+VALUE resource.both en.lproj/both.txt
+VALUE resource.note note.txt
+VALUE resource.note.en note.txt
+VALUE resource.note.ja note.txt
+VALUE resource.note.text top note
+VALUE resource.top top.txt
+VALUE resources.txt base.txt,both.txt,both.txt,note.txt,note.txt,top.txt
+VALUE string.escaped Line\nTwo "quoted" é
+VALUE string.greeting Hello
+VALUE string.greeting.value Hello
+VALUE string.items.raw %#@n@
+VALUE string.missing missing.key
+VALUE string.missing.empty missing.key
+VALUE string.missing.value Fallback
+VALUE string.nosuchtable farewell
+VALUE string.only.en Only in English
+VALUE string.other Goodbye
+VALUE url.Localizable en.lproj/Localizable.strings
+VALUE url.base Base.lproj/base.txt
+VALUE url.both en.lproj/both.txt
+VALUE url.note note.txt
+VALUE url.top top.txt

@@ -1,0 +1,8 @@
+# The swiftuilocalized fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE farewell さようなら
+VALUE format なし
+VALUE greeting こんにちは
+VALUE items.1 1個
+VALUE items.3 3個
+VALUE missing Default
+VALUE nslocalized こんにちは

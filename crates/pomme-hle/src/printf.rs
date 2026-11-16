@@ -8,12 +8,19 @@
 use crate::{Emu, HostFn, Result};
 
 pub struct Args {
+    /// The first argument's slot, for positional arguments (`%2$@`).
+    base: u64,
     next: u64,
 }
 
 impl Args {
     pub fn new(at: u64) -> Self {
-        Args { next: at }
+        Args { base: at, next: at }
+    }
+
+    /// The `n`th argument's raw slot (1-based), without moving on.
+    pub(crate) fn nth(&self, emu: &Emu, n: usize) -> Result<u64> {
+        emu.read_u64(self.base + 8 * (n.max(1) as u64 - 1))
     }
 
     /// The next argument as a pointer (scanf's outputs).
@@ -39,7 +46,15 @@ pub fn format(emu: &mut Emu, fmt: &[u8], args: &mut Args) -> Result<Vec<u8>> {
             out.push(c);
             continue;
         }
-        // %[flags][width][.precision][length]conv
+        // %[position$][flags][width][.precision][length]conv: a position
+        // (as translations reorder arguments) reads that argument, and the
+        // next conversion without one the argument after it.
+        let digits = fmt[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 && fmt.get(i + digits) == Some(&b'$') {
+            let n: usize = std::str::from_utf8(&fmt[i..i + digits]).ok().and_then(|d| d.parse().ok()).unwrap_or(1);
+            args.next = args.base + 8 * (n.max(1) as u64 - 1);
+            i += digits + 1;
+        }
         let mut left = false;
         let mut zero = false;
         let mut plus = false;

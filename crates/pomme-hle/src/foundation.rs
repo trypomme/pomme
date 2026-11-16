@@ -687,16 +687,36 @@ fn empty_string(emu: &mut Emu) -> Result<()> {
 
 /// `+stringWithFormat:` / `-initWithFormat:`: format is x2, varargs on the stack.
 fn string_with_format(emu: &mut Emu) -> Result<()> {
-    let fmt = nsstring(emu, emu.arg(2))?;
-    let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
-    ret_made_string(emu, &String::from_utf8_lossy(&s))
+    let s = format_with(emu, emu.arg(2), emu.cpu.sp)?;
+    ret_made_string(emu, &s)
 }
 
 /// `-initWithFormat:arguments:` — format x2, va_list x3.
 fn string_with_format_va(emu: &mut Emu) -> Result<()> {
-    let fmt = nsstring(emu, emu.arg(2))?;
-    let s = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.arg(3)))?;
-    ret_made_string(emu, &String::from_utf8_lossy(&s))
+    let s = format_with(emu, emu.arg(2), emu.arg(3))?;
+    ret_made_string(emu, &s)
+}
+
+/// `-initWithFormat:locale:` / `+localizedStringWithFormat:` — format x2,
+/// varargs on the stack (the locale, x3, isn't applied yet).
+fn string_with_format_locale(emu: &mut Emu) -> Result<()> {
+    let s = format_with(emu, emu.arg(2), emu.cpu.sp)?;
+    ret_made_string(emu, &s)
+}
+
+/// `-initWithFormat:locale:arguments:` — format x2, locale x3, va_list x4.
+fn string_with_format_locale_va(emu: &mut Emu) -> Result<()> {
+    let s = format_with(emu, emu.arg(2), emu.arg(4))?;
+    ret_made_string(emu, &s)
+}
+
+/// Format guest string `fmt` (a plain or a plural format, localizable.rs)
+/// with the arguments from `args`.
+fn format_with(emu: &mut Emu, fmt: u64, args: u64) -> Result<String> {
+    let mut args = crate::printf::Args::new(args);
+    let f = crate::localizable::format_of(emu, fmt, &args)?;
+    let s = crate::printf::format(emu, f.as_bytes(), &mut args)?;
+    Ok(String::from_utf8_lossy(&s).into_owned())
 }
 
 fn string_by_appending(emu: &mut Emu) -> Result<()> {
@@ -708,16 +728,14 @@ fn string_by_appending(emu: &mut Emu) -> Result<()> {
 /// `-stringByAppendingFormat:`: format x2, varargs on the stack.
 fn string_by_appending_format(emu: &mut Emu) -> Result<()> {
     let a = nsstring(emu, emu.arg(0))?;
-    let fmt = nsstring(emu, emu.arg(2))?;
-    let b = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
-    ret_string(emu, &(a + &String::from_utf8_lossy(&b)))
+    let b = format_with(emu, emu.arg(2), emu.cpu.sp)?;
+    ret_string(emu, &(a + &b))
 }
 
 /// `-[NSMutableString appendFormat:]`.
 fn append_format(emu: &mut Emu) -> Result<()> {
-    let fmt = nsstring(emu, emu.arg(2))?;
-    let b = crate::printf::format(emu, fmt.as_bytes(), &mut crate::printf::Args::new(emu.cpu.sp))?;
-    let b = new_nsstring(emu, &String::from_utf8_lossy(&b))?;
+    let b = format_with(emu, emu.arg(2), emu.cpu.sp)?;
+    let b = new_nsstring(emu, &b)?;
     let s = as_cf_string(emu, b)?;
     cf(emu, "_CFStringAppend", &[emu.arg(0), s])?;
     Ok(())
@@ -4470,6 +4488,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", true, "stringWithFormat:", string_with_format),
     ("NSString", false, "initWithFormat:", string_with_format),
     ("NSString", false, "initWithFormat:arguments:", string_with_format_va),
+    ("NSString", true, "localizedStringWithFormat:", string_with_format_locale),
+    ("NSString", false, "initWithFormat:locale:", string_with_format_locale),
+    ("NSString", false, "initWithFormat:locale:arguments:", string_with_format_locale_va),
     ("NSString", false, "length", string_length),
     ("NSString", false, "UTF8String", utf8_string),
     // A path's bytes for the file system: UTF-8 (pomme's file system keeps names as given).

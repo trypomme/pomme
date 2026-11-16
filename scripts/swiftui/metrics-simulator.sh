@@ -32,6 +32,8 @@ else
   xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-arc \
     -framework UIKit -framework Foundation $(cat "$FIXTURE/ldflags" 2>/dev/null) "$FIXTURE/main.m" -o "$APP/$EXE"
 fi
+# Resources the fixture ships with (files and .lproj folders) at the bundle's top level.
+[ -d "$FIXTURE/resources" ] && cp -R "$FIXTURE/resources/." "$APP/"
 cat >"$APP/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

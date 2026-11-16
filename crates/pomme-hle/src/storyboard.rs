@@ -149,13 +149,17 @@ fn storyboard_dir(emu: &Emu, sb: u64) -> Option<String> {
     emu.ui.storyboards.get(&sb).cloned()
 }
 
-/// `+storyboardWithName:bundle:` — `<bundle>/Base.lproj/<name>.storyboardc` or `<bundle>/<name>.storyboardc`.
+/// A compiled storyboard's directory, found as resources are (the top
+/// level, the chosen localization's folder, then `Base.lproj`).
+fn find_storyboard(emu: &mut Emu, name: &str) -> Option<String> {
+    let dir = crate::bundle::main_resource(emu, &format!("{name}.storyboardc")).ok()??;
+    crate::fs::read_file(emu, &format!("{dir}/Info.plist")).map(|_| dir)
+}
+
+/// `+storyboardWithName:bundle:`.
 fn storyboard_with_name(emu: &mut Emu) -> Result<()> {
     let name = foundation::nsstring(emu, emu.arg(2))?;
-    let bundle = crate::fs::guest_bundle_path(emu);
-    let dir = [format!("{bundle}/Base.lproj/{name}.storyboardc"), format!("{bundle}/{name}.storyboardc")]
-        .into_iter()
-        .find(|d| crate::fs::read_file(emu, &format!("{d}/Info.plist")).is_some());
+    let dir = find_storyboard(emu, &name);
     let Some(dir) = dir else {
         emu.ret(0);
         return Ok(());
@@ -236,10 +240,7 @@ pub fn scene_storyboard(emu: &mut Emu) -> Option<String> {
     let configs = info.as_dictionary()?.get("UIApplicationSceneManifest")?.as_dictionary()?.get("UISceneConfigurations")?.as_dictionary()?;
     let first = configs.get("UIWindowSceneSessionRoleApplication")?.as_array()?.first()?.as_dictionary()?;
     let name = first.get("UISceneStoryboardFile")?.as_string()?.to_string();
-    let bundle = crate::fs::guest_bundle_path(emu);
-    [format!("{bundle}/Base.lproj/{name}.storyboardc"), format!("{bundle}/{name}.storyboardc")]
-        .into_iter()
-        .find(|d| crate::fs::read_file(emu, &format!("{d}/Info.plist")).is_some())
+    find_storyboard(emu, &name)
 }
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[

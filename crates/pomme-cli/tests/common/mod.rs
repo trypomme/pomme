@@ -39,6 +39,7 @@ fn build_now(name: &str) -> Option<PathBuf> {
             .status()
             .expect("run swiftc");
         assert!(status.success(), "building the {name} fixture app failed");
+        copy_tree(&dir.join("resources"), &app);
         write_info_plist(&dir, &app, &exe, name);
         return Some(app);
     }
@@ -64,15 +65,25 @@ fn build_now(name: &str) -> Option<PathBuf> {
         .status()
         .expect("run clang");
     assert!(status.success(), "building the {name} fixture app failed");
-    // Resources the fixture ships with go in the bundle's top level.
-    if let Ok(entries) = std::fs::read_dir(dir.join("resources")) {
-        for e in entries {
-            let p = e.unwrap().path();
-            std::fs::copy(&p, app.join(p.file_name().unwrap())).unwrap();
-        }
-    }
+    // Resources the fixture ships with (files and .lproj folders) go in the bundle's top level.
+    copy_tree(&dir.join("resources"), &app);
     write_info_plist(&dir, &app, &exe, name);
     Some(app)
+}
+
+/// Copy the files and folders in `from` (if it exists) into `to`.
+fn copy_tree(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else { return };
+    for e in entries {
+        let p = e.unwrap().path();
+        let dest = to.join(p.file_name().unwrap());
+        if p.is_dir() {
+            std::fs::create_dir_all(&dest).unwrap();
+            copy_tree(&p, &dest);
+        } else {
+            std::fs::copy(&p, dest).unwrap();
+        }
+    }
 }
 
 /// The app's Info.plist, with the fixture's extra keys (scenes, orientations, …).

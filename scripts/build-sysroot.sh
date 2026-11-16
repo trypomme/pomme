@@ -124,7 +124,12 @@ CFLAGS=(-target "$MAC_TARGET" -isysroot "$MAC_SDK" -Os -fblocks -std=gnu11 -Wno-
   -DCF_BUILDING_CF -DDEPLOYMENT_ENABLE_LIBDISPATCH -DU_SHOW_DRAFT_API -DU_SHOW_INTERNAL_API)
 for f in "$CF_SRC"/*.c "$SHIMS/cf-pomme.c"; do
   o="$CF_OBJ/$(basename "${f%.c}").o"
-  xcrun clang "${CFLAGS[@]}" -c "$f" -o "$o" &
+  # Bundles match preferred languages with localizations as iOS does, with
+  # Apple's ualoc_localizationsToUse (in this ICU); without the flag, CF
+  # matches nothing and takes the first localization.
+  extra=()
+  [ "$(basename "$f")" = CFBundle_Locale.c ] && extra=(-D__HAS_APPLE_ICU__=1)
+  xcrun clang "${CFLAGS[@]}" "${extra[@]}" -c "$f" -o "$o" &
 done
 wait
 # All of ICU goes in (-force_load), not only what CoreFoundation calls: Swift
