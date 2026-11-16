@@ -172,6 +172,14 @@ Debugging:
   keeps them, and its keychain items) and starts everything else fresh, so a second launch can
   be tested: React Native's `I18nManager.forceRTL` applies, a login stays. Each `pomme run`
   still starts as a fresh install.
+- Opening a link in the running app: File ▸ Open URL… (⌘L, Ctrl+L on Windows and Linux) in
+  the window shows a box over the phone; paste a link and press Return, and pomme hands it to
+  the app as iOS does (`scene:openURLContexts:`, or `application:openURL:options:` without
+  scenes), with no "Open in…?" prompt. Only links with a scheme the app lists in its
+  `Info.plist` go through; others say why. File ▸ Open Recent URL keeps the last ten. Use it
+  to test deep links (`myapp://settings`), or to point a development build at Metro: paste
+  the `exp+…://expo-development-client/?url=…` link `npx expo start` prints. Tests do the
+  same with `app.open_url("…")`.
 - Screen readers: the app's UIAccessibility tree reaches the host's assistive technology, so
   someone using VoiceOver, NVDA, Narrator or Orca can use an iOS app running in pomme. A host
   that wants it (`Host::wants_accessibility`) gets the screen as VoiceOver presents it

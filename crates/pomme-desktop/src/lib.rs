@@ -20,6 +20,7 @@
 //! (accessibility.rs): VoiceOver on a Mac reads its elements and activates them.
 
 mod accessibility;
+mod open_url;
 mod capture;
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), path = "menu_none.rs")]
 mod menu;
@@ -69,6 +70,12 @@ enum Action {
     Record,
     /// Device ▸ Relaunch App: quit the app and start it again, keeping what it saved.
     Relaunch,
+    /// File ▸ Open URL…: the panel to type or paste a link into.
+    OpenUrl,
+    /// File ▸ Open Recent URL ▸ one of the recent links (its place in the list).
+    OpenRecent(usize),
+    /// File ▸ Open Recent URL ▸ Clear.
+    ClearRecent,
 }
 
 /// The emulator thread's side: a frame for the window, or the run ended.
@@ -83,6 +90,8 @@ enum ToWindow {
     Tree(Vec<pomme_hle::accessibility::Node>),
     /// The system's screen reader wants something (AccessKit).
     ScreenReader(accesskit_winit::Event),
+    /// What became of a link sent with File ▸ Open URL.
+    UrlOpened(String, Result<(), String>),
 }
 
 impl From<accesskit_winit::Event> for ToWindow {
@@ -196,6 +205,10 @@ impl Host for DesktopHost {
         let _ = self.proxy.send_event(ToWindow::FaceId(false));
     }
 
+    fn url_opened(&mut self, url: &str, result: Result<(), &str>) {
+        let _ = self.proxy.send_event(ToWindow::UrlOpened(url.to_string(), result.map_err(str::to_string)));
+    }
+
     fn screenshot(&mut self, shot: Frame<'_>) {
         capture::save_screenshot(shot, self.device);
     }
@@ -263,6 +276,7 @@ pub fn launch(config: Config, app: impl FnOnce(Box<dyn Host>, f32) + Send + 'sta
         screen_reader: Arc::new(AtomicBool::new(false)),
         ax_nodes: Vec::new(),
         ax_focus: None,
+        panel: None,
     };
     event_loop.run_app(&mut window).map_err(|e| e.to_string())
 }
@@ -306,6 +320,8 @@ struct App {
     /// The app's accessibility tree as last given, and the element the screen reader is on.
     ax_nodes: Vec<pomme_hle::accessibility::Node>,
     ax_focus: Option<u64>,
+    /// File ▸ Open URL's panel (made with the window).
+    panel: Option<open_url::Panel>,
 }
 
 impl App {
@@ -383,10 +399,57 @@ impl App {
             face_id_sheet(&mut pix, phone.screen, phone.scale);
             pix
         });
+        // The Open URL panel over the phone's screen, while it's open.
+        let mut wants = open_url::Wants::Nothing;
+        let overlay = match (self.panel.as_mut(), self.window.as_ref()) {
+            (Some(panel), Some(window)) if panel.open => {
+                let (k, dx, dy) = fit;
+                let [sx, sy, sw, sh] = phone.screen;
+                let (overlay, w) = panel.frame(window, [dx + sx * k, dy + sy * k, sw * k, sh * k]);
+                wants = w;
+                Some(overlay)
+            }
+            _ => None,
+        };
         let pix = sheet.as_ref().unwrap_or(&phone.pix);
         let (data, w, h) = (pix.data(), pix.width(), pix.height());
         if let Some(p) = self.presenter.as_mut() {
-            p.present(data, w, h, fit);
+            p.present(data, w, h, fit, overlay);
+        }
+        self.panel_wants(wants);
+    }
+
+    /// Do what the panel asked for in its last frame.
+    fn panel_wants(&mut self, wants: open_url::Wants) {
+        match wants {
+            open_url::Wants::Nothing => return,
+            open_url::Wants::Close => {
+                if let Some(p) = self.panel.as_mut() {
+                    p.close();
+                }
+            }
+            open_url::Wants::Open(url) => self.open_url(url),
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Send a link to the app; its answer comes back as `ToWindow::UrlOpened`.
+    fn open_url(&mut self, url: String) {
+        if self.ended || self.events.is_none() {
+            if let Some(p) = self.panel.as_mut() {
+                p.unanswerable("The app has stopped.");
+            }
+            return;
+        }
+        self.send(Event::OpenUrl(url));
+    }
+
+    /// The recent links changed: the menu lists them.
+    fn recent_changed(&self) {
+        if let (Some(m), Some(p)) = (&self.menus, &self.panel) {
+            m.set_recent(&p.recent.items);
         }
     }
 
@@ -414,6 +477,30 @@ impl App {
             Action::Close => self.close(event_loop),
             Action::SaveScreen => self.send(Event::SaveScreen),
             Action::Relaunch => self.send(Event::Relaunch),
+            Action::OpenUrl => {
+                if let Some(p) = self.panel.as_mut() {
+                    p.show();
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            Action::OpenRecent(i) => {
+                let url = self.panel.as_ref().and_then(|p| p.recent.items.get(i).cloned());
+                if let Some(url) = url {
+                    if let Some(p) = self.panel.as_mut() {
+                        p.show();
+                        p.sent(&url);
+                    }
+                    self.open_url(url);
+                }
+            }
+            Action::ClearRecent => {
+                if let Some(p) = self.panel.as_mut() {
+                    p.recent.clear();
+                }
+                self.recent_changed();
+            }
             Action::Record => {
                 self.recording = !self.recording;
                 if let Some(m) = &self.menus {
@@ -455,6 +542,43 @@ impl App {
             }
             W::AccessibilityDeactivated => self.screen_reader.store(false, Ordering::Relaxed),
         }
+    }
+
+    /// A window event while the Open URL panel is open: the keyboard is the
+    /// panel's (⌘W / ⌘Q still close the window); a click on the panel is its
+    /// own; a click elsewhere on the screen closes it; the bezel and the rest
+    /// work as usual. True when the event is used up.
+    fn panel_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) -> bool {
+        let Some(window) = self.window.clone() else { return false };
+        let Some(panel) = self.panel.as_mut() else { return false };
+        let over_panel = panel.on_event(&window, event);
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = *position;
+        }
+        let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
+        let used = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                if command && key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Character(c) if c.as_str() == "w" || c.as_str() == "q") {
+                    self.close(event_loop);
+                }
+                true
+            }
+            WindowEvent::Ime(_) => true,
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } if !over_panel => {
+                let on_screen = self.point_at(self.cursor).is_some();
+                if on_screen && let Some(p) = self.panel.as_mut() {
+                    p.close();
+                }
+                on_screen
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. } => over_panel,
+            _ => false,
+        };
+        // (A moved cursor over the panel still redraws it: buttons light up.)
+        if used || over_panel {
+            window.request_redraw();
+        }
+        used
     }
 
     fn close(&mut self, event_loop: &ActiveEventLoop) {
@@ -613,6 +737,8 @@ impl ApplicationHandler<ToWindow> for App {
             }
         };
         self.adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
+        self.panel = Some(open_url::Panel::new(&window));
+        self.recent_changed();
         window.set_visible(true);
         let scale = window.scale_factor() as f32;
         self.window = Some(window.clone());
@@ -666,6 +792,15 @@ impl ApplicationHandler<ToWindow> for App {
                 self.update_accessibility();
             }
             ToWindow::ScreenReader(e) => self.screen_reader(e.window_event),
+            ToWindow::UrlOpened(url, result) => {
+                if let Some(p) = self.panel.as_mut() {
+                    p.answered(&url, result);
+                }
+                self.recent_changed();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             ToWindow::Ended => {
                 self.ended = true;
                 if let Some(w) = &self.window {
@@ -678,6 +813,9 @@ impl ApplicationHandler<ToWindow> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         if let (Some(a), Some(w)) = (self.adapter.as_mut(), self.window.as_ref()) {
             a.process_event(w, &event);
+        }
+        if self.panel.as_ref().is_some_and(|p| p.open) && self.panel_event(event_loop, &event) {
+            return;
         }
         match event {
             WindowEvent::CloseRequested => self.close(event_loop),
@@ -761,6 +899,7 @@ impl ApplicationHandler<ToWindow> for App {
                     // No title bar to close it with: ⌘W / ⌘Q.
                     Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
                     Key::Character(c) if command && c.as_str() == "s" => self.act(event_loop, Action::SaveScreen),
+                    Key::Character(c) if command && c.as_str() == "l" => self.act(event_loop, Action::OpenUrl),
                     Key::Character(c) if command && self.modifiers.shift_key() && c.eq_ignore_ascii_case("r") => self.act(event_loop, Action::Relaunch),
                     Key::Character(c) if command && c.as_str() == "r" => self.act(event_loop, Action::Record),
                     _ if command => {}

@@ -1,4 +1,5 @@
-//! The Simulator's menus, as far as pomme has them: File ▸ Save Screen /
+//! The Simulator's menus, as far as pomme has them: File ▸ Open URL… /
+//! Open Recent URL (pomme's own: a link into the running app), Save Screen /
 //! Record Screen, Device ▸ Rotate Left / Rotate Right / Relaunch App (pomme's
 //! own: quit the app and start it again, keeping its data), and Features ▸ Face ID
 //! ▸ Enrolled / Matching Face / Non-matching Face. On macOS they're the menu bar, with the Simulator's
@@ -18,7 +19,13 @@ pub(crate) struct Menus {
     menu: Menu,
     enrolled: CheckMenuItem,
     record: MenuItem,
+    /// File ▸ Open Recent URL: the recent links, then Clear.
+    recent: Submenu,
 }
+
+/// The ids of File ▸ Open Recent URL's items: `recent-<n>` for the n-th link, and Clear.
+const RECENT_PREFIX: &str = "recent-";
+const RECENT_CLEAR: &str = "recent-clear";
 
 fn key(mods: Modifiers, code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(mods, code))
@@ -37,6 +44,8 @@ impl Menus {
         let matching = item("Matching Face", key(face, Code::KeyM));
         let non_matching = item("Non-matching Face", key(face, Code::KeyN));
         let close = item("Close Window", key(CMD_OR_CTRL, Code::KeyW));
+        let open_url = item("Open URL…", key(CMD_OR_CTRL, Code::KeyL));
+        let recent = Submenu::new("Open Recent URL", true);
         let save = item("Save Screen", key(CMD_OR_CTRL, Code::KeyS));
         let record = item("Record Screen", key(CMD_OR_CTRL, Code::KeyR));
         let sep = PredefinedMenuItem::separator();
@@ -50,6 +59,7 @@ impl Menus {
             (close.id().clone(), Action::Close),
             (save.id().clone(), Action::SaveScreen),
             (record.id().clone(), Action::Record),
+            (open_url.id().clone(), Action::OpenUrl),
         ];
         let face_id = Submenu::with_items("Face ID", true, &[&enrolled, &sep, &matching, &non_matching]).expect("menu");
         let device = Submenu::with_items("Device", true, &[&rotate_left, &rotate_right, &sep, &relaunch]).expect("menu");
@@ -66,28 +76,47 @@ impl Menus {
                 &[&PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &sep, &quit],
             )
             .expect("menu");
-            let file = Submenu::with_items("File", true, &[&close, &sep, &save, &record]).expect("menu");
+            let file = Submenu::with_items("File", true, &[&open_url, &recent, &sep, &close, &sep, &save, &record]).expect("menu");
             let window = Submenu::with_items("Window", true, &[&PredefinedMenuItem::minimize(None)]).expect("menu");
             menu.append_items(&[&app, &file, &device, &features, &window]).expect("menu");
             window.set_as_windows_menu_for_nsapp();
             actions.push((quit.id().clone(), Action::Close));
-            Self::finish(menu, enrolled, record, actions, proxy, wrap)
+            Self::finish(menu, enrolled, record, recent, actions, proxy, wrap)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            menu.append_items(&[&save, &record, &sep, &device, &features, &sep, &close]).expect("menu");
-            Self::finish(menu, enrolled, record, actions, proxy, wrap)
+            menu.append_items(&[&open_url, &recent, &sep, &save, &record, &sep, &device, &features, &sep, &close]).expect("menu");
+            Self::finish(menu, enrolled, record, recent, actions, proxy, wrap)
         }
     }
 
-    fn finish<T: Send + 'static>(menu: Menu, enrolled: CheckMenuItem, record: MenuItem, actions: Vec<(MenuId, Action)>, proxy: EventLoopProxy<T>, wrap: fn(Action) -> T) -> Self {
+    fn finish<T: Send + 'static>(menu: Menu, enrolled: CheckMenuItem, record: MenuItem, recent: Submenu, actions: Vec<(MenuId, Action)>, proxy: EventLoopProxy<T>, wrap: fn(Action) -> T) -> Self {
         let proxy = std::sync::Mutex::new(proxy);
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-            if let Some(&(_, a)) = actions.iter().find(|(id, _)| *id == e.id) {
+            let a = match actions.iter().find(|(id, _)| *id == e.id) {
+                Some(&(_, a)) => Some(a),
+                None if e.id.0 == RECENT_CLEAR => Some(Action::ClearRecent),
+                None => e.id.0.strip_prefix(RECENT_PREFIX).and_then(|n| n.parse().ok()).map(Action::OpenRecent),
+            };
+            if let Some(a) = a {
                 let _ = proxy.lock().unwrap().send_event(wrap(a));
             }
         }));
-        Self { menu, enrolled, record }
+        let menus = Self { menu, enrolled, record, recent };
+        menus.set_recent(&[]);
+        menus
+    }
+
+    /// File ▸ Open Recent URL lists these links (newest first), then Clear.
+    pub(crate) fn set_recent(&self, urls: &[String]) {
+        while self.recent.remove_at(0).is_some() {}
+        for (i, url) in urls.iter().enumerate() {
+            let _ = self.recent.append(&MenuItem::with_id(format!("{RECENT_PREFIX}{i}"), url, true, None));
+        }
+        if !urls.is_empty() {
+            let _ = self.recent.append(&PredefinedMenuItem::separator());
+        }
+        let _ = self.recent.append(&MenuItem::with_id(RECENT_CLEAR, "Clear", !urls.is_empty(), None));
     }
 
     /// Put the menus up for the app (macOS: the menu bar).

@@ -44,9 +44,11 @@ handler (`crates/pomme-hle/src/uikit.rs`, next to the launch code):
    Without scenes: calls `application:openURL:options:` on the app
    delegate if it implements it.
 
-A refusal comes back to the host as a reason string, through a new
-`Host::url_refused(reason)` call with a default that does nothing. The
-window shows it in the panel; the driver turns it into a failed step.
+The result comes back to the host either way, through a new
+`Host::url_opened(url, Result<(), reason>)` call with a default that does
+nothing: the panel closes (and remembers the link) when the app took it,
+and shows the reason when it didn't. The driver turns a refusal into a
+failed step.
 
 ### The driver step
 

@@ -33,6 +33,8 @@ pub struct Presenter {
     /// The phone texture, its bind group and size.
     texture: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)>,
     blend: Blend,
+    /// egui's renderer, made when the Open URL panel is first drawn.
+    egui: Option<egui_wgpu::Renderer>,
 }
 
 const SHADER: &str = r#"
@@ -148,7 +150,7 @@ impl Presenter {
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("phone"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        Ok(Presenter { surface, device, queue, config, pipeline, layout, sampler, uniforms, texture: None, blend })
+        Ok(Presenter { surface, device, queue, config, pipeline, layout, sampler, uniforms, texture: None, blend, egui: None })
     }
 
     /// Whether the window can show through where the phone isn't.
@@ -165,8 +167,10 @@ impl Presenter {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Show `rgba` (premultiplied, `w` × `h`), placed by `fit` (scale, x, y in window pixels).
-    pub fn present(&mut self, rgba: &[u8], w: u32, h: u32, fit: (f32, f32, f32)) {
+    /// Show `rgba` (premultiplied, `w` × `h`), placed by `fit` (scale, x, y in
+    /// window pixels), with the Open URL panel over it when there's one. With
+    /// no panel nothing else is drawn: the window is as it always was.
+    pub fn present(&mut self, rgba: &[u8], w: u32, h: u32, fit: (f32, f32, f32), overlay: Option<crate::open_url::Overlay>) {
         if self.texture.as_ref().is_none_or(|t| (t.2, t.3) != (w, h)) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("phone"),
@@ -242,7 +246,44 @@ impl Presenter {
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..3, 0..1);
         }
+        if let Some(o) = overlay {
+            self.draw_overlay(&mut encoder, &view, o);
+        }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+    }
+
+    /// egui's shapes over the phone, in a second pass that keeps what's drawn.
+    /// egui's colours are premultiplied, as the phone's are.
+    fn draw_overlay(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, o: crate::open_url::Overlay) {
+        let (device, queue, format) = (&self.device, &self.queue, self.config.format);
+        let renderer = self.egui.get_or_insert_with(|| egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default()));
+        for (id, deltas) in &o.textures.set {
+            for delta in deltas {
+                renderer.update_texture(device, queue, *id, delta);
+            }
+        }
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: o.pixels_per_point };
+        let extra = renderer.update_buffers(device, queue, encoder, &o.primitives, &screen);
+        queue.submit(extra);
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("open url"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            renderer.render(&mut pass.forget_lifetime(), &o.primitives, &screen);
+        }
+        for id in &o.textures.free {
+            renderer.free_texture(id);
+        }
     }
 }

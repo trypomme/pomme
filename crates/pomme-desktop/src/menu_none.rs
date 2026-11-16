@@ -15,4 +15,5 @@ impl Menus {
     pub(crate) fn pop_up(&self, _window: &Window) {}
     pub(crate) fn toggled_enrolled(&self) {}
     pub(crate) fn recording(&self, _on: bool) {}
+    pub(crate) fn set_recent(&self, _urls: &[String]) {}
 }

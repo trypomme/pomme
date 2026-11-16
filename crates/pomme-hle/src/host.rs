@@ -46,7 +46,7 @@ pub enum Event {
     /// The screen reader did something to an element of the last tree the host got (by its id).
     Accessibility { id: u64, action: Action },
     /// File ▸ Open URL: a link opened in the running app (see [`crate::uikit::open_url`]).
-    /// One the app doesn't take comes back in [`Host::url_refused`].
+    /// Whether the app took it comes back in [`Host::url_opened`].
     OpenUrl(String),
 }
 
@@ -106,9 +106,9 @@ pub trait Host {
     fn biometry_prompt(&mut self, _reason: &str) {}
     /// The waiting Face ID prompts were answered (or failed): the sheet goes.
     fn biometry_answered(&mut self) {}
-    /// A link from [`Event::OpenUrl`] the app didn't take, and why (not a
-    /// URL, or a scheme the app doesn't list).
-    fn url_refused(&mut self, _url: &str, _why: &str) {}
+    /// What became of a link from [`Event::OpenUrl`]: delivered, or why the
+    /// app didn't take it (not a URL, or a scheme the app doesn't list).
+    fn url_opened(&mut self, _url: &str, _result: std::result::Result<(), &str>) {}
     /// The wall clock as the app's time (ns), once the host has started
     /// pacing: while the app is busy, its clock keeps up with this, as an
     /// iPhone's animations keep real time however busy the app is.
@@ -398,10 +398,9 @@ fn deliver(emu: &mut Emu) -> Result<()> {
             }
             Event::Relaunch => return crate::relaunch::request(emu),
             Event::OpenUrl(url) => {
-                if let Err(why) = crate::uikit::open_url(emu, &url)? {
-                    if let Some(host) = emu.live.host.as_mut() {
-                        host.url_refused(&url, &why);
-                    }
+                let r = crate::uikit::open_url(emu, &url)?;
+                if let Some(host) = emu.live.host.as_mut() {
+                    host.url_opened(&url, r.as_ref().map(|_| ()).map_err(String::as_str));
                 }
             }
             Event::SaveScreen | Event::Record(_) => {}
