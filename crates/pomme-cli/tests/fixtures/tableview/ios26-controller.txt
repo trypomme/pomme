@@ -1,0 +1,14 @@
+# The tableview probe on the iOS 26.0 Simulator (iPhone 16e), case controller: METRIC <rect> (the table's frame; rows and headers in its content), VALUE <name> <value>.
+VALUE controller.isTableView 1
+VALUE controller.dataSource 0
+METRIC controller.table 0.00 0.00 390.00 844.00
+VALUE controller.adjustedContentInset 47.00 0.00 34.00 0.00
+VALUE controller.contentOffset -47.00
+METRIC header0 0.00 22.00 390.00 28.00
+METRIC row0.0 0.00 50.00 390.00 52.00
+METRIC row0.1 0.00 102.00 390.00 52.00
+METRIC row0.2 0.00 154.00 390.00 52.00
+METRIC header1 0.00 228.00 390.00 28.00
+METRIC row1.0 0.00 256.00 390.00 52.00
+METRIC row1.1 0.00 308.00 390.00 52.00
+METRIC row1.2 0.00 360.00 390.00 52.00

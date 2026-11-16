@@ -153,3 +153,65 @@ fn tapping_an_item_sends_its_action() {
     common::views(&mut emu, 2.0);
     assert!(emu.console.contains("VALUE tapped (no title)"), "{}", emu.console);
 }
+
+/// pomme's toolbar items for the `toolbar` case, in window coordinates, and
+/// what the probe printed.
+fn toolbar(compat: bool) -> Option<(Vec<BarItem>, String)> {
+    let mut emu = common::boot("baritems")?;
+    pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", "toolbar");
+    emu.system.requires_compatibility = compat;
+    common::views(&mut emu, 1.5);
+    let t = pomme_hle::baritems::toolbars(&emu)[0];
+    let o = pomme_hle::baritems::toolbar_origin(&mut emu, t);
+    let items = pomme_hle::baritems::toolbar_look(&mut emu, t).unwrap().unwrap();
+    let shift = |r: [f64; 4]| [r[0] + o[0], r[1] + o[1], r[2], r[3]];
+    let items = items.into_iter().map(|i| BarItem { capsule: i.capsule.map(shift), area: shift(i.area), content_frame: shift(i.content_frame), ..i }).collect();
+    Some((items, emu.console.clone()))
+}
+
+/// The navigation controller's toolbar under Liquid Glass (measured in
+/// ios26-toolbar.png: the capsules at the sides and centred between the
+/// flexible spaces, 48 pt tall, 28 pt above the screen's bottom); the
+/// screen's safe area ends above them.
+#[test]
+fn toolbar_items() {
+    let Some((ours, console)) = toolbar(false) else { return };
+    // (add 28–76, Edit 167.33–223.33, Share 290.67–362, all 768–816; titles' widths loosely.)
+    let want = [[28.0, 768.0, 48.0, 48.0], [167.33, 768.0, 56.0, 48.0], [290.67, 768.0, 71.33, 48.0]];
+    let got: Vec<[f64; 4]> = ours.iter().filter_map(|i| i.capsule).collect();
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert!((got[0][0] - 28.0).abs() <= 0.5 && (got[0][2] - 48.0).abs() <= 0.5, "add {:?}", got[0]);
+    assert!(((got[1][0] + got[1][2] / 2.0) - 195.33).abs() <= 0.5 && (got[1][2] - 56.0).abs() <= 3.0, "Edit {:?}", got[1]);
+    assert!(((got[2][0] + got[2][2]) - 362.0).abs() <= 0.5 && (got[2][2] - 71.33).abs() <= 3.0, "Share {:?}", got[2]);
+    assert!(got.iter().zip(want).all(|(g, w)| (g[1] - w[1]).abs() <= 0.5 && (g[3] - w[3]).abs() <= 0.5), "{got:?}");
+    assert!(console.contains("VALUE safeArea 101.00 0.00 76.00 0.00"), "{console}");
+}
+
+/// Before iOS 26: a 49-pt bar above the home indicator, the items' content
+/// as recorded (ios26-compat-toolbar.txt), the safe area ending at the bar.
+#[test]
+fn toolbar_items_before_ios_26() {
+    let Some((ours, console)) = toolbar(true) else { return };
+    let rec = views("ios26-compat-toolbar.txt");
+    let want: Vec<[f64; 4]> = rec.iter().filter(|v| v.0 == "_UIButtonBarButton").map(|v| [v.1[0], v.1[1] + BAR_TOP, v.1[2], v.1[3]]).collect();
+    assert_eq!(ours.len(), want.len(), "{ours:?}");
+    for (i, w) in ours.iter().zip(&want) {
+        let a = i.area;
+        // (Held by the outer edge; titles loosely.)
+        let edge = if w[0] > 195.0 { (a[0] + a[2] - w[0] - w[2]).abs() } else { (a[0] - w[0]).abs() };
+        assert!(edge <= 3.0 && (a[2] - w[2]).abs() <= 3.0, "area {a:?}, iOS {w:?}");
+        let mid = i.content_frame[1] + i.content_frame[3] / 2.0;
+        assert!((mid - 782.5).abs() <= 0.5, "content {:?}", i.content_frame);
+    }
+    assert!(console.contains("VALUE safeArea 91.00 0.00 83.00 0.00"), "{console}");
+}
+
+/// A tap on the toolbar's add item sends its action.
+#[test]
+fn tapping_a_toolbar_item() {
+    let Some(mut emu) = common::boot("baritems") else { return };
+    pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", "toolbar");
+    pomme_hle::touch::swipe(&mut emu.touch.script, 1_500_000_000, (52.0, 792.0), (52.0, 792.0), 50_000_000);
+    common::views(&mut emu, 2.0);
+    assert!(emu.console.contains("VALUE tapped"), "{}", emu.console);
+}

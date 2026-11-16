@@ -345,6 +345,7 @@ pub fn layout_container(emu: &mut Emu, container: u64) -> Result<()> {
     };
     set_frame_of(emu, n.bar, [0.0, safe_top, w, bar_h + stretch]);
     view_mut(emu, n.bar).hidden = n.bar_hidden;
+    crate::baritems::layout_toolbar(emu, nc, container, n.stack.last().copied(), w, h)?;
     if let Some(&top) = n.stack.last() {
         let v = send(emu, top, "view", &[])?;
         // The view runs under the bar unless the controller excludes the top edge.
@@ -1172,6 +1173,11 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
             let n = nav(emu, nc);
             if cur != v && !n.bar_hidden && !is_inside(emu, v, n.bar) {
                 top += nav_bar_height(emu, nc).unwrap_or(BAR_HEIGHT);
+            }
+            // And a visible toolbar the bottom (not its own content).
+            let toolbar = crate::baritems::toolbar_of(emu, nc);
+            if cur != v && toolbar.is_none_or(|t| !is_inside(emu, v, t)) {
+                bottom += crate::baritems::toolbar_covers(emu, nc, n.stack.last().copied());
             }
             break;
         }
@@ -2202,7 +2208,6 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (NC, false, "interactivePopGestureRecognizer", nc_pop_gesture),
     // iOS 26: popping by swiping anywhere in the content (pomme has one recognizer for both).
     (NC, false, "interactiveContentPopGestureRecognizer", nc_pop_gesture),
-    (NC, false, "toolbar", |e| ret(e, 0)),
     ("UIBarAppearance", false, "init", |e| {
         let a = e.arg(0);
         configure_appearance(e, a, DEFAULT_BACKGROUND)?;

@@ -16,8 +16,8 @@
 
 ## 3. Toolbar
 
-- [ ] 3.1 Show the navigation controller's toolbar when `isToolbarHidden` is false and the top screen has `toolbarItems`; add its height to the content's bottom safe area. Check: frames match the toolbar case.
-- [ ] 3.2 Lay out flexible and fixed spaces, and draw the toolbar's capsules. Check: frames and pixels match.
+- [x] 3.1 Show the navigation controller's toolbar when `isToolbarHidden` is false and the top screen has `toolbarItems`; add its height to the content's bottom safe area. Check: frames match the toolbar case.
+- [x] 3.2 Lay out flexible and fixed spaces, and draw the toolbar's capsules. Check: frames and pixels match.
 
 ## 4. Accessibility, tests and docs
 

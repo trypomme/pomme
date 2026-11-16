@@ -4,7 +4,8 @@
 // `title` (a trailing title item), `image` (a symbol), `custom` (a 30-pt
 // custom view), `prominent` (a prominent done item), `separate` (two items,
 // the second with hidesSharedBackground), `pushed` (a trailing item on a
-// pushed screen, beside the back button). After a second the bar's views are
+// pushed screen, beside the back button), `toolbar` (the navigation
+// controller's toolbar: add, flexible space, edit, flexible space, Share). After a second the bar's views are
 // listed (`VIEW class x y w h text [bg=] [radius=]`, in the window), and each
 // item's tap target (`VALUE`). scripts/swiftui/metrics-simulator.sh records it.
 #import <UIKit/UIKit.h>
@@ -74,6 +75,10 @@ static void dump(UIView *v, UIView *window) {
         UIBarButtonItem *done = [self system:UIBarButtonSystemItemDone];
         done.style = UIBarButtonItemStyleProminent;
         n.rightBarButtonItem = done;
+    } else if ([v isEqual:@"toolbar"]) {
+        UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        UIBarButtonItem *flex2 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        self.toolbarItems = @[ [self system:UIBarButtonSystemItemAdd], flex, [self system:UIBarButtonSystemItemEdit], flex2, [self titled:@"Share"] ];
     } else if ([v isEqual:@"separate"]) {
         UIBarButtonItem *b = [self system:UIBarButtonSystemItemEdit];
         b.hidesSharedBackground = YES;
@@ -100,9 +105,16 @@ static void dump(UIView *v, UIView *window) {
         [nav pushViewController:s animated:NO];
     }
     self.window.rootViewController = nav;
+    if ([variant() isEqual:@"toolbar"]) nav.toolbarHidden = NO;
     [self.window makeKeyAndVisible];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         dump(nav.navigationBar, self.window);
+        if (!nav.toolbarHidden) {
+            printf("TOOLBAR\n");
+            dump(nav.toolbar, self.window);
+            UIEdgeInsets i = nav.topViewController.view.safeAreaInsets;
+            printf("VALUE safeArea %.2f %.2f %.2f %.2f\n", i.top, i.left, i.bottom, i.right);
+        }
         fflush(stdout);
     });
     return YES;

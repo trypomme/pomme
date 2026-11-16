@@ -11,7 +11,7 @@
 - [x] 2.2 Cells: the four styles' parts, accessory types, separators; mirrored in right to left. Check: frames from 1.2 (`styles`) and `fixtures/rtlcontrols`.
 - [x] 2.3 Only visible rows have cells, with reuse; layout on scroll. Check: the `long` case.
 - [x] 2.4 Selection by tap. Check: a test taps a row.
-- [ ] 2.5 `UITableViewController` (written: a table as its view, itself the data source and delegate). Check: a probe case uses it, recorded.
+- [x] 2.5 `UITableViewController` (written: a table as its view, itself the data source and delegate). Check: a probe case uses it, recorded.
 
 ## 3. Tests and docs
 

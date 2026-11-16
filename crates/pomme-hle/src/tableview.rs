@@ -812,6 +812,11 @@ fn default_background(emu: &mut Emu, t: u64) -> Result<()> {
         return Ok(());
     }
     objc::bag_set(emu, t, "pomme.tableBackground", 1);
+    // A table always bounces vertically, so it takes the safe area as its
+    // insets even when its rows don't fill it (fixtures/tableview, `controller`).
+    if objc::bag_get(emu, t, "alwaysBounceVertical").is_none() {
+        objc::bag_set(emu, t, "alwaysBounceVertical", 1);
+    }
     if view(emu, t).background == 0 {
         let bg = color(emu, if style(emu, t) == PLAIN { [1.0; 4] } else { GROUPED_BACKGROUND })?;
         send(emu, t, "setBackgroundColor:", &[bg])?;

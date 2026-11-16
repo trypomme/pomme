@@ -69,7 +69,8 @@ fn differences(case: &str, taps: &[(f64, f64)]) -> Option<(Vec<String>, String)>
     let mut wrong = Vec::new();
     let (ours, ios) = (values(&console), values(&recording));
     for (name, want) in &ios {
-        if name.ends_with("distinctCells") {
+        // (iOS hands a UITableViewController's table a data source of its own: an internal detail.)
+        if name.ends_with("distinctCells") || name == "controller.dataSource" {
             continue;
         }
         if ours.get(name) != Some(want) {
@@ -158,4 +159,11 @@ fn long_table() {
 fn tapping_a_row_selects_it() {
     let Some((_, console)) = differences("plain", &[(200.0, 100.0 + 102.0 + 26.0)]) else { return };
     assert_eq!(values(&console).get("didSelect").map(String::as_str), Some("0 1"), "{console}");
+}
+
+/// A UITableViewController: its view is its table, the whole screen, inset
+/// for the safe area and scrolled to its top inset; the same rows.
+#[test]
+fn table_view_controller() {
+    check("controller");
 }

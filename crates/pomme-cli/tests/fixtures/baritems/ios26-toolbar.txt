@@ -1,0 +1,15 @@
+# The baritems probe on the iOS 26.0 Simulator (iPhone 16e, light), case toolbar: VIEW <class> <frame in the window> <text> [bg=RGBA] [radius=] [font=size/weight color=RGBA] (the toolbar's after TOOLBAR).
+VIEW UINavigationBar 0.00 47.00 390.00 54.00 
+VIEW _UIBarBackground 0.00 0.00 390.00 101.00 
+VIEW UIKit.NavigationBarContentView 0.00 47.00 390.00 54.00 
+VIEW UIKit.NavigationBarTransitionContainer 0.00 47.00 390.00 54.00 
+VIEW _UINavigationBarHostedViewContainer 0.00 47.00 390.00 54.00 
+VIEW _UINavigationBarHostedViewWrapper 172.67 58.83 44.67 20.33 
+VIEW _UINavigationBarTitleControl 172.67 58.83 44.67 20.33 
+VIEW _UIIntrinsicContentSizeInvalidationForwardingWrapperView 172.67 58.83 44.67 20.33 
+VIEW UILabel 172.67 58.83 44.67 20.33 Items bg=0,0,0,0 font=17.0/0.30 color=0,0,0,255
+VIEW UIView 0.00 47.00 390.00 54.00 
+VIEW UIKit.NavigationBarPlatterContainer 0.00 47.00 390.00 54.00 
+TOOLBAR
+VIEW UIToolbar 0.00 0.00 390.00 844.00 
+VALUE safeArea 101.00 0.00 76.00 0.00

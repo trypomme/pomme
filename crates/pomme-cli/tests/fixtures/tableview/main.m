@@ -2,7 +2,9 @@
 // `plain`, `grouped`, `insetGrouped`: two sections of three rows with header
 // and footer titles; `styles`: a cell of each standard style with an image,
 // text, detail text and a disclosure indicator; `long`: 100 rows, scrolled
-// to the bottom after a second; `groupedBare`: grouped, no titles. In
+// to the bottom after a second; `groupedBare`: grouped, no titles;
+// `controller`: a UITableViewController (plain) as the window's root, its
+// table the whole screen (its frame, insets and offset printed too). In
 // `plain`, row 0.1 is then selected and its cell listed again (`selected`). The table sits at (0, 100), 390 × 700.
 // Printed (scripts/swiftui/metrics-simulator.sh, VARIANT=<case>):
 // `METRIC name x y width height` for the table's rects (rows, headers,
@@ -159,6 +161,45 @@ static void metric(NSString *name, CGRect r) {
 }
 @end
 
+@interface Controller : UITableViewController
+@end
+
+@implementation Controller
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"row"];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t {
+    return 2;
+}
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
+    return 3;
+}
+- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
+    return [NSString stringWithFormat:@"Section %ld", (long)s];
+}
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)p {
+    UITableViewCell *cell = [t dequeueReusableCellWithIdentifier:@"row" forIndexPath:p];
+    cell.textLabel.text = [NSString stringWithFormat:@"Row %ld", (long)p.row];
+    return cell;
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    UITableView *t = self.tableView;
+    printf("VALUE controller.isTableView %d\n", self.view == t);
+    printf("VALUE controller.dataSource %d\n", t.dataSource == self);
+    metric(@"controller.table", t.frame);
+    UIEdgeInsets a = t.adjustedContentInset;
+    printf("VALUE controller.adjustedContentInset %.2f %.2f %.2f %.2f\n", a.top, a.left, a.bottom, a.right);
+    printf("VALUE controller.contentOffset %.2f\n", t.contentOffset.y);
+    for (NSInteger s = 0; s < 2; s++) {
+        metric([NSString stringWithFormat:@"header%ld", (long)s], [t rectForHeaderInSection:s]);
+        for (NSInteger r = 0; r < 3; r++) metric([NSString stringWithFormat:@"row%ld.%ld", (long)s, (long)r], [t rectForRowAtIndexPath:[NSIndexPath indexPathForRow:r inSection:s]]);
+    }
+    fflush(stdout);
+}
+@end
+
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic, strong) UIWindow *window;
 @end
@@ -166,7 +207,7 @@ static void metric(NSString *name, CGRect r) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [Root new];
+    self.window.rootViewController = [variant() isEqual:@"controller"] ? [[Controller alloc] initWithStyle:UITableViewStylePlain] : [Root new];
     [self.window makeKeyAndVisible];
     return YES;
 }

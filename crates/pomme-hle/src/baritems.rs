@@ -54,6 +54,11 @@ pub struct State {
     items: HashMap<(u64, bool), Vec<u64>>,
     /// Navigation bar → the custom views it shows.
     custom: HashMap<u64, Vec<u64>>,
+    /// View controller → its toolbar items.
+    toolbar_items: HashMap<u64, Vec<u64>>,
+    /// Navigation controller → its toolbar (a UIToolbar view), and whether it's hidden.
+    toolbars: HashMap<u64, u64>,
+    toolbar_shown: HashMap<u64, bool>,
 }
 
 // ---- measured ----
@@ -242,10 +247,10 @@ pub(crate) fn place_custom(emu: &mut Emu, bar: u64, items: &[BarItem], row_top: 
     Ok(())
 }
 
-/// A tap at `x` (bar coordinates) on one of these items: send its action.
-/// Whether it hit one.
+/// A tap at (`x`, `y`) (bar coordinates) on one of these items: send its
+/// action. Whether it hit one.
 pub(crate) fn tap(emu: &mut Emu, items: &[BarItem], x: f64, y: f64) -> Result<bool> {
-    let Some(hit) = items.iter().find(|i| x >= i.area[0] - INSET && x < i.area[0] + i.area[2] + INSET && (0.0..CAPSULE).contains(&y)) else { return Ok(false) };
+    let Some(hit) = items.iter().find(|i| x >= i.area[0] - INSET && x < i.area[0] + i.area[2] + INSET && y >= i.area[1] - INSET && y < i.area[1] + i.area[3] + INSET) else { return Ok(false) };
     if !hit.enabled || matches!(hit.content, Content::Custom(_)) {
         return Ok(true);
     }
@@ -284,6 +289,186 @@ pub(crate) fn accessibility_label(emu: &mut Emu, b: &BarItem) -> Result<Option<S
         (None, Content::Title(t, _)) => t.clone(),
         _ => String::new(),
     }))
+}
+
+// ---- the navigation controller's toolbar ----
+//
+// Recorded (fixtures/baritems, `toolbar`): under Liquid Glass each item on
+// its own capsule, 48 pt tall, its bottom 28 pt above the screen's, 28 pt
+// from the sides; a symbol's capsule round, a title's its text and 27. The
+// flexible spaces split the items into groups: the first at the leading
+// side, the last at the trailing side, those between centred. The screen's
+// safe area ends at the capsules' top (76 pt up on the iPhone 16e). Before
+// iOS 26: a 49-pt bar above the home indicator, the content without
+// backgrounds 16 pt from the sides, centred 21.5 pt down the bar.
+
+const TOOLBAR_CAPSULE: f64 = 48.0;
+const TOOLBAR_GAP_BELOW: f64 = 28.0;
+const TOOLBAR_SIDE: f64 = 28.0;
+const TOOLBAR_TITLE_PAD: f64 = 27.0;
+const TOOLBAR_HEIGHT: f64 = 49.0;
+const TOOLBAR_CONTENT_MID: f64 = 21.5;
+
+/// The toolbar's height above the screen's bottom safe area (what it covers of the content).
+fn toolbar_cover(glass: bool, bottom_safe: f64) -> f64 {
+    if glass { (TOOLBAR_GAP_BELOW + TOOLBAR_CAPSULE - bottom_safe).max(0.0) } else { TOOLBAR_HEIGHT }
+}
+
+/// The toolbar items of a navigation controller's top screen, laid out in a
+/// toolbar `width` wide.
+fn toolbar_layout(emu: &mut Emu, items: &[u64], width: f64, glass: bool) -> Result<Vec<BarItem>> {
+    // Groups between flexible spaces: (item, content, width) each.
+    let mut groups: Vec<Vec<(u64, Content, f64)>> = vec![Vec::new()];
+    for &item in items {
+        match objc::bag_get(emu, item, "pomme.systemItem") {
+            Some(5) => {
+                groups.push(Vec::new());
+                continue;
+            }
+            Some(6) => continue,
+            _ => {}
+        }
+        let Some(content) = content_of(emu, item, glass)? else { continue };
+        let size = content_size(emu, &content);
+        let w = if !glass {
+            size[0]
+        } else if matches!(content, Content::Title(..)) {
+            size[0] + TOOLBAR_TITLE_PAD
+        } else {
+            size[0].max(TOOLBAR_CAPSULE)
+        };
+        groups.last_mut().unwrap().push((item, content, w));
+    }
+    let side = if glass { TOOLBAR_SIDE } else { EDGE };
+    let gap = if glass { GAP } else { 8.0 };
+    let n = groups.len();
+    let mut out = Vec::new();
+    for (g, group) in groups.into_iter().enumerate() {
+        let total: f64 = group.iter().map(|i| i.2).sum::<f64>() + gap * group.len().saturating_sub(1) as f64;
+        let mut x = if g == 0 {
+            side
+        } else if g == n - 1 {
+            width - side - total
+        } else {
+            // (Between: centred, as the one middle group is; more spread evenly.)
+            let centre = width * g as f64 / (n - 1) as f64;
+            centre - total / 2.0
+        };
+        for (item, content, w) in group {
+            let size = content_size(emu, &content);
+            let enabled = objc::bag_get(emu, item, "enabled").is_none_or(|e| e & 0xff != 0);
+            let prominent = glass && (objc::bag_get(emu, item, "style").unwrap_or(0) == 2 || objc::bag_get(emu, item, "pomme.systemItem") == Some(0));
+            let b = if glass {
+                let cap = [x, 0.0, w, TOOLBAR_CAPSULE];
+                let mut cf = [x + (w - size[0]) / 2.0, (TOOLBAR_CAPSULE - size[1]) / 2.0, size[0], size[1]];
+                if matches!(content, Content::Custom(_)) {
+                    cf = cap;
+                }
+                BarItem { item, capsule: Some(cap), area: cap, content, content_frame: cf, prominent, enabled }
+            } else {
+                let cf = [x, TOOLBAR_CONTENT_MID - size[1] / 2.0, size[0], size[1]];
+                BarItem { item, capsule: None, area: [x, 0.0, size[0], TOOLBAR_HEIGHT], content, content_frame: cf, prominent: false, enabled }
+            };
+            out.push(b);
+            x += w + gap;
+        }
+    }
+    Ok(out)
+}
+
+/// Whether navigation controller `nc` shows its toolbar: not hidden, and its top screen has items.
+fn toolbar_visible(emu: &Emu, nc: u64, top: Option<u64>) -> bool {
+    emu.bar_items.toolbar_shown.get(&nc).copied().unwrap_or(false) && top.is_some_and(|t| emu.bar_items.toolbar_items.get(&t).is_some_and(|l| !l.is_empty()))
+}
+
+/// The navigation controllers' toolbar views.
+pub fn toolbars(emu: &Emu) -> Vec<u64> {
+    emu.bar_items.toolbars.values().copied().collect()
+}
+
+/// Where a toolbar view is in its window.
+pub fn toolbar_origin(emu: &mut Emu, t: u64) -> [f64; 2] {
+    let o = crate::uiview::window_origin(emu, t);
+    [o[0], o[1]]
+}
+
+/// Navigation controller `nc`'s toolbar view, if made.
+pub(crate) fn toolbar_of(emu: &Emu, nc: u64) -> Option<u64> {
+    emu.bar_items.toolbars.get(&nc).copied()
+}
+
+/// Navigation controller `nc`'s toolbar view, made on first use.
+fn toolbar_view(emu: &mut Emu, nc: u64) -> Result<u64> {
+    if let Some(&t) = emu.bar_items.toolbars.get(&nc) {
+        return Ok(t);
+    }
+    let cls = objc::host_class(emu, "UIToolbar")?;
+    let t = send(emu, cls, "alloc", &[])?;
+    let t = objc::send_fp_id(emu, t, "initWithFrame:", &[], &[0.0; 4])?;
+    emu.bar_items.toolbars.insert(nc, t);
+    Ok(t)
+}
+
+/// Place a navigation controller's toolbar in its container (`w` × `h`),
+/// showing its top screen's items; how much of the content it covers.
+pub(crate) fn layout_toolbar(emu: &mut Emu, nc: u64, container: u64, top: Option<u64>, w: f64, h: f64) -> Result<f64> {
+    let shown = toolbar_visible(emu, nc, top);
+    if !shown && !emu.bar_items.toolbars.contains_key(&nc) {
+        return Ok(0.0);
+    }
+    let t = toolbar_view(emu, nc)?;
+    if crate::uiview::view(emu, t).superview != container {
+        send(emu, container, "addSubview:", &[t])?;
+    }
+    send(emu, container, "bringSubviewToFront:", &[t])?;
+    crate::uiview::view_mut(emu, t).hidden = !shown;
+    let glass = emu.system.liquid_glass();
+    let bottom = crate::orientation::safe_area(emu)[2];
+    let frame = if glass { [0.0, h - TOOLBAR_GAP_BELOW - TOOLBAR_CAPSULE, w, TOOLBAR_CAPSULE] } else { [0.0, h - bottom - TOOLBAR_HEIGHT, w, TOOLBAR_HEIGHT] };
+    if crate::uiview::frame_of(emu, t) != frame {
+        crate::uiview::set_frame_of(emu, t, frame);
+    }
+    Ok(if shown { toolbar_cover(glass, bottom) } else { 0.0 })
+}
+
+/// How much of a navigation controller's screens its toolbar covers (above the bottom safe area).
+pub(crate) fn toolbar_covers(emu: &mut Emu, nc: u64, top: Option<u64>) -> f64 {
+    if !toolbar_visible(emu, nc, top) {
+        return 0.0;
+    }
+    toolbar_cover(emu.system.liquid_glass(), crate::orientation::safe_area(emu)[2])
+}
+
+/// The items a toolbar view shows (None: not a navigation controller's toolbar).
+pub fn toolbar_look(emu: &mut Emu, t: u64) -> Result<Option<Vec<BarItem>>> {
+    let Some(nc) = emu.bar_items.toolbars.iter().find(|(_, v)| **v == t).map(|(k, _)| *k) else { return Ok(None) };
+    let top = crate::navigation::stack_of(emu, nc).and_then(|s| s.last().copied());
+    let Some(top) = top else { return Ok(None) };
+    let items = emu.bar_items.toolbar_items.get(&top).cloned().unwrap_or_default();
+    let w = crate::uiview::view(emu, t).bounds[2];
+    let glass = emu.system.liquid_glass();
+    let mut out = toolbar_layout(emu, &items, w, glass)?;
+    if crate::direction::view_rtl(emu, t)? {
+        mirror(&mut out, w);
+    }
+    // (Custom views go into the toolbar, where their items are.)
+    place_custom(emu, t, &out, 0.0)?;
+    Ok(Some(out))
+}
+
+fn toolbar_touches_ended(emu: &mut Emu) -> Result<()> {
+    let t = emu.arg(0);
+    let Some(p) = crate::touch::active_location(emu) else { return Ok(()) };
+    let o = crate::uiview::window_origin(emu, t);
+    if let Some(items) = toolbar_look(emu, t)? {
+        tap(emu, &items, p[0] - o[0], p[1] - o[1])?;
+    }
+    Ok(())
+}
+
+fn relayout_navs(emu: &mut Emu) {
+    crate::autolayout::mark_dirty(emu);
+    crate::host::frame_changed(emu);
 }
 
 // ---- methods ----
@@ -332,7 +517,46 @@ fn store(emu: &mut Emu, obj: u64, key: &str, v: u64, retain: bool) -> Result<()>
 const NI: &str = "UINavigationItem";
 const BBI: &str = "UIBarButtonItem";
 
+fn set_toolbar_items(emu: &mut Emu) -> Result<()> {
+    let (vc, a) = (emu.arg(0), emu.arg(2));
+    let list = if a == 0 { vec![] } else { foundation::array_values(emu, a)? };
+    for &i in &list {
+        send(emu, i, "retain", &[])?;
+    }
+    emu.bar_items.toolbar_items.insert(vc, list);
+    relayout_navs(emu);
+    Ok(())
+}
+
+fn set_toolbar_hidden(emu: &mut Emu) -> Result<()> {
+    let (nc, hidden) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    emu.bar_items.toolbar_shown.insert(nc, !hidden);
+    relayout_navs(emu);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("UIViewController", false, "setToolbarItems:", set_toolbar_items),
+    ("UIViewController", false, "setToolbarItems:animated:", set_toolbar_items),
+    ("UIViewController", false, "toolbarItems", |e| {
+        let list = e.bar_items.toolbar_items.get(&e.arg(0)).cloned().unwrap_or_default();
+        let a = if list.is_empty() { 0 } else { foundation::new_array_of(e, &list)? };
+        e.ret(a);
+        Ok(())
+    }),
+    ("UINavigationController", false, "setToolbarHidden:", set_toolbar_hidden),
+    ("UINavigationController", false, "setToolbarHidden:animated:", set_toolbar_hidden),
+    ("UINavigationController", false, "isToolbarHidden", |e| {
+        let hidden = !e.bar_items.toolbar_shown.get(&e.arg(0)).copied().unwrap_or(false);
+        e.ret(hidden as u64);
+        Ok(())
+    }),
+    ("UINavigationController", false, "toolbar", |e| {
+        let t = toolbar_view(e, e.arg(0))?;
+        e.ret(t);
+        Ok(())
+    }),
+    ("UIToolbar", false, "touchesEnded:withEvent:", toolbar_touches_ended),
     (NI, false, "setRightBarButtonItem:", |e| set_one(e, true)),
     (NI, false, "setRightBarButtonItem:animated:", |e| set_one(e, true)),
     (NI, false, "setLeftBarButtonItem:", |e| set_one(e, false)),

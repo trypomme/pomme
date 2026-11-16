@@ -2248,6 +2248,12 @@ fn draw_view_body(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
             draw_bar(emu, p, &look, w, h, above, a, &inner, mm, dx as f32, back.map(|b| b as f32));
         }
     }
+    if let Ok(Some(items)) = crate::baritems::toolbar_look(emu, v) {
+        // (Before iOS 26, transparent as UIKit's scroll-edge default.)
+        let glass = emu.system.liquid_glass();
+        let mid = if glass { h as f64 / 2.0 } else { 21.5 };
+        draw_bar_items(emu, p, &items, glass, mid, a, &inner, m);
+    }
     if let Ok(Some(look)) = crate::tabbar::look(emu, v) {
         draw_tab_bar(emu, p, &look, w, h, a, &inner, m);
     }
@@ -2492,7 +2498,7 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
         p.sync_faces(emu, &placed);
         p.glyphs(&placed, alpha, t, mask);
     }
-    draw_bar_items(emu, p, look, alpha, t, mask);
+    draw_bar_items(emu, p, &look.items, look.glass, look.row / 2.0, alpha, t, mask);
     let Some(back) = &look.back else { return };
     let alpha = alpha * back_alpha;
     // The back button sits inside the bar's leading safe-area inset; in
@@ -2535,16 +2541,17 @@ fn draw_bar(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, w
 /// A navigation bar's button items (baritems.rs): each on its glass capsule
 /// (blue when prominent) under Liquid Glass, its symbol, image or title in
 /// the content colour (light cyan on blue), or before iOS 26 in the tint.
-fn draw_bar_items(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarLook, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+/// (Also a toolbar's; `mid` is the middle of the row titles are centred on.)
+fn draw_bar_items(emu: &mut Emu, p: &mut Painter, items: &[crate::baritems::BarItem], glass: bool, mid: f64, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
     use crate::baritems::{Content, GLASS_CONTENT, GLASS_FILL, PROMINENT_CONTENT, PROMINENT_FILL, TINT};
-    for item in &look.items {
+    for item in items {
         let a = if item.enabled { alpha } else { alpha * 0.35 };
         if let Some(c) = item.capsule {
             let els = transform_els(&rounded_rect(c[2] as f32, c[3] as f32, (c[3] / 2.0) as f32), &[1.0, 0.0, 0.0, 1.0, c[0] as f32, c[1] as f32]);
             p.fill(&els, (if item.prominent { PROMINENT_FILL } else { GLASS_FILL }).map(|v| v as f32), a, false, t, mask);
             p.stroke(&els, [0.0, 0.0, 0.0, 0.06], a, 0.5, t, mask);
         }
-        let color = if item.prominent { PROMINENT_CONTENT } else if look.glass { GLASS_CONTENT } else { TINT };
+        let color = if item.prominent { PROMINENT_CONTENT } else if glass { GLASS_CONTENT } else { TINT };
         let f = item.content_frame;
         let at = concat(&[1.0, 0.0, 0.0, 1.0, f[0] as f32, f[1] as f32], t);
         match &item.content {
@@ -2563,7 +2570,7 @@ fn draw_bar_items(emu: &mut Emu, p: &mut Painter, look: &crate::navigation::BarL
                 }
             }
             Content::Title(text, weight) => {
-                let baseline = look.row / 2.0 + crate::navigation::TITLE_SIZE * 0.35;
+                let baseline = mid + crate::navigation::TITLE_SIZE * 0.35;
                 let (glyphs, _) = crate::textkit::line_glyphs(emu, text, crate::navigation::TITLE_SIZE, *weight, color, f[0], baseline);
                 p.sync_faces(emu, &glyphs);
                 p.glyphs(&glyphs, a, t, mask);
