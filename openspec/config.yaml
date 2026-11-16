@@ -12,6 +12,12 @@ context: |
   prints what UIKit did, we save that output in the repository, and a test
   in crates/pomme-cli/tests/ checks that pomme gives the same answer.
 
+  The focus is the app itself, not the whole phone. What the app sees should
+  match iOS closely. The system's own screens and apps (the Home Screen,
+  Settings, prompts like "Open in …?") are usually left out unless an app
+  needs them. pomme's own tools, such as its menus, don't need to look like
+  iOS.
+
   One exception: text widths. pomme draws text with open fonts in place of
   Apple's (Inter for SF Pro, Noto Sans for Hiragino and PingFang), at the
   open fonts' own widths. We do not copy Apple's widths into pomme. Tests
