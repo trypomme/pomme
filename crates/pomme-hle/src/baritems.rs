@@ -300,7 +300,10 @@ pub(crate) fn accessibility_label(emu: &mut Emu, b: &BarItem) -> Result<Option<S
 // side, the last at the trailing side, those between centred. The screen's
 // safe area ends at the capsules' top (76 pt up on the iPhone 16e). Before
 // iOS 26: a 49-pt bar above the home indicator, the content without
-// backgrounds 16 pt from the sides, centred 21.5 pt down the bar.
+// backgrounds 16 pt from the sides, centred 21.5 pt down the bar, on no
+// background (the content rests at its edge). Under Liquid Glass the
+// toolbar view itself covers the whole screen (as recorded), passing touches
+// through but on its items.
 
 const TOOLBAR_CAPSULE: f64 = 48.0;
 const TOOLBAR_GAP_BELOW: f64 = 28.0;
@@ -386,10 +389,11 @@ pub fn toolbars(emu: &Emu) -> Vec<u64> {
     emu.bar_items.toolbars.values().copied().collect()
 }
 
-/// Where a toolbar view is in its window.
-pub fn toolbar_origin(emu: &mut Emu, t: u64) -> [f64; 2] {
+/// A toolbar view's frame in its window.
+pub fn toolbar_frame(emu: &mut Emu, t: u64) -> [f64; 4] {
     let o = crate::uiview::window_origin(emu, t);
-    [o[0], o[1]]
+    let b = crate::uiview::view(emu, t).bounds;
+    [o[0], o[1], b[2], b[3]]
 }
 
 /// Navigation controller `nc`'s toolbar view, if made.
@@ -424,7 +428,7 @@ pub(crate) fn layout_toolbar(emu: &mut Emu, nc: u64, container: u64, top: Option
     crate::uiview::view_mut(emu, t).hidden = !shown;
     let glass = emu.system.liquid_glass();
     let bottom = crate::orientation::safe_area(emu)[2];
-    let frame = if glass { [0.0, h - TOOLBAR_GAP_BELOW - TOOLBAR_CAPSULE, w, TOOLBAR_CAPSULE] } else { [0.0, h - bottom - TOOLBAR_HEIGHT, w, TOOLBAR_HEIGHT] };
+    let frame = if glass { [0.0, 0.0, w, h] } else { [0.0, h - bottom - TOOLBAR_HEIGHT, w, TOOLBAR_HEIGHT] };
     if crate::uiview::frame_of(emu, t) != frame {
         crate::uiview::set_frame_of(emu, t, frame);
     }
@@ -445,15 +449,46 @@ pub fn toolbar_look(emu: &mut Emu, t: u64) -> Result<Option<Vec<BarItem>>> {
     let top = crate::navigation::stack_of(emu, nc).and_then(|s| s.last().copied());
     let Some(top) = top else { return Ok(None) };
     let items = emu.bar_items.toolbar_items.get(&top).cloned().unwrap_or_default();
-    let w = crate::uiview::view(emu, t).bounds[2];
+    let [_, _, w, h] = crate::uiview::view(emu, t).bounds;
     let glass = emu.system.liquid_glass();
     let mut out = toolbar_layout(emu, &items, w, glass)?;
+    let top = toolbar_row_top(glass, h);
+    for i in &mut out {
+        i.capsule = i.capsule.map(|c| [c[0], c[1] + top, c[2], c[3]]);
+        i.area[1] += top;
+        i.content_frame[1] += top;
+    }
     if crate::direction::view_rtl(emu, t)? {
         mirror(&mut out, w);
     }
     // (Custom views go into the toolbar, where their items are.)
     place_custom(emu, t, &out, 0.0)?;
     Ok(Some(out))
+}
+
+/// Where a toolbar's row of items starts, in the toolbar view `h` tall.
+fn toolbar_row_top(glass: bool, h: f64) -> f64 {
+    if glass { h - TOOLBAR_GAP_BELOW - TOOLBAR_CAPSULE } else { 0.0 }
+}
+
+/// The middle of a toolbar's row of items (titles are centred on it).
+pub(crate) fn toolbar_mid(glass: bool, h: f64) -> f64 {
+    if glass { toolbar_row_top(glass, h) + TOOLBAR_CAPSULE / 2.0 } else { TOOLBAR_CONTENT_MID }
+}
+
+/// A navigation controller's toolbar takes touches only on its items under
+/// Liquid Glass (it covers the screen); before, on all of it.
+fn toolbar_point_inside(emu: &mut Emu) -> Result<()> {
+    let (t, x, y) = (emu.arg(0), f64::from_bits(emu.cpu.q[0] as u64), f64::from_bits(emu.cpu.q[1] as u64));
+    let b = crate::uiview::view(emu, t).bounds;
+    let mut inside = x >= b[0] && y >= b[1] && x < b[0] + b[2] && y < b[1] + b[3];
+    if inside && emu.system.liquid_glass() {
+        if let Some(items) = toolbar_look(emu, t)? {
+            inside = items.iter().any(|i| x >= i.area[0] - INSET && x < i.area[0] + i.area[2] + INSET && y >= i.area[1] - INSET && y < i.area[1] + i.area[3] + INSET);
+        }
+    }
+    emu.ret(inside as u64);
+    Ok(())
 }
 
 fn toolbar_touches_ended(emu: &mut Emu) -> Result<()> {
@@ -557,6 +592,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         Ok(())
     }),
     ("UIToolbar", false, "touchesEnded:withEvent:", toolbar_touches_ended),
+    ("UIToolbar", false, "pointInside:withEvent:", toolbar_point_inside),
     (NI, false, "setRightBarButtonItem:", |e| set_one(e, true)),
     (NI, false, "setRightBarButtonItem:animated:", |e| set_one(e, true)),
     (NI, false, "setLeftBarButtonItem:", |e| set_one(e, false)),

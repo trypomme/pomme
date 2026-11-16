@@ -2251,7 +2251,7 @@ fn draw_view_body(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
     if let Ok(Some(items)) = crate::baritems::toolbar_look(emu, v) {
         // (Before iOS 26, transparent as UIKit's scroll-edge default.)
         let glass = emu.system.liquid_glass();
-        let mid = if glass { h as f64 / 2.0 } else { 21.5 };
+        let mid = crate::baritems::toolbar_mid(glass, h as f64);
         draw_bar_items(emu, p, &items, glass, mid, a, &inner, m);
     }
     if let Ok(Some(look)) = crate::tabbar::look(emu, v) {

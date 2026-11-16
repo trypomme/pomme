@@ -155,14 +155,17 @@ fn tapping_an_item_sends_its_action() {
 }
 
 /// pomme's toolbar items for the `toolbar` case, in window coordinates, and
-/// what the probe printed.
+/// what the probe printed; the toolbar's frame held to the recording's.
 fn toolbar(compat: bool) -> Option<(Vec<BarItem>, String)> {
     let mut emu = common::boot("baritems")?;
     pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", "toolbar");
     emu.system.requires_compatibility = compat;
     common::views(&mut emu, 1.5);
     let t = pomme_hle::baritems::toolbars(&emu)[0];
-    let o = pomme_hle::baritems::toolbar_origin(&mut emu, t);
+    let o = pomme_hle::baritems::toolbar_frame(&mut emu, t);
+    let rec = views(if compat { "ios26-compat-toolbar.txt" } else { "ios26-toolbar.txt" });
+    let want = rec.iter().find(|v| v.0 == "UIToolbar").unwrap().1;
+    assert!(close(o, [want[0], want[1] + BAR_TOP, want[2], want[3]]), "toolbar {o:?}, iOS {want:?}");
     let items = pomme_hle::baritems::toolbar_look(&mut emu, t).unwrap().unwrap();
     let shift = |r: [f64; 4]| [r[0] + o[0], r[1] + o[1], r[2], r[3]];
     let items = items.into_iter().map(|i| BarItem { capsule: i.capsule.map(shift), area: shift(i.area), content_frame: shift(i.content_frame), ..i }).collect();
