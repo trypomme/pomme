@@ -39,6 +39,8 @@ const STRING_PREFIXES: &[&str] = &[
     // ImageIO's option keys are their own names.
     "kCGImageSource",
     "kCGImageDestination",
+    // AVAudioSession's categories, modes and options ("AVAudioSessionCategoryAmbient").
+    "AVAudioSession",
 ];
 
 /// String constants whose values aren't their names: (name, value).
@@ -414,6 +416,8 @@ mod tests {
     #[test]
     fn functions_are_not_string_constants() {
         assert!(is_string_constant("UIApplicationDidBecomeActiveNotification"));
+        assert!(is_string_constant("AVAudioSessionCategoryAmbient"));
+        assert!(is_string_constant("AVAudioSessionModeMoviePlayback"));
         assert!(is_string_constant("NSFileProtectionKey"));
         assert!(is_string_constant("kCFStreamPropertySSLSettingsKey"));
         assert!(!is_string_constant("SCNetworkReachabilityCreateWithName"));
