@@ -11,9 +11,12 @@
 
 - [x] 2.1 `scripts/dev-build-test.sh`: build the Debug app once, start Metro, run pomme against it, stop Metro. Check: the script prints the run's views.
 - [x] 2.2 The bundle loads from Metro and hello-expo shows its first screen; Metro's slow answer doesn't time out under virtual time. Check: `tests/development_builds.rs` (with `POMME_METRO`) waits for "Hello from pomme 🍎".
-- [ ] 2.3 The HMR WebSocket to Metro; Fast Refresh. Check: the script edits the greeting and the test sees the new text with the tap count kept, as in 1.2.
-- [ ] 2.4 Reload from Metro. Check: after `r`, the test sees "Tapped 0 times".
+- [x] 2.2b `crates/pomme-net`: the live network client (real HTTP and sockets) moved out of the CLI, so driver tests can run a development build against Metro. Check: the CLI's runs behave as before (`a_debug_build_loads_from_metro`), and a driver test boots the Debug build with it.
+- [x] 2.3 The HMR WebSocket to Metro; Fast Refresh. Check: the script edits the greeting and the test sees the new text with the tap count kept, as in 1.2.
+- [x] 2.4 Reload from Metro. Check: after `r`, the test sees "Tapped 0 times".
 - [ ] 2.5 With no Metro running, the screen matches the Simulator's (from 1.1's notes). Check: a case in `development_builds.rs`.
+
+- [x] 2.6 Find why virtual time falls behind the wall clock with the HMR socket open (a run of 600 virtual seconds took over 19 real minutes). Check: a note in the design, and a fix if it's pomme's.
 
 ## 3. Shake and the developer menu
 

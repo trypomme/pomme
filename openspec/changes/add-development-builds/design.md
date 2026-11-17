@@ -79,7 +79,33 @@ and stops Metro. A Rust test (`tests/development_builds.rs`) runs only when
 `POMME_METRO` names a running Metro and the Debug app is built, and is
 skipped otherwise.
 
+### Live network in driver tests
+
+The test driver (`pomme_hle::driver`) steers an app step by step: wait for
+text, tap, read the screen. Its runs had only fixture networking; real
+HTTP and sockets lived in the CLI (`LiveNet` in `crates/pomme-cli/src/main.rs`).
+Running the `pomme` binary from a test can't edit a file mid-run and wait
+for the result. So the live client moves to its own small crate,
+`crates/pomme-net` (real HTTP with `ureq`, sockets through
+`pomme_hle::net::HostSockets`), used by the CLI and by the development-build
+tests. It stays out of `pomme-hle`, which also builds for the browser,
+where `ureq` doesn't.
+
 ## Risks / Trade-offs
+
+- **Virtual time with an open WebSocket** (task 2.6). Two causes, found by
+  sampling the process:
+  - In a driven test, the idle loop waited on the network before giving
+    the test its turn, so with the HMR socket open the test never got one.
+    Fixed: a turn that's due comes first (`driver::turn_due`, called from
+    `threads::wait_in_place`). The test then loads, refreshes and reloads
+    in about two minutes.
+  - On the command line (no test), virtual time follows the wall clock
+    while the app waits on the network, and the instruction clock while it
+    runs. A Debug build keeps running JavaScript after it loads, and the
+    interpreter runs it slower than a phone would, so virtual time falls
+    behind the wall clock. That's the interpreter's speed, not a fault:
+    tests wait for what they need, not for a duration.
 
 - **Disk and time.** A Debug build of hello-expo takes several GB and many
   minutes. The script builds once and reuses it.

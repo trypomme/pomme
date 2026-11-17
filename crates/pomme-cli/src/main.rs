@@ -854,65 +854,6 @@ fn parse_fixture(s: &str) -> std::result::Result<(String, PathBuf), String> {
     Ok((url.to_string(), PathBuf::from(file)))
 }
 
-/// Real HTTP for whatever the fixtures don't answer, and the host's TCP for sockets.
-struct LiveNet {
-    fixtures: pomme_hle::net::Fixtures,
-    agent: ureq::Agent,
-    sockets: pomme_hle::net::HostSockets,
-}
-
-impl pomme_hle::net::Net for LiveNet {
-    fn fetch(&mut self, req: &pomme_hle::net::Request) -> std::result::Result<pomme_hle::net::Response, String> {
-        if let Some(r) = self.fixtures.lookup(&req.url) {
-            return Ok(r.clone());
-        }
-        let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(&req.url);
-        for (k, v) in &req.headers {
-            b = b.header(k, v);
-        }
-        let request = b.body(req.body.clone()).map_err(|e| e.to_string())?;
-        let request = self.agent.configure_request(request).http_status_as_error(false).build();
-        let mut response = self.agent.run(request).map_err(|e| e.to_string())?;
-        let status = response.status().as_u16();
-        let headers = response.headers().iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
-        // No 10 MB cap (ureq's default): iOS has none, and a development
-        // bundle from Metro is bigger than that.
-        let body = response.body_mut().with_config().limit(1 << 30).read_to_vec().map_err(|e| e.to_string())?;
-        Ok(pomme_hle::net::Response { status, headers, body })
-    }
-
-    fn resolve(&mut self, host: &str) -> std::result::Result<Vec<std::net::IpAddr>, String> {
-        self.sockets.resolve(host)
-    }
-    fn connect(&mut self, addr: std::net::SocketAddr) -> std::io::Result<pomme_hle::net::SocketId> {
-        self.sockets.connect(addr)
-    }
-    fn send(&mut self, s: pomme_hle::net::SocketId, data: &[u8]) -> std::io::Result<usize> {
-        self.sockets.send(s, data)
-    }
-    fn recv(&mut self, s: pomme_hle::net::SocketId, max: usize) -> std::io::Result<Vec<u8>> {
-        self.sockets.recv(s, max)
-    }
-    fn readiness(&mut self, s: pomme_hle::net::SocketId) -> pomme_hle::net::Readiness {
-        self.sockets.readiness(s)
-    }
-    fn wait(&mut self, sockets: &[pomme_hle::net::SocketId], timeout: std::time::Duration) {
-        self.sockets.wait(sockets, timeout)
-    }
-    fn shutdown(&mut self, s: pomme_hle::net::SocketId, how: std::net::Shutdown) {
-        self.sockets.shutdown(s, how)
-    }
-    fn close(&mut self, s: pomme_hle::net::SocketId) {
-        self.sockets.close(s)
-    }
-    fn local_addr(&mut self, s: pomme_hle::net::SocketId) -> Option<std::net::SocketAddr> {
-        self.sockets.local_addr(s)
-    }
-    fn peer_addr(&mut self, s: pomme_hle::net::SocketId) -> Option<std::net::SocketAddr> {
-        self.sockets.peer_addr(s)
-    }
-}
-
 fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<dyn pomme_hle::net::Net>>> {
     let mut f = pomme_hle::net::Fixtures::default();
     for (url, file) in fixtures {
@@ -923,7 +864,7 @@ fn make_net(offline: bool, fixtures: &[(String, PathBuf)]) -> Result<Option<Box<
     Ok(if offline {
         (!fixtures.is_empty()).then(|| Box::new(f) as Box<dyn pomme_hle::net::Net>)
     } else {
-        Some(Box::new(LiveNet { fixtures: f, agent: ureq::Agent::new_with_defaults(), sockets: Default::default() }))
+        Some(Box::new(pomme_net::LiveNet::new(f)))
     })
 }
 

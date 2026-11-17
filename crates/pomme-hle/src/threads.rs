@@ -575,6 +575,10 @@ fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
             }
             continue;
         }
+        // A driving test whose turn has come takes it before any wait on the network.
+        if crate::driver::turn_due(emu)? {
+            continue;
+        }
         // Waiting on the network: wait for it in real time.
         let own = if let Wait::Socket(p) = wait { Some(p.clone()) } else { None };
         let next = next_deadline(emu, wait.deadline());

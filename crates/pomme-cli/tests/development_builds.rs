@@ -78,26 +78,61 @@ fn http_messages_as_on_ios() {
     assert!(differences.is_empty(), "{}\n\nconsole:\n{}", differences.join("\n"), emu.console);
 }
 
-/// A Debug build of hello-expo (no bundle inside) loads its JavaScript from a
-/// running Metro and shows its first screen, as on the iOS 26 Simulator
-/// (tests/fixtures/devbuild). Needs the build and Metro, so it runs only when
-/// `POMME_DEV_APP` names the Debug `.app` (built with
-/// `scripts/build-app.sh hello-expo device debug`) and Metro is running
-/// (`npx expo start` in that app's folder); otherwise it's skipped.
+/// hello-expo as a Debug build against a running Metro, as on the iOS 26
+/// Simulator (tests/fixtures/devbuild/notes.md): it loads its JavaScript from
+/// Metro and shows its first screen; Fast Refresh changes the greeting and
+/// keeps the tap count; Metro's reload starts the JavaScript over. Needs the
+/// build and Metro, so it runs only when `POMME_DEV_APP` names the Debug
+/// `.app` (`scripts/build-app.sh hello-expo device debug`) with Metro running
+/// in its folder (`scripts/dev-build-test.sh` does both); else it's skipped.
 #[test]
-fn a_debug_build_loads_from_metro() {
-    let Some(app) = std::env::var_os("POMME_DEV_APP") else {
+fn a_debug_build_with_metro() {
+    use pomme_hle::driver::{drive, id, text};
+    let Some(app) = std::env::var_os("POMME_DEV_APP").map(std::path::PathBuf::from) else {
         eprintln!("skipped: set POMME_DEV_APP to a Debug build of hello-expo, with Metro running");
         return;
     };
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_pomme"))
-        .arg("run")
-        .arg(&app)
-        .args(["--sysroot", "../../vendor/sysroot", "--steps", "40000000000", "--seconds", "120", "--views"])
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&out.stdout);
-    for want in ["\"Hello from pomme 🍎\"", "\"Tapped 0 times\"", "\"Expo SDK: 11/11 passed\""] {
-        assert!(text.contains(want), "no {want} on screen:\n{}", &text[text.len().saturating_sub(4000)..]);
+    // The app's source folder: …/hello-expo/ios/build/Build/Products/Debug-iphoneos/helloexpo.app.
+    let src = app.ancestors().nth(6).unwrap().to_path_buf();
+    let home = src.join("components/Home.tsx");
+    let original = std::fs::read_to_string(&home).unwrap();
+    /// Puts the source back however the test ends.
+    struct Restore(std::path::PathBuf, String);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, &self.1);
+        }
     }
+    let _restore = Restore(home.clone(), original.clone());
+
+    let sysroot = std::path::Path::new("../../vendor/sysroot").canonicalize().unwrap();
+    let opts = pomme_loader::LoadOptions { sysroot: Some(sysroot) };
+    let mut emu = pomme_hle::Emu::new(pomme_loader::load_with(&app, &opts).unwrap()).unwrap();
+    *emu.net.client = Some(Box::new(pomme_net::LiveNet::new(Default::default())));
+    let started = std::time::Instant::now();
+    drive(&mut emu, |app| {
+        // (Hermes compiles Metro's unminified bundle: a long first wait.)
+        app.timeout = 300.0;
+        app.wait_for(&text("Hello from pomme 🍎"))?;
+        eprintln!("loaded from Metro after {:?}", started.elapsed());
+        app.tap(&id("tap-button"))?;
+        app.tap(&id("tap-button"))?;
+        app.wait_for(&text("Tapped 2 times"))?;
+
+        // Fast Refresh: the new text, the same state.
+        std::fs::write(&home, original.replace("Hello from pomme 🍎", "Hello again from pomme 🍏")).unwrap();
+        app.wait_for(&text("Hello again from pomme 🍏"))?;
+        assert!(app.find(&text("Tapped 2 times"))?.is_some(), "Fast Refresh lost the tap count:\n{}", app.describe()?);
+        eprintln!("refreshed after {:?}", started.elapsed());
+
+        // Reload (Metro's `r`): the JavaScript starts over, from the file as it is now.
+        std::fs::write(&home, &original).unwrap();
+        let reload = std::process::Command::new("node").arg("../../scripts/devbuild/reload.js").arg(&src).status().unwrap();
+        assert!(reload.success(), "couldn't reach Metro to reload");
+        app.wait_for(&text("Tapped 0 times"))?;
+        app.wait_for(&text("Hello from pomme 🍎"))?;
+        eprintln!("reloaded after {:?}", started.elapsed());
+        Ok(())
+    })
+    .unwrap();
 }

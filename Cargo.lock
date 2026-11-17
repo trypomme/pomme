@@ -2968,11 +2968,11 @@ dependencies = [
  "pomme-hle",
  "pomme-loader",
  "pomme-macho",
+ "pomme-net",
  "pomme-video",
  "pomme-webview",
  "serde_json",
  "tiny-skia 0.12.0",
- "ureq",
  "zip",
 ]
 
@@ -3063,6 +3063,14 @@ name = "pomme-msl"
 version = "0.1.0"
 dependencies = [
  "naga",
+]
+
+[[package]]
+name = "pomme-net"
+version = "0.1.0"
+dependencies = [
+ "pomme-hle",
+ "ureq",
 ]
 
 [[package]]

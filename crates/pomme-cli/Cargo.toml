@@ -14,7 +14,7 @@ pomme-hle = { version = "0.1.0", path = "../pomme-hle" }
 pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }
 serde_json = "1.0.154"
-ureq = "3.5.1"
+pomme-net = { version = "0.1.0", path = "../pomme-net" }
 pomme-webview = { version = "0.1.0", path = "../pomme-webview" }
 
 [dev-dependencies]

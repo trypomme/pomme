@@ -437,6 +437,22 @@ pub(crate) fn active(emu: &Emu) -> bool {
 
 /// Every thread waits (`next_ns`: the earliest deadline). Ok(true): something
 /// changed, look again; Ok(false): carry on as without a driver.
+/// The test's turn is due (the app is idle and its time has come): start it.
+/// Checked before waiting on the network too, so a test still gets its turns
+/// while the app holds a socket open (a development build's WebSocket to
+/// Metro), where waiting on the network otherwise comes first.
+pub(crate) fn turn_due(emu: &mut Emu) -> Result<bool> {
+    let Some(d) = emu.driver.as_ref() else { return Ok(false) };
+    if d.in_turn || d.signalled || crate::threads::now_ns(emu) < d.resume_at {
+        return Ok(false);
+    }
+    if !crate::host::signal_input(emu)? {
+        return Ok(false); // no main run loop yet
+    }
+    emu.driver.as_mut().unwrap().signalled = true;
+    Ok(true)
+}
+
 pub(crate) fn idle(emu: &mut Emu, next_ns: Option<u64>) -> Result<bool> {
     let Some(d) = emu.driver.as_ref() else { return Ok(false) };
     if d.in_turn || d.signalled {
