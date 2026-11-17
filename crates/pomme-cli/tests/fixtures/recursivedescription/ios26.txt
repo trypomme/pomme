@@ -1,0 +1,5 @@
+# The recursivedescription fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE box.00 <RCTViewLike: 0x?; frame = (10 20; 100 50); layer = <CALayer: 0x?>>
+VALUE box.01    | <UIView: 0x?; frame = (1.5 2; 30 40); alpha = 0.5; hidden = YES; layer = <CALayer: 0x?>>
+VALUE box.hasRCTView 1
+VALUE box.lines 2

@@ -136,3 +136,16 @@ fn a_debug_build_with_metro() {
     })
     .unwrap();
 }
+
+/// `-[UIView recursiveDescription]` (tests/fixtures/recursivedescription), as
+/// on the iOS 26 Simulator: React Native's developer menu searches it for
+/// "RCTView" on a shake.
+#[test]
+fn recursive_description_as_on_ios() {
+    let Some(mut emu) = common::boot("recursivedescription") else { return };
+    common::views(&mut emu, 1.0);
+    let recording = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/recursivedescription/ios26.txt")).unwrap();
+    let (want, got) = (values(&recording), values(&emu.console));
+    let differences: Vec<String> = want.iter().filter(|(k, v)| got.get(*k) != Some(*v)).map(|(k, v)| format!("{k}: iOS {v:?}, pomme {:?}", got.get(k))).collect();
+    assert!(differences.is_empty(), "{}\n\nconsole:\n{}", differences.join("\n"), emu.console);
+}

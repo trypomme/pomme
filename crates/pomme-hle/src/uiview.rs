@@ -671,6 +671,47 @@ fn ret_one(emu: &mut Emu) -> Result<()> {
 
 // ---- UIWindow ----
 
+/// A number as `%g` prints it (six significant digits, no trailing zeros):
+/// UIKit's view descriptions use it for frames and alpha.
+fn g(x: f64) -> String {
+    if x == 0.0 {
+        return "0".into();
+    }
+    let digits = (6 - 1 - x.abs().log10().floor() as i32).max(0) as usize;
+    let s = format!("{x:.digits$}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+    if s == "-0" { "0".into() } else { s }
+}
+
+/// One view as UIKit describes it (tests/fixtures/recursivedescription,
+/// iOS 26 Simulator): `<Class: 0x…; frame = (x y; w h); alpha = …;
+/// hidden = YES; layer = <CALayer: 0x…>>`, alpha and hidden only when not
+/// the default.
+fn view_description(emu: &mut Emu, v: u64) -> String {
+    let [x, y, w, h] = frame_of(emu, v);
+    let st = view(emu, v);
+    let class = crate::objc::object_class_name(emu, v).unwrap_or_else(|| "UIView".into());
+    let mut s = format!("<{class}: {v:#x}; frame = ({} {}; {} {})", g(x), g(y), g(w), g(h));
+    if st.alpha != 1.0 {
+        s += &format!("; alpha = {}", g(st.alpha));
+    }
+    if st.hidden {
+        s += "; hidden = YES";
+    }
+    let layer_class = if st.layer == 0 { "CALayer".to_string() } else { crate::objc::object_class_name(emu, st.layer).unwrap_or_else(|| "CALayer".into()) };
+    s += &format!("; layer = <{layer_class}: {:#x}>>", st.layer);
+    s
+}
+
+/// `recursiveDescription` (UIKit's, private; React Native's developer menu
+/// reads it): the view, then each subview a level deeper behind `   | `.
+fn recursive_description(emu: &mut Emu, v: u64, depth: usize, out: &mut Vec<String>) {
+    out.push(format!("{}{}", "   | ".repeat(depth), view_description(emu, v)));
+    for sub in view(emu, v).subviews {
+        recursive_description(emu, sub, depth + 1, out);
+    }
+}
+
 /// Windows in the order they're drawn and hit-tested (last on top): by
 /// level, then (within a level) in the order they appeared, as on iOS, where
 /// a higher `windowLevel` (an alert's, the status bar's) is always above.
@@ -1464,6 +1505,21 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIWindow", false, "windowScene", window_scene),
     ("UIWindow", false, "setWindowScene:", noop),
     ("UIWindow", false, "screen", window_screen),
+    ("UIView", false, "description", |e| {
+        let v = e.arg(0);
+        let d = view_description(e, v);
+        let d = crate::foundation::new_nsstring(e, &d)?;
+        e.ret(d);
+        Ok(())
+    }),
+    ("UIView", false, "recursiveDescription", |e| {
+        let v = e.arg(0);
+        let mut lines = Vec::new();
+        recursive_description(e, v, 0, &mut lines);
+        let d = crate::foundation::new_nsstring(e, &lines.join("\n"))?;
+        e.ret(d);
+        Ok(())
+    }),
     ("UIWindow", false, "windowLevel", |e| {
         let level = crate::objc::bag_get_f64(e, e.arg(0), "windowLevel").unwrap_or(0.0);
         ret_f64(e, level);
@@ -1651,6 +1707,19 @@ pub fn describe_tree(emu: &mut Emu) -> Result<String> {
         walk(emu, w, 0, &mut out)?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod g_tests {
+    #[test]
+    fn numbers_print_as_percent_g() {
+        assert_eq!(super::g(10.0), "10");
+        assert_eq!(super::g(1.5), "1.5");
+        assert_eq!(super::g(0.5), "0.5");
+        assert_eq!(super::g(390.0), "390");
+        assert_eq!(super::g(33.333333333), "33.3333");
+        assert_eq!(super::g(-2.25), "-2.25");
+    }
 }
 
 #[cfg(test)]
