@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Serve web/ with the headers SharedArrayBuffer needs (cross-origin isolation).
+"""Serve web/ on 127.0.0.1. The page needs no special headers (any static file
+server does); this one sends .wasm as application/wasm and asks browsers not to
+cache, so a rebuild shows at once.
 
 Usage: scripts/serve-web.py [port]   (default 8787)
 """
@@ -15,8 +17,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".wasm": "application/wasm", ".js": "text/javascript"}
 
     def end_headers(self):
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 

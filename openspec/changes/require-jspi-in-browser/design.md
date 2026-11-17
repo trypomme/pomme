@@ -18,6 +18,22 @@ Both browsers gave the same answers. So the only way to keep shared memory
 in an embed is to ask the outer site to isolate itself. We cannot ask that
 of a docs site.
 
+## Browsers with JSPI
+
+From each browser's release notes (checked November 2026):
+
+| Browser | JSPI by default since |
+|---|---|
+| Chrome | 137 (May 2025) |
+| Edge | 137 (Chromium 137, May 2025) |
+| Firefox | 153 (July 2026); Nightly only from 152 |
+| Safari | 27.0 |
+
+So every current major browser has JSPI. The page's message names them
+all: "pomme needs a browser with JSPI: Chrome or Edge 137, Firefox 153,
+Safari 27, or later". Playwright's WebKit 26 has none, which the embedding
+test uses (task 3.2).
+
 ## Why messages are enough with JSPI
 
 Without JSPI, the emulator runs inside one long call into WebAssembly. The
@@ -60,8 +76,8 @@ frames).
     `SharedArrayBuffer`.
   - `push(kind, a, b)` posts a message to the worker.
   - Before starting the worker, check for JSPI on the page too (and honour
-    `?nojspi`): show "pomme needs a browser with JSPI: Chrome, Edge, or
-    Safari 27 or later" and stop.
+    `?nojspi`): show the message from "Browsers with JSPI" above and
+    stop.
 - `web/webview.js`: post web view events to the worker instead of writing
   them to the byte ring.
 - `crates/pomme-web/src/lib.rs`
@@ -79,6 +95,27 @@ frames).
 - `web/tests/embed.mjs` (new): serves a plain outer page on a second
   origin (`localhost` beside `127.0.0.1`) with an iframe of the pomme page,
   and drives hello-expo inside the frame.
+
+## Decided while implementing
+
+- **Web view events don't end an idle pause.** Only input (touches, screen
+  reader actions) does. The idle loop in `WebHost::idle` takes input only;
+  web view events are taken by `BrowserEngine::poll`, which runs once the
+  pause is over. While pages are live, the emulator never waits longer than
+  `LIVE_STEP` (16 ms) before polling, so they arrive as soon as they did
+  with the ring. If they ended the pause, the idle loop would wake, find no
+  input, and pause again at once, over and over, until the deadline.
+- **No `credentialless` on web view frames.** It was there because, under
+  cross-origin isolation, frames that don't opt in only load that way. It
+  also makes them load without cookies, so it went with the headers.
+- **The embedding test is `run.mjs --embed PORT`.** `embed.mjs` serves the
+  outer page; `run.mjs` runs its usual steps inside the frame, so every
+  step works embedded. `--browser webkit` runs the same steps in WebKit.
+- **Taps while busy** (task 3.3): `--taps` sends taps back to back without
+  waiting for frames. The test taps hello-expo's counter twice right after
+  its first frame, while its start-up keeps it busy, and expects "Tapped 2
+  times". It uses the counter rather than a navigation push because the
+  counter shows that both taps arrived, in one place.
 
 ## Possible side benefit: web views
 

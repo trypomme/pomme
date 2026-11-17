@@ -4,29 +4,36 @@
 #
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
 #   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app or .ipa;
-#   `all` runs every browser test (the apps must be built)
+#   `all` runs every browser test (the apps must be built); `embed` runs hello-expo
+#   in a frame on a page from another origin (web/tests/embed.mjs)
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
 #   --compare (alone): compare with the same app's frame on the command line
 #   (hello-skia, hello-flutter).
-#   NO_BUILD=1 skips the build (reuse web/pkg and the bundle); QUERY="stats&nojspi" adds page options.
+#   NO_BUILD=1 skips the build (reuse web/pkg and the bundle); QUERY=stats adds page options.
 # Example: scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,265 --see "Tapped 1 time"
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:?usage: $0 <app> [steps…]}"
 shift
 if [ "$APP" = all ]; then
-  # Every browser test: hello-expo (with JSPI and without), hello-skia (and without WebGPU), hello-flutter.
+  # Every browser test: hello-expo (and embedded, and the page without JSPI), hello-skia (and without WebGPU), hello-flutter.
   T="$ROOT/scripts/web-test.sh"; FAILED=0
   run() { echo "== $*"; "$@" > "$ROOT/web/tests/out/last.log" 2>&1 && echo ok || { FAILED=1; tail -20 "$ROOT/web/tests/out/last.log"; }; }
   mkdir -p "$ROOT/web/tests/out"
   run "$T" hello-expo --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
-  run env NO_BUILD=1 QUERY=nojspi "$T" hello-expo --timeout 240 --wait "has no JSPI" --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+  # Two taps while the app is busy (its start-up frames): both arrive.
+  run env NO_BUILD=1 "$T" hello-expo --timeout 240 --wait "First frame" --taps "195,265 195,265" --see "Tapped 2 times"
+  run env NO_BUILD=1 QUERY=nojspi "$T" hello-expo --wait "needs a browser with JSPI"
+  run env NO_BUILD=1 "$T" embed --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+  run env NO_BUILD=1 "$T" embed --browser webkit --wait "needs a browser with JSPI"
   run "$T" hello-skia --compare
   run env NO_BUILD=1 "$T" hello-skia --no-webgpu --timeout 120 --wait "has no WebGPU" --see "Hello from Skia"
   run "$T" hello-flutter --compare
   run env NO_BUILD=1 "$T" hello-flutter --timeout 120 --wait "[metal] running on" --see "Tapped 0" --tap 195,422 --see "Tapped 1" --tap 60,300 --see "Tapped 2"
   exit $FAILED
 fi
+EMBED=
+[ "$APP" = embed ] && { EMBED=1; APP=hello-expo; }
 case "$APP" in
   hello-expo)    PATH_APP="$ROOT/apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app" ;;
   hello-skia)    PATH_APP="$ROOT/apps/hello-skia/ios/build/Build/Products/Release-iphoneos/helloskia.app" ;;
@@ -68,4 +75,7 @@ if [ "${STEPS[0]:-}" = "--compare" ]; then
   STEPS=(--timeout 180 --wait "$WAIT" --sleep $((SECONDS_CLI * 1000)) --out "$ROOT/web/tests/out/$APP.png" --compare "$REF" --points "$POINTS")
 fi
 [ ${#STEPS[@]} -gt 0 ] || STEPS=(--wait "First frame" --out "$ROOT/web/tests/out/$APP.png")
-node "$ROOT/web/tests/run.mjs" --url "http://127.0.0.1:$PORT/?app=$BUNDLE${QUERY:+&$QUERY}" "${STEPS[@]}"
+URL="http://127.0.0.1:$PORT/?app=$BUNDLE${QUERY:+&$QUERY}"
+# embed: the page in a frame on a plain page from another origin (localhost, beside 127.0.0.1).
+[ -z "$EMBED" ] || STEPS=(--embed "${OUTER_PORT:-8791}" "${STEPS[@]}")
+node "$ROOT/web/tests/run.mjs" --url "$URL" "${STEPS[@]}"

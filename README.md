@@ -416,16 +416,21 @@ draws it with Inter because SF Pro can't be redistributed.
      `cargo test` boots hello-expo, taps twice and checks the screen (when the app is built)
    - Browser host ✅: the emulator compiled to WebAssembly runs in a Web Worker; the app and the
      sysroot files it loads come as one in-memory bundle (`pomme bundle`, ~90 MB for hello-expo);
-     taps go through a SharedArrayBuffer and frames come back to a canvas. Virtual time follows
+     taps go to it as messages and frames come back to a canvas. Virtual time follows
      the wall clock while the app idles. `scripts/build-web.sh && scripts/serve-web.py`, then open
-     http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps. The
+     http://127.0.0.1:8787 — hello-expo boots in about a second and counts your taps. `web/`
+     needs no special headers: any static file server can serve it, and the page runs embedded
+     in another site's page (`<iframe src="https://your.host/pomme/?app=helloexpo.pfs"
+     style="width:480px;height:1000px">`). The
      screen is clipped to the device's own display shape (continuous corners, as screens'
      cards are in a transition). Built with WebAssembly SIMD, which doubles drawing speed.
-     Metal runs on the browser's GPU (WebGPU) where the browser has JSPI (WebAssembly JavaScript
-     Promise Integration: Chrome, Safari 27+): the emulator pauses after each frame and while
-     the app idles, so the browser can send its GPU work and answer. So Flutter (Impeller) and
-     React Native Skia draw in the browser too, matching the command line pixel for pixel at
-     the tests' sample points. Without JSPI apps still run, and Metal draws nothing.
+     pomme needs JSPI (WebAssembly JavaScript Promise Integration: Chrome and Edge 137+,
+     Firefox 153+, Safari 27+): the emulator pauses after each frame and while the app idles,
+     so the browser can send its GPU work and answer, and the page's taps reach it. In a browser
+     without JSPI the page says which browsers pomme needs. Metal runs on the browser's GPU
+     (WebGPU), so Flutter (Impeller) and React Native Skia draw in the browser too, matching
+     the command line pixel for pixel at the tests' sample points. Without WebGPU apps still
+     run, and Metal draws nothing.
    - Frame timing: `pomme run … --window --frame-stats` and the browser's `?stats` report, each
      second, the frame rate, how far the app's time kept up with the wall clock, the longest
      stall, and where each frame of motion went: the app (its instructions), rendering,
