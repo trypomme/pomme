@@ -48,6 +48,8 @@ case "$APP" in
   bluesky)
     corepack enable
     pnpm install --frozen-lockfile >&2
+    # postinstall skips compiling the translations on CI (is-ci); the bundle imports them.
+    pnpm intl:compile >&2
     # app.config.js picks the iOS icon by EAS_BUILD_PLATFORM; no Sentry token, no upload.
     EAS_BUILD_PLATFORM=ios EXPO_NO_GIT_STATUS=1 CI=1 npx expo prebuild -p ios --clean >&2
     export SENTRY_DISABLE_AUTO_UPLOAD=true
