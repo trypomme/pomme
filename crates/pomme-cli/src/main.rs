@@ -38,7 +38,7 @@ enum Cmd {
         /// Where to write the bundle.
         #[arg(short, long)]
         out: PathBuf,
-        #[arg(long, default_value = "vendor/sysroot")]
+        #[arg(long, default_value_os_t = default_sysroot())]
         sysroot: PathBuf,
         /// Languages whose fonts to include besides the app's own localizations'
         /// (the Chinese, Japanese and Korean fonts are large, so a bundle has
@@ -94,7 +94,9 @@ struct RunArgs {
     #[arg(long)]
     trace: bool,
     /// Directory of pomme-built system libraries (see scripts/build-sysroot.sh).
-    #[arg(long, default_value = "vendor/sysroot")]
+    /// Defaults to `vendor/sysroot` in a checkout, else the `sysroot` folder
+    /// next to the executable (as the release downloads ship it).
+    #[arg(long, default_value_os_t = default_sysroot())]
     sysroot: PathBuf,
     /// Run from a bundle made by `pomme bundle` instead of the disk (PATH is then ignored).
     #[arg(long)]
@@ -509,6 +511,21 @@ fn main() -> Result<()> {
     }
 }
 
+/// The sysroot to use when `--sysroot` isn't given: `vendor/sysroot` when run
+/// from a checkout (`cargo run`), else the `sysroot` folder that the release
+/// downloads put next to the executable (or in `../Resources` in a macOS app).
+fn default_sysroot() -> PathBuf {
+    let checkout = PathBuf::from("vendor/sysroot");
+    if checkout.is_dir() {
+        return checkout;
+    }
+    let beside_exe = std::env::current_exe().ok().and_then(|exe| {
+        let dir = exe.parent()?;
+        [dir.join("sysroot"), dir.join("../Resources/sysroot")].into_iter().find(|d| d.is_dir())
+    });
+    beside_exe.unwrap_or(checkout)
+}
+
 /// `run` and `coverage`: set up the network and the window (if any), then [`run`].
 fn run_command(args: RunArgs, coverage: Option<CoverageArgs>) -> Result<()> {
     let RunArgs { path, steps, seconds, views, elements, tap, swipe, screenshot, device, shell, trace, sysroot, bundle, offline, fixture, ios, missing, url, typing, clipboard, mut state, profile, window, frame_stats } = args;
@@ -761,7 +778,7 @@ fn print_image(path: &Path, img: &Image<'_>, show_symbols: bool) {
 
 fn load(path: &Path, show_stubs: bool) -> Result<()> {
     let start = std::time::Instant::now();
-    let sysroot = Path::new("vendor/sysroot").canonicalize().ok();
+    let sysroot = default_sysroot().canonicalize().ok();
     let p = pomme_loader::load_with(path, &pomme_loader::LoadOptions { sysroot })?;
     let elapsed = start.elapsed();
 
