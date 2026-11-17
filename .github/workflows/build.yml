@@ -1,0 +1,290 @@
+# Builds pomme on every platform it runs on.
+#
+#   pull requests   build on Linux, Windows and macOS; tests (macOS with the sysroot, so the
+#                   iOS fixture tests run; Linux without, so they skip)
+#   push to main    the same, plus the downloadable packages (on the run's Summary page)
+#   tag v*          the packages attached to a GitHub Release
+#
+# Release assets keep the same names in every release, so
+# https://github.com/<owner>/<repo>/releases/latest/download/<name> always points at the newest:
+#   pomme-macos-arm64.zip  pomme-windows-x64.zip  pomme-linux-x64.tar.gz
+#   pomme-linux-arm64.tar.gz  pomme-web.zip  SHA256SUMS.txt
+#
+# macOS signing and notarization switch on when these repository secrets exist
+# (Settings > Secrets and variables > Actions); without them the Mac build is unsigned:
+#   MACOS_CERTIFICATE_P12       base64 of a "Developer ID Application" certificate exported as .p12
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's password
+#   APPLE_TEAM_ID               the Apple Developer team ID
+#   APPLE_API_KEY_P8            base64 of an App Store Connect API key (.p8), for notarytool
+#   APPLE_API_KEY_ID            that key's ID
+#   APPLE_API_ISSUER_ID         its issuer ID
+#
+# Other optional secrets:
+#   HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST  base64 of apps/hello-expo/GoogleService-Info.plist (not
+#                                         committed): with it, pomme-web.zip includes the hello-expo
+#                                         demo (helloexpo.pfs), which the web page opens by default
+#   SITE_DISPATCH_TOKEN                   a token that can dispatch to trypomme/trypomme.dev: with it, a
+#                                         release tells the website to pick up the new web build now
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Swift release the sysroot is built from; the runner's Xcode must ship the same Swift.
+  SWIFT_TAG: swift-6.3.2-RELEASE
+  # Packages are made for pushes (main and tags) and manual runs, not pull requests.
+  PACKAGE: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  # The open-source iOS system libraries apps load as guest code (scripts/build-sysroot.sh).
+  # arm64 iOS code, the same for every host: built once on a Mac and cached until its scripts change.
+  sysroot:
+    name: Sysroot
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: .github/scripts/select-xcode.sh
+      - name: Cache sysroot
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/sysroot
+          key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
+      - name: Build sysroot
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja
+          scripts/build-sysroot.sh
+      # Two archives: one keeping symlinks (macOS, Linux), one with them followed, for
+      # Windows, where unpacking a symlink needs admin rights.
+      - name: Pack sysroot
+        run: |
+          tar -czf sysroot.tar.gz -C vendor/sysroot .
+          tar -czhf sysroot-nosymlinks.tar.gz -C vendor/sysroot .
+          ls -lh sysroot*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sysroot
+          path: sysroot*.tar.gz
+          retention-days: 7
+          compression-level: 0
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: sysroot
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64,   os: macos-26,         exe: pomme,     sysroot: sysroot.tar.gz }
+          - { name: windows-x64,   os: windows-latest,   exe: pomme.exe, sysroot: sysroot-nosymlinks.tar.gz }
+          - { name: linux-x64,     os: ubuntu-24.04,     exe: pomme,     sysroot: sysroot.tar.gz }
+          - { name: linux-arm64,   os: ubuntu-24.04-arm, exe: pomme,     sysroot: sysroot.tar.gz }
+    defaults:
+      run:
+        shell: bash
+    env:
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # NASM for openh264's assembly (screen recordings); without it, slower C. X11, Wayland
+          # and Vulkan are loaded at run time, so they need no headers here.
+          sudo apt-get install -y --no-install-recommends nasm
+      - name: Select Xcode
+        if: runner.os == 'macOS'
+        run: .github/scripts/select-xcode.sh
+
+      - name: Build
+        run: cargo build --release --locked -p pomme
+
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'macOS' || env.PACKAGE == 'true'
+        with:
+          name: sysroot
+      # On the Mac the fixture tests build tiny iOS apps with Xcode and run them on the sysroot;
+      # elsewhere they skip themselves and the rest run.
+      - name: Test
+        if: runner.os == 'macOS' || matrix.name == 'linux-x64'
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
+          fi
+          cargo test --locked --workspace
+
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS' && env.PACKAGE == 'true' && env.HAS_MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: .github/scripts/sign-macos.sh target/release/pomme
+
+      - name: Package
+        if: env.PACKAGE == 'true'
+        run: .github/scripts/package.sh pomme-${{ matrix.name }} target/release/${{ matrix.exe }} ${{ matrix.sysroot }}
+      - uses: actions/upload-artifact@v4
+        if: env.PACKAGE == 'true'
+        with:
+          name: pomme-${{ matrix.name }}
+          path: dist/*
+          compression-level: 0
+
+  # The web page's default app: hello-expo, built with Xcode and packed with the sysroot
+  # files it loads by `pomme bundle` into helloexpo.pfs. Needs the app's Firebase config,
+  # which isn't committed (HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST); skipped without it.
+  demo:
+    name: Web demo app
+    needs: sysroot
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      HAS_FIREBASE_CONFIG: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
+    steps:
+      - name: Skip
+        if: env.PACKAGE != 'true' || env.HAS_FIREBASE_CONFIG != 'true'
+        run: echo "::notice::web build without the hello-expo demo (pull request, or no HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret)"
+      - uses: actions/checkout@v4
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          key: macos-arm64
+          save-if: false
+      - uses: actions/setup-node@v4
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          name: sysroot
+      - name: Build hello-expo and bundle it
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        env:
+          GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
+        run: |
+          .github/scripts/select-xcode.sh
+          echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
+          mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
+          scripts/build-hello-expo.sh
+          cargo build --release --locked -p pomme
+          mkdir -p dist
+          ./target/release/pomme bundle apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app -o dist/helloexpo.pfs
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          name: demo
+          path: dist/helloexpo.pfs
+          retention-days: 7
+
+  # The browser build: the emulator as WebAssembly and the page that hosts it
+  # (index.html, its scripts and pkg/), plus helloexpo.pfs when the demo job made one.
+  web:
+    name: Web
+    needs: demo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      # As scripts/build-web.sh builds it (a 32 MB stack; SIMD).
+      - name: Build
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -C link-arg=-zstack-size=33554432 -C target-feature=+simd128
+        run: wasm-pack build crates/pomme-web --release --target no-modules --out-dir "$PWD/web/pkg" --no-typescript
+      - uses: actions/download-artifact@v4
+        if: env.PACKAGE == 'true'
+        continue-on-error: true  # no demo artifact without the Firebase config secret
+        with:
+          name: demo
+          path: demo
+      - name: Package
+        if: env.PACKAGE == 'true'
+        run: |
+          mkdir -p dist stage/pomme-web
+          if [ -f demo/helloexpo.pfs ]; then cp demo/helloexpo.pfs stage/pomme-web/; else echo "::warning::pomme-web.zip has no helloexpo.pfs"; fi
+          cp web/*.html web/*.js stage/pomme-web/
+          cp -r web/pkg stage/pomme-web/pkg
+          rm -f stage/pomme-web/pkg/.gitignore stage/pomme-web/pkg/package.json
+          (cd stage && zip -qr9 ../dist/pomme-web.zip pomme-web)
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        if: env.PACKAGE == 'true'
+        with:
+          name: pomme-web
+          path: dist/*
+          compression-level: 0
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, web]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      HAS_SITE_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pomme-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          # v1.2.3-beta and the like are marked as prereleases (and so aren't "latest").
+          prerelease: ${{ contains(github.ref_name, '-') }}
+      # Tell the website a release is out, so its demo picks up the new web build now.
+      - name: Notify trypomme.dev
+        if: ${{ !contains(github.ref_name, '-') && env.HAS_SITE_TOKEN == 'true' }}
+        env:
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          curl -fsS -X POST https://api.github.com/repos/trypomme/trypomme.dev/dispatches \
+            -H "Authorization: Bearer $SITE_DISPATCH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -d '{"event_type":"pomme-release","client_payload":{"tag":"${{ github.ref_name }}"}}'
