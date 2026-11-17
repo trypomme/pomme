@@ -64,9 +64,10 @@ cargo run -- run apps/hello-expo/ios/build/Build/Products/Debug-iphoneos/helloex
   Mac (or EAS).
 
 With `expo-dev-client`, the launcher finds Metro over Bonjour, which Expo CLI
-advertises on its own. The first time, macOS asks whether your terminal may
-find devices on your local network: allow it, or Metro won't be listed (the
-development link works either way).
+advertises on its own (`npx expo start`, nothing else to set). Your terminal
+app needs macOS's Local Network access for that (System Settings › Privacy &
+Security › Local Network; macOS asks the first time); without it Metro isn't
+listed, though the development link still works.
 
 `scripts/dev-build-test.sh` builds hello-expo's Debug app once, starts Metro
 and runs the tests that need them (`crates/pomme-cli/tests/development_builds.rs`):
