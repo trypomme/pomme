@@ -67,9 +67,11 @@ jobs:
           key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
       - name: Build sysroot
         if: steps.cache.outputs.cache-hit != 'true'
+        # The scripts need bash 4+ (macOS's /bin/bash 3.2 rejects "${empty[@]}" under set -u);
+        # Homebrew's comes first on the runner's PATH.
         run: |
-          brew install ninja
-          cmake --version | head -1
+          brew install ninja bash
+          bash --version | head -1; cmake --version | head -1
           scripts/build-sysroot.sh
       # Two archives: one keeping symlinks (macOS, Linux), one with them followed, for
       # Windows, where unpacking a symlink needs admin rights.
@@ -194,6 +196,7 @@ jobs:
         env:
           GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
         run: |
+          brew install bash
           .github/scripts/select-xcode.sh
           echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
           mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
