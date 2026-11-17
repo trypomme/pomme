@@ -24,8 +24,27 @@ development link):
 - React Native logs "Packager server access is disabled in this
   environment": the launcher turns off `RCTBundleURLProvider`'s packager
   access until it loads an app. The launcher reached `navigateToLauncher`
-  from `start:launchOptions:` instead of loading the link: why is still to
-  find out (task 4.1).
+  from `start:launchOptions:` instead of loading the link (task 4.1). Why:
+  a phone build (what pomme runs) ignores the launch link until
+  `expo.devlauncher.hasGrantedNetworkPermission` is set, and shows
+  `LocalNetworkPermissionView` first; a Simulator build skips both
+  (`TARGET_OS_SIMULATOR`). So pomme takes the phone's path, as a fresh
+  install would. A link opened while the launcher runs loads the app either
+  way (`onDeepLink`).
+
+### Finding Metro: Bonjour, from the computer's network
+
+The launcher lists dev servers it finds by Bonjour (`_expo._tcp`), then
+checks each with `GET /status` over an `NWConnection`; its permission check
+advertises with an `NWListener` and browses with an `NWBrowser`. pomme's
+Network overlay (`scripts/sysroot/overlays/Network/Connections.swift`) has
+these, with the iOS SDK's declarations: connections over pomme's BSD
+sockets, and browsing through `pomme_bonjour_browse`, which asks the host
+(`Net::browse`): on a Mac the system's Bonjour (`dns_sd`, as `dns-sd -B`
+does; a command-line process's own multicast is held back by macOS's
+local network privacy), elsewhere mDNS (`mdns-sd`). So pomme sees what a
+phone on the same network would. Expo CLI advertises only with
+`EXPO_UNSTABLE_BONJOUR=1`.
 
 ## Goals / Non-Goals
 

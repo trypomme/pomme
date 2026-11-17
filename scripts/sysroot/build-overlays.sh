@@ -143,9 +143,11 @@ xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$(xcrun --sdk ipho
   "$HERE/overlays/UIKit/UIKit.swift"
 
 # Network: the Swift API for watching the network (NWPathMonitor, NWPath,
-# NWInterface), ours, on the nw_* C API that pomme implements. Apps link it
-# as libswiftNetwork, as the SDK lays it out.
-overlay Network swiftNetwork -import-underlying-module -- "$HERE/overlays/Network/Network.swift"
+# NWInterface), ours, on the nw_* C API that pomme implements; and
+# connections, Bonjour browsers and listeners (Connections.swift), on BSD
+# sockets and pomme's Bonjour. Apps link it as libswiftNetwork, as the SDK
+# lays it out.
+overlay Network swiftNetwork -import-underlying-module -- "$HERE/overlays/Network/Network.swift" "$HERE/overlays/Network/Connections.swift"
 
 
 # Regex: _RegexParser, _StringProcessing (with its C Unicode tables) and

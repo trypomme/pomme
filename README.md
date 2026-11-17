@@ -40,6 +40,33 @@ file, and runs it from there. Signed builds run as unsigned ones do: pomme
 doesn't check signatures. Apps from the App Store or TestFlight are encrypted
 and can't run.
 
+### Development builds (React Native and Expo, with Metro)
+
+A Debug build loads its JavaScript from Metro instead of carrying it, and
+pomme runs it as the Simulator does: edit a file and Fast Refresh shows it,
+press `r` in Metro to reload.
+
+```bash
+scripts/build-app.sh hello-expo device debug   # or a development build .ipa from EAS (`eas build --profile development`)
+(cd apps/hello-expo && npx expo start)         # Metro, on port 8081
+cargo run -- run apps/hello-expo/ios/build/Build/Products/Debug-iphoneos/helloexpo.app --window
+```
+
+- **No Metro:** React Native's red error screen, as on a phone.
+- **Device ▸ Shake** (⌃⌘Z; Ctrl+Alt+Z on Windows and Linux): React Native's
+  dev menu (Reload, Open DevTools, …).
+- **File ▸ Open URL…** (⌘L): any link the app handles, as `xcrun simctl
+  openurl` does. With `expo-dev-client`, the launcher lists the Metro it finds;
+  its development link (`exp+<slug>://expo-development-client/?url=…`) opens
+  the app from that Metro directly. `--url` does the same at launch.
+- Metro runs on the same computer as pomme (`localhost`), or anywhere pomme
+  can reach: Windows and Linux too. Building the iOS app itself still needs a
+  Mac (or EAS).
+
+`scripts/dev-build-test.sh` builds hello-expo's Debug app once, starts Metro
+and runs the tests that need them (`crates/pomme-cli/tests/development_builds.rs`):
+loading, Fast Refresh, reload, the dev menu, React Native's alerts, Firebase.
+
 Where pomme deliberately behaves differently from iOS (fonts, no Home Screen, virtual
 time, …) is in [docs/differences-from-ios.md](docs/differences-from-ios.md).
 

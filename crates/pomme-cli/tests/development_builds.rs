@@ -330,3 +330,68 @@ fn firebase_in_a_debug_build() {
     .unwrap();
 }
 
+/// The development build with `expo-dev-client` that `POMME_LAUNCHER_APP`
+/// names (hello-expo with Expo's dev launcher), live, with Metro serving it
+/// and advertising itself (`EXPO_UNSTABLE_BONJOUR=1`, or `dns-sd -R hello-expo
+/// _expo._tcp local. 8081 …`): `scripts/dev-build-test.sh` sets this up.
+fn launcher_build() -> Option<(pomme_hle::Emu, Turn)> {
+    let Some(app) = std::env::var_os("POMME_LAUNCHER_APP").map(std::path::PathBuf::from) else {
+        eprintln!("skipped: set POMME_LAUNCHER_APP to a development build of hello-expo with expo-dev-client, with Metro running");
+        return None;
+    };
+    let turn = Some(METRO.lock().unwrap_or_else(|e| e.into_inner()));
+    let sysroot = std::path::Path::new("../../vendor/sysroot").canonicalize().unwrap();
+    let opts = pomme_loader::LoadOptions { sysroot: Some(sysroot) };
+    let mut emu = pomme_hle::Emu::new(pomme_loader::load_with(&app, &opts).unwrap()).unwrap();
+    *emu.net.client = Some(Box::new(pomme_net::LiveNet::new(Default::default())));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    pomme_hle::libsystem::set_boot_time(&mut emu, now);
+    Some((emu, turn))
+}
+
+/// The development link for hello-expo's Metro on this computer.
+const DEV_LINK: &str = "exp+hello-expo://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081";
+
+/// A phone build's first launch, as a fresh install (tests/fixtures/devlauncher/notes.md):
+/// the launcher asks for the local network first ("Finding Dev Servers"),
+/// then its home lists the Metro it finds on the network; choosing it loads
+/// the app.
+#[test]
+fn the_dev_launcher_finds_metro() {
+    use pomme_hle::driver::{drive, text, text_containing};
+    let Some((mut emu, _turn)) = launcher_build() else { return };
+    drive(&mut emu, |app| {
+        app.timeout = 300.0;
+        app.wait_for(&text("Finding Dev Servers"))?;
+        app.tap(&text("Next"))?;
+        app.tap(&text("Done"))?;
+        app.wait_for(&text("DEVELOPMENT SERVERS"))?;
+        app.wait_for(&text_containing("hello-expo"))?;
+        app.wait_for(&text_containing("8081"))?;
+        app.tap(&text_containing("8081"))?;
+        app.wait_for(&text("Hello from pomme 🍎"))?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// The development link while the launcher runs (File > Open URL), and at
+/// launch (`--url`): hello-expo from Metro, with expo-dev-menu's welcome
+/// sheet on the first load (ios26-loaded.png).
+#[test]
+fn the_development_link_loads_the_app() {
+    use pomme_hle::driver::{drive, text};
+    let Some((mut emu, _turn)) = launcher_build() else { return };
+    drive(&mut emu, |app| {
+        app.timeout = 300.0;
+        app.wait_for(&text("Finding Dev Servers"))?;
+        app.open_url(DEV_LINK)?;
+        app.wait_for(&text("Hello from pomme 🍎"))?;
+        app.wait_for(&text("Continue"))?;
+        app.tap(&text("Continue"))?;
+        app.wait_until_gone(&text("Continue"))?;
+        Ok(())
+    })
+    .unwrap();
+}
+

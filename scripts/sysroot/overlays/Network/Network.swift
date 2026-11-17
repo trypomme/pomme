@@ -3,7 +3,7 @@
 // interface. Apple's is closed source; this one is written from that
 // interface, on the C API (nw_path_monitor_*, nw_path_*, nw_interface_*)
 // that pomme implements, as Apple's Swift layer sits on its C one.
-// Connections, listeners and browsers aren't here yet.
+// Connections, listeners and browsers are in Connections.swift.
 
 import Dispatch
 
@@ -81,6 +81,8 @@ public struct NWPath: Equatable, CustomDebugStringConvertible, Sendable {
   public let supportsDNS: Bool
   internal let constrained: Bool
   internal let reason: UnsatisfiedReason
+  public let localEndpoint: NWEndpoint?
+  public let remoteEndpoint: NWEndpoint?
 
   public var isConstrained: Bool { constrained }
 
@@ -121,6 +123,22 @@ public struct NWPath: Equatable, CustomDebugStringConvertible, Sendable {
     supportsIPv6 = nw_path_has_ipv6(p)
     supportsDNS = nw_path_has_dns(p)
     reason = .notAvailable
+    localEndpoint = nil
+    remoteEndpoint = nil
+  }
+
+  /// A connection's path: satisfied, to `remote`.
+  internal init(remote: NWEndpoint) {
+    status = .satisfied
+    availableInterfaces = []
+    isExpensive = false
+    constrained = false
+    supportsIPv4 = true
+    supportsIPv6 = true
+    supportsDNS = true
+    reason = .notAvailable
+    localEndpoint = nil
+    remoteEndpoint = remote
   }
 
   internal init() {
@@ -132,6 +150,8 @@ public struct NWPath: Equatable, CustomDebugStringConvertible, Sendable {
     supportsIPv6 = false
     supportsDNS = false
     reason = .notAvailable
+    localEndpoint = nil
+    remoteEndpoint = nil
   }
 }
 

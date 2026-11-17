@@ -10,6 +10,10 @@
 //! without it, `kDNSServiceFlagsTimeout` turns a failed lookup into
 //! `kDNSServiceErr_Timeout`, and otherwise the request waits, as one does on a
 //! phone with no answer. Addresses come from the host resolver (see `Net`).
+//!
+//! Bonjour browsing, for pomme's Network overlay (NWBrowser, NWConnection to
+//! a service): `pomme_bonjour_browse`, the services of a kind the computer's
+//! network has (`Net::browse`), as text.
 
 use crate::{Emu, HostFn, Result};
 use std::collections::HashMap;
@@ -183,7 +187,36 @@ fn ref_deallocate(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// `size_t pomme_bonjour_browse(const char *kind, char *out, size_t cap)`: the
+/// services of `kind` found so far, one a line: name, kind, domain, host,
+/// port, addresses (comma separated) and the TXT record (`key=hex` or `key`,
+/// semicolon separated), tab separated. Writes it (with a NUL) when it fits in
+/// `cap`; returns its length either way. None while the network is offline.
+fn bonjour_browse(emu: &mut Emu) -> Result<()> {
+    let (kind, out, cap) = (emu.arg(0), emu.arg(1), emu.arg(2));
+    let kind = emu.cstr(kind)?;
+    let online = emu.network.path != crate::network::Path::Offline;
+    let services = match emu.net.client.as_mut() {
+        Some(n) if online => n.browse(&kind),
+        _ => Vec::new(),
+    };
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let mut text = String::new();
+    for s in services {
+        let addrs: Vec<String> = s.addresses.iter().map(|a| a.to_string()).collect();
+        let txt: Vec<String> = s.txt.iter().map(|(k, v)| v.as_ref().map_or_else(|| k.clone(), |v| format!("{k}={}", hex(v)))).collect();
+        text += &format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.name, s.kind, s.domain, s.host, s.port, addrs.join(","), txt.join(";"));
+    }
+    if out != 0 && (text.len() as u64) < cap {
+        emu.p.memory.write(out, text.as_bytes())?;
+        emu.p.memory.write_u8(out + text.len() as u64, 0)?;
+    }
+    emu.ret(text.len() as u64);
+    Ok(())
+}
+
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_pomme_bonjour_browse", bonjour_browse),
     ("_DNSServiceGetAddrInfo", get_addr_info),
     ("_DNSServiceSetDispatchQueue", set_dispatch_queue),
     ("_DNSServiceRefDeallocate", ref_deallocate),

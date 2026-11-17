@@ -275,7 +275,17 @@ pub fn load(path: &Path) -> Result<Process> {
 
 /// The sysroot copy of a system library, if there is one.
 fn sysroot_dylib(sysroot: Option<&Path>, install: &str) -> Option<PathBuf> {
-    let file = sysroot?.join(install.trim_start_matches('/'));
+    let sysroot = sysroot?;
+    let file = sysroot.join(install.trim_start_matches('/'));
+    if vfs::is_file(&file) {
+        return Some(vfs::canonicalize(&file));
+    }
+    // A macOS framework path (`Foundation.framework/Versions/C/Foundation`,
+    // from sysroot libraries built against the macOS SDK) is the iOS one,
+    // `Foundation.framework/Foundation`.
+    let (dir, rest) = install.split_once(".framework/Versions/")?;
+    let (_, name) = rest.split_once('/')?;
+    let file = sysroot.join(format!("{dir}.framework/{name}").trim_start_matches('/'));
     vfs::is_file(&file).then(|| vfs::canonicalize(&file))
 }
 

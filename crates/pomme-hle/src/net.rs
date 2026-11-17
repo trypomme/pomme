@@ -53,6 +53,22 @@ pub struct Readiness {
     pub closed: bool,
 }
 
+/// A Bonjour service found on the network.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Service {
+    /// Its instance name ("hello-expo").
+    pub name: String,
+    /// "_expo._tcp".
+    pub kind: String,
+    /// "local."
+    pub domain: String,
+    pub host: String,
+    pub port: u16,
+    pub addresses: Vec<std::net::IpAddr>,
+    /// Its TXT record, in order: key, and value (None: a key with no `=`).
+    pub txt: Vec<(String, Option<Vec<u8>>)>,
+}
+
 pub trait Net {
     /// Perform a request. Err: the request failed before any response (no network, bad host, …).
     fn fetch(&mut self, req: &Request) -> std::result::Result<Response, String>;
@@ -88,6 +104,12 @@ pub trait Net {
     }
     fn peer_addr(&mut self, _s: SocketId) -> Option<std::net::SocketAddr> {
         None
+    }
+    /// Bonjour services of `kind` (`_expo._tcp`) on the computer's network,
+    /// as found so far: a phone on the same Wi-Fi would see the same ones.
+    /// The first call starts looking; none without a live network.
+    fn browse(&mut self, _kind: &str) -> Vec<Service> {
+        Vec::new()
     }
 }
 
