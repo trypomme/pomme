@@ -715,6 +715,24 @@ fn recursive_description(emu: &mut Emu, v: u64, depth: usize, out: &mut Vec<Stri
 /// Windows in the order they're drawn and hit-tested (last on top): by
 /// level, then (within a level) in the order they appeared, as on iOS, where
 /// a higher `windowLevel` (an alert's, the status bar's) is always above.
+/// Where a touch at (x, y) lands, as UIKit finds it: the frontmost window
+/// that's shown and has a view there (whichever is key), and that view.
+pub(crate) fn window_hit(emu: &mut Emu, x: f64, y: f64) -> Result<(u64, u64)> {
+    for w in emu.ui.windows.clone().into_iter().rev() {
+        let vw = view(emu, w);
+        if vw.hidden || vw.alpha < 0.01 || !vw.user_interaction {
+            continue;
+        }
+        emu.cpu.q[0] = x.to_bits() as u128;
+        emu.cpu.q[1] = y.to_bits() as u128;
+        let hit = send(emu, w, "hitTest:withEvent:", &[0])?;
+        if hit != 0 {
+            return Ok((w, hit));
+        }
+    }
+    Ok((0, 0))
+}
+
 pub(crate) fn order_windows(emu: &mut Emu) {
     let mut ws = std::mem::take(&mut emu.ui.windows);
     ws.sort_by(|&a, &b| {
@@ -750,24 +768,44 @@ fn window_init_with_frame(emu: &mut Emu) -> Result<()> {
 
 fn make_key_and_visible(emu: &mut Emu) -> Result<()> {
     let w = emu.arg(0);
-    emu.ui.key_window = w;
     view_mut(emu, w).hidden = false;
+    set_key_window(emu, w)
+}
+
+/// Make `w` the key window: as UIKit does, the old one is told
+/// `resignKeyWindow` and the new one `becomeKeyWindow` (Swift's `resignKey()`
+/// and `becomeKey()`, which windows override: expo-dev-menu's presents its
+/// sheet then).
+fn set_key_window(emu: &mut Emu, w: u64) -> Result<()> {
+    let old = emu.ui.key_window;
+    if old == w {
+        return Ok(());
+    }
+    emu.ui.key_window = w;
+    if old != 0 {
+        send(emu, old, "resignKeyWindow", &[])?;
+    }
+    if w != 0 {
+        send(emu, w, "becomeKeyWindow", &[])?;
+    }
     Ok(())
 }
 
 /// Hiding the key window makes the topmost window still shown key, as UIKit does
 /// (React Native's alert window hides itself once a button is chosen).
-fn rekey_if_gone(emu: &mut Emu, w: u64) {
+fn rekey_if_gone(emu: &mut Emu, w: u64) -> Result<()> {
     if emu.ui.key_window == w {
-        emu.ui.key_window = emu.ui.windows.iter().rev().copied().find(|&o| o != w && emu.ui.views.views.get(&o).is_some_and(|v| !v.hidden)).unwrap_or(0);
+        let next = emu.ui.windows.iter().rev().copied().find(|&o| o != w && emu.ui.views.views.get(&o).is_some_and(|v| !v.hidden)).unwrap_or(0);
+        set_key_window(emu, next)?;
     }
+    Ok(())
 }
 
 fn window_set_hidden(emu: &mut Emu) -> Result<()> {
     let (w, h) = (emu.arg(0), emu.arg(2) & 0xff != 0);
     set_hidden(emu)?;
     if h {
-        rekey_if_gone(emu, w);
+        rekey_if_gone(emu, w)?;
     }
     Ok(())
 }
@@ -777,7 +815,7 @@ fn window_set_scene(emu: &mut Emu) -> Result<()> {
     let (w, scene) = (emu.arg(0), emu.arg(2));
     if scene == 0 {
         emu.ui.windows.retain(|&o| o != w);
-        rekey_if_gone(emu, w);
+        rekey_if_gone(emu, w)?;
     } else if !emu.ui.windows.contains(&w) {
         emu.ui.windows.push(w);
         order_windows(emu);
@@ -786,8 +824,8 @@ fn window_set_scene(emu: &mut Emu) -> Result<()> {
 }
 
 fn make_key(emu: &mut Emu) -> Result<()> {
-    emu.ui.key_window = emu.arg(0);
-    Ok(())
+    let w = emu.arg(0);
+    set_key_window(emu, w)
 }
 
 fn is_key_window(emu: &mut Emu) -> Result<()> {
@@ -803,6 +841,16 @@ fn root_view_controller(emu: &mut Emu) -> Result<()> {
 
 fn set_root_view_controller(emu: &mut Emu) -> Result<()> {
     let (w, vc) = (emu.arg(0), emu.arg(2));
+    // The old root's view leaves the window, as UIKit takes it out.
+    if let Some(&old) = emu.ui.views.root_vc.get(&w) {
+        if old != 0 && old != vc {
+            if let Some(&ov) = emu.ui.views.vc_view.get(&old) {
+                if view(emu, ov).superview == w {
+                    send(emu, ov, "removeFromSuperview", &[])?;
+                }
+            }
+        }
+    }
     emu.ui.views.root_vc.insert(w, vc);
     if vc != 0 {
         let v = send(emu, vc, "view", &[])?;
@@ -886,6 +934,25 @@ fn ret_color(emu: &mut Emu, rgba: [f64; 4]) -> Result<()> {
 fn color_rgba(emu: &mut Emu) -> Result<()> {
     let rgba = [f(emu, 0), f(emu, 1), f(emu, 2), f(emu, 3)];
     ret_color(emu, rgba)
+}
+
+/// `+colorWithDisplayP3Red:…` / `-initWithDisplayP3Red:…`: the Display P3
+/// color in sRGB (both D65: P3's encoding is sRGB's curve; the primaries
+/// convert with the standard matrix), clamped to what sRGB shows.
+fn color_p3(emu: &mut Emu) -> Result<()> {
+    let p3 = [f(emu, 0), f(emu, 1), f(emu, 2)];
+    let linear = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let encode = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    };
+    let [r, g, b] = p3.map(linear);
+    let srgb = [
+        1.2249401 * r - 0.2249404 * g,
+        -0.0420569 * r + 1.0420571 * g,
+        -0.0196376 * r - 0.0786361 * g + 1.0982735 * b,
+    ];
+    ret_color(emu, [encode(srgb[0]), encode(srgb[1]), encode(srgb[2]), f(emu, 3)])
 }
 
 fn color_white(emu: &mut Emu) -> Result<()> {
@@ -1198,6 +1265,82 @@ fn animate(emu: &mut Emu, form: Form, completion: bool) -> Result<()> {
     Ok(())
 }
 
+// ---- UIViewPropertyAnimator ----
+//
+// An animator keeps its animation blocks and completions until it starts;
+// starting runs the blocks as a UIView animation block (its spring, or its
+// curve), and the completions (UIViewAnimatingPositionEnd) when it's done.
+// Its bag: duration, dampingRatio or curve, the blocks (anim.N, done.N) and
+// state (UIViewAnimatingState: 0 inactive, 1 active, 2 stopped).
+
+const ANIMATOR: &str = "UIViewPropertyAnimator";
+
+fn animator_add(emu: &mut Emu, a: u64, kind: &str, block: u64) -> Result<()> {
+    if block == 0 {
+        return Ok(());
+    }
+    let n = objc::bag_get(emu, a, &format!("{kind}.count")).unwrap_or(0);
+    let c = copy_block(emu, block)?;
+    objc::bag_set(emu, a, &format!("{kind}.{n}"), c);
+    objc::bag_set(emu, a, &format!("{kind}.count"), n + 1);
+    Ok(())
+}
+
+fn animator_blocks(emu: &Emu, a: u64, kind: &str) -> Vec<u64> {
+    let n = objc::bag_get(emu, a, &format!("{kind}.count")).unwrap_or(0);
+    (0..n).filter_map(|i| objc::bag_get(emu, a, &format!("{kind}.{i}"))).collect()
+}
+
+/// `-initWithDuration:dampingRatio:animations:` (spring) or `-initWithDuration:curve:animations:`.
+fn animator_init(emu: &mut Emu, spring: bool) -> Result<()> {
+    let a = emu.arg(0);
+    objc::bag_set_f64(emu, a, "duration", f(emu, 0));
+    let block = if spring {
+        objc::bag_set_f64(emu, a, "dampingRatio", f(emu, 1));
+        emu.arg(2)
+    } else {
+        objc::bag_set(emu, a, "curve", emu.arg(2));
+        emu.arg(3)
+    };
+    animator_add(emu, a, "anim", block)?;
+    emu.ret(a);
+    Ok(())
+}
+
+fn animator_done_fire(emu: &mut Emu) -> Result<()> {
+    let a = emu.arg(1);
+    if objc::bag_get(emu, a, "state") != Some(1) {
+        return Ok(()); // stopped before it finished
+    }
+    objc::bag_set(emu, a, "state", 0);
+    for b in animator_blocks(emu, a, "done") {
+        crate::libsystem::call_block(emu, b, &[0])?; // UIViewAnimatingPositionEnd
+    }
+    Ok(())
+}
+
+fn animator_start(emu: &mut Emu, delay: f64) -> Result<()> {
+    let a = emu.arg(0);
+    if objc::bag_get(emu, a, "state") == Some(1) {
+        return Ok(());
+    }
+    objc::bag_set(emu, a, "state", 1);
+    let duration = objc::bag_get_f64(emu, a, "duration").unwrap_or(0.0).max(0.0);
+    let timing = match objc::bag_get_f64(emu, a, "dampingRatio") {
+        Some(ratio) => crate::animation::view_spring(duration, ratio, 0.0),
+        // UIViewAnimationCurve n is the options' curve n << 16.
+        None => crate::animation::block_timing(objc::bag_get(emu, a, "curve").unwrap_or(0) << 16),
+    };
+    let blocks = animator_blocks(emu, a, "anim");
+    crate::animation::in_block(emu, delay, duration, timing, 0, |e| {
+        for b in &blocks {
+            crate::libsystem::call_block(e, *b, &[])?;
+        }
+        Ok(())
+    })?;
+    crate::animation::after_commit(emu, delay + duration, animator_done_fire, a)
+}
+
 /// `-convertPoint/Rect:to/fromCoordinateSpace:`: a view, or the screen (whose
 /// space is the window's: pomme's windows fill the screen at the origin).
 fn convert_space(emu: &mut Emu, rect: bool, to: bool) -> Result<()> {
@@ -1276,6 +1419,48 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIView", false, "convertPoint:fromView:", |e| convert_point(e, false)),
     ("UIView", false, "convertRect:toView:", |e| convert_rect(e, true)),
     ("UIView", false, "convertRect:fromView:", |e| convert_rect(e, false)),
+    (ANIMATOR, false, "initWithDuration:dampingRatio:animations:", |e| animator_init(e, true)),
+    (ANIMATOR, false, "initWithDuration:curve:animations:", |e| animator_init(e, false)),
+    (ANIMATOR, false, "addAnimations:", |e| animator_add(e, e.arg(0), "anim", e.arg(2))),
+    (ANIMATOR, false, "addAnimations:delayFactor:", |e| animator_add(e, e.arg(0), "anim", e.arg(2))),
+    (ANIMATOR, false, "addCompletion:", |e| animator_add(e, e.arg(0), "done", e.arg(2))),
+    (ANIMATOR, false, "startAnimation", |e| animator_start(e, 0.0)),
+    (ANIMATOR, false, "startAnimationAfterDelay:", |e| {
+        let d = f(e, 0).max(0.0);
+        animator_start(e, d)
+    }),
+    // Stopping leaves the views where they are now (pomme's animations end
+    // at their targets: there's no in-between to keep) and skips the completions.
+    (ANIMATOR, false, "stopAnimation:", |e| {
+        let a = e.arg(0);
+        objc::bag_set(e, a, "state", if e.arg(2) != 0 { 0 } else { 2 });
+        Ok(())
+    }),
+    (ANIMATOR, false, "state", |e| {
+        let s = objc::bag_get(e, e.arg(0), "state").unwrap_or(0);
+        e.ret(s);
+        Ok(())
+    }),
+    (ANIMATOR, false, "isRunning", |e| {
+        let s = objc::bag_get(e, e.arg(0), "state") == Some(1);
+        e.ret(s as u64);
+        Ok(())
+    }),
+    (ANIMATOR, false, "duration", |e| {
+        let d = objc::bag_get_f64(e, e.arg(0), "duration").unwrap_or(0.0);
+        ret_f64(e, d);
+        Ok(())
+    }),
+    (ANIMATOR, false, "isInterruptible", |e| {
+        e.ret(1);
+        Ok(())
+    }),
+    (ANIMATOR, false, "setInterruptible:", |_| Ok(())),
+    (ANIMATOR, false, "setUserInteractionEnabled:", |_| Ok(())),
+    (ANIMATOR, false, "isUserInteractionEnabled", |e| {
+        e.ret(1);
+        Ok(())
+    }),
     ("UIView", true, "animateWithDuration:animations:", |e| animate(e, Form::Plain, false)),
     ("UIView", true, "animateWithDuration:animations:completion:", |e| animate(e, Form::Plain, true)),
     ("UIView", true, "animateWithDuration:delay:options:animations:completion:", |e| animate(e, Form::Options, true)),
@@ -1535,6 +1720,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIWindow", false, "initWithFrame:", window_init_with_frame),
     ("UIWindow", false, "makeKeyAndVisible", make_key_and_visible),
     ("UIWindow", false, "makeKeyWindow", make_key),
+    ("UIWindow", false, "becomeKeyWindow", |_| Ok(())),
+    ("UIWindow", false, "resignKeyWindow", |_| Ok(())),
     ("UIWindow", false, "isKeyWindow", is_key_window),
     ("UIWindow", false, "rootViewController", root_view_controller),
     ("UIWindow", false, "setRootViewController:", set_root_view_controller),
@@ -1599,6 +1786,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIViewController", false, "traitCollection", trait_collection),
     ("UIColor", true, "colorWithRed:green:blue:alpha:", color_rgba),
     ("UIColor", false, "initWithRed:green:blue:alpha:", color_rgba),
+    ("UIColor", true, "colorWithDisplayP3Red:green:blue:alpha:", color_p3),
+    ("UIColor", false, "initWithDisplayP3Red:green:blue:alpha:", color_p3),
     ("UIColor", true, "colorWithWhite:alpha:", color_white),
     ("UIColor", true, "whiteColor", |e| ret_color(e, [1.0, 1.0, 1.0, 1.0])),
     ("UIColor", true, "blackColor", |e| ret_color(e, [0.0, 0.0, 0.0, 1.0])),

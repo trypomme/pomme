@@ -143,6 +143,10 @@ xcrun clang++ -dynamiclib -target "$MAC_TARGET" -isysroot "$MAC_SDK" -Wl,-alias_
   "$CF_OBJ"/*.o -Wl,-force_load,"$VENDOR/build/icu-macos/lib/lib_FoundationICU.a" -lobjc \
   -o "$CF_FW/CoreFoundation"
 
+# Combine.framework: pomme's own, generated from the SDK's interface
+# (scripts/combine). First: Foundation's and Dispatch's overlays import it.
+"$ROOT/scripts/combine/build.sh"
+
 # Swift Foundation (swift-foundation, as module `Foundation`, plus pomme's bridging overlay)
 VENDOR="$VENDOR" TAG="$TAG" "$ROOT/scripts/sysroot/build-swift-foundation.sh"
 
@@ -155,9 +159,8 @@ VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-sqlite.sh"
 # zlib (libz.1.dylib)
 VENDOR="$VENDOR" "$ROOT/scripts/sysroot/build-zlib.sh"
 
-# Combine.framework and SwiftUI.framework: pomme's own, generated from the
-# SDK's interfaces (scripts/combine, scripts/swiftui; SwiftUI links Combine)
-"$ROOT/scripts/combine/build.sh"
+# SwiftUI.framework: pomme's own, generated from the SDK's interfaces
+# (scripts/swiftui; it links Combine)
 "$ROOT/scripts/swiftui/build.sh"
 
 # System font: Inter, open-source with metrics close to SF Pro.

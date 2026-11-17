@@ -65,3 +65,32 @@ extension AnyShapeStyle: PommeShapeStyle {
     return base.pommeFill(in: environment)
   }
 }
+
+// ---- Materials ----
+
+/// A material, as a translucent color: the one that gives what iOS 26 draws
+/// over white and over black (tests/fixtures/materials, light and dark). Over
+/// a plain background it's the same; pomme doesn't blur what's behind.
+extension Material: PommeShapeStyle {
+  /// (Over white, over black) gray levels, 0–255, in light and dark appearance.
+  private static let measured: [String: (light: (white: CGFloat, black: CGFloat), dark: (white: CGFloat, black: CGFloat))] = [
+    "ultraThin": ((245, 88), (177, 31)),
+    "thin": ((245, 142), (125, 31)),
+    "regular": ((245, 197), (83, 31)),
+    "thick": ((245, 233), (37, 31)),
+    "ultraThick": ((246, 233), (37, 31)),
+    "bar": ((247, 178), (87, 18)),
+  ]
+
+  func pommeColor(in environment: EnvironmentValues) -> UIColor {
+    guard let m = Self.measured[pommeName] else {
+      fatalError("SwiftUI in pomme doesn't implement the material \(pommeName) yet")
+    }
+    // Over white w = a·c + (1 − a), over black b = a·c: a = 1 − (w − b), c = b / a.
+    func color(_ w: CGFloat, _ b: CGFloat) -> UIColor {
+      let a = 1 - (w - b) / 255
+      return UIColor(white: a > 0 ? b / 255 / a : 0, alpha: a)
+    }
+    return UIColor { $0.userInterfaceStyle == .dark ? color(m.dark.white, m.dark.black) : color(m.light.white, m.light.black) }
+  }
+}

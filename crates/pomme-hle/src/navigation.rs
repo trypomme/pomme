@@ -56,6 +56,8 @@ struct Item {
 
 #[derive(Clone, Default)]
 pub struct State {
+    /// Controllers' `additionalSafeAreaInsets` (top, left, bottom, right).
+    pub(crate) additional_safe_area: HashMap<u64, [f64; 4]>,
     pub(crate) parent: HashMap<u64, u64>,
     pub(crate) children: HashMap<u64, Vec<u64>>,
     navs: HashMap<u64, Nav>,
@@ -1199,7 +1201,24 @@ pub fn safe_rect(emu: &mut Emu, v: u64) -> [f64; 4] {
         }
         cur = view(emu, cur).superview;
     }
-    [left, top, w - right, h - bottom]
+    let mut rect = [left, top, w - right, h - bottom];
+    // A controller's `additionalSafeAreaInsets` move its view's (and its
+    // subviews') safe area in by as much, from where the view is.
+    let mut cur = v;
+    while cur != 0 {
+        if let Some(vc) = emu.ui.views.vc_view.iter().find(|&(_, &view)| view == cur).map(|(&vc, _)| vc)
+            && let Some(&[t, l, b, r]) = emu.nav.additional_safe_area.get(&vc)
+        {
+            let o = crate::uiview::window_origin(emu, cur);
+            let size = view(emu, cur).bounds;
+            rect[0] = rect[0].max(o[0]) + l;
+            rect[1] = rect[1].max(o[1]) + t;
+            rect[2] = rect[2].min(o[0] + size[2]) - r;
+            rect[3] = rect[3].min(o[1] + size[3]) - b;
+        }
+        cur = view(emu, cur).superview;
+    }
+    rect
 }
 
 /// A navigation bar's height: 44 pt (54 under Liquid Glass), or UIKit's
@@ -1422,6 +1441,28 @@ pub fn safe_area(emu: &mut Emu, v: u64) -> [f64; 4] {
 const VC: &str = "UIViewController";
 
 /// Stored UIViewController properties (presentation and layout knobs pomme doesn't act on yet).
+/// `additionalSafeAreaInsets`: UIEdgeInsets (top, left, bottom, right) in d0–d3.
+fn additional_safe_area(emu: &mut Emu) -> Result<()> {
+    let v = emu.nav.additional_safe_area.get(&emu.arg(0)).copied().unwrap_or([0.0; 4]);
+    for (i, x) in v.iter().enumerate() {
+        emu.cpu.q[i] = x.to_bits() as u128;
+    }
+    Ok(())
+}
+
+fn set_additional_safe_area(emu: &mut Emu) -> Result<()> {
+    let vc = emu.arg(0);
+    let v: [f64; 4] = std::array::from_fn(|i| f64::from_bits(emu.cpu.q[i] as u64));
+    if emu.nav.additional_safe_area.insert(vc, v) != Some(v) {
+        // The safe area moved: layout follows, as UIKit lays the view out again.
+        if let Some(&view) = emu.ui.views.vc_view.get(&vc) {
+            send(emu, view, "setNeedsLayout", &[])?;
+        }
+        crate::autolayout::mark_dirty(emu);
+    }
+    Ok(())
+}
+
 pub(crate) const PROPS: &[[(&str, bool, &str, HostFn); 2]] = &[
     prop!(VC, "isModalInPresentation", "setModalInPresentation:", 0),
     prop!(VC, "modalPresentationStyle", "setModalPresentationStyle:", 1), // page sheet
@@ -2202,6 +2243,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret(e, r as u64)
     }),
     (VC, false, "presentViewController:animated:completion:", present),
+    (VC, false, "additionalSafeAreaInsets", additional_safe_area),
+    (VC, false, "setAdditionalSafeAreaInsets:", set_additional_safe_area),
     (VC, false, "dismissViewControllerAnimated:completion:", dismiss),
     (VC, false, "presentedViewController", |e| {
         let root = root_of(e, e.arg(0));
@@ -2244,6 +2287,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UISheetPresentationControllerDetent", true, "largeDetent", |e| {
         let d = new_detent(e, 2, "com.apple.UIKit.large", 0)?;
         ret(e, d)
+    }),
+    // `detents` is a copy property: the sheet keeps its own copy of the array
+    // (a Swift array the app passes goes away once it's set).
+    ("UISheetPresentationController", false, "setDetents:", |e| {
+        let (sc, list) = (e.arg(0), e.arg(2));
+        let old = crate::objc::bag_get(e, sc, "detents").unwrap_or(0);
+        let copy = if list != 0 { send(e, list, "copy", &[])? } else { 0 };
+        crate::objc::bag_set(e, sc, "detents", copy);
+        if old != 0 {
+            send(e, old, "release", &[])?;
+        }
+        Ok(())
     }),
     ("UISheetPresentationControllerDetent", true, "customDetentWithIdentifier:resolver:", |e| {
         let (id, resolver) = (e.arg(2), e.arg(3));

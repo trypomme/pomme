@@ -872,12 +872,8 @@ pub fn describe(elements: &[Element]) -> String {
 /// Whether a touch at the element's center would land on it: the window's
 /// hit test finds its view or something inside it (XCUITest's `isHittable`).
 pub fn hittable(emu: &mut Emu, e: &Element) -> Result<bool> {
-    let window = if emu.ui.key_window != 0 { emu.ui.key_window } else { emu.ui.windows.first().copied().unwrap_or(0) };
-    if window == 0 {
-        return Ok(false);
-    }
     let (x, y) = e.center();
-    let mut hit = objc::send_fp_id(emu, window, "hitTest:withEvent:", &[0], &[x, y])?;
+    let (_, mut hit) = crate::uiview::window_hit(emu, x, y)?;
     while hit != 0 && hit != e.view {
         hit = view(emu, hit).superview;
     }

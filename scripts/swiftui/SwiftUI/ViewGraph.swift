@@ -3,6 +3,7 @@
 // view's place in the tree, so it outlives the view values, which are made
 // anew on every update.
 
+import Combine
 import UIKit
 
 /// A view's place in the tree: its identity from one update to the next.
@@ -24,6 +25,12 @@ final class Preferences {
   var navigationTitle: String?
   /// How the navigation bar shows the title (`navigationBarTitleDisplayMode`).
   var titleDisplayMode: NavigationBarItem.TitleDisplayMode?
+  /// The screen's toolbar items, its bar's subtitle, and whether it hides the bar (Toolbar.swift).
+  var toolbar: [ToolbarEntry] = []
+  var navigationSubtitle: String?
+  var navigationBarHidden: Bool?
+  /// Values of preference keys, by key type (Effects.swift).
+  var values: [ObjectIdentifier: Any] = [:]
 }
 
 /// A view SwiftUI shows itself (text, a list …), rather than through its body.
@@ -89,8 +96,22 @@ final class ViewGraph {
   /// The tasks and appearance actions of the views in the tree, from the last update.
   private(set) var tasks: [ViewPath: TaskWork] = [:]
   private(set) var appearances: [ViewPath: AppearanceActions] = [:]
+  /// The alerts the tree is presenting (Alerts.swift).
+  private(set) var alerts: [ViewPath: AlertRequest] = [:]
+  /// The sheets the tree is presenting, and what it asks of the sheet it's in (Sheets.swift).
+  private(set) var sheets: [ViewPath: SheetRequest] = [:]
+  var sheetSettings = SheetSettings()
   /// Called when a view's state changes.
   private let changed: () -> Void
+  /// The publishers views subscribe to (`onReceive`), by the view's place:
+  /// kept while it's in the tree (More.swift).
+  var subscriptions: [ViewPath: (cancellable: AnyCancellable, action: ActionBox)] = [:]
+  var subscribedNow: Set<ViewPath> = []
+  /// What each GeometryReader was last laid out with (Effects.swift).
+  var readerGeometry: [ViewPath: GeometryInfo] = [:]
+
+  /// Update again (a GeometryReader's geometry changed).
+  func setNeedsUpdate() { changed() }
 
   init(changed: @escaping () -> Void) {
     self.changed = changed
@@ -101,12 +122,20 @@ final class ViewGraph {
     visited = []
     tasks = [:]
     appearances = [:]
+    alerts = [:]
+    sheets = [:]
+    sheetSettings = SheetSettings()
     environment = EnvironmentValues()
     let preferences = Preferences()
     followedNow = []
     let nodes = resolve(root, at: ViewPath(), preferences)
     storages = storages.filter { visited.contains($0.key) }
     followed = followed.filter { followedNow.contains($0.key) }
+    for (path, s) in subscriptions where !subscribedNow.contains(path) {
+      s.cancellable.cancel()
+      subscriptions[path] = nil
+    }
+    subscribedNow = []
     return (nodes, preferences)
   }
 
@@ -181,6 +210,12 @@ final class ViewGraph {
     return last != value
   }
 
+  /// The value followed at `path` at the last update, and whether this is the first time it's seen.
+  func followedValue<V>(at path: ViewPath, as: V.Type) -> (V?, Bool) {
+    guard let last = followed[path] else { return (nil, true) }
+    return (last as? V, false)
+  }
+
   func runAfterUpdate(_ action: @escaping () -> Void) {
     afterUpdate.append(action)
   }
@@ -198,6 +233,14 @@ final class ViewGraph {
   func addAppearance(_ actions: AppearanceActions, at path: ViewPath) {
     appearances[path] = actions
   }
+
+  func addAlert(_ request: AlertRequest, at path: ViewPath) {
+    alerts[path] = request
+  }
+
+  func addSheet(_ request: SheetRequest, at path: ViewPath) {
+    sheets[path] = request
+  }
 }
 
 // ---- Primitive views ----
@@ -206,6 +249,11 @@ extension Text: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     let node = TextNode(path: path, string: pommeString)
     node.font = graph.environment.font
+    switch graph.environment.multilineTextAlignment {
+    case .center: node.alignment = .center
+    case .trailing: node.alignment = graph.environment.layoutDirection == .rightToLeft ? .left : .right
+    default: node.alignment = .natural
+    }
     node.color = graph.environment.pommeForeground
     for modifier in modifiers {
       switch modifier {
@@ -276,6 +324,13 @@ extension _ViewModifier_Content: PrimitiveView {
 extension _EnvironmentKeyWritingModifier: PrimitiveModifier {
   func pommeResolve(content: () -> [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     graph.withEnvironment({ pommeWrite(&$0) }, content)
+  }
+}
+
+/// `.transformEnvironment` (`.disabled` uses it): the value, changed in place.
+extension _EnvironmentKeyTransformModifier: PrimitiveModifier {
+  func pommeResolve(content: () -> [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    graph.withEnvironment({ transform(&$0[keyPath: keyPath]) }, content)
   }
 }
 

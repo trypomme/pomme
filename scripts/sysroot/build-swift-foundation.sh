@@ -98,6 +98,15 @@ OVERLAY="$(cd "$(dirname "$0")" && pwd)/swift-foundation-overlay"
 swift_files "$ESS"
 ESSENTIALS=("${FILES[@]}")
 swift_files "$INTL"
+# The overlay's Combine.swift (Foundation's publishers) imports pomme's
+# Combine (scripts/combine/build.sh, built first); Foundation links to it.
+cat > "$OUT/Combine.tbd" <<'TBD'
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64-macos ]
+install-name:    '/System/Library/Frameworks/Combine.framework/Combine'
+...
+TBD
 FILES=("${ESSENTIALS[@]}" "${FILES[@]}" "$OVERLAY"/*.swift)
 FEATURES=()
 for f in VariadicGenerics LifetimeDependence AddressableTypes AllowUnsafeAttribute BuiltinModule AccessLevelOnImport StrictConcurrency; do
@@ -114,6 +123,7 @@ done
 # (JSONEncoder/JSONDecoder's .formatted(DateFormatter) date strategies).
 "${SWIFTC[@]}" -module-name Foundation -package-name SwiftFoundation -enable-library-evolution -D POMME \
   -Xcc -I"$SHIMS/include" -I "$OVERLAY/PommeObjC" -I "$ICU/_foundation_unicode" -Xcc -I"$ICU" "${FEATURES[@]}" \
+  -I "$VENDOR/combine-gen/macos" \
   -emit-module -emit-module-path "$OUT/Foundation.swiftmodule" \
   -c "${FILES[@]}" -o "$OUT/Foundation.o"
 
@@ -122,5 +132,5 @@ done
 FW="${SF_FRAMEWORK:-$VENDOR/sysroot/System/Library/Frameworks/Foundation.framework}"
 mkdir -p "$FW"
 xcrun --sdk macosx swiftc -target "$TARGET" -sdk "$SDK" -emit-library -o "$FW/Foundation" \
-  "$OUT"/*.o -Xlinker -install_name -Xlinker /System/Library/Frameworks/Foundation.framework/Foundation \
+  "$OUT"/*.o "$OUT/Combine.tbd" -Xlinker -install_name -Xlinker /System/Library/Frameworks/Foundation.framework/Foundation \
   -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache

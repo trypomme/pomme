@@ -1,0 +1,12 @@
+PIXEL ultraThin-white 97.5 140 245 245 244
+PIXEL ultraThin-black 292.5 140 88 89 88
+PIXEL thin-white 97.5 220 245 245 245
+PIXEL thin-black 292.5 220 142 142 142
+PIXEL regular-white 97.5 300 245 246 244
+PIXEL regular-black 292.5 300 197 199 197
+PIXEL thick-white 97.5 380 245 246 245
+PIXEL thick-black 292.5 380 233 233 233
+PIXEL ultraThick-white 97.5 460 246 245 245
+PIXEL ultraThick-black 292.5 460 233 234 233
+PIXEL bar-white 97.5 540 247 248 247
+PIXEL bar-black 292.5 540 178 179 178

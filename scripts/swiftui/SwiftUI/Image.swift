@@ -111,7 +111,7 @@ final class ImageNode: Node {
     view.tintColor = color
     view.contentMode = .scaleToFill
     view.frame = frame
-    view.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: view)
     parent.pommeAdopt(view)
   }
 }
@@ -305,7 +305,7 @@ final class LabelNode: Node {
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     let container: ContainerView = renderer.view(for: path) { ContainerView() }
     container.frame = frame
-    container.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: container)
     parent.pommeAdopt(container)
     let l = layout(ProposedViewSize(frame.size))
     icon?.place(in: l.icon, of: container, renderer)

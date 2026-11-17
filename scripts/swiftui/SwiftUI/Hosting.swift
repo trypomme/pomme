@@ -34,6 +34,12 @@ final class ViewHost {
   private var updateScheduled = false
   private var running: [ViewPath: Task<Void, Never>] = [:]
   private var appeared: [ViewPath: AppearanceActions] = [:]
+  /// The alerts it's showing, by the view that asked (Alerts.swift).
+  var shownAlerts: [ViewPath: UIAlertController] = [:]
+  /// A pushed screen's toolbar items' views (Toolbar.swift).
+  var toolbarHosts: [String: [ToolbarItemHost]] = [:]
+  /// The sheets it's showing (Sheets.swift).
+  var shownSheets: [ViewPath: SheetHostingController] = [:]
   /// A navigation stack at the root: shown by a navigation controller.
   private var navigation: (controller: UINavigationController, content: ContentController)?
   /// A tab view at the root: shown by a tab bar controller.
@@ -60,14 +66,36 @@ final class ViewHost {
     guard let view else { return }
     // The environment's colour scheme is the appearance's.
     EnvironmentValues.pommeDefaults["colorScheme"] = view.traitCollection.userInterfaceStyle == .dark ? ColorScheme.dark : ColorScheme.light
+    // The screen's scale, and that the scene is active.
+    let scale = view.window?.screen.scale ?? UIScreen.main.scale
+    EnvironmentValues.pommeDefaults["displayScale"] = scale
+    EnvironmentValues.pommeDefaults["pixelLength"] = 1 / scale
+    EnvironmentValues.pommeDefaults["scenePhase"] = ScenePhase.active
     // And its layout direction, the app's (its localization's).
     EnvironmentValues.pommeDefaults["layoutDirection"] = UIApplication.shared.userInterfaceLayoutDirection == .rightToLeft ? LayoutDirection.rightToLeft : LayoutDirection.leftToRight
-    let (nodes, _) = graph.update(root)
+    let (nodes, preferences) = graph.update(root)
     self.nodes = nodes
+    // A screen a navigation link pushed: its title and toolbar, from its content.
+    if let pushed = controller as? PushedHostingController {
+      if pushed.navigationItem.title != preferences.navigationTitle {
+        pushed.navigationItem.title = preferences.navigationTitle
+      }
+      let mode = (preferences.titleDisplayMode ?? .automatic).pommeLargeTitleDisplayMode
+      if pushed.navigationItem.largeTitleDisplayMode != mode {
+        pushed.navigationItem.largeTitleDisplayMode = mode
+      }
+      pushed.showToolbar(preferences.toolbar, hosts: &toolbarHosts)
+    }
     if nodes.count == 1, let stack = nodes[0] as? NavigationStackNode {
+      removeTabs()
       showNavigationStack(stack, in: view)
     } else if nodes.count == 1, let tabView = nodes[0] as? TabViewNode {
+      removeNavigationStack()
       showTabs(tabView, in: view)
+    } else {
+      // (Content that was a navigation stack or tab view, and isn't now.)
+      removeNavigationStack()
+      removeTabs()
     }
     view.setNeedsLayout()
     if sizesToContent {
@@ -79,12 +107,28 @@ final class ViewHost {
     }
   }
 
-  /// Lay the tree out in the hosting view.
+  /// Lay the tree out in the hosting view (shown by a navigation or tab bar
+  /// controller instead, it has none of its own: what was there goes).
   func layout() {
     guard let view else { return }
-    if navigation == nil, tabs == nil {
-      renderer.show(nodes, in: view, respectingSafeArea: safeAreaRegions.contains(.container))
-    }
+    let own = navigation == nil && tabs == nil
+    renderer.show(own ? nodes : [], in: view, respectingSafeArea: safeAreaRegions.contains(.container))
+  }
+
+  private func removeNavigationStack() {
+    guard let (controller, _) = navigation else { return }
+    controller.willMove(toParent: nil)
+    controller.view.removeFromSuperview()
+    controller.removeFromParent()
+    navigation = nil
+  }
+
+  private func removeTabs() {
+    guard let controller = tabs else { return }
+    controller.willMove(toParent: nil)
+    controller.view.removeFromSuperview()
+    controller.removeFromParent()
+    tabs = nil
   }
 
   /// The content's size when offered `proposal` (a nil dimension: its ideal size).
@@ -108,7 +152,7 @@ final class ViewHost {
       navigationController.didMove(toParent: controller)
       navigation = (navigationController, content)
     }
-    navigation!.content.show(stack.root, title: stack.title, displayMode: stack.displayMode)
+    navigation!.content.show(stack: stack)
   }
 
   private func showTabs(_ node: TabViewNode, in view: UIView) {
@@ -144,6 +188,9 @@ final class ViewHost {
       appeared[path] = actions
       actions.appear?()
     }
+    applySheetSettings(graph.sheetSettings)
+    syncSheets(graph.sheets)
+    syncAlerts(graph.alerts)
   }
 }
 
@@ -248,6 +295,17 @@ extension UIHostingController {
 final class ContentController: UIViewController {
   private let renderer = Renderer()
   private var nodes: [Node] = []
+  /// Its toolbar items' views, by placement (Toolbar.swift).
+  private var toolbarHosts: [String: [ToolbarItemHost]] = [:]
+
+  /// Show a navigation stack's screen: its views, title, toolbar and bar.
+  func show(stack: NavigationStackNode) {
+    show(stack.root, title: stack.title, displayMode: stack.displayMode)
+    showToolbar(stack.toolbar, hosts: &toolbarHosts)
+    if let nav = navigationController, nav.isNavigationBarHidden != stack.barHidden {
+      nav.setNavigationBarHidden(stack.barHidden, animated: false)
+    }
+  }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -360,7 +418,7 @@ final class TabPageController: UIViewController {
         controller.navigationBar.prefersLargeTitles = true
         navigation = (controller, content)
       }
-      navigation!.content.show(stack.root, title: stack.title, displayMode: stack.displayMode)
+      navigation!.content.show(stack: stack)
     } else {
       nodes = [tab]
       if isViewLoaded { view.setNeedsLayout() }

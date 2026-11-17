@@ -4,7 +4,7 @@
 
 - [x] 1.1 `scripts/build-app.sh`: a `debug` kind (Debug configuration, no bundle inside). Build hello-expo for the iOS 26 Simulator that way, start Metro, run it, and save a screenshot and the console under `crates/pomme-cli/tests/fixtures/devbuild/`. Check: the screenshot shows hello-expo's first screen.
 - [x] 1.2 On the Simulator: edit hello-expo's greeting while it runs (Fast Refresh), and press `r` in Metro (reload); note what the screen shows and whether the tap count is kept. Check: notes beside the probe. (Taps on the Simulator with AXe: `axe tap --id tap-button`.)
-- [ ] 1.3 hello-expo with `expo-dev-client` on the Simulator: launch with the development link; record the screens on the way and what `checkLocalNetworkAccess` answers (from the console). Check: screenshots and notes in the fixture folder.
+- [x] 1.3 hello-expo with `expo-dev-client` on the Simulator: launch with the development link; record the screens on the way and what `checkLocalNetworkAccess` answers (from the console). Check: screenshots and notes in the fixture folder.
 - [x] 1.4 A probe app that logs `motionBegan:` / `motionEnded:` (receiver, subtype) and run Device ▸ Shake on the Simulator. Check: `crates/pomme-cli/tests/fixtures/shake/ios26.txt`.
 
 ## 2. Plain Debug builds
@@ -29,11 +29,11 @@
 ## 4. Expo development builds
 
 - [x] 4.1a Combine: `send()` on a `Subject` of `Void` (`scripts/combine/Combine/Subjects.swift`). Check: Expo's `DevMenuManager` gets past `updateCurrentManifest`.
-- [ ] 4.1 Find why the launcher goes to its home screen instead of loading the launch link, and fix what pomme does differently from the Simulator (1.3). Check: the notes in the design.
-- [ ] 4.2 `+[NSThread callStackSymbols]`, `NSCountedSet`, and the `NSCache`, `UILongPressGestureRecognizer` and `UIWindow` setters the dev menu uses. Check: `pomme coverage` of the development build lists none of them.
-- [ ] 4.3 The local network check (`NWBrowser`, `NWListener`) answers as measured in 1.3. Check: the launcher takes the same path as on the Simulator.
-- [ ] 4.4 The SwiftUI views the measured flow shows, in pomme's SwiftUI. Check: screenshots compared with 1.3's.
-- [ ] 4.5 The development link at launch (`--url`) and with File ▸ Open URL loads hello-expo from Metro. Check: cases in `development_builds.rs`.
+- [x] 4.1 Find why the launcher goes to its home screen instead of loading the launch link, and fix what pomme does differently from the Simulator (1.3). Check: the notes in the design. (A phone build asks for the local network first and, as on a phone, ignores the launch link until that's done; a link opened while it runs loads the app — `devlauncher/notes.md`.)
+- [x] 4.2 `+[NSThread callStackSymbols]`, `NSCountedSet`, and the `NSCache`, `UILongPressGestureRecognizer` and `UIWindow` setters the dev menu uses. Check: `pomme coverage` of the development build lists none of them. (The dev menu's three-finger long press is set up — its recognizer's settings are stored — but not recognized: a desktop has one pointer; Shake opens the menu.)
+- [x] 4.3 The local network check (`NWBrowser`, `NWListener`) answers as measured in 1.3. Check: the launcher takes the same path as on the Simulator. (Bonjour browsing through the system's DNS-SD on macOS; NWConnection over sockets; `the_dev_launcher_finds_metro`.)
+- [ ] 4.4 The SwiftUI views the measured flow shows, in pomme's SwiftUI. Check: screenshots compared with 1.3's. (Every screen of the flow runs; the home screen still differs: no app icon (asset catalogs), no "Development Build" subtitle under the title, the Updates tab's symbol missing, the server's URL wrapping where `lineLimit(1)` keeps it to one line, and the account button blue rather than black.)
+- [x] 4.5 The development link at launch (`--url`) and with File ▸ Open URL loads hello-expo from Metro. Check: cases in `development_builds.rs`. (`the_development_link_loads_the_app`, with expo-dev-menu's welcome sheet.)
 
 ## 5. Docs
 

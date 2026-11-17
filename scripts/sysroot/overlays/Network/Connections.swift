@@ -254,7 +254,9 @@ public enum NWError: Error, CustomDebugStringConvertible, Equatable {
   }
 }
 
-extension NWError: CustomNSError {
+// (Apple's NWError is a CustomNSError; pomme's Foundation doesn't have that
+// protocol yet, so these are its members without the conformance.)
+extension NWError {
   public var errorCode: Int {
     switch self {
     case .posix(let c): return Int(c.rawValue)
@@ -384,12 +386,12 @@ public struct NWTXTRecord: Sendable {
   @discardableResult
   public mutating func removeEntry(key: String) -> Bool {
     let before = list.count
-    list.removeAll { $0.0.caseInsensitiveCompare(key) == .orderedSame }
+    list.removeAll { $0.0.lowercased() == key.lowercased() }
     return list.count != before
   }
 
   public func getEntry(for key: String) -> Entry? {
-    list.first { $0.0.caseInsensitiveCompare(key) == .orderedSame }?.1
+    list.first { $0.0.lowercased() == key.lowercased() }?.1
   }
 
   public var entries: [String: Entry] { Dictionary(list, uniquingKeysWith: { a, _ in a }) }

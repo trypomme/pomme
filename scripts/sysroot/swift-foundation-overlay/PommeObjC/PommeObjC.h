@@ -193,6 +193,12 @@ typedef NSString *NSURLResourceKey NS_TYPED_EXTENSIBLE_ENUM;
 + (instancetype)notificationWithName:(NSNotificationName)name object:(nullable id)object userInfo:(nullable NSDictionary *)userInfo;
 @end
 
+@interface NSNotificationCenter : NSObject
+@property (class, readonly, strong) NSNotificationCenter *defaultCenter;
+- (id)addObserverForName:(nullable NSNotificationName)name object:(nullable id)obj queue:(nullable id)queue usingBlock:(void (^)(NSNotification *notification))block;
+- (void)removeObserver:(id)observer;
+@end
+
 @interface NSError : NSObject
 - (instancetype)initWithDomain:(NSString *)domain code:(long)code userInfo:(nullable NSDictionary *)dict;
 @property (readonly, copy) NSString *domain;
@@ -232,6 +238,25 @@ typedef NS_ENUM(unsigned long, NSURLRequestCachePolicy) {
 - (void)setHTTPBody:(nullable NSData *)body;
 - (void)setValue:(nullable NSString *)value forHTTPHeaderField:(NSString *)field;
 @end
+
+@interface NSURLResponse : NSObject
+@end
+
+@protocol NSURLSessionTaskDelegate <NSObject>
+@end
+
+@interface NSURLSessionTask : NSObject
+- (void)resume;
+@end
+
+@interface NSURLSessionDataTask : NSURLSessionTask
+@end
+
+@interface NSURLSession : NSObject
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error))completionHandler;
+- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error))completionHandler;
+@end
+
 
 
 

@@ -46,6 +46,26 @@ local network privacy), elsewhere mDNS (`mdns-sd`). So pomme sees what a
 phone on the same network would. Expo CLI advertises only with
 `EXPO_UNSTABLE_BONJOUR=1`.
 
+### What the launcher needed
+
+The launcher and expo-dev-menu are SwiftUI apps; running them filled in a
+good part of SwiftUI in pomme: `@EnvironmentObject`, `@StateObject`,
+`onReceive`, sheets and full-screen covers (with detents), toolbars,
+`ScrollView`, `GeometryReader`, drag gestures, shapes, effects (scale,
+rotation, offset, opacity, shadow), preferences, `.id`, the bordered button
+styles and materials (both measured: `tests/fixtures/borderedbuttons`,
+`tests/fixtures/materials`). Animations are accepted and not run: changes
+show at once.
+
+It also needed Foundation's and Dispatch's Combine parts
+(`NotificationCenter.publisher(for:)`, `receive(on: DispatchQueue.main)`),
+so pomme's Combine is now built first and those two link to it; UIKit's
+Swift overlay as `libswiftUIKit` (window-level arithmetic, custom sheet
+detents); and on the UIKit side `becomeKeyWindow`/`resignKeyWindow` (the
+dev menu presents its sheet when its window becomes key),
+`UIViewPropertyAnimator`, and a window dropping its old root view when it
+gets a new root view controller.
+
 ## Goals / Non-Goals
 
 **Goals:** the edit-and-reload loop for React Native and Expo, without a

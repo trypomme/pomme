@@ -148,9 +148,17 @@ These are gaps, not decisions. They'll close over time:
   Linux.
 - The desktop window is probably not see-through on Windows (a wgpu
   setting; not tried on Windows yet).
-- Development builds (Debug builds that load JavaScript from Metro,
-  `expo-dev-client`): in progress, see the `add-development-builds` change.
-- SwiftUI covers the common views, not all of them.
+- Development builds: the desktop app's Device ▸ Shake hasn't been tried
+  by hand yet; the dev menu's three-finger long press isn't recognized (a
+  desktop has one pointer).
+- SwiftUI covers the common views, not all of them. Changes show at once
+  (no animations or transitions yet); materials (`.ultraThinMaterial` …)
+  are their measured color over a plain background, with nothing blurred
+  behind them; pull to refresh, search fields, keyboard toolbar items and
+  segmented pickers aren't shown yet; only drag gestures are recognized.
+- Images in asset catalogs (`Assets.car`): pomme can't read them yet (Xcode
+  compresses them with Apple's private format), so they show as nothing.
+- Swift errors that adopt `CustomNSError` aren't in pomme's Foundation yet.
 
 For any particular app, `pomme coverage App.app` lists exactly what it
 needs that pomme doesn't have.

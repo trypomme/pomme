@@ -63,9 +63,14 @@ cargo run -- run apps/hello-expo/ios/build/Build/Products/Debug-iphoneos/helloex
   can reach: Windows and Linux too. Building the iOS app itself still needs a
   Mac (or EAS).
 
+For the launcher to find Metro on the network, Expo CLI has to advertise it
+over Bonjour: start it with `EXPO_UNSTABLE_BONJOUR=1 npx expo start`.
+
 `scripts/dev-build-test.sh` builds hello-expo's Debug app once, starts Metro
 and runs the tests that need them (`crates/pomme-cli/tests/development_builds.rs`):
 loading, Fast Refresh, reload, the dev menu, React Native's alerts, Firebase.
+With `LAUNCHER_DIR` (a copy of hello-expo with `expo-dev-client` added), it
+runs the dev launcher's: finding Metro, and the development link.
 
 Where pomme deliberately behaves differently from iOS (fonts, no Home Screen, virtual
 time, …) is in [docs/differences-from-ios.md](docs/differences-from-ios.md).

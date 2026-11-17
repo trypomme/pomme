@@ -65,7 +65,7 @@ final class FillNode: Node {
     }
     v.frame = frame
     v.backgroundColor = color
-    v.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: v)
     parent.pommeAdopt(v)
   }
 }
@@ -204,4 +204,51 @@ extension _ClipEffect: PrimitiveModifier {
     }
     return content().enumerated().map { i, node in ClipNode(path: path.appending(i), child: node, shape: corners) }
   }
+}
+
+// ---- .ignoresSafeArea ----
+
+/// Content that reaches on under the safe area at some edges, where its
+/// frame meets it (`.ignoresSafeArea`: a background colour under the status
+/// bar and the home indicator).
+final class SafeAreaIgnoringNode: WrapperNode {
+  let edges: Edge.Set
+
+  init(path: ViewPath, child: Node, edges: Edge.Set) {
+    self.edges = edges
+    super.init(path: path, child: child)
+  }
+
+  override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
+    let insets = renderer.extendingUnderSafeArea(frame, in: parent).insets
+    let grown = CGRect(
+      x: frame.minX - (edges.contains(.leading) ? insets.left : 0),
+      y: frame.minY - (edges.contains(.top) ? insets.top : 0),
+      width: frame.width + (edges.contains(.leading) ? insets.left : 0) + (edges.contains(.trailing) ? insets.right : 0),
+      height: frame.height + (edges.contains(.top) ? insets.top : 0) + (edges.contains(.bottom) ? insets.bottom : 0))
+    child.place(in: grown, of: parent, renderer)
+  }
+}
+
+extension _SafeAreaRegionsIgnoringLayout: PrimitiveModifier {
+  func pommeResolve(content: () -> [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    content().enumerated().map { i, node in
+      guard regions.contains(.container) else { return node }
+      if let fill = node as? FillNode {
+        fill.underSafeArea = edges
+        return fill
+      }
+      return SafeAreaIgnoringNode(path: path.appending(i), child: node, edges: edges)
+    }
+  }
+}
+
+extension _SafeAreaIgnoringLayout: PrimitiveModifier {
+  func pommeResolve(content: () -> [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    _SafeAreaRegionsIgnoringLayout(regions: .container, edges: edges).pommeResolve(content: content, at: path, in: graph, preferences)
+  }
+}
+
+extension _AspectRatioLayout: LayoutModifier {
+  var pommeLayout: any Layout { pommeAspectRatio }
 }

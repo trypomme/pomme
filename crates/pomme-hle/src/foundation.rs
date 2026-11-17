@@ -547,6 +547,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         (e.cpu.x[0], e.cpu.x[1]) = (lo, hi - lo);
         Ok(())
     }),
+    // NSLogv(format, va_list): a va_list on arm64 Darwin points at the arguments, as the stack does.
+    ("_NSLogv", |e| {
+        let fmt = nsstring(e, e.arg(0))?;
+        let s = crate::printf::format(e, fmt.as_bytes(), &mut crate::printf::Args::new(e.arg(1)))?;
+        println!("[NSLog] {}", String::from_utf8_lossy(&s));
+        Ok(())
+    }),
     ("_NSStringFromClass", ns_string_from_class),
     ("_NSClassFromString", ns_class_from_string),
     ("_NSStringFromSelector", ns_string_from_selector),

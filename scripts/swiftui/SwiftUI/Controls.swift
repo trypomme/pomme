@@ -103,7 +103,7 @@ final class ToggleNode: Node {
     }
     let binding = isOn
     control.changed = { binding.wrappedValue = $0 }
-    control.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: control)
     parent.pommeAdopt(control)
   }
 }
@@ -204,7 +204,7 @@ final class SliderNode: Node {
     let set = setFraction
     control.changed = { set(Double($0)) }
     control.editingChanged = editingChanged
-    control.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: control)
     parent.pommeAdopt(control)
   }
 }
@@ -307,13 +307,48 @@ extension Button: PrimitiveView {
       foreground = destructive ? .systemRed : .tintColor
     case is PlainButtonStyle:
       foreground = destructive ? .systemRed : nil
+    case let style as any PrimitiveButtonStyle where style is BorderedButtonStyle || style is BorderedProminentButtonStyle:
+      return pommeResolveBordered(prominent: style is BorderedProminentButtonStyle, at: path, in: graph, preferences)
     case let style?:
       fatalError("SwiftUI in pomme doesn't implement the button style \(type(of: style)) yet")
     }
-    let label = graph.withEnvironment({ env in foreground.map { env.pommeForeground = $0 } }) {
+    // (An explicit `.foregroundStyle` around the button wins over its tint.)
+    let label = graph.withEnvironment({ env in if env.pommeForeground == nil { foreground.map { env.pommeForeground = $0 } } }) {
       graph.resolve(pommeLabel, at: path.appending("label"), preferences)
     }
-    return [ButtonNode(path: path, label: label, action: pommeAction)]
+    let node = ButtonNode(path: path, label: label, action: pommeAction)
+    node.enabled = graph.environment.isEnabled
+    return [node]
+  }
+
+  /// `.bordered` and `.borderedProminent` (iOS 26, tests/fixtures/borderedbuttons):
+  /// the label in a capsule, 12 pt in from its sides and 7 from its top and
+  /// bottom (small: 10 and 5, in the subheadline font). Bordered: the
+  /// secondary fill, the label in the tint; prominent: the tint, the label
+  /// white; disabled, either: the secondary fill, the label the label gray at
+  /// 22.5%.
+  private func pommeResolveBordered(prominent: Bool, at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
+    let env = graph.environment
+    let destructive = pommeRole?.pommeName == "destructive"
+    let enabled = env.isEnabled
+    let small = env.controlSize == .small || env.controlSize == .mini
+    let accent: UIColor = destructive ? .systemRed : .tintColor
+    let disabledText = UIColor { $0.userInterfaceStyle == .dark
+      ? UIColor(red: 235 / 255, green: 235 / 255, blue: 245 / 255, alpha: 0.225)
+      : UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.225) }
+    let text: UIColor = !enabled ? disabledText : prominent ? .white : accent
+    let fill: UIColor = !enabled ? .secondarySystemFill : prominent ? accent : .secondarySystemFill
+    let label = graph.withEnvironment({ e in
+      if e.pommeForeground == nil || !enabled { e.pommeForeground = text }
+      if small && e.font == nil { e.font = .subheadline }
+    }) {
+      graph.resolve(pommeLabel, at: path.appending("label"), preferences)
+    }
+    let inset = small ? CGSize(width: 10, height: 5) : CGSize(width: 12, height: 7)
+    let shape = label.first.map { [BorderedNode(path: path.appending("capsule"), child: $0, inset: inset, fill: fill)] } ?? []
+    let node = ButtonNode(path: path, label: shape, action: pommeAction)
+    node.enabled = enabled
+    return [node]
   }
 }
 
@@ -332,11 +367,45 @@ final class PommeButtonControl: UIControl {
   }
 
   @objc private func tapped() { action?() }
+
+  // A button is one accessibility element, as on iOS: a button, named by
+  // the text in its label.
+  override var isAccessibilityElement: Bool {
+    get { true }
+    set {}
+  }
+
+  override var accessibilityTraits: UIAccessibilityTraits {
+    get { .button }
+    set {}
+  }
+
+  /// Its label set with `.accessibilityLabel(_:)`, which names it instead of its text.
+  var pommeLabel: String?
+
+  override var accessibilityLabel: String? {
+    get {
+      if let pommeLabel { return pommeLabel }
+      var texts: [String] = []
+      func walk(_ v: UIView) {
+        if let l = v as? UILabel, let t = l.text, !t.isEmpty, !l.isHidden { texts.append(t) }
+        else if v !== self, let a = v.accessibilityLabel, !a.isEmpty, v.isAccessibilityElement { texts.append(a) }
+        for s in v.subviews { walk(s) }
+      }
+      walk(self)
+      return texts.isEmpty ? nil : texts.joined(separator: ", ")
+    }
+    set {}
+  }
 }
 
 final class ButtonNode: Node {
   let label: [Node]
   let action: @MainActor () -> Void
+  /// An action that needs the control tapped (a navigation link's push).
+  var viewAction: (@MainActor (UIView) -> Void)?
+  /// Whether it takes taps (`.disabled`).
+  var enabled = true
 
   init(path: ViewPath, label: [Node], action: @escaping @MainActor () -> Void) {
     self.label = label
@@ -358,8 +427,15 @@ final class ButtonNode: Node {
     let control: PommeButtonControl = renderer.view(for: path) { PommeButtonControl(frame: .zero) }
     control.frame = frame
     let action = action
-    control.action = { MainActor.assumeIsolated { action() } }
+    if let viewAction {
+      control.action = { [weak control] in MainActor.assumeIsolated { if let control { viewAction(control) } } }
+    } else {
+      control.action = { MainActor.assumeIsolated { action() } }
+    }
     control.accessibilityIdentifier = accessibilityIdentifier
+    control.pommeLabel = accessibilityLabel
+    control.isEnabled = enabled
+    control.accessibilityElementsHidden = accessibilityHidden
     control.accessibilityTraits = .button
     parent.pommeAdopt(control)
     for node in label {
@@ -425,5 +501,34 @@ extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func buttonStyle<S>(_ style: S) -> some SwiftUICore.View where S : SwiftUI.ButtonStyle
   nonisolated public func buttonStyle<S>(_ style: S) -> some View where S: ButtonStyle {
     environment(\.pommeButtonStyle, style)
+  }
+}
+
+/// A bordered button's label in its capsule.
+final class BorderedNode: WrapperNode {
+  let inset: CGSize
+  let fill: UIColor
+
+  init(path: ViewPath, child: Node, inset: CGSize, fill: UIColor) {
+    self.inset = inset
+    self.fill = fill
+    super.init(path: path, child: child)
+  }
+
+  override func sizeThatFits(_ proposal: ProposedViewSize) -> CGSize {
+    let inner = ProposedViewSize(width: proposal.width.map { max(0, $0 - 2 * inset.width) },
+                                 height: proposal.height.map { max(0, $0 - 2 * inset.height) })
+    let s = child.sizeThatFits(inner)
+    return CGSize(width: s.width + 2 * inset.width, height: s.height + 2 * inset.height)
+  }
+
+  override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
+    let v: ContainerView = renderer.view(for: path) { ContainerView() }
+    v.frame = frame
+    v.backgroundColor = fill
+    v.layer.cornerRadius = frame.height / 2
+    v.isUserInteractionEnabled = false
+    parent.pommeAdopt(v)
+    child.place(in: CGRect(x: inset.width, y: inset.height, width: frame.width - 2 * inset.width, height: frame.height - 2 * inset.height), of: v, renderer)
   }
 }

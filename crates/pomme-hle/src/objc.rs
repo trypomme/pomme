@@ -393,6 +393,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("UISegmentedControl", "UIControl"),
     ("UIDatePicker", "UIControl"),
     ("UIRefreshControl", "UIControl"),
+    ("UIViewPropertyAnimator", "NSObject"),
     ("UILabel", "UIView"),
     ("UILayoutGuide", "NSObject"),
     ("NSLayoutAnchor", "NSObject"),

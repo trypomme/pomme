@@ -104,6 +104,7 @@ extension TextField: PrimitiveView {
     node.selection = pommeSelection
     node.editingChanged = pommeEditingChanged
     node.commit = pommeCommit
+    node.input = graph.environment.pommeTextInput
     return [node]
   }
 }
@@ -147,7 +148,9 @@ extension SecureField where Label == Text {
 
 extension SecureField: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
-    [TextFieldNode(path: path, placeholder: pommePrompt?.pommeString ?? pommeTitle, text: pommeText, secure: true)]
+    let node = TextFieldNode(path: path, placeholder: pommePrompt?.pommeString ?? pommeTitle, text: pommeText, secure: true)
+    node.input = graph.environment.pommeTextInput
+    return [node]
   }
 }
 
@@ -214,6 +217,8 @@ final class TextFieldNode: Node {
   /// What editing beginning and ending, and return, do (`onEditingChanged:`, `onCommit:`).
   var editingChanged: ((Bool) -> Void)?
   var commit: (() -> Void)?
+  /// Its keyboard, capitalization, correction, return key and submit actions (More.swift).
+  var input = TextInputTraits()
   static var font: UIFont { .preferredFont(forTextStyle: .body) }
 
   init(path: ViewPath, placeholder: String, text: Binding<String>, secure: Bool) {
@@ -261,8 +266,16 @@ final class TextFieldNode: Node {
       field.selectionChanged = nil
     }
     field.onEditing = editingChanged
-    field.onReturn = commit
-    field.accessibilityIdentifier = accessibilityIdentifier
+    let (commit, submits) = (commit, input.onSubmit)
+    field.onReturn = commit == nil && submits.isEmpty ? nil : {
+      commit?()
+      for submit in submits { submit() }
+    }
+    if field.keyboardType != input.keyboardType { field.keyboardType = input.keyboardType }
+    if let cap = input.autocapitalization, field.autocapitalizationType != cap { field.autocapitalizationType = cap }
+    if field.autocorrectionType != input.autocorrection { field.autocorrectionType = input.autocorrection }
+    if field.returnKeyType != input.returnKey { field.returnKeyType = input.returnKey }
+    applyAccessibility(to: field)
     parent.pommeAdopt(field)
     // The focus, as a FocusState has it, and back.
     if let focus {

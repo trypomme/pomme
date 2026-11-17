@@ -44,14 +44,16 @@ extension _AppearanceActionModifier: NodeModifier {
 @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
 public struct AccessibilityAttachmentModifier: ViewModifier {
   var pommeIdentifier: String?
+  var pommeLabel: (@MainActor () -> String)?
+  var pommeHidden: Bool?
 }
 
 extension AccessibilityAttachmentModifier: NodeModifier {
   func pommeApply(to nodes: [Node], at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) {
-    if let id = pommeIdentifier {
-      for node in nodes {
-        node.accessibilityIdentifier = id
-      }
+    for node in nodes {
+      if let id = pommeIdentifier { node.accessibilityIdentifier = id }
+      if let label = pommeLabel { node.accessibilityLabel = label() }
+      if let hidden = pommeHidden { node.accessibilityHidden = hidden }
     }
   }
 }
@@ -65,6 +67,28 @@ extension View {
   // pomme: replaces extension SwiftUICore.View :: nonisolated public func accessibilityIdentifier(_ identifier: Swift.String, isEnabled: Swift.Bool) -> SwiftUICore.ModifiedContent<Self, SwiftUI.AccessibilityAttachmentModifier>
   nonisolated public func accessibilityIdentifier(_ identifier: String, isEnabled: Bool) -> ModifiedContent<Self, AccessibilityAttachmentModifier> {
     modifier(AccessibilityAttachmentModifier(pommeIdentifier: isEnabled ? identifier : nil))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func accessibilityLabel(_ labelKey: SwiftUICore.LocalizedStringKey) -> SwiftUICore.ModifiedContent<Self, SwiftUI.AccessibilityAttachmentModifier>
+  nonisolated public func accessibilityLabel(_ labelKey: LocalizedStringKey) -> ModifiedContent<Self, AccessibilityAttachmentModifier> {
+    modifier(AccessibilityAttachmentModifier(pommeLabel: { labelKey.pommeLocalized() }))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func accessibilityLabel(_ label: SwiftUICore.Text) -> SwiftUICore.ModifiedContent<Self, SwiftUI.AccessibilityAttachmentModifier>
+  nonisolated public func accessibilityLabel(_ label: Text) -> ModifiedContent<Self, AccessibilityAttachmentModifier> {
+    modifier(AccessibilityAttachmentModifier(pommeLabel: { label.pommeString }))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func accessibilityLabel<S>(_ label: S) -> SwiftUICore.ModifiedContent<Self, SwiftUI.AccessibilityAttachmentModifier> where S : Swift.StringProtocol
+  @_disfavoredOverload
+  nonisolated public func accessibilityLabel<S>(_ label: S) -> ModifiedContent<Self, AccessibilityAttachmentModifier> where S: StringProtocol {
+    let s = String(label)
+    return modifier(AccessibilityAttachmentModifier(pommeLabel: { s }))
+  }
+
+  // pomme: replaces extension SwiftUICore.View :: nonisolated public func accessibilityHidden(_ hidden: Swift.Bool) -> SwiftUICore.ModifiedContent<Self, SwiftUI.AccessibilityAttachmentModifier>
+  nonisolated public func accessibilityHidden(_ hidden: Bool) -> ModifiedContent<Self, AccessibilityAttachmentModifier> {
+    modifier(AccessibilityAttachmentModifier(pommeHidden: hidden))
   }
 }
 

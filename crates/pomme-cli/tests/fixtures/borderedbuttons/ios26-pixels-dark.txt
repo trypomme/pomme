@@ -1,0 +1,5 @@
+PIXEL bordered-fill 22 266 38 38 41
+PIXEL prominent-fill 22 320.3 0 145 255
+PIXEL bordered-disabled-fill 22 536.7 38 38 41
+PIXEL prominent-disabled-fill 22 591 38 38 41
+PIXEL wide-fill 22 476.5 0 145 255

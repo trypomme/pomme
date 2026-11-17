@@ -262,7 +262,7 @@ def read_markers(paths, processed_dir=None):
                 for k, b in enumerate(body):
                     r = re.match(r'\s*// pomme: replaces (.+)$', b)
                     if r:
-                        ctx, _, member = r.group(1).partition(' :: ')
+                        ctx, _, member = (' ' + r.group(1)).partition(' :: '); ctx = ctx.strip()
                         replaces[(key(ctx), key(member))] = f'{path}:{i + 3 + k}'
                 kept.extend([f'// (moved into the declaration: {m.group(2)})'] + [''] * (j - i - 1))
                 i = j
@@ -270,7 +270,7 @@ def read_markers(paths, processed_dir=None):
             if m and m.group(1) == 'owns':
                 owns[key(m.group(2))] = where
             elif m:
-                ctx, _, member = m.group(2).partition(' :: ')
+                ctx, _, member = (' ' + m.group(2)).partition(' :: '); ctx = ctx.strip()
                 replaces[(key(ctx), key(member))] = where
             kept.append(line)
             i += 1
@@ -468,6 +468,18 @@ def generate(src, owns=None, replaces=None, inside=None):
             if d > 0:
                 stack.extend([('skip',)] * d)
             continue
+
+        # A top-level function pomme implements (`// pomme: replaces :: public func …`): left out.
+        if kind == 'file' and re.match(r'(public|package|internal)?\s*func\b', ATTRIBUTES.sub('', stripped).strip()):
+            k = ('', key(stripped))
+            SEEN.append(f'// pomme: replaces :: {k[1]}')
+            if k in replaces:
+                used.add(k)
+                for i in reversed(attr_lines):
+                    del out[i]
+                if d > 0:
+                    stack.extend([('skip',)] * d)
+                continue
 
         # A member pomme implements, or an owned type's deinit: left out.
         if kind == 'type' and stripped and not stripped.startswith('}'):

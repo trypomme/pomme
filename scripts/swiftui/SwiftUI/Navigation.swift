@@ -22,7 +22,11 @@ extension NavigationStack: PrimitiveView {
   func pommeResolve(at path: ViewPath, in graph: ViewGraph, _ preferences: Preferences) -> [Node] {
     let inner = Preferences()
     let root = graph.withEnvironment({ $0.pommeUnderNavigationBar = true }) { graph.resolve(pommeRoot, at: path.appending("root"), inner) }
-    return [NavigationStackNode(path: path, root: root, title: inner.navigationTitle, displayMode: inner.titleDisplayMode ?? .automatic)]
+    let node = NavigationStackNode(path: path, root: root, title: inner.navigationTitle, displayMode: inner.titleDisplayMode ?? .automatic)
+    node.toolbar = inner.toolbar
+    node.subtitle = inner.navigationSubtitle
+    node.barHidden = inner.navigationBarHidden ?? false
+    return [node]
   }
 }
 
@@ -31,6 +35,9 @@ final class NavigationStackNode: Node {
   let root: [Node]
   let title: String?
   let displayMode: NavigationBarItem.TitleDisplayMode
+  var toolbar: [ToolbarEntry] = []
+  var subtitle: String?
+  var barHidden = false
 
   init(path: ViewPath, root: [Node], title: String?, displayMode: NavigationBarItem.TitleDisplayMode) {
     self.root = root

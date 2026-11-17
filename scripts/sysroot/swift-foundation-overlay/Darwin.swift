@@ -4,6 +4,7 @@
 // NSData-flavoured Data APIs, URL resource values. Same names and signatures
 // as Apple's, so apps' imports resolve to these.
 
+import Darwin
 import PommeObjC
 
 // MARK: CharacterSet (pure Swift: Unicode properties and scalar ranges)
@@ -625,7 +626,16 @@ public struct URLResourceValues {
     public var volumeAvailableCapacityForImportantUsage: Int64? {
         values[NSURLResourceKey(rawValue: "NSURLVolumeAvailableCapacityForImportantUsageKey"._bridgeToObjectiveC())] as? Int64
     }
+    /// Whether backups leave the item out (iOS keeps it as an extended attribute).
+    public var isExcludedFromBackup: Bool? {
+        get { values[NSURLResourceKey(rawValue: "NSURLIsExcludedFromBackupKey"._bridgeToObjectiveC())] as? Bool }
+        set { values[NSURLResourceKey(rawValue: "NSURLIsExcludedFromBackupKey"._bridgeToObjectiveC())] = newValue }
+    }
 }
+
+/// The extended attribute iOS marks an item excluded from backups with.
+private let backupExcludeAttribute = "com.apple.metadata:com_apple_backup_excludeItem"
+private let backupExcludeValue = Array("com.apple.backupd".utf8)
 
 extension URL {
     // Apple's Set<NSURLResourceKey> uses the importer's Hashable; ours is retroactive and
@@ -635,7 +645,19 @@ extension URL {
         var v = URLResourceValues()
         v.values[NSURLResourceKey(rawValue: "NSURLVolumeTotalCapacityKey"._bridgeToObjectiveC())] = 128_000_000_000
         v.values[NSURLResourceKey(rawValue: "NSURLVolumeAvailableCapacityForImportantUsageKey"._bridgeToObjectiveC())] = Int64(64_000_000_000)
+        v.isExcludedFromBackup = getxattr(path, backupExcludeAttribute, nil, 0, 0, 0) >= 0
         return v
+    }
+
+    /// Set the values given (of those pomme keeps: exclusion from backup).
+    public mutating func setResourceValues(_ values: URLResourceValues) throws {
+        guard let excluded = values.isExcludedFromBackup else { return }
+        let result = excluded
+            ? backupExcludeValue.withUnsafeBufferPointer { setxattr(path, backupExcludeAttribute, $0.baseAddress, $0.count, 0, 0) }
+            : removexattr(path, backupExcludeAttribute, 0)
+        if result != 0 && !(errno == ENOATTR && !excluded) {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
+        }
     }
 
     public func startAccessingSecurityScopedResource() -> Bool { true }
@@ -705,4 +727,14 @@ public struct NSFastEnumerationIterator: IteratorProtocol {
         defer { index += 1 }
         return objects[index]
     }
+}
+
+// MARK: NSLog
+
+@_silgen_name("NSLogv")
+internal func _pommeNSLogv(_ format: NSString, _ args: CVaListPointer)
+
+/// Swift's NSLog: the format and its arguments, to the device log (pomme's NSLogv).
+public func NSLog(_ format: String, _ args: CVarArg...) {
+    withVaList(args) { _pommeNSLogv(format._bridgeToObjectiveC(), $0) }
 }

@@ -268,15 +268,13 @@ pub fn send_touch(emu: &mut Emu, phase: u64, x: f64, y: f64) -> Result<()> {
 /// input carries the time it was scheduled for, so velocities don't depend on
 /// how busy the run loop was).
 pub fn send_touch_at(emu: &mut Emu, phase: u64, x: f64, y: f64, at_ns: u64) -> Result<()> {
-    let window = if emu.ui.key_window != 0 { emu.ui.key_window } else { emu.ui.windows.first().copied().unwrap_or(0) };
-    if window == 0 {
-        return Ok(());
-    }
     let now = at_ns as f64 / 1e9;
     let touch = if phase == BEGAN {
-        emu.cpu.q[0] = x.to_bits() as u128;
-        emu.cpu.q[1] = y.to_bits() as u128;
-        let hit = send(emu, window, "hitTest:withEvent:", &[0])?;
+        // (The frontmost shown window with a view there, as UIKit finds it.)
+        let (window, hit) = crate::uiview::window_hit(emu, x, y)?;
+        if window == 0 {
+            return Ok(());
+        }
         let t = new_object(emu, "UITouch")?;
         let recognizers = recognizers_for(emu, hit)?;
         emu.touch.touches.insert(t, Touch { view: hit, window, phase, location: [x, y], previous: [x, y], timestamp: now, recognizers, view_cancelled: false, delivered: false });

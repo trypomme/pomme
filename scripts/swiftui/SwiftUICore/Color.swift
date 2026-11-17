@@ -97,6 +97,10 @@ extension Color {
   public static let cyan = Color(pommeLight: [0, 0.7529, 0.9098, 1], dark: [0.2353, 0.8275, 0.9961, 1])
   // pomme: replaces extension SwiftUICore.Color :: public static let blue: SwiftUICore.Color
   public static let blue = Color(pommeLight: [0, 0.5333, 1, 1], dark: [0, 0.5686, 1, 1])
+  // pomme: replaces extension SwiftUICore.Color :: public static var accentColor: SwiftUICore.Color
+  /// The app's tint: the system blue. (An app's AccentColor asset isn't
+  /// read yet: SwiftUICore doesn't see UIKit.)
+  public static var accentColor: Color { .blue }
   // pomme: replaces extension SwiftUICore.Color :: public static let indigo: SwiftUICore.Color
   @available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *)
   public static let indigo = Color(pommeLight: [0.3804, 0.3333, 0.9608, 1], dark: [0.4275, 0.4863, 1, 1])

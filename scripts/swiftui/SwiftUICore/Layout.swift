@@ -953,3 +953,47 @@ extension _PaddingLayout {
       trailing: edges.contains(.trailing) ? all.trailing : 0))
   }
 }
+
+/// `.aspectRatio` (`.scaledToFit`, `.scaledToFill`): the content is offered
+/// the largest size of its ratio that fits in what's offered (fit), or the
+/// smallest that covers it (fill); the ratio is the given one, else the
+/// content's own (its ideal size's).
+package struct AspectRatioLayout: Layout {
+  let ratio: CGFloat?
+  let fill: Bool
+
+  private func offer(_ p: ProposedViewSize, _ child: LayoutSubview?) -> ProposedViewSize {
+    let ideal = child?.sizeThatFits(.unspecified) ?? .zero
+    let r = ratio ?? (ideal.height > 0 ? ideal.width / ideal.height : 1)
+    guard r > 0 else { return p }
+    switch (p.width, p.height) {
+    case let (w?, h?):
+      let byWidth = CGSize(width: w, height: w / r), byHeight = CGSize(width: h * r, height: h)
+      let fits = byWidth.height <= h
+      return ProposedViewSize(fill ? (fits ? byHeight : byWidth) : (fits ? byWidth : byHeight))
+    case let (w?, nil):
+      return ProposedViewSize(width: w, height: w / r)
+    case let (nil, h?):
+      return ProposedViewSize(width: h * r, height: h)
+    default:
+      // (Nothing offered: the content's ideal size, at the ratio.)
+      return ratio == nil ? ProposedViewSize(ideal) : ProposedViewSize(width: ideal.width, height: ideal.width / r)
+    }
+  }
+
+  package func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    subviews.first?.sizeThatFits(offer(proposal, subviews.first)) ?? .zero
+  }
+
+  package func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    for v in subviews {
+      v.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: offer(ProposedViewSize(bounds.size), v))
+    }
+  }
+}
+
+extension _AspectRatioLayout {
+  package var pommeAspectRatio: AspectRatioLayout {
+    AspectRatioLayout(ratio: aspectRatio, fill: contentMode == .fill)
+  }
+}

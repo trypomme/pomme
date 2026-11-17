@@ -9,6 +9,9 @@ import UIKit
 class Node: LayoutProxy {
   let path: ViewPath
   var accessibilityIdentifier: String?
+  /// What VoiceOver calls it (`.accessibilityLabel`), and whether it's hidden from it.
+  var accessibilityLabel: String?
+  var accessibilityHidden = false
   /// Its layout priority (`.layoutPriority`).
   var priority: Double = 0
   /// Values for its parent layout (`.layoutValue`), by key type.
@@ -25,6 +28,15 @@ class Node: LayoutProxy {
 
   init(path: ViewPath) {
     self.path = path
+  }
+
+  /// Give the view that shows it its accessibility identifier, label and hiding.
+  func applyAccessibility(to view: UIView) {
+    view.accessibilityIdentifier = accessibilityIdentifier
+    if let accessibilityLabel {
+      view.accessibilityLabel = accessibilityLabel
+    }
+    view.accessibilityElementsHidden = accessibilityHidden
   }
 
   /// What tapping the list row it's the content of does: a button's action
@@ -215,7 +227,7 @@ final class LayoutNode: Node {
   override func place(in frame: CGRect, of parent: UIView, _ renderer: Renderer) {
     let container: ContainerView = renderer.view(for: path) { ContainerView() }
     container.frame = frame
-    container.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: container)
     parent.pommeAdopt(container)
     func run<L: Layout>(_ l: L) {
       let subviews = subviews
@@ -259,6 +271,9 @@ final class TextNode: Node {
   var font: Font?
   var weight: Font.Weight?
   var color: UIColor?
+
+  /// Its lines' alignment (`multilineTextAlignment`).
+  var alignment: NSTextAlignment = .natural
 
   init(path: ViewPath, string: String) {
     self.string = string
@@ -334,10 +349,11 @@ final class TextNode: Node {
     let style = resolved
     label.font = style.font
     label.textColor = style.color
+    label.textAlignment = alignment
     if label.text != shown {
       label.text = shown
     }
-    label.accessibilityIdentifier = accessibilityIdentifier
+    applyAccessibility(to: label)
     label.frame = frame
     parent.pommeAdopt(label)
   }

@@ -127,11 +127,13 @@ pub struct Meta {
     pub permissions: u16,
     /// The data protection class (NSFileProtection…), if one was set.
     pub protection: Option<String>,
+    /// Extended attributes (`setxattr`), by name.
+    pub xattrs: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 impl Meta {
     fn new(at: f64, dir: bool) -> Self {
-        Meta { created: at, modified: at, permissions: if dir { 0o755 } else { 0o644 }, protection: None }
+        Meta { created: at, modified: at, permissions: if dir { 0o755 } else { 0o644 }, protection: None, xattrs: Default::default() }
     }
 }
 
@@ -785,6 +787,108 @@ fn write(emu: &mut Emu) -> Result<()> {
         }
         None => fail(emu, EBADF),
     }
+}
+
+// ---- extended attributes ----
+//
+// Kept with a data-container item's metadata (the app bundle has none and
+// can't take any), as `getxattr(2)` and friends describe: a missing one is
+// ENOATTR; a NULL buffer asks for the size; XATTR_CREATE / XATTR_REPLACE.
+
+const ENOATTR: u64 = 93;
+const ERANGE: u64 = 34;
+const EROFS: u64 = 30;
+const XATTR_CREATE: u64 = 2;
+const XATTR_REPLACE: u64 = 4;
+
+/// The guest path a descriptor (a file or a directory) was opened at.
+fn fd_path(emu: &Emu, fd: u64) -> Option<String> {
+    let fd = fd & 0xffff_ffff;
+    emu.fs.files.get(&fd).and_then(|f| f.path.clone()).or_else(|| emu.fs.dir_fds.get(&fd).cloned())
+}
+
+/// The path of a `*xattr` call: arg 0 is a path, or (the `f` ones) a descriptor.
+fn xattr_path(emu: &mut Emu, by_fd: bool) -> Result<Option<String>> {
+    if by_fd {
+        Ok(fd_path(emu, emu.arg(0)))
+    } else {
+        Ok(Some(emu.cstr(emu.arg(0))?))
+    }
+}
+
+/// `getxattr(path, name, value, size, position, options)` (`fgetxattr`: an fd).
+fn getxattr(emu: &mut Emu, by_fd: bool) -> Result<()> {
+    let Some(path) = xattr_path(emu, by_fd)? else { return fail(emu, EBADF) };
+    let (name, buf, size) = (emu.cstr(emu.arg(1))?, emu.arg(2), emu.arg(3));
+    let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
+    let Some(value) = a.meta.xattrs.get(&name).cloned() else { return fail(emu, ENOATTR) };
+    if buf != 0 {
+        if (size as usize) < value.len() {
+            return fail(emu, ERANGE);
+        }
+        emu.p.memory.write(buf, &value)?;
+    }
+    emu.ret(value.len() as u64);
+    Ok(())
+}
+
+/// `setxattr(path, name, value, size, position, options)` (`fsetxattr`: an fd).
+fn setxattr(emu: &mut Emu, by_fd: bool) -> Result<()> {
+    let Some(path) = xattr_path(emu, by_fd)? else { return fail(emu, EBADF) };
+    let (name, buf, size, options) = (emu.cstr(emu.arg(1))?, emu.arg(2), emu.arg(3), emu.arg(5));
+    let value = emu.p.memory.read(buf, size as usize)?.to_vec();
+    let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
+    if a.read_only {
+        return fail(emu, EROFS);
+    }
+    let has = a.meta.xattrs.contains_key(&name);
+    if options & XATTR_CREATE != 0 && has {
+        return fail(emu, EEXIST);
+    }
+    if options & XATTR_REPLACE != 0 && !has {
+        return fail(emu, ENOATTR);
+    }
+    set_attributes(emu, &path, |m| {
+        m.xattrs.insert(name, value);
+    });
+    emu.ret(0);
+    Ok(())
+}
+
+/// `removexattr(path, name, options)` (`fremovexattr`: an fd).
+fn removexattr(emu: &mut Emu, by_fd: bool) -> Result<()> {
+    let Some(path) = xattr_path(emu, by_fd)? else { return fail(emu, EBADF) };
+    let name = emu.cstr(emu.arg(1))?;
+    let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
+    if !a.meta.xattrs.contains_key(&name) {
+        return fail(emu, ENOATTR);
+    }
+    set_attributes(emu, &path, |m| {
+        m.xattrs.remove(&name);
+    });
+    emu.ret(0);
+    Ok(())
+}
+
+/// `listxattr(path, namebuf, size, options)` (`flistxattr`: an fd): the names,
+/// each NUL-terminated.
+fn listxattr(emu: &mut Emu, by_fd: bool) -> Result<()> {
+    let Some(path) = xattr_path(emu, by_fd)? else { return fail(emu, EBADF) };
+    let (buf, size) = (emu.arg(1), emu.arg(2));
+    let Some(a) = attributes(emu, &path) else { return fail(emu, ENOENT) };
+    let mut names = Vec::new();
+    for k in a.meta.xattrs.keys() {
+        names.extend_from_slice(k.as_bytes());
+        names.push(0);
+    }
+    if buf != 0 {
+        if (size as usize) < names.len() {
+            return fail(emu, ERANGE);
+        }
+        emu.p.memory.write(buf, &names)?;
+    }
+    emu.ret(names.len() as u64);
+    Ok(())
 }
 
 // ---- pipes ----
@@ -1759,6 +1863,14 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_fdopen", fdopen),
     ("_readv", readv),
     ("_futimes", futimes),
+    ("_getxattr", |e| getxattr(e, false)),
+    ("_fgetxattr", |e| getxattr(e, true)),
+    ("_setxattr", |e| setxattr(e, false)),
+    ("_fsetxattr", |e| setxattr(e, true)),
+    ("_removexattr", |e| removexattr(e, false)),
+    ("_fremovexattr", |e| removexattr(e, true)),
+    ("_listxattr", |e| listxattr(e, false)),
+    ("_flistxattr", |e| listxattr(e, true)),
     ("_utimensat", utimensat),
     ("_statfs", statfs),
     ("_fstatfs", fstatfs),

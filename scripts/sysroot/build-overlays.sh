@@ -23,7 +23,8 @@ if [ ! -d "$VENDOR/swift-5.2" ]; then
   git clone --depth 1 --branch swift-5.2.5-RELEASE --filter=blob:none --sparse \
     https://github.com/swiftlang/swift.git "$VENDOR/swift-5.2"
   git -C "$VENDOR/swift-5.2" sparse-checkout set stdlib/public/Darwin/ObjectiveC stdlib/public/Darwin/Dispatch \
-    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os stdlib/public/Platform stdlib/public/SwiftShims
+    stdlib/public/Darwin/CoreGraphics stdlib/public/Darwin/CoreFoundation stdlib/public/Darwin/os stdlib/public/Platform stdlib/public/SwiftShims \
+    stdlib/public/Darwin/Foundation
 fi
 
 # Shim modules Apple's overlays import (ours, plus the old Dispatch one).
@@ -54,7 +55,6 @@ overlay() {
 }
 
 overlay ObjectiveC swiftObjectiveC -import-underlying-module -- "$OLD/ObjectiveC/ObjectiveC.swift"
-overlay Darwin swiftDarwin -import-underlying-module -- "$HERE/overlays/Darwin/Darwin.swift"
 
 # _errno: Darwin's POSIXErrorCode and errno, which Apple's SDKs moved into
 # libswift_errno keeping their Darwin names (Foundation's POSIXError uses
@@ -64,8 +64,24 @@ sed '/^public enum POSIXErrorCode/i\
 @available(macOS 10.0, *)
 ' "$VENDOR/swift-5.2/stdlib/public/Platform/POSIXError.swift" > "$OUT/POSIXError.swift"
 overlay _errno swift_errno -- "$OUT/POSIXError.swift" "$HERE/overlays/errno/errno.swift"
+# Darwin re-exports it (as the macOS SDK that the overlays link against lays
+# it out: their POSIXErrorCode and errno bind to libswiftDarwin).
+overlay Darwin swiftDarwin -import-underlying-module -Xlinker -reexport_library -Xlinker "$LIB/libswift_errno.dylib" -- "$HERE/overlays/Darwin/Darwin.swift"
 
-# Dispatch: Apple's old overlay (minus the Combine scheduler).
+# pomme's Combine (scripts/combine/build.sh, run first): its macOS module, for
+# the overlays that have publishers and schedulers (Dispatch's; Foundation's,
+# in build-swift-foundation.sh), and a stub of its framework to link them to,
+# so it's loaded with them.
+COMBINE_MODULE="$VENDOR/combine-gen/macos"
+cat > "$OUT/Combine.tbd" <<'TBD'
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64-macos ]
+install-name:    '/System/Library/Frameworks/Combine.framework/Combine'
+...
+TBD
+
+# Dispatch: Apple's old overlay, with its Combine scheduler.
 xcrun --sdk macosx clang -target "$TARGET" -isysroot "$SDK" -Os -c "$HERE/overlays/Dispatch/DispatchShims.c" -o "$OUT/DispatchShims.o"
 # Newer SDKs also have a designated init(flags:block:).
 python3 - "$OLD/Dispatch/Block.swift" "$OUT/Block.swift" <<'PY'
@@ -79,9 +95,10 @@ add = ("\tpublic init(flags: DispatchWorkItemFlags, block: @escaping @convention
 assert anchor in s
 open(sys.argv[2], "w").write(s.replace(anchor, add + anchor, 1))
 PY
-overlay Dispatch swiftDispatch -import-underlying-module -Xlinker "$OUT/DispatchShims.o" -- \
+overlay Dispatch swiftDispatch -import-underlying-module -Xlinker "$OUT/DispatchShims.o" -I "$COMBINE_MODULE" "$OUT/Combine.tbd" -- \
   "$OUT/Block.swift" "$OLD/Dispatch/Data.swift" "$OLD/Dispatch/Dispatch.swift" "$OLD/Dispatch/IO.swift" \
-  "$OLD/Dispatch/Private.swift" "$OLD/Dispatch/Queue.swift" "$OLD/Dispatch/Source.swift" "$OLD/Dispatch/Time.swift"
+  "$OLD/Dispatch/Private.swift" "$OLD/Dispatch/Queue.swift" "$OLD/Dispatch/Source.swift" "$OLD/Dispatch/Time.swift" \
+  "$OLD/Dispatch/Schedulers+DispatchQueue.swift"
 
 overlay os swiftos -import-underlying-module -- "$HERE/overlays/os/os.swift"
 
@@ -140,7 +157,13 @@ xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$(xcrun --sdk ipho
   -emit-library -o "$UIK/UIKit" \
   -Xlinker -install_name -Xlinker /System/Library/Frameworks/UIKit.framework/UIKit \
   -Xlinker -undefined -Xlinker dynamic_lookup -Xlinker -not_for_dyld_shared_cache \
-  "$HERE/overlays/UIKit/UIKit.swift"
+  "$HERE/overlays/UIKit/UIKit.swift" "$HERE/overlays/UIKit/NumericRawRepresentable.swift" "$HERE/overlays/UIKit/SheetDetents.swift"
+# Apps link UIKit's Swift overlay (its arithmetic on window levels …) as
+# libswiftUIKit, as older SDKs laid it out: a library that re-exports it.
+echo "overlay UIKit → libswiftUIKit.dylib (re-exports UIKit.framework)"
+xcrun --sdk iphoneos clang -target arm64-apple-ios26.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -dynamiclib \
+  -o "$LIB/libswiftUIKit.dylib" -install_name /usr/lib/swift/libswiftUIKit.dylib -nostdlib \
+  -Xlinker -reexport_library -Xlinker "$UIK/UIKit" -Xlinker -not_for_dyld_shared_cache -x c /dev/null
 
 # Network: the Swift API for watching the network (NWPathMonitor, NWPath,
 # NWInterface), ours, on the nw_* C API that pomme implements; and

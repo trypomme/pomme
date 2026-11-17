@@ -160,3 +160,157 @@ private func _pommeFieldType(_ type: Any.Type, index: Int, fieldMetadata: Unsafe
 
 @_silgen_name("swift_reflectionMirror_recursiveChildOffset")
 private func _pommeFieldOffset(_ type: Any.Type, index: Int) -> Int
+
+// ---- @EnvironmentObject ----
+
+/// Where `.environmentObject(_:)` keeps an object: by its type.
+package struct PommeObjectKey<T>: Hashable {
+  package init() {}
+}
+
+extension EnvironmentValues {
+  package subscript<T>(pommeObject key: PommeObjectKey<T>) -> T? {
+    get { pommeByKey[ObjectIdentifier(PommeObjectKey<T>.self)] as? T }
+    set { pommeByKey[ObjectIdentifier(PommeObjectKey<T>.self)] = newValue }
+  }
+}
+
+// pomme: in extension Combine.ObservableObject
+extension ObservableObject {
+  // pomme: replaces extension Combine.ObservableObject :: package static var environmentStore: Swift.WritableKeyPath<SwiftUICore.EnvironmentValues, Self?>
+  @usableFromInline
+  package static var environmentStore: WritableKeyPath<EnvironmentValues, Self?> {
+    \EnvironmentValues[pommeObject: PommeObjectKey<Self>()]
+  }
+}
+
+// pomme: in public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject
+extension EnvironmentObject {
+  // pomme: replaces public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public init()
+  @MainActor @preconcurrency
+  public init() {
+    _store = nil
+  }
+
+  // pomme: replaces public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: internal func error() -> Swift.Never
+  @usableFromInline
+  @MainActor @preconcurrency internal func error() -> Never {
+    fatalError("No ObservableObject of type \(ObjectType.self) found. A View.environmentObject(_:) for \(ObjectType.self) may be missing as an ancestor of this view.")
+  }
+
+  // pomme: replaces public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public var projectedValue: SwiftUICore.EnvironmentObject<ObjectType>.Wrapper
+  @MainActor @preconcurrency public var projectedValue: Wrapper {
+    Wrapper(root: wrappedValue)
+  }
+}
+
+// pomme: in public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject > public struct Wrapper
+extension EnvironmentObject.Wrapper {
+  // pomme: replaces public struct EnvironmentObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject > public struct Wrapper :: public subscript<Subject>(dynamicMember keyPath: Swift.ReferenceWritableKeyPath<ObjectType, Subject>) -> SwiftUICore.Binding<Subject>
+  @MainActor @preconcurrency public subscript<Subject>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Subject>) -> Binding<Subject> {
+    let root = root
+    return Binding(get: { root[keyPath: keyPath] }, set: { root[keyPath: keyPath] = $0 })
+  }
+}
+
+extension EnvironmentObject: PommeDynamicProperty {
+  /// The object from the environment; the view updates when it's about to change.
+  package mutating func pommeAttach(to storage: ViewStorage, slot: Int, environment: EnvironmentValues) {
+    _store = environment[pommeObject: PommeObjectKey<ObjectType>()]
+    guard let object = _store else { return }
+    let id = ObjectIdentifier(object)
+    guard storage.observing[slot]?.object != id else { return }
+    let changed = storage.changed
+    let subscription = object.objectWillChange.sink { _ in changed() }
+    storage.observing[slot] = (id, subscription)
+  }
+}
+
+// pomme: in public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject
+extension ObservedObject {
+  // pomme: replaces public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public var projectedValue: SwiftUICore.ObservedObject<ObjectType>.Wrapper
+  @MainActor @preconcurrency public var projectedValue: Wrapper {
+    Wrapper(root: wrappedValue)
+  }
+}
+
+// pomme: in public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject > public struct Wrapper
+extension ObservedObject.Wrapper {
+  // pomme: replaces public struct ObservedObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject > public struct Wrapper :: public subscript<Subject>(dynamicMember keyPath: Swift.ReferenceWritableKeyPath<ObjectType, Subject>) -> SwiftUICore.Binding<Subject>
+  @MainActor @preconcurrency public subscript<Subject>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Subject>) -> Binding<Subject> {
+    let root = root
+    return Binding(get: { root[keyPath: keyPath] }, set: { root[keyPath: keyPath] = $0 })
+  }
+}
+
+// ---- @StateObject ----
+
+// pomme: in public struct StateObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject
+extension StateObject {
+  // pomme: replaces public struct StateObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public var wrappedValue: ObjectType
+  /// Outside a view in the graph, a new object each time (as SwiftUI warns).
+  @MainActor @preconcurrency public var wrappedValue: ObjectType {
+    switch storage {
+    case .object(let o): return o.wrappedValue
+    case .initially(let make): return make()
+    }
+  }
+
+  // pomme: replaces public struct StateObject<ObjectType> : SwiftUICore.DynamicProperty where ObjectType : Combine.ObservableObject :: public var projectedValue: SwiftUICore.ObservedObject<ObjectType>.Wrapper
+  @MainActor @preconcurrency public var projectedValue: ObservedObject<ObjectType>.Wrapper {
+    ObservedObject<ObjectType>.Wrapper(root: wrappedValue)
+  }
+}
+
+/// A view's state object, made once.
+final class StoredObject<ObjectType: ObservableObject>: AnyLocationBase, @unchecked Sendable {
+  let object: ObjectType
+  init(_ object: ObjectType) {
+    self.object = object
+    super.init()
+  }
+}
+
+extension StateObject: PommeDynamicProperty {
+  /// The object, made the first time the view is in the graph and kept; the
+  /// view updates when it's about to change.
+  package mutating func pommeAttach(to storage: ViewStorage, slot: Int, environment: EnvironmentValues) {
+    let stored: StoredObject<ObjectType>
+    if let s = storage.locations[slot] as? StoredObject<ObjectType> {
+      stored = s
+    } else {
+      guard case .initially(let make) = self.storage else { return }
+      stored = StoredObject(make())
+      storage.locations[slot] = stored
+    }
+    self.storage = .object(ObservedObject(wrappedValue: stored.object))
+    let id = ObjectIdentifier(stored.object)
+    guard storage.observing[slot]?.object != id else { return }
+    let changed = storage.changed
+    let subscription = stored.object.objectWillChange.sink { _ in changed() }
+    storage.observing[slot] = (id, subscription)
+  }
+}
+
+// ---- withAnimation, withTransaction ----
+
+// pomme: replaces :: public func withAnimation<Result>(_ animation: SwiftUICore.Animation? = .default, _ body: () throws -> Result) rethrows -> Result
+/// The changes it makes, shown at once (pomme's SwiftUI doesn't animate them yet).
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+@_originallyDefinedIn(module: "SwiftUI", iOS 18.0)
+@_originallyDefinedIn(module: "SwiftUI", macOS 15.0)
+@_originallyDefinedIn(module: "SwiftUI", tvOS 18.0)
+@_originallyDefinedIn(module: "SwiftUI", watchOS 11.0)
+public func withAnimation<Result>(_ animation: Animation? = .default, _ body: () throws -> Result) rethrows -> Result {
+  try body()
+}
+
+// pomme: replaces :: public func withTransaction<Result>(_ transaction: SwiftUICore.Transaction, _ body: () throws -> Result) rethrows -> Result
+@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+@_originallyDefinedIn(module: "SwiftUI", iOS 18.0)
+@_originallyDefinedIn(module: "SwiftUI", macOS 15.0)
+@_originallyDefinedIn(module: "SwiftUI", tvOS 18.0)
+@_originallyDefinedIn(module: "SwiftUI", watchOS 11.0)
+public func withTransaction<Result>(_ transaction: Transaction, _ body: () throws -> Result) rethrows -> Result {
+  try body()
+}

@@ -1,0 +1,1 @@
+# The materials fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
