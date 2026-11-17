@@ -1,0 +1,138 @@
+# Runs well-known open-source iOS apps in pomme and reports what works and what breaks.
+#
+#   wonderous  gskinner's Wonderous (Flutter, Impeller)      MIT: screenshots may be shown, with credit
+#   gallery    Flutter Gallery (Material and Cupertino)      BSD-3: screenshots may be shown, with credit
+#   bluesky    Bluesky's social-app (Expo, React Native)     test only: its artwork, icons and marks
+#                                                            aren't MIT (see its ASSETS.md); don't publish
+#
+# Each app is built from a pinned upstream commit (scripts/compat/build.sh) on GitHub's macOS
+# runners, then run in pomme through a few scenarios (scripts/compat/run.sh). An app crashing or
+# reaching an API pomme lacks is a finding, not a failure: the job fails only if an app or pomme
+# doesn't build. The run's Summary page has the table; the "compat-<app>" artifacts hold the
+# screenshots, logs and coverage reports (JSON).
+name: App compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Apps to run (JSON list)
+        default: '["wonderous", "gallery", "bluesky"]'
+  schedule:
+    - cron: '0 18 * * 0'  # weekly, Monday morning in Melbourne
+  pull_request:
+    paths:
+      - .github/workflows/compat.yml
+      - scripts/compat/**
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must match build.yml: the sysroot cache is shared with it.
+  SWIFT_TAG: swift-6.3.2-RELEASE
+  FLUTTER_VERSION: 3.47.9
+
+jobs:
+  # As in build.yml (same cache key, so whichever runs first builds it).
+  sysroot:
+    name: Sysroot
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: .github/scripts/select-xcode.sh
+      - name: Cache sysroot
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/sysroot
+          key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
+      - name: Build sysroot
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja bash
+          scripts/build-sysroot.sh
+      - name: Pack sysroot
+        run: tar -czf sysroot.tar.gz -C vendor/sysroot .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compat-sysroot
+          path: sysroot.tar.gz
+          retention-days: 3
+          compression-level: 0
+
+  pomme:
+    name: pomme (macOS)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64
+      - name: Build
+        run: cargo build --release --locked -p pomme
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compat-pomme
+          path: target/release/pomme
+          retention-days: 3
+
+  app:
+    name: ${{ matrix.app }}
+    needs: [sysroot, pomme]
+    runs-on: macos-26
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(github.event.inputs.apps || '["wonderous", "gallery", "bluesky"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: .github/scripts/select-xcode.sh
+      - uses: subosito/flutter-action@v2
+        if: matrix.app != 'bluesky'
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        if: matrix.app == 'bluesky'
+        with:
+          node-version: 24
+      - name: Build ${{ matrix.app }}
+        id: build
+        run: |
+          set -o pipefail
+          scripts/compat/build.sh ${{ matrix.app }} | tee build-out.txt
+          echo "app=$(tail -1 build-out.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: compat-sysroot
+      - uses: actions/download-artifact@v4
+        with:
+          name: compat-pomme
+          path: bin
+      - name: Run in pomme
+        run: |
+          mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
+          chmod +x bin/pomme
+          brew install coreutils  # timeout
+          scripts/compat/run.sh ${{ matrix.app }} "${{ steps.build.outputs.app }}" results/${{ matrix.app }} bin/pomme
+      - name: Summary
+        if: always()
+        run: python3 scripts/compat/summary.py results >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-${{ matrix.app }}
+          path: results/
+          retention-days: 30
