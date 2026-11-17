@@ -130,6 +130,8 @@ struct Presentation {
     detent: usize,
     /// Dismissed by a drag: the sheet's delegate hears presentationControllerDidDismiss: after.
     dragged_away: bool,
+    /// An alert controller (alert.rs): its box grows into place in the middle, and vanishes.
+    alert: bool,
 }
 
 /// A finger on a sheet that may drag it.
@@ -164,6 +166,16 @@ const GRABBER: [f64; 2] = [34.6, 4.8];
 const GRABBER_TOP: f64 = 4.8;
 const GRABBER_COLOR: [f64; 4] = [0.0, 0.0, 0.0, 0.23];
 const SHEET_DIMMING: [f64; 4] = [0.0, 0.0, 0.0, 0.2];
+/// An alert controller's appear (the box from 1.2× and transparent) and the
+/// dimming's fade, both ways: a critically damped spring fitted to the iOS 26
+/// Simulator (tests/fixtures/alerts/ios26-motion.txt, within 0.002).
+const ALERT_SPRING: (f64, f64, f64) = (22.8, 1.0, 0.0);
+const ALERT_START_SCALE: f64 = 1.2;
+/// From `presentViewController:` to the first frame of the appear, and from
+/// a choice (or `dismissViewController`) to the close (ios26-motion.txt,
+/// ios26-events.txt).
+const ALERT_APPEAR_DELAY: f64 = 0.065;
+const ALERT_CLOSE_DELAY: f64 = 0.032;
 
 /// A change of the top controller: what's left to do when its transition settles.
 #[derive(Clone)]
@@ -1574,7 +1586,30 @@ fn present(emu: &mut Emu) -> Result<()> {
     send(emu, window, "addSubview:", &[container])?;
     let vview = send(emu, vc, "view", &[])?;
     let mut sheet_detents: (Vec<(String, [f64; 4])>, usize) = (Vec::new(), 0);
-    let (dim, sheet) = if sheet_style {
+    let alert = crate::alert::is_alert(emu, vc)?;
+    let (dim, sheet) = if alert {
+        // The dimming (an action sheet's takes a tap as its cancel), and the box
+        // in the middle of the safe area (tests/fixtures/alerts).
+        let dim = if crate::alert::is_action_sheet(emu, vc) {
+            let cls = objc::host_class(emu, "UIButton")?;
+            let b = send(emu, cls, "buttonWithType:", &[0])?;
+            crate::uiview::set_frame_of(emu, b, [0.0, 0.0, w, h]);
+            let sel = objc::intern(emu, "_pommeAlertOutsideTapped:")?;
+            send(emu, b, "addTarget:action:forControlEvents:", &[vc, sel, 1 << 6])?;
+            send(emu, b, "retain", &[])?
+        } else {
+            new_view(emu, [0.0, 0.0, w, h])?
+        };
+        let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
+        send(emu, dim, "setBackgroundColor:", &[black])?;
+        send(emu, container, "addSubview:", &[dim])?;
+        let size = crate::alert::build(emu, vc)?;
+        let safe = crate::orientation::safe_area(emu);
+        let mid = (safe[0] + h - safe[2]) / 2.0;
+        set_frame_of(emu, vview, [(w - size[0]) / 2.0, mid - size[1] / 2.0, size[0], size[1]]);
+        send(emu, container, "addSubview:", &[vview])?;
+        (dim, 0)
+    } else if sheet_style {
         let dim = new_view(emu, [0.0, 0.0, w, h])?;
         let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
         send(emu, dim, "setBackgroundColor:", &[black])?;
@@ -1637,6 +1672,7 @@ fn present(emu: &mut Emu) -> Result<()> {
         detents: sheet_detents.0,
         detent: sheet_detents.1,
         dragged_away: false,
+        alert,
     };
     emu.nav.presentations.push(p.clone());
     let a = animated as u64;
@@ -1673,6 +1709,21 @@ fn slide_modal_from(emu: &mut Emu, p: &Presentation, up: bool, h: f64, from_drag
     let (timing, duration) = transition_spring((o, z, v));
     let c = if up { c } else { start };
     let l = send(emu, moving, "layer", &[])?;
+    if p.alert {
+        // iOS starts moving a moment after it's asked (the first frame of the
+        // spring, tests/fixtures/alerts/ios26-motion.txt); until then the box
+        // and the dimming stay as they were.
+        let (_, duration) = transition_spring(ALERT_SPRING);
+        let delay = if up {
+            view_mut(emu, moving).alpha = 0.0;
+            view_mut(emu, p.dim).alpha = 0.0;
+            ALERT_APPEAR_DELAY
+        } else {
+            ALERT_CLOSE_DELAY
+        };
+        crate::animation::after_commit(emu, delay, if up { alert_appear_fire } else { alert_close_fire }, p.presented)?;
+        return Ok(delay + duration);
+    }
     if p.dissolve {
         // Cross-dissolve: the same spring, on its opacity (measured in the iOS 26 Simulator).
         let (from, to) = if up { (0.0, 1.0) } else { (1.0, 0.0) };
@@ -1693,6 +1744,40 @@ fn slide_modal_from(emu: &mut Emu, p: &Presentation, up: bool, h: f64, from_drag
         transition(emu, dl, Prop::Opacity, Val::N(a), Val::N(b), timing, duration);
     }
     Ok(duration)
+}
+
+/// An alert controller starts to appear: the box grows into place from 1.2×
+/// and fades in, and the dimming fades in.
+fn alert_appear_fire(emu: &mut Emu) -> Result<()> {
+    use crate::animation::{Prop, Val, transition, transition_spring};
+    let vc = emu.arg(1);
+    let Some(p) = emu.nav.presentations.iter().find(|p| p.presented == vc && p.moving == Some(true)).cloned() else { return Ok(()) };
+    let (timing, duration) = transition_spring(ALERT_SPRING);
+    let bx = send(emu, vc, "view", &[])?;
+    view_mut(emu, bx).alpha = 1.0;
+    view_mut(emu, p.dim).alpha = 1.0;
+    let l = send(emu, bx, "layer", &[])?;
+    transition(emu, l, Prop::Scale, Val::N(ALERT_START_SCALE), Val::N(1.0), timing.clone(), duration);
+    transition(emu, l, Prop::Opacity, Val::N(0.0), Val::N(1.0), timing.clone(), duration);
+    let dl = send(emu, p.dim, "layer", &[])?;
+    transition(emu, dl, Prop::Opacity, Val::N(0.0), Val::N(1.0), timing, duration);
+    Ok(())
+}
+
+/// An alert controller starts to close: the box goes at once, the dimming fades out.
+fn alert_close_fire(emu: &mut Emu) -> Result<()> {
+    use crate::animation::{Prop, Val, transition, transition_spring};
+    let vc = emu.arg(1);
+    let Some(p) = emu.nav.presentations.iter().find(|p| p.presented == vc && p.moving == Some(false)).cloned() else { return Ok(()) };
+    let (timing, duration) = transition_spring(ALERT_SPRING);
+    let bx = send(emu, vc, "view", &[])?;
+    let l = send(emu, bx, "layer", &[])?;
+    crate::animation::end_transition(emu, l);
+    view_mut(emu, bx).alpha = 0.0;
+    view_mut(emu, p.dim).alpha = 0.0;
+    let dl = send(emu, p.dim, "layer", &[])?;
+    transition(emu, dl, Prop::Opacity, Val::N(1.0), Val::N(0.0), timing, duration);
+    Ok(())
 }
 
 fn present_done_fire(emu: &mut Emu) -> Result<()> {
@@ -1800,6 +1885,10 @@ fn dismiss_now(emu: &mut Emu, vc: u64, notify: bool) -> Result<()> {
     }
     if p.completion != 0 {
         crate::libsystem::call_block(emu, p.completion, &[])?;
+    }
+    if p.alert {
+        // The chosen action's handler, now that it has gone.
+        crate::alert::dismissed(emu, vc)?;
     }
     if p.dragged_away {
         sheet_delegate(emu, vc, "presentationControllerDidDismiss:")?;

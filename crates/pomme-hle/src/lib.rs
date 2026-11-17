@@ -77,6 +77,7 @@ mod pointer_array;
 mod urlcomponents;
 mod streams;
 mod exceptions;
+mod alert;
 pub mod storyboard;
 pub mod locale;
 mod measurement;

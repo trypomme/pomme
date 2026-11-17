@@ -1,7 +1,8 @@
 # UIAlertController on the iOS 26.0 Simulator (iPhone 16e, light)
 
 Recorded with `scripts/swiftui/metrics-simulator.sh alerts` and
-`VARIANT=<case>` (alert2, alert3, styles, disabled, sheet), screenshots at
+`VARIANT=<case>` (alert2, alert3, styles, disabled, sheet, titleonly,
+messageonly, long), screenshots at
 5 s (`ios26-<case>.png`), taps with AXe. The probe's screen is teal
 (systemTeal) with a label, so the glass shows what's behind it.
 
@@ -15,6 +16,11 @@ Recorded with `scripts/swiftui/metrics-simulator.sh alerts` and
   (secondary label colour), both left-aligned at x 65 (30 pt in), width
   260. The title's top is 22 pt below the box's top; the message's top is
   7.67 pt below the title's bottom. The header is 72.33 pt tall with both.
+- With only a title, or only a message (`titleonly`, `messageonly`): that
+  one text is SF Regular 17, black, 22 pt below the box's top, and the
+  header ends 4 pt below it (46.33 tall). With both, the header ends
+  4.33 pt below the message. A message that wraps (`long`, three lines)
+  is 58 pt tall: the first line 18, each further line 20.
 - Buttons are capsules 48 pt tall (radius 24), 16 pt in from the box's
   sides, 8 pt apart, the first 16 pt below the header, 16 pt above the
   box's bottom. Their titles are SF Medium 17, centred; the preferred
@@ -40,6 +46,29 @@ Recorded with `scripts/swiftui/metrics-simulator.sh alerts` and
 - A destructive title is the system red (255,56,60).
 - A disabled action's title is faded: 81,189,196 drawn on its fill.
 - The message draws as 57,108,112 on the glass.
+
+### Over other backgrounds (`styles-white`, `-black`, `-orange`)
+
+The same alert over white, black and orange (`ios26-pixels-styles-*.txt`)
+gives how each part follows what's behind it (b: the dimmed backdrop;
+values 0–255):
+
+| | white (b 204) | black (b 0) | orange (b 204,102,0) | teal (b 0,156,166) |
+|---|---|---|---|---|
+| glass | 239,239,238 | 179,179,179 | 255,205,131 | 127,241,248 |
+| grey fill | 220,220,218 | 159,159,159 | 246,184,91 | 87,230,238 |
+| blue fill | 0,128,247 | 0,98,217 | 0,111,193 | 0,129,251 |
+| message ink | 108,108,107 | 81,81,81 | 115,92,59 | 57,108,112 |
+
+What fits all four (within 3 levels):
+
+- The glass: the backdrop mixed 70.6% toward 253.5, then 2.5× as saturated
+  (around Rec. 709 luma). Regular glass (tests/fixtures/glass) is 70% toward
+  249 and 1.8×: an alert's is more vivid.
+- The grey fill: the glass 20 levels darker, then 1.27× as saturated.
+- The blue (preferred) fill: system blue (0, 136, 255) times the glass,
+  except its blue channel: 255 × (0.5 + 0.5 × the glass's blue).
+- The message: the glass × 0.45 (black at 55%).
 
 ## Events (`ios26-events.txt`)
 

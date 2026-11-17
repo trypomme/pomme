@@ -891,7 +891,8 @@ pub fn transition(emu: &mut Emu, l: u64, prop: Prop, from: Val, to: Val, timing:
         emu,
         l,
         Anim {
-            key: "pomme.transition".into(),
+            // (One per property: a transition can move and fade a layer at once.)
+            key: format!("pomme.transition.{prop:?}"),
             prop,
             curve: Curve::Basic { from: Some(from), to: Some(to), by: None },
             begin,
@@ -913,7 +914,7 @@ pub fn transition(emu: &mut Emu, l: u64, prop: Prop, from: Val, to: Val, timing:
 /// The transition's animations are done: take them off `l` (the model shows from now).
 pub fn end_transition(emu: &mut Emu, l: u64) {
     if let Some(list) = emu.anim.layers.get_mut(&l) {
-        list.retain(|a| a.key != "pomme.transition");
+        list.retain(|a| !a.key.starts_with("pomme.transition"));
         if list.is_empty() {
             emu.anim.layers.remove(&l);
         }

@@ -81,7 +81,14 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
     let runs = [Run::new(emu, text.len(), f)];
     // (A label sets its text as CoreText does.)
     let shaped = textkit::shaped_advances(emu, &text, &runs);
-    let lines = textkit::layout(&text, &runs, |u, _, _| shaped[u], width, f64::INFINITY, max_lines);
+    let mut lines = textkit::layout(&text, &runs, |u, _, _| shaped[u], width, f64::INFINITY, max_lines);
+    // Extra room between lines, as a paragraph style's lineSpacing gives
+    // (set by pomme's own views: alert.rs).
+    if let Some(gap) = objc::bag_get_f64(emu, v, "pomme.lineSpacing") {
+        for (i, l) in lines.iter_mut().enumerate() {
+            l.y += gap * i as f64;
+        }
+    }
     // (Natural by default, as drawn in the view's direction.)
     let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(4) & 0xff;
     let alignment = crate::direction::resolve_alignment(emu, v, alignment)?;

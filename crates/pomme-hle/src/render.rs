@@ -1998,7 +1998,11 @@ fn shadow(emu: &mut Emu, p: &mut Painter, ly: &Layer, w: f32, h: f32, lt: &[f32;
 fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h: f32, alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
     let k = (t[0] * t[0] + t[1] * t[1]).sqrt();
     let clear = g.style == crate::glass::CLEAR;
-    let sigma = if clear { 1.75 } else { 2.5 } * k;
+    // An alert's fills colour what's under them (the alert's glass) without blurring it.
+    let fill = g.style == crate::glass::ALERT_FILL;
+    let tinted_fill = g.style == crate::glass::ALERT_TINTED_FILL;
+    let flat = fill || tinted_fill;
+    let sigma = if clear { 1.75 } else if flat { 0.0 } else { 2.5 } * k;
     let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(t, x, y));
     let margin = (3.0 * sigma).ceil() + 1.0;
     let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor() as i32;
@@ -2031,7 +2035,7 @@ fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h:
     for c in &mut ch {
         gaussian_blur(c, bw as usize, bh as usize, sigma);
     }
-    if !clear {
+    if !clear && !flat {
         let off_y = 6.0 * k;
         let ssigma = 16.0 * k;
         let sm = (3.0 * ssigma).ceil() + 1.0;
@@ -2051,16 +2055,32 @@ fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h:
     for (i, px) in out.pixels_mut().iter_mut().enumerate() {
         let c = [ch[0][i], ch[1][i], ch[2][i]];
         let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        let mut o = if clear {
-            c.map(|v| 1.0 - (1.0 - (0.925 * v + 0.075)).max(0.0).powf(1.15))
-        } else {
-            // (Dark: 78% toward 0.175, 2.6× as saturated.)
-            let (mix, toward, sat) = if g.dark { (0.784, 0.175, 2.6) } else { (0.7, 0.977, 1.8) };
-            let m = c.map(|v| (1.0 - mix) * v + mix * toward);
+        let saturate = |m: [f32; 3], sat: f32| {
             let l = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
             m.map(|v| l + sat * (v - l))
         };
-        if let Some(tc) = tint {
+        let mut o = if clear {
+            c.map(|v| 1.0 - (1.0 - (0.925 * v + 0.075)).max(0.0).powf(1.15))
+        } else if fill {
+            // An alert action's grey fill: what's under it, 20 levels darker, 1.27× as saturated.
+            saturate(c.map(|v| v - 20.0 / 255.0), 1.27)
+        } else if tinted_fill {
+            // The preferred action's fill: the tint times what's under it; its
+            // blue only half so (system blue over teal, white, black and orange).
+            let tc = tint.unwrap_or([0.0, 0.533, 1.0, 1.0]);
+            [tc[0] * c[0], tc[1] * c[1], tc[2] * (0.5 + 0.5 * c[2])]
+        } else {
+            // (Dark: 78% toward 0.175, 2.6× as saturated. An alert's: 70.6% toward 0.994, 2.5×.)
+            let (mix, toward, sat) = if g.dark {
+                (0.784, 0.175, 2.6)
+            } else if g.style == crate::glass::ALERT {
+                (0.706, 0.994, 2.5)
+            } else {
+                (0.7, 0.977, 1.8)
+            };
+            saturate(c.map(|v| (1.0 - mix) * v + mix * toward), sat)
+        };
+        if let Some(tc) = tint.filter(|_| !tinted_fill) {
             for j in 0..3 {
                 // (Dark: the tint, a little lighter over lighter backdrops.)
                 let t = if g.dark { tc[j] + 0.043 * luma * (1.0 - tc[j]) } else { tc[j] * (0.855 + 0.135 * luma) };

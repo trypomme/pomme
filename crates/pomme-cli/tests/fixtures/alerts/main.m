@@ -1,6 +1,7 @@
 // Alerts and action sheets (UIAlertController), as UIKit shows them on iOS 26
 // (openspec/changes/add-alert-controller). PROBE_VARIANT picks the case:
-//   alert2   title, message, cancel + default
+//   alert2   title, message, cancel + default (titleonly, messageonly, long: the same with
+//            only a title, only a message, a message that wraps)
 //   alert3   three actions (the cancel added first)
 //   styles   destructive + preferred default
 //   disabled a disabled action and an enabled one
@@ -91,7 +92,12 @@ static void animating(CALayer *l, NSString *path, double t) {
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemTealColor;
+    // "<case>-white" / "-black" / "-orange": the screen behind in that colour (teal otherwise).
+    NSString *full = NSProcessInfo.processInfo.environment[@"PROBE_VARIANT"] ?: @"";
+    self.view.backgroundColor = [full hasSuffix:@"-white"] ? UIColor.whiteColor
+                              : [full hasSuffix:@"-black"] ? UIColor.blackColor
+                              : [full hasSuffix:@"-orange"] ? [UIColor colorWithRed:1 green:0.5 blue:0 alpha:1]
+                                                            : UIColor.systemTealColor;
     UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(20, 200, 350, 40)];
     l.text = @"Behind the alert";
     [self.view addSubview:l];
@@ -105,14 +111,19 @@ static void animating(CALayer *l, NSString *path, double t) {
     NSString *full = NSProcessInfo.processInfo.environment[@"PROBE_VARIANT"] ?: @"alert2";
     NSString *variant = [full componentsSeparatedByString:@"-"].firstObject;
     BOOL sheet = [variant isEqualToString:@"sheet"];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Delete the note?"
-                                                               message:@"This can't be undone."
+    // titleonly / messageonly: one of the two; long: a message that wraps.
+    NSString *title = [variant isEqualToString:@"messageonly"] ? nil : @"Delete the note?";
+    NSString *message = [variant isEqualToString:@"titleonly"] ? nil
+                      : [variant isEqualToString:@"long"] ? @"This note and its 12 attachments will be deleted from all of your devices. This can't be undone."
+                                                           : @"This can't be undone.";
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+                                                               message:message
                                                         preferredStyle:sheet ? UIAlertControllerStyleActionSheet : UIAlertControllerStyleAlert];
     void (^h)(UIAlertAction *) = ^(UIAlertAction *x) {
         event([NSString stringWithFormat:@"handler %@ presented %@", x.title, self.presentedViewController ? @"yes" : @"no"]);
     };
     NSMutableArray<NSString *> *titles = [NSMutableArray array];
-    if ([variant isEqualToString:@"alert2"]) {
+    if ([@[ @"alert2", @"titleonly", @"messageonly", @"long" ] containsObject:variant]) {
         [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:h]];
         [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:h]];
     } else if ([variant isEqualToString:@"alert3"]) {
@@ -153,7 +164,10 @@ static void animating(CALayer *l, NSString *path, double t) {
             printf("VALUE window %s level %.0f\n", NSStringFromClass(w.class).UTF8String, w.windowLevel);
             printf("VALUE sameWindow %d\n", w == self.view.window);
             printf("VALUE alertView %s\n", rect([a.view convertRect:a.view.bounds toView:w]).UTF8String);
-            for (NSString *s in [@[ a.title, a.message ] arrayByAddingObjectsFromArray:titles]) {
+            NSMutableArray *texts = [NSMutableArray array];
+            if (a.title) [texts addObject:a.title];
+            if (a.message) [texts addObject:a.message];
+            for (NSString *s in [texts arrayByAddingObjectsFromArray:titles]) {
                 UILabel *l = labelWithText(w, s);
                 NSString *key = [[s componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet] componentsJoinedByString:@""];
                 if (l)
