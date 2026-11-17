@@ -38,6 +38,8 @@ case "$APP" in
       # take the newest its constraints allow. It imports its strings from the synthetic
       # package:flutter_gen, which Flutter dropped: they're generated into lib/l10n now.
       grep -rl 'package:flutter_gen/gen_l10n/' lib test | xargs perl -pi -e 's#package:flutter_gen/gen_l10n/#package:gallery/l10n/#g'
+      # ThemeData.bottomAppBarTheme takes BottomAppBarThemeData since Flutter 3.32.
+      grep -rl 'BottomAppBarTheme(' lib | xargs perl -pi -e 's/\bBottomAppBarTheme\(/BottomAppBarThemeData(/g'
       flutter pub upgrade
     else
       flutter pub get
