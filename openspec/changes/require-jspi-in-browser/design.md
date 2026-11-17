@@ -111,11 +111,17 @@ frames).
 - **The embedding test is `run.mjs --embed PORT`.** `embed.mjs` serves the
   outer page; `run.mjs` runs its usual steps inside the frame, so every
   step works embedded. `--browser webkit` runs the same steps in WebKit.
-- **Taps while busy** (task 3.3): `--taps` sends taps back to back without
-  waiting for frames. The test taps hello-expo's counter twice right after
-  its first frame, while its start-up keeps it busy, and expects "Tapped 2
-  times". It uses the counter rather than a navigation push because the
-  counter shows that both taps arrived, in one place.
+- **Taps while busy** (task 3.3): `--taps` sends taps back to back (30 ms
+  apart) without waiting for frames, so the second arrives while the app is
+  busy with the first. The test taps hello-expo's counter and then Details,
+  two taps whose order shows in the result. In order, the counter counts and
+  the app pushes the Details screen. The other way round, Details pushes
+  first and the counter's tap lands on the new screen, so the counter stays
+  at 0. The test waits for the home screen to go (`--gone "Hello from
+  pomme"`), goes back (38, 69), and expects "Tapped 1 time". The positions
+  are the native tests' (`crates/pomme-cli/tests/hello_expo.rs`).
+- **The spec says "new input", not "a new event"**, for what ends an idle
+  pause (see the first point).
 
 ## Possible side benefit: web views
 

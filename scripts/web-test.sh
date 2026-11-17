@@ -21,8 +21,11 @@ if [ "$APP" = all ]; then
   run() { echo "== $*"; "$@" > "$ROOT/web/tests/out/last.log" 2>&1 && echo ok || { FAILED=1; tail -20 "$ROOT/web/tests/out/last.log"; }; }
   mkdir -p "$ROOT/web/tests/out"
   run "$T" hello-expo --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
-  # Two taps while the app is busy (its start-up frames): both arrive.
-  run env NO_BUILD=1 "$T" hello-expo --timeout 240 --wait "First frame" --taps "195,265 195,265" --see "Tapped 2 times"
+  # Two taps back to back, the second while the app is busy with the first, whose order matters:
+  # the counter, then Details (240,508). In order, the counter counts and the app pushes the
+  # Details screen; the other way round, Details pushes first and the counter's tap misses.
+  # Back (38,69) to the home screen to read the counter.
+  run env NO_BUILD=1 "$T" hello-expo --timeout 240 --see "Tapped 0" --taps "195,265 240,508" --gone "Hello from pomme" --sleep 1500 --tap 38,69 --see "Tapped 1 time"
   run env NO_BUILD=1 QUERY=nojspi "$T" hello-expo --wait "needs a browser with JSPI"
   run env NO_BUILD=1 "$T" embed --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
   run env NO_BUILD=1 "$T" embed --browser webkit --wait "needs a browser with JSPI"

@@ -39,7 +39,8 @@ at points where the app draws something (each channel within 12). The points
 for each app are in `scripts/web-test.sh`.
 
 Steps run in order: `--wait TEXT` (the page's status or log), `--see TEXT`
-(the app's accessibility tree, which the page mirrors as ARIA), `--tap X,Y` (in
+(the app's accessibility tree, which the page mirrors as ARIA), `--gone TEXT`
+(until the tree no longer shows it), `--tap X,Y` (in
 points), `--taps "X,Y X,Y…"` (back to back, not waiting for the app), `--sleep MS`.
 `--out FILE` saves the screen at the end. `--no-jspi` starts Chromium without
 JSPI, `--no-webgpu` without WebGPU, `--browser webkit` uses WebKit instead.
