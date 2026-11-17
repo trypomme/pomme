@@ -25,6 +25,9 @@ def method_name(m):
 
 def main(root):
     root = Path(root)
+    if not root.is_dir():
+        print("## App compatibility\n\nNo results: the app didn't build (see the job's log).")
+        return
     rows, gaps = [], []
     for app_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         app = app_dir.name

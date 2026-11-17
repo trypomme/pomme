@@ -121,9 +121,18 @@ jobs:
         with:
           name: compat-pomme
           path: bin
+      - name: Unpack the sysroot
+        run: mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
+      # pomme draws Impeller's built-in shaders from MSL that this engine's impellerc makes
+      # (scripts/flutter/impeller-msl.sh); without it Flutter can't create its pipelines.
+      - name: Impeller shaders
+        if: matrix.app != 'bluesky'
+        run: |
+          ln -sfn "$FLUTTER_ROOT" "vendor/flutter-$FLUTTER_VERSION"
+          flutter precache --ios
+          scripts/flutter/impeller-msl.sh "$FLUTTER_VERSION"
       - name: Run in pomme
         run: |
-          mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
           chmod +x bin/pomme
           brew install coreutils  # timeout
           scripts/compat/run.sh ${{ matrix.app }} "${{ steps.build.outputs.app }}" results/${{ matrix.app }} bin/pomme
