@@ -143,8 +143,10 @@ jobs:
       - name: Docs only
         if: env.RUN != 'true'
         run: echo "only docs changed; nothing to build"
+      # Only jobs that use the sysroot (the Mac, and every package) need it to have succeeded,
+      # so the Linux and Windows pull request builds don't wait on the Mac runner.
       - name: Check sysroot
-        if: env.RUN == 'true' && needs.sysroot.result != 'success'
+        if: env.RUN == 'true' && (runner.os == 'macOS' || env.PACKAGE == 'true') && needs.sysroot.result != 'success'
         run: echo "::error::the sysroot job didn't succeed (${{ needs.sysroot.result }})"; exit 1
       - uses: actions/checkout@v4
         if: env.RUN == 'true'
