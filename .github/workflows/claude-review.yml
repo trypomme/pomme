@@ -1,14 +1,13 @@
 # Claude reviews every pull request and leaves a GitHub review on it:
 #   Approve          no blocking problems (smaller notes go in as inline comments)
 #   Request changes  something must be fixed before it merges
-# A new push to the PR runs the review again. With the main branch ruleset
-# (an approval plus passing CI required) and auto-merge on, approved PRs merge
-# on their own.
+# A new push to the PR runs the review again. The job passes on approve and fails
+# on request changes, which is what auto-merge.yml goes by.
 #
 # Needs one repository or organization secret: CLAUDE_CODE_OAUTH_TOKEN (from
 # `claude setup-token`, uses a Claude subscription) or ANTHROPIC_API_KEY.
-# And Settings > Actions > General > "Allow GitHub Actions to create and approve
-# pull requests", so the approval below counts.
+# Optional: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests" makes the verdict a real review instead of a comment.
 name: Claude review
 
 on:
@@ -87,8 +86,14 @@ jobs:
           fi
           verdict=$(jq -r .verdict review-verdict.json)
           body="$(jq -r .summary review-verdict.json)"$'\n\n'"_Automated review by Claude_"
+          # Approving needs "Allow GitHub Actions to create and approve pull requests";
+          # without it the verdict goes in as a comment. Either way this job's result is
+          # the verdict: green for approve, red for changes requested.
           case "$verdict" in
-            approve)         gh pr review "$PR" --approve --body "$body" ;;
-            request_changes) gh pr review "$PR" --request-changes --body "$body" ;;
+            approve)
+              gh pr review "$PR" --approve --body "$body" || gh pr comment "$PR" --body "**Approved.** $body" ;;
+            request_changes)
+              gh pr review "$PR" --request-changes --body "$body" || gh pr comment "$PR" --body "**Changes requested.** $body"
+              echo "::error::Claude requested changes"; exit 1 ;;
             *) echo "::error::unexpected verdict '$verdict'"; exit 1 ;;
           esac

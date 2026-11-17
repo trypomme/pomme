@@ -1,0 +1,59 @@
+# Merges a pull request by itself once Claude approved it and CI is green.
+# GitHub's own auto-merge and branch rules need a paid plan for private repos, so
+# this does the same job from a workflow: whenever one of the workflows below
+# finishes on a PR, it checks every check run on the PR's latest commit and
+# squash-merges when all of them passed, including "Claude review" and:
+#   Desktop (macos-arm64)|Desktop (windows-x64)|Desktop (linux-x64)|Desktop (linux-arm64)|Web
+# Merges made with GITHUB_TOKEN don't start push workflows, so it then starts
+# the main branch workflows by hand: build.yml
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows: [Build, Claude review]
+    types: [completed]
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  merge:
+    name: Auto-merge
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      REQUIRED: "Claude review|Desktop (macos-arm64)|Desktop (windows-x64)|Desktop (linux-x64)|Desktop (linux-arm64)|Web"
+      DISPATCH: "build.yml"
+    steps:
+      - name: Merge if everything passed
+        run: |
+          pr=$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.state == "open" and .base.ref == "main" and .head.sha == env.SHA and (.draft | not))][0].number // empty')
+          if [ -z "$pr" ]; then echo "No open, ready PR into main has $SHA as its latest commit"; exit 0; fi
+
+          checks=$(gh api --paginate "repos/$GH_REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.name != "Auto-merge") | [.name, .status, (.conclusion // "")] | @tsv')
+          echo "$checks"
+
+          IFS='|' read -ra required <<< "$REQUIRED"
+          for name in "${required[@]}"; do
+            if ! awk -F'\t' -v n="$name" '$1 == n && $2 == "completed" && $3 == "success" { ok = 1 } END { exit !ok }' <<< "$checks"; then
+              echo "Waiting: $name hasn't passed on $SHA"; exit 0
+            fi
+          done
+          if awk -F'\t' '$2 != "completed" || ($3 != "success" && $3 != "skipped" && $3 != "neutral")' <<< "$checks" | grep -q .; then
+            echo "Waiting: some checks are still running or didn't pass"; exit 0
+          fi
+
+          gh pr merge "$pr" --squash --delete-branch --match-head-commit "$SHA"
+          echo "Merged #$pr"
+          for wf in $DISPATCH; do
+            gh workflow run "$wf" --ref main || echo "::warning::couldn't start $wf on main"
+          done
