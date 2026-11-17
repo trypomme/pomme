@@ -63,6 +63,11 @@ cargo run -- run apps/hello-expo/ios/build/Build/Products/Debug-iphoneos/helloex
   can reach: Windows and Linux too. Building the iOS app itself still needs a
   Mac (or EAS).
 
+With `expo-dev-client`, the launcher finds Metro over Bonjour, which Expo CLI
+advertises on its own. The first time, macOS asks whether your terminal may
+find devices on your local network: allow it, or Metro won't be listed (the
+development link works either way).
+
 `scripts/dev-build-test.sh` builds hello-expo's Debug app once, starts Metro
 and runs the tests that need them (`crates/pomme-cli/tests/development_builds.rs`):
 loading, Fast Refresh, reload, the dev menu, React Native's alerts, Firebase.
