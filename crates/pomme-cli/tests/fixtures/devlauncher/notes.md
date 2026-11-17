@@ -13,8 +13,8 @@ debug`, Metro started with `npx expo start --port 8081`.
   filters. Change them in Settings."), "Enter URL manually", and a tab bar
   (Home, Updates, Settings).
 - Servers are found by Bonjour (`_expo._tcp`, the app's NSBonjourServices).
-  Expo CLI advertises one only with `EXPO_UNSTABLE_BONJOUR=1`; with it, its
-  TXT record has `name`, `slug`, `iosBundleIdentifier` and `username`. The
+  Expo CLI advertises Metro by default (not when `CI` is set, or with
+  `EXPO_UNSTABLE_BONJOUR=0`); its TXT record has `name`, `slug`, `iosBundleIdentifier` and `username`. The
   launcher connects to each found server and asks `GET /status` for
   `packager-status:running` before listing it.
 - **The local network check:** a Simulator build skips it

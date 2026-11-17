@@ -1,5 +1,5 @@
 //! Bonjour browsing on the computer's network (`LiveNet::browse`). Needs a
-//! `_expo._tcp` service advertised (Metro with EXPO_UNSTABLE_BONJOUR=1, or
+//! `_expo._tcp` service advertised (Metro, which Expo CLI advertises unless `CI` is set, or
 //! `dns-sd -R`), so it runs only with POMME_BONJOUR set to the name to find.
 use pomme_hle::net::Net;
 

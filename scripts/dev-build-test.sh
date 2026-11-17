@@ -8,8 +8,8 @@
 # (a Debug build takes several GB; a scratch copy keeps the release build).
 # NO_TEST=1: start Metro and print the run's views instead of running tests.
 # LAUNCHER_DIR: a copy of hello-expo with `expo-dev-client` added (`npx expo
-# install expo-dev-client`): build and serve that, with Metro advertised over
-# Bonjour (EXPO_UNSTABLE_BONJOUR=1), and run the dev launcher's tests
+# install expo-dev-client`): build and serve that (Expo CLI advertises Metro
+# over Bonjour, so the launcher finds it), and run the dev launcher's tests
 # (POMME_LAUNCHER_APP) instead.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +19,7 @@ APP="$DIR/ios/build/Build/Products/Debug-iphoneos/helloexpo.app"
 
 # Metro, unless one is already there (watching files: Fast Refresh needs it).
 if ! curl -s http://127.0.0.1:8081/status | grep -q running; then
-  (cd "$DIR" && EXPO_UNSTABLE_BONJOUR=${LAUNCHER_DIR:+1} npx expo start --port 8081 >"$DIR/.metro.log" 2>&1) &
+  (cd "$DIR" && npx expo start --port 8081 >"$DIR/.metro.log" 2>&1) &
   METRO=$!
   trap 'kill $METRO 2>/dev/null; pkill -f "expo start --port 8081" 2>/dev/null || true' EXIT
   for _ in $(seq 120); do curl -s http://127.0.0.1:8081/status | grep -q running && break; sleep 1; done

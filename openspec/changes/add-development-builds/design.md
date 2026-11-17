@@ -43,8 +43,8 @@ sockets, and browsing through `pomme_bonjour_browse`, which asks the host
 (`Net::browse`): on a Mac the system's Bonjour (`dns_sd`, as `dns-sd -B`
 does; a command-line process's own multicast is held back by macOS's
 local network privacy), elsewhere mDNS (`mdns-sd`). So pomme sees what a
-phone on the same network would. Expo CLI advertises only with
-`EXPO_UNSTABLE_BONJOUR=1`.
+phone on the same network would. Expo CLI advertises Metro by default
+(not with `CI` set, or `EXPO_UNSTABLE_BONJOUR=0`).
 
 ### What the launcher needed
 

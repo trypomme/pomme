@@ -332,7 +332,7 @@ fn firebase_in_a_debug_build() {
 
 /// The development build with `expo-dev-client` that `POMME_LAUNCHER_APP`
 /// names (hello-expo with Expo's dev launcher), live, with Metro serving it
-/// and advertising itself (`EXPO_UNSTABLE_BONJOUR=1`, or `dns-sd -R hello-expo
+/// and advertising itself (Expo CLI does unless `CI` is set; or `dns-sd -R hello-expo
 /// _expo._tcp local. 8081 …`): `scripts/dev-build-test.sh` sets this up.
 fn launcher_build() -> Option<(pomme_hle::Emu, Turn)> {
     let Some(app) = std::env::var_os("POMME_LAUNCHER_APP").map(std::path::PathBuf::from) else {
