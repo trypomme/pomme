@@ -13,9 +13,9 @@
 ## 3. The window
 
 - [x] 3.1 `crates/pomme-desktop/Cargo.toml`: `egui`, `egui-winit`, `egui-wgpu` 0.37. `present.rs`: an egui pass on the phone's frame only while the panel is open. Check: `cargo build -p pomme-desktop` with one copy of wgpu and winit in `cargo tree -d`.
-- [ ] 3.2 `crates/pomme-desktop/src/open_url.rs` and `lib.rs`: the panel (field with the last link selected, Return, Escape, the error line, the recent list); events go to the panel while it is open. Check: by hand with hello-expo on macOS: ⌘L, paste `pommehello:///tabs`, Return shows the tabs; `https://example.com` shows the reason.
-- [ ] 3.3 Keys do not reach the app while the panel is open. Check: by hand, with hello-expo's text field focused: ⌘L, type, Escape; the app's field is unchanged.
-- [ ] 3.4 `menu.rs`: File ▸ Open URL… (⌘L / Ctrl+L) and File ▸ Open Recent URL with Clear; the recent links file. Check: a unit test for the recent list (ten items, newest first, no repeats, an unreadable file reads as empty); by hand, a link survives a restart.
+- [x] 3.2 `crates/pomme-desktop/src/open_url.rs` and `lib.rs`: the panel (field with the last link selected, Return, Escape, the error line, the recent list); events go to the panel while it is open. Check: `cargo test -p pomme-desktop open_url` drives the panel with egui's events: Return sends the typed link and an accepted link closes it (`return_opens_the_typed_link`); typing replaces the last link (`the_last_link_is_selected_so_typing_replaces_it`); a refused link keeps it open and draws the reason (`a_refused_link_keeps_the_panel_open_with_the_reason`); Escape closes it. The link reaching the app is 2.3's `hello_expo.rs` case.
+- [x] 3.3 Keys do not reach the app while the panel is open. Check: `cargo test -p pomme-desktop keys_never_reach_the_app_while_the_panel_is_open` (every key and IME event is the panel's; a click on the screen beside it closes it and isn't a touch).
+- [x] 3.4 `menu.rs`: File ▸ Open URL… (⌘L / Ctrl+L) and File ▸ Open Recent URL with Clear; the recent links file. Check: unit tests for the recent list (ten items, newest first, no repeats, an unreadable file reads as empty), `a_link_survives_a_restart` (the file written, read back by the next run, cleared), and `menu_shortcuts` (⌘L / Ctrl+L).
 - [ ] 3.5 The window's look with the panel closed. Check: `cargo test --test capture` (or the window tests that compare frames) still passes, and a screenshot after opening and closing the panel equals one taken before.
 
 ## 4. Docs

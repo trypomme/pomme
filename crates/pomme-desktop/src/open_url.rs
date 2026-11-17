@@ -33,7 +33,9 @@ pub(crate) struct Overlay {
     pub pixels_per_point: f32,
 }
 
-pub(crate) struct Panel {
+/// The panel itself, apart from the window: what it shows and what the
+/// user asked for, from egui's input. Tests drive it with egui's events.
+pub(crate) struct Form {
     pub open: bool,
     text: String,
     /// Why the last link wasn't taken.
@@ -44,16 +46,59 @@ pub(crate) struct Panel {
     fresh: bool,
     pub recent: Recent,
     ctx: egui::Context,
+}
+
+/// The panel in pomme's window: the [`Form`], and egui's link to winit.
+pub(crate) struct Panel {
+    pub form: Form,
     state: egui_winit::State,
 }
 
 impl Panel {
     pub fn new(window: &Window) -> Panel {
+        let form = Form::new(Recent::load());
+        let state = egui_winit::State::new(form.ctx.clone(), egui::ViewportId::ROOT, window, Some(window.scale_factor() as f32), window.theme(), None);
+        Panel { form, state }
+    }
+
+    /// A window event while the panel is open; true if egui wants the
+    /// pointer where it is (the event is the panel's).
+    pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        let _ = self.state.on_window_event(window, event);
+        self.form.ctx.is_pointer_over_egui()
+    }
+
+    /// One frame of the panel, laid out over `screen` (the phone's screen,
+    /// in window pixels): what to draw, and what the user asked for.
+    pub fn frame(&mut self, window: &Window, screen: [f32; 4]) -> (Overlay, Wants) {
+        let input = self.state.take_egui_input(window);
+        let ppp = window.scale_factor() as f32;
+        let (output, wants) = self.form.run(input, screen.map(|v| v / ppp));
+        self.state.handle_platform_output(window, output.platform_output);
+        let primitives = self.form.ctx.tessellate(output.shapes, output.pixels_per_point);
+        (Overlay { primitives, textures: output.textures_delta, pixels_per_point: output.pixels_per_point }, wants)
+    }
+}
+
+impl std::ops::Deref for Panel {
+    type Target = Form;
+    fn deref(&self) -> &Form {
+        &self.form
+    }
+}
+
+impl std::ops::DerefMut for Panel {
+    fn deref_mut(&mut self) -> &mut Form {
+        &mut self.form
+    }
+}
+
+impl Form {
+    pub fn new(recent: Recent) -> Form {
         let ctx = egui::Context::default();
         // Nothing animates while the app's frames don't come: a steady caret.
         ctx.all_styles_mut(|s| s.visuals.text_cursor.blink = false);
-        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, window, Some(window.scale_factor() as f32), window.theme(), None);
-        Panel { open: false, text: String::new(), error: None, waiting: None, fresh: false, recent: Recent::load(), ctx, state }
+        Form { open: false, text: String::new(), error: None, waiting: None, fresh: false, recent, ctx }
     }
 
     /// Show the panel, with the last link (selected) in the field.
@@ -71,13 +116,6 @@ impl Panel {
         self.open = false;
         self.waiting = None;
         self.error = None;
-    }
-
-    /// A window event while the panel is open; true if egui wants the
-    /// pointer where it is (the event is the panel's).
-    pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        let _ = self.state.on_window_event(window, event);
-        self.ctx.is_pointer_over_egui()
     }
 
     /// The app's answer to the link sent: accepted closes the panel and
@@ -110,11 +148,9 @@ impl Panel {
     }
 
     /// One frame of the panel, laid out over `screen` (the phone's screen,
-    /// in window pixels): what to draw, and what the user asked for.
-    pub fn frame(&mut self, window: &Window, screen: [f32; 4]) -> (Overlay, Wants) {
-        let input = self.state.take_egui_input(window);
-        let ppp = window.scale_factor() as f32;
-        let [x, y, w, _] = screen.map(|v| v / ppp);
+    /// in egui's points): egui's output, and what the user asked for.
+    pub fn run(&mut self, input: egui::RawInput, screen: [f32; 4]) -> (egui::FullOutput, Wants) {
+        let [x, y, w, _] = screen;
         let mut wants = Wants::Nothing;
         let fresh = std::mem::take(&mut self.fresh);
         let (text, error, waiting, recent) = (&mut self.text, &self.error, &self.waiting, &self.recent.items);
@@ -168,9 +204,7 @@ impl Panel {
             self.error = None;
             self.waiting = Some(url.clone());
         }
-        self.state.handle_platform_output(window, output.platform_output);
-        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-        (Overlay { primitives, textures: output.textures_delta, pixels_per_point: output.pixels_per_point }, wants)
+        (output, wants)
     }
 }
 
@@ -183,9 +217,18 @@ pub(crate) struct Recent {
 impl Recent {
     /// From the config folder; an unreadable file is an empty list.
     pub fn load() -> Recent {
-        let path = config_dir().map(|d| d.join("pomme").join("recent-urls.txt"));
+        Recent::load_from(config_dir().map(|d| d.join("pomme").join("recent-urls.txt")))
+    }
+
+    fn load_from(path: Option<PathBuf>) -> Recent {
         let items = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default();
         Recent { items, path }
+    }
+
+    /// A list that isn't saved anywhere.
+    #[cfg(test)]
+    pub fn in_memory(items: &[&str]) -> Recent {
+        Recent { items: items.iter().map(|s| s.to_string()).collect(), path: None }
     }
 
     pub fn add(&mut self, url: &str) {
@@ -240,6 +283,85 @@ fn config_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The phone's screen in egui's points, as the window lays the panel over it.
+    const SCREEN: [f32; 4] = [0.0, 0.0, 390.0, 844.0];
+
+    /// One frame with these events.
+    fn frame(form: &mut Form, events: Vec<egui::Event>) -> Wants {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(390.0, 844.0))),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let (mut out, wants) = form.run(input, SCREEN);
+        out.textures_delta.clear();
+        wants
+    }
+
+    fn key(k: egui::Key) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn text(t: &str) -> egui::Event {
+        egui::Event::Text(t.into())
+    }
+
+    /// Open the panel and draw its first frame (the field takes the focus).
+    fn opened(recent: &[&str]) -> Form {
+        let mut form = Form::new(Recent::in_memory(recent));
+        form.show();
+        assert_eq!(frame(&mut form, vec![]), Wants::Nothing);
+        form
+    }
+
+    #[test]
+    fn return_opens_the_typed_link() {
+        let mut form = opened(&[]);
+        assert_eq!(frame(&mut form, vec![text("pommehello:///tabs")]), Wants::Nothing);
+        assert_eq!(frame(&mut form, vec![key(egui::Key::Enter)]), Wants::Open("pommehello:///tabs".into()));
+        // Accepted: the panel closes and the link is the newest recent one.
+        form.answered("pommehello:///tabs", Ok(()));
+        assert!(!form.open);
+        assert_eq!(form.recent.items, ["pommehello:///tabs"]);
+    }
+
+    #[test]
+    fn the_last_link_is_selected_so_typing_replaces_it() {
+        let mut form = opened(&["old://link"]);
+        assert_eq!(form.text, "old://link");
+        frame(&mut form, vec![text("new://link")]);
+        assert_eq!(frame(&mut form, vec![key(egui::Key::Enter)]), Wants::Open("new://link".into()));
+    }
+
+    #[test]
+    fn a_refused_link_keeps_the_panel_open_with_the_reason() {
+        let mut form = opened(&[]);
+        frame(&mut form, vec![text("https://example.com")]);
+        assert_eq!(frame(&mut form, vec![key(egui::Key::Enter)]), Wants::Open("https://example.com".into()));
+        form.answered("https://example.com", Err("The app doesn't open https links.".into()));
+        assert!(form.open);
+        assert_eq!(form.error.as_deref(), Some("The app doesn't open https links."));
+        assert!(form.recent.items.is_empty());
+        // The reason is drawn.
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(390.0, 844.0))), ..Default::default() };
+        let mut out = form.run(input, SCREEN).0;
+        out.textures_delta.clear();
+        assert!(format!("{:?}", out.shapes).contains("open https links"));
+    }
+
+    #[test]
+    fn escape_closes() {
+        let mut form = opened(&["a://1"]);
+        assert_eq!(frame(&mut form, vec![key(egui::Key::Escape)]), Wants::Close);
+    }
+
+    #[test]
+    fn an_empty_field_opens_nothing() {
+        let mut form = opened(&[]);
+        assert_eq!(frame(&mut form, vec![key(egui::Key::Enter)]), Wants::Nothing);
+    }
+
     #[test]
     fn newest_first_without_repeats() {
         let l = pushed(&[], "a://1");
@@ -257,6 +379,21 @@ mod tests {
         assert_eq!(l.len(), RECENT_MAX);
         assert_eq!(l[0], "x://14");
         assert_eq!(l[9], "x://5");
+    }
+
+    #[test]
+    fn a_link_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("pomme-recent-{}", std::process::id()));
+        let path = dir.join("pomme").join("recent-urls.txt");
+        let mut before = Recent::load_from(Some(path.clone()));
+        assert!(before.items.is_empty());
+        before.add("pommehello:///tabs");
+        before.add("myapp://settings");
+        // The next run reads the same list back.
+        assert_eq!(Recent::load_from(Some(path.clone())).items, ["myapp://settings", "pommehello:///tabs"]);
+        before.clear();
+        assert!(Recent::load_from(Some(path)).items.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
