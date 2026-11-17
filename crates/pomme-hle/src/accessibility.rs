@@ -821,8 +821,14 @@ fn walk(emu: &mut Emu, o: u64, in_view: u64, depth: usize, out: &mut Vec<Element
         },
     };
     let in_view = element.view;
+    // An element stands for everything inside it, as on iOS (a button's title
+    // label isn't an element of its own).
+    let leaf = element.is_element;
     let at = out.len();
     out.push(element);
+    if leaf {
+        return Ok(());
+    }
     let (children, ordered) = children(emu, o)?;
     out[at].ordered = ordered;
     for c in children {

@@ -345,6 +345,11 @@ fn alerts_for_accessibility() {
                 _ => shown.iter().filter(at).any(|e| e.label.as_deref() == Some(label)),
             };
             assert!(found, "{case}: no {kind} {label:?} at {f:?}\n{}", pomme_hle::accessibility::describe(&shown));
+            // A button is one element: its title isn't text of its own, as on iOS.
+            if kind == "Button" {
+                let texts = shown.iter().filter(|e| e.label.as_deref() == Some(label) && e.traits & 1 == 0).count();
+                assert_eq!(texts, 0, "{case}: {label:?} is also text inside its button\n{}", pomme_hle::accessibility::describe(&shown));
+            }
         }
     }
 }
