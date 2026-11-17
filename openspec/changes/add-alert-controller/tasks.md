@@ -2,10 +2,10 @@
 
 ## 1. Measure on the Simulator
 
-- [ ] 1.1 A probe app, `crates/pomme-cli/tests/fixtures/alerts/main.m`, that presents in turn: an alert with a title, a message and two actions (cancel, default); one with three actions; one with a destructive action and a preferred action; one with a disabled action; and an action sheet with a title, two default actions, a destructive action and a cancel. For each it prints the frames of the box (or sheet), the labels and the buttons, and the text colours, as `VALUE` lines. Record with `scripts/swiftui/metrics-simulator.sh alerts`. Check: `fixtures/alerts/ios26.txt` and a screenshot per case (`ios26-*.png`).
-- [ ] 1.2 The order of events, with timestamps: the probe logs `viewWillAppear`/`viewDidAppear` of the alert controller, the presentation's completion, `viewWillDisappear`/`viewDidDisappear`, the presenter's `presentedViewController` and the action handler, while AXe taps a button (`axe tap --label`). Also: a tap on a disabled action, a tap outside an action sheet with a cancel, a tap outside an alert, and `dismissViewControllerAnimated:` in code. Check: the log lines in `fixtures/alerts/ios26.txt`, and notes in `fixtures/alerts/notes.md`.
-- [ ] 1.3 The animations: screen recordings (`xcrun simctl io recordVideo`) of an alert and an action sheet appearing and closing; frames sampled to give the opacity, scale and position over time, and the dimming's colour and opacity. Check: `fixtures/alerts/ios26-motion.txt` with the measured curves, and frames saved as stills.
-- [ ] 1.4 What accessibility sees while each is shown (`axe describe-ui`): labels, identifiers, traits, and whether the screen behind is hidden. Check: `fixtures/alerts/ios26-ax.txt`.
+- [x] 1.1 A probe app, `crates/pomme-cli/tests/fixtures/alerts/main.m`, that presents in turn: an alert with a title, a message and two actions (cancel, default); one with three actions; one with a destructive action and a preferred action; one with a disabled action; and an action sheet with a title, two default actions, a destructive action and a cancel. For each it prints the frames of the box (or sheet), the labels and the buttons, and the text colours, as `VALUE` lines. Record with `scripts/swiftui/metrics-simulator.sh alerts`. Check: `fixtures/alerts/ios26.txt` and a screenshot per case (`ios26-*.png`).
+- [x] 1.2 The order of events, with timestamps: the probe logs `viewWillAppear`/`viewDidAppear` of the alert controller, the presentation's completion, `viewWillDisappear`/`viewDidDisappear`, the presenter's `presentedViewController` and the action handler, while AXe taps a button (`axe tap --label`). Also: a tap on a disabled action, a tap outside an action sheet with a cancel, a tap outside an alert, and `dismissViewControllerAnimated:` in code. Check: the log lines in `fixtures/alerts/ios26.txt`, and notes in `fixtures/alerts/notes.md`.
+- [x] 1.3 The animations: the probe logs, each frame (CADisplayLink), every animating layer's drawn opacity and scale, and the dimming's opacity, while an alert and an action sheet appear and close. Check: `fixtures/alerts/ios26-motion.txt` with the measured curves.
+- [x] 1.4 What accessibility sees while each is shown (`axe describe-ui`): labels, identifiers, traits, and whether the screen behind is hidden. Check: `fixtures/alerts/ios26-ax.txt`.
 
 ## 2. Alerts
 
@@ -17,8 +17,8 @@
 
 ## 3. Action sheets
 
-- [ ] 3.1 The action sheet's view tree and layout from 1.1: the choices in order, the cancel apart, the destructive title in red. Check: `tests/alerts.rs` compares frames with `ios26.txt`; a still compared with the screenshot.
-- [ ] 3.2 Its appear and close animations (1.3), and a tap outside it (1.2). Check: `tests/alerts.rs` compares sampled frames with `ios26-motion.txt`, and the cancel handler runs on a tap outside.
+- [ ] 3.1 The action sheet's view tree and layout from 1.1: like an alert's, in the middle of the screen, every choice stacked, the cancel last. Check: `tests/alerts.rs` compares frames with `ios26.txt`; a still compared with the screenshot.
+- [ ] 3.2 Its appear and close animations (the alert's, 1.3), and a tap outside it (1.2). Check: `tests/alerts.rs` compares sampled frames with `ios26-motion.txt`, and the cancel handler runs on a tap outside.
 
 ## 4. React Native
 

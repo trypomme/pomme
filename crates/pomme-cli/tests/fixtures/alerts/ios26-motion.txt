@@ -1,0 +1,159 @@
+# Motion in the alerts fixture on the iOS 26.0 Simulator (iPhone 16e), each frame: BOX <case> <time> <opacity> <scale> (the box while animating, as drawn), DIM <case> <time> <opacity> (the dimming view), DRAWN <case> <time> <box opacity> <on screen> when either changes.
+BOX alert2-tap 1.1644 0.001 1.1998
+BOX alert2-tap 1.1826 0.080 1.1841
+BOX alert2-tap 1.1993 0.208 1.1584
+BOX alert2-tap 1.2160 0.347 1.1306
+BOX alert2-tap 1.2326 0.477 1.1045
+BOX alert2-tap 1.2494 0.591 1.0818
+BOX alert2-tap 1.2660 0.685 1.0630
+BOX alert2-tap 1.2818 0.757 1.0486
+BOX alert2-tap 1.2993 0.820 1.0361
+BOX alert2-tap 1.3161 0.866 1.0269
+BOX alert2-tap 1.3327 0.900 1.0199
+BOX alert2-tap 1.3494 0.927 1.0147
+BOX alert2-tap 1.3661 0.946 1.0108
+BOX alert2-tap 1.3827 0.961 1.0078
+BOX alert2-tap 1.3994 0.972 1.0057
+BOX alert2-tap 1.4160 0.979 1.0041
+BOX alert2-tap 1.4326 0.985 1.0030
+BOX alert2-tap 1.4494 0.989 1.0021
+BOX alert2-tap 1.4660 0.992 1.0015
+BOX alert2-tap 1.4827 0.995 1.0011
+BOX alert2-tap 1.4994 0.996 1.0008
+BOX alert2-tap 1.5161 0.997 1.0006
+BOX alert2-tap 1.5327 0.998 1.0004
+BOX alert2-tap 1.5494 0.999 1.0003
+BOX alert2-tap 1.5644 0.999 1.0002
+BOX alert2-tap 1.5827 1.000 1.0000
+BOX alert2-tap 3.6478 0.980 1.0000
+DIM alert2-tap 1.1645 0.001
+DIM alert2-tap 1.1827 0.080
+DIM alert2-tap 1.1994 0.208
+DIM alert2-tap 1.2161 0.347
+DIM alert2-tap 1.2328 0.477
+DIM alert2-tap 1.2497 0.591
+DIM alert2-tap 1.2663 0.685
+DIM alert2-tap 1.2820 0.757
+DIM alert2-tap 1.2996 0.820
+DIM alert2-tap 1.3164 0.866
+DIM alert2-tap 1.3330 0.900
+DIM alert2-tap 1.3497 0.927
+DIM alert2-tap 1.3663 0.946
+DIM alert2-tap 1.3830 0.961
+DIM alert2-tap 1.3996 0.972
+DIM alert2-tap 1.4162 0.979
+DIM alert2-tap 1.4329 0.985
+DIM alert2-tap 1.4496 0.989
+DIM alert2-tap 1.4662 0.992
+DIM alert2-tap 1.4830 0.995
+DIM alert2-tap 1.4997 0.996
+DIM alert2-tap 1.5163 0.997
+DIM alert2-tap 1.5330 0.998
+DIM alert2-tap 1.5497 0.999
+DIM alert2-tap 1.5830 1.000
+DIM alert2-tap 3.6479 0.980
+DIM alert2-tap 3.6645 0.879
+DIM alert2-tap 3.6811 0.745
+DIM alert2-tap 3.6978 0.607
+DIM alert2-tap 3.7144 0.482
+DIM alert2-tap 3.7311 0.375
+DIM alert2-tap 3.7478 0.287
+DIM alert2-tap 3.7645 0.218
+DIM alert2-tap 3.7813 0.163
+DIM alert2-tap 3.7979 0.122
+DIM alert2-tap 3.8146 0.090
+DIM alert2-tap 3.8313 0.066
+DIM alert2-tap 3.8479 0.048
+DIM alert2-tap 3.8646 0.035
+DIM alert2-tap 3.8813 0.026
+DIM alert2-tap 3.8979 0.018
+DIM alert2-tap 3.9146 0.013
+DIM alert2-tap 3.9313 0.010
+DIM alert2-tap 3.9479 0.007
+DIM alert2-tap 3.9646 0.005
+DIM alert2-tap 3.9812 0.004
+DIM alert2-tap 3.9980 0.002
+DIM alert2-tap 4.0313 0.001
+DIM alert2-tap 4.0479 0.000
+DRAWN alert2-tap 1.1645 1.000 1
+DRAWN alert2-tap 3.6811 0.000 1
+DRAWN alert2-tap 4.0644 0.000 0
+DRAWN alert2-tap 4.0811 1.000 0
+BOX sheet-tap 1.1582 0.055 1.1890
+BOX sheet-tap 1.1748 0.175 1.1650
+BOX sheet-tap 1.1915 0.314 1.1372
+BOX sheet-tap 1.2082 0.448 1.1104
+BOX sheet-tap 1.2248 0.566 1.0869
+BOX sheet-tap 1.2416 0.665 1.0671
+BOX sheet-tap 1.2582 0.744 1.0512
+BOX sheet-tap 1.2749 0.807 1.0386
+BOX sheet-tap 1.2916 0.856 1.0289
+BOX sheet-tap 1.3083 0.893 1.0214
+BOX sheet-tap 1.3249 0.921 1.0158
+BOX sheet-tap 1.3416 0.942 1.0116
+BOX sheet-tap 1.3582 0.958 1.0085
+BOX sheet-tap 1.3749 0.969 1.0061
+BOX sheet-tap 1.3915 0.978 1.0045
+BOX sheet-tap 1.4082 0.984 1.0032
+BOX sheet-tap 1.4249 0.988 1.0023
+BOX sheet-tap 1.4416 0.992 1.0017
+BOX sheet-tap 1.4582 0.994 1.0012
+BOX sheet-tap 1.4749 0.996 1.0009
+BOX sheet-tap 1.4916 0.997 1.0006
+BOX sheet-tap 1.5082 0.998 1.0004
+BOX sheet-tap 1.5249 0.998 1.0003
+BOX sheet-tap 1.5415 0.999 1.0002
+BOX sheet-tap 1.5582 1.000 1.0000
+BOX sheet-tap 3.6749 0.979 1.0000
+DIM sheet-tap 1.1584 0.055
+DIM sheet-tap 1.1750 0.175
+DIM sheet-tap 1.1916 0.314
+DIM sheet-tap 1.2083 0.448
+DIM sheet-tap 1.2250 0.566
+DIM sheet-tap 1.2419 0.665
+DIM sheet-tap 1.2585 0.744
+DIM sheet-tap 1.2752 0.807
+DIM sheet-tap 1.2919 0.856
+DIM sheet-tap 1.3086 0.893
+DIM sheet-tap 1.3251 0.921
+DIM sheet-tap 1.3419 0.942
+DIM sheet-tap 1.3586 0.958
+DIM sheet-tap 1.3752 0.969
+DIM sheet-tap 1.3918 0.978
+DIM sheet-tap 1.4085 0.984
+DIM sheet-tap 1.4252 0.988
+DIM sheet-tap 1.4418 0.992
+DIM sheet-tap 1.4584 0.994
+DIM sheet-tap 1.4752 0.996
+DIM sheet-tap 1.4918 0.997
+DIM sheet-tap 1.5086 0.998
+DIM sheet-tap 1.5417 0.999
+DIM sheet-tap 1.5585 1.000
+DIM sheet-tap 3.6750 0.979
+DIM sheet-tap 3.6916 0.879
+DIM sheet-tap 3.7082 0.744
+DIM sheet-tap 3.7249 0.606
+DIM sheet-tap 3.7416 0.481
+DIM sheet-tap 3.7583 0.374
+DIM sheet-tap 3.7749 0.287
+DIM sheet-tap 3.7916 0.217
+DIM sheet-tap 3.8083 0.163
+DIM sheet-tap 3.8251 0.121
+DIM sheet-tap 3.8418 0.090
+DIM sheet-tap 3.8584 0.066
+DIM sheet-tap 3.8752 0.048
+DIM sheet-tap 3.8918 0.035
+DIM sheet-tap 3.9085 0.025
+DIM sheet-tap 3.9252 0.018
+DIM sheet-tap 3.9418 0.013
+DIM sheet-tap 3.9586 0.010
+DIM sheet-tap 3.9751 0.007
+DIM sheet-tap 3.9918 0.005
+DIM sheet-tap 4.0085 0.003
+DIM sheet-tap 4.0251 0.002
+DIM sheet-tap 4.0584 0.001
+DIM sheet-tap 4.0751 0.000
+DRAWN sheet-tap 1.1584 1.000 1
+DRAWN sheet-tap 3.7082 0.000 1
+DRAWN sheet-tap 4.0915 0.000 0
+DRAWN sheet-tap 4.1082 1.000 0

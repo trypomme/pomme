@@ -1,0 +1,17 @@
+# What accessibility sees in the alerts fixture on the iOS 26.0 Simulator (iPhone 16e), from axe describe-ui: AX <case> <type> "<label>" x y w h (elements with a label or text; the scroll bars left out).
+AX alert2 Application "Alerts" 0.00 0.00 390.00 844.00
+AX alert2 StaticText "Behind the alert" 20.00 200.00 350.00 40.00
+AX alert2 Sheet "Delete the note?" 35.00 352.33 320.00 152.33
+AX alert2 StaticText "Delete the note?" 65.00 374.33 260.00 20.33
+AX alert2 StaticText "This can't be undone." 65.00 402.33 260.00 18.00
+AX alert2 Button "Cancel" 51.00 440.67 140.00 48.00
+AX alert2 Button "OK" 199.00 440.67 140.00 48.00
+AX sheet Application "Alerts" 0.00 0.00 390.00 844.00
+AX sheet StaticText "Behind the alert" 20.00 200.00 350.00 40.00
+AX sheet Sheet "Delete the note?" 35.00 268.33 320.00 320.33
+AX sheet StaticText "Delete the note?" 65.00 290.33 260.00 20.33
+AX sheet StaticText "This can't be undone." 65.00 318.33 260.00 18.00
+AX sheet Button "Share" 51.00 356.67 288.00 48.00
+AX sheet Button "Duplicate" 51.00 412.67 288.00 48.00
+AX sheet Button "Delete" 51.00 468.67 288.00 48.00
+AX sheet Button "Cancel" 51.00 524.67 288.00 48.00

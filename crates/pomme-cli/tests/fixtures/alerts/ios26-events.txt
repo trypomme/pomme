@@ -1,0 +1,18 @@
+# Events in the alerts fixture on the iOS 26.0 Simulator (iPhone 16e), seconds since launch: EVENT <case> <time> <what>. Taps by AXe at about 5 s (-tap: the named button; -outside: the point 195,100).
+EVENT alert2-tap 1.101 present
+EVENT alert2-tap 1.585 presented
+EVENT alert2-tap 4.057 handler OK presented no
+EVENT sheet-tap 1.081 present
+EVENT sheet-tap 1.560 presented
+EVENT sheet-tap 4.082 handler Share presented no
+EVENT sheet-outside 1.078 present
+EVENT sheet-outside 1.557 presented
+EVENT sheet-outside 4.111 handler Cancel presented no
+EVENT alert2-outside 1.096 present
+EVENT alert2-outside 1.574 presented
+EVENT disabled-tap 1.104 present
+EVENT disabled-tap 1.574 presented
+EVENT alert2-code 1.118 present
+EVENT alert2-code 1.589 presented
+EVENT alert2-code 3.738 dismiss in code
+EVENT alert2-code 4.180 dismissed presented no

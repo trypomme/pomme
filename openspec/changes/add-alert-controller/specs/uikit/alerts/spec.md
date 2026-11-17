@@ -2,65 +2,82 @@
 
 ### Requirement: Alerts look as on iOS 26
 
-pomme SHALL draw an alert as the iOS 26 Simulator does: its box's size,
-position, corners and background; the title's and message's fonts, colours
-and wrapping; the buttons' layout (side by side for two actions, stacked
-for three or more, as measured); and the dimming behind it.
+pomme SHALL draw an alert as the iOS 26 Simulator does
+(`tests/fixtures/alerts`, notes.md): a glass box 320 pt wide in the middle
+of the screen, with continuous corners of 34 pt; the title (semibold 17)
+and the message (regular 15, secondary colour) left-aligned 30 pt in; and
+the actions as capsules 48 pt tall, 16 pt in from the box's sides and 8 pt
+apart. Two actions SHALL sit side by side; three or more SHALL be stacked.
+The screen behind SHALL be dimmed by black at 20%.
 
 #### Scenario: Title, message and two buttons
 
 - **WHEN** the alerts probe presents an alert with a title, a message, a cancel action and a default action
-- **THEN** the box, the text and the two buttons are where they are on the Simulator, as measured on the iOS 26 Simulator, and the two buttons sit side by side
+- **THEN** the box is at 35, 352.33, 320 × 152.33, and the two buttons are at 51, 440.67 and 199, 440.67, each 140 × 48
 
 #### Scenario: Three actions
 
 - **WHEN** the alerts probe presents an alert with three actions
-- **THEN** the buttons are laid out as on the Simulator, as measured on the iOS 26 Simulator
+- **THEN** the box is 264.33 pt tall and the buttons are stacked at y 384.67, 440.67 and 496.67, each 288 × 48
 
 ### Requirement: Action sheets look as on iOS 26
 
-pomme SHALL draw an action sheet as the iOS 26 Simulator does: where it
-sits at the bottom of the screen, its corners and background, its title and
-message, its choices in the order the app added them, and the cancel choice
-in its own place, apart from the others.
+pomme SHALL draw an action sheet as the iOS 26 Simulator does on iPhone:
+the same box as an alert, in the middle of the screen, with every action
+stacked in one column.
 
 #### Scenario: Choices and a cancel
 
-- **WHEN** the alerts probe presents an action sheet with a title, two default actions, a destructive action and a cancel action
-- **THEN** the sheet, its text and its choices are where they are on the Simulator, as measured on the iOS 26 Simulator, with the cancel choice shown apart
+- **WHEN** the alerts probe presents an action sheet with a title, a message, a cancel action, two default actions and a destructive action
+- **THEN** the box is at 35, 268.33, 320 × 320.33, and the four buttons are stacked from y 356.67, 56 pt apart
 
-### Requirement: Action styles
+### Requirement: Action styles and order
 
-A destructive action's title SHALL be drawn in the system red. A cancel
-action SHALL be placed where UIKit places it (in an alert, as measured; in
-an action sheet, apart at the bottom). The `preferredAction` SHALL be drawn
-as UIKit draws it. An action that is not `enabled` SHALL be drawn dimmed
-and SHALL NOT respond to taps.
+A destructive action's title SHALL be drawn in the system red. The
+`preferredAction` SHALL be drawn filled in the system blue with a white,
+semibold title. An action that is not `enabled` SHALL be drawn faded and
+SHALL NOT respond to taps. The cancel action SHALL be placed as UIKit
+places it, whatever order it was added in: on the left of two side by
+side, last in a stack.
 
 #### Scenario: Destructive and preferred
 
 - **WHEN** the alerts probe presents an alert with a destructive action and a preferred default action
-- **THEN** the destructive title is red and the preferred title is drawn as on the Simulator
+- **THEN** the destructive title draws as 255, 56, 60 and the preferred button's fill as 0, 129, 251, as in `ios26-pixels-styles.txt`
+
+#### Scenario: Cancel added first
+
+- **WHEN** an action sheet's cancel action is added before its other actions
+- **THEN** it is the last button in the stack
 
 #### Scenario: Disabled action
 
 - **WHEN** an alert's action is not enabled and the user taps it
 - **THEN** the alert stays and the action's handler does not run
 
-### Requirement: Presenting and closing follow UIKit's order
+### Requirement: Appearing
 
 `presentViewController:animated:completion:` with an alert controller SHALL
-show it with the measured animation and call the completion once it is on
-screen. Tapping an action SHALL close the alert controller with the
-measured animation and then run the action's handler, in the order the
-Simulator does (the presenter's `presentedViewController` is nil by the
-time the handler runs, if it is on the Simulator). Each alert controller
-SHALL close once, whatever is tapped after the first tap.
+show it as iOS 26 does: the box scales from 1.2 to 1 and fades in, and the
+dimming fades in, over about 0.4 s (`ios26-motion.txt`). The completion
+SHALL run when that ends.
+
+#### Scenario: Appearing
+
+- **WHEN** the alerts probe presents an alert
+- **THEN** in each frame the box's scale and opacity are within 0.05 of `ios26-motion.txt`
+
+### Requirement: Closing follows UIKit's order
+
+Tapping an action SHALL remove the box at once, fade the dimming out over
+about 0.4 s, and then run the action's handler. By then the presenter's
+`presentedViewController` SHALL be nil. Each alert controller SHALL close
+once, whatever is tapped after the first tap.
 
 #### Scenario: Tap a button
 
 - **WHEN** the user taps the default action of an alert in the alerts probe
-- **THEN** the probe's log shows the same events in the same order as on the Simulator, ending with the action's title
+- **THEN** the probe's log shows the events of `ios26-events.txt` in the same order, ending with "handler OK presented no"
 
 #### Scenario: Close in code
 
@@ -70,8 +87,7 @@ SHALL close once, whatever is tapped after the first tap.
 ### Requirement: Tapping outside
 
 Tapping outside an action sheet that has a cancel action SHALL close it and
-run the cancel action's handler. Tapping outside an alert, or outside an
-action sheet without a cancel action, SHALL do what the Simulator does.
+run the cancel action's handler. Tapping outside an alert SHALL do nothing.
 
 #### Scenario: Outside an action sheet
 
@@ -81,14 +97,14 @@ action sheet without a cancel action, SHALL do what the Simulator does.
 #### Scenario: Outside an alert
 
 - **WHEN** the user taps the dimming around an alert
-- **THEN** the result is the Simulator's, as measured on the iOS 26 Simulator
+- **THEN** the alert stays and no handler runs
 
 ### Requirement: Alerts are visible to accessibility
 
-pomme's accessibility tree SHALL contain an alert controller's title,
-message and each action as a button labelled with its title, with the
-identifiers and traits the Simulator gives. The rest of the screen SHALL be
-hidden from it while the alert controller is shown, as on iOS.
+pomme's accessibility tree SHALL contain the box as one element labelled
+with the title, the title and message as text, and each action as a button
+labelled with its title at its capsule's frame (`ios26-ax.txt`). The screen
+behind SHALL stay in the tree, as on the Simulator.
 
 #### Scenario: Find and tap by title
 

@@ -1,0 +1,16 @@
+# The alerts fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE alertView 35.00 268.33 320.00 320.33
+VALUE box 35.00 268.33 320.00 320.33 radius 34.00
+VALUE button0 51.00 356.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE button1 51.00 412.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE button2 51.00 468.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE button3 51.00 524.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE dimming 0.00 0.00 390.00 844.00 bg 0.000 0.000 0.000 0.200
+VALUE labelCancel 168.00 538.67 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelDelete 169.67 482.67 50.67 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelDeletethenote 65.00 290.33 260.00 20.33 font .SFUI-Semibold 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelDuplicate 158.00 426.67 74.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelShare 172.33 370.67 45.33 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelThiscantbeundone 65.00 318.33 260.00 18.00 font .SFUI-Regular 15.00 color 0.235 0.235 0.263 0.600
+VALUE sameWindow 1
+VALUE window UIWindow level 0

@@ -14,7 +14,8 @@ the user can't answer, so the app can get stuck.
 - **Alert**: a `UIAlertController` with the alert style. A box in the
   middle of the screen with a title, a message and buttons.
 - **Action sheet**: a `UIAlertController` with the action sheet style. A
-  list of choices that comes up from the bottom of the screen.
+  list of choices. On iOS 26 on iPhone it is drawn like an alert, in the
+  middle of the screen, with its choices stacked.
 - **Action**: one choice (`UIAlertAction`): a title, a style (default,
   cancel or destructive) and a handler the app gives.
 - **Dimming**: the dark layer drawn over the screen behind an alert or
@@ -28,14 +29,14 @@ The reference is the alerts probe app (`tests/fixtures/alerts`) on the iOS
 - `UIAlertController` with its two styles, as UIKit draws them on iOS 26:
   - **Alert**: a box in the middle of the screen, with a title, a message
     and buttons, over a dimmed screen.
-  - **Action sheet**: a list of choices that comes up from the bottom of
-    the screen. A cancel choice sits apart from the others.
+  - **Action sheet**: the same box with its choices stacked. (Measured: on
+    iOS 26 it sits in the middle of the screen, not at the bottom.)
 - `UIAlertAction` with its three styles: default, cancel and destructive
   (drawn in red). The preferred action (`preferredAction`) is shown in bold.
 - Presenting one, tapping a choice, and closing it, in UIKit's order: the
   alert goes away, then the choice's handler runs.
 - Tapping outside an action sheet closes it as its cancel choice, if it has
-  one. An alert can't be closed that way.
+  one. Tapping outside an alert does nothing.
 - Alerts and action sheets are visible to accessibility, so tests and the
   test driver can find and tap their buttons by title.
 - Every size, colour, font, corner, and animation curve is measured on the
