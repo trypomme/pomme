@@ -69,6 +69,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           brew install ninja
+          cmake --version | head -1
           scripts/build-sysroot.sh
       # Two archives: one keeping symlinks (macOS, Linux), one with them followed, for
       # Windows, where unpacking a symlink needs admin rights.
