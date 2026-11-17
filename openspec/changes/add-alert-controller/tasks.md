@@ -13,7 +13,7 @@
 - [x] 2.2 The alert's view tree and layout from 1.1: the glass box, title, message, buttons side by side or stacked, separators. Check: `tests/alerts.rs` compares every frame with `ios26.txt`; a still compared with the Simulator's screenshot.
 - [x] 2.3 Presenting an alert controller in `crates/pomme-hle/src/navigation.rs`: its own kind of presentation with the measured dimming and appear animation (1.3). Check: `tests/alerts.rs` samples frames during the appear and compares them with `ios26-motion.txt`.
 - [x] 2.4 Tapping an action: close with the measured animation, then the handler, in the order measured in 1.2; once only; disabled actions ignore taps; closing in code runs no handler. Check: `tests/alerts.rs` compares the probe's event log with the recording.
-- [ ] 2.5 Accessibility for alerts, as measured in 1.4, in `crates/pomme-hle/src/accessibility.rs`. Check: `tests/alerts.rs` finds and taps "OK" with the test driver, and the elements match `ios26-ax.txt`.
+- [x] 2.5 Accessibility for alerts, as measured in 1.4, in `crates/pomme-hle/src/accessibility.rs`. Check: `tests/alerts.rs` finds and taps "OK" with the test driver, and the elements match `ios26-ax.txt`. (pomme also lists a button's title as text inside it, as it does for every UIButton; iOS doesn't.)
 
 ## 3. Action sheets
 
@@ -28,4 +28,4 @@
 
 ## 5. Documentation
 
-- [ ] 5.1 `docs/differences-from-ios.md`: anything about alerts that ends up different from the Simulator (for example, text wrapping from the font). Check: the page lists it, or says nothing changed.
+- [x] 5.1 `docs/differences-from-ios.md`: anything about alerts that ends up different from the Simulator (for example, text wrapping from the font). Check: the page lists it, or says nothing changed.

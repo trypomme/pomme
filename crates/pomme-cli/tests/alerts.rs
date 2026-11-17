@@ -316,3 +316,35 @@ fn the_alert_grows_into_place_as_on_ios() {
     }
     assert!(checked > 12, "only {checked} frames while it appeared");
 }
+
+/// What accessibility sees (ios26-ax.txt): the box named by its title, its
+/// texts, and each action a button at its capsule; the screen behind stays.
+#[test]
+fn alerts_for_accessibility() {
+    use pomme_hle::driver::{drive, text};
+    let ax = std::fs::read_to_string(format!("{}/tests/fixtures/alerts/ios26-ax.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    for case in ["alert2", "sheet"] {
+        let Some(mut emu) = common::boot("alerts") else { return };
+        pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", case);
+        let shown = drive(&mut emu, |app| {
+            app.wait_for(&text("Delete the note?"))?;
+            app.run_for(1.0)?;
+            app.elements()
+        })
+        .unwrap();
+        for line in ax.lines().filter_map(|l| l.strip_prefix(&format!("AX {case} "))) {
+            let (kind, rest) = line.split_once(' ').unwrap();
+            let (label, frame) = rest[1..].split_once("\" ").unwrap();
+            let f: Vec<f64> = frame.split(' ').map(|v| v.parse().unwrap()).collect();
+            let at = |e: &&pomme_hle::accessibility::Element| e.frame.iter().zip(&f).all(|(a, b)| (a - b).abs() <= 0.5);
+            let found = match kind {
+                "Application" => continue,
+                // (A text's frame is the label's; its width follows the font only when centred.)
+                "StaticText" => shown.iter().any(|e| e.label.as_deref() == Some(label) && (e.frame[1] - f[1]).abs() <= 0.5),
+                "Button" => shown.iter().filter(at).any(|e| e.traits & 1 != 0 && e.label.as_deref() == Some(label)),
+                _ => shown.iter().filter(at).any(|e| e.label.as_deref() == Some(label)),
+            };
+            assert!(found, "{case}: no {kind} {label:?} at {f:?}\n{}", pomme_hle::accessibility::describe(&shown));
+        }
+    }
+}

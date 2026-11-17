@@ -273,6 +273,11 @@ pub(crate) fn build(emu: &mut Emu, vc: u64) -> Result<[f64; 2]> {
             top += BUTTON_HEIGHT;
         }
     }
+    // For accessibility the box is one container named by its title (the
+    // Simulator's "Sheet", tests/fixtures/alerts/ios26-ax.txt); the screen
+    // behind stays.
+    let name = bag_get(emu, vc, "pomme.alertTitle").or_else(|| bag_get(emu, vc, "pomme.message")).unwrap_or(0);
+    send(emu, bx, "setAccessibilityLabel:", &[name])?;
     let height = if n > 0 { top + BUTTON_INSET } else { y };
     set_frame(emu, bx, [0.0, 0.0, WIDTH, height]);
     set_frame(emu, content, [0.0, 0.0, WIDTH, height]);
