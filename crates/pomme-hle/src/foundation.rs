@@ -3010,7 +3010,12 @@ pub fn new_date(emu: &mut Emu, abs: f64) -> Result<u64> {
     cf(emu, "_CFDateCreate", &[0])
 }
 
+/// A date's seconds since 2001; nil's aren't a number
+/// (`timeIntervalSinceDate:nil` is NaN: tests/fixtures/devmisc).
 pub(crate) fn date_value(emu: &mut Emu, d: u64) -> Result<f64> {
+    if d == 0 {
+        return Ok(f64::NAN);
+    }
     cf(emu, "_CFDateGetAbsoluteTime", &[d])?;
     Ok(f64::from_bits(emu.last_q0 as u64))
 }

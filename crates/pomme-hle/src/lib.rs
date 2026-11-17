@@ -76,6 +76,7 @@ mod coretext;
 mod pointer_array;
 mod urlcomponents;
 mod streams;
+mod exceptions;
 pub mod storyboard;
 pub mod locale;
 mod measurement;
@@ -141,6 +142,10 @@ const CODE_SIZE: u64 = 1 << 20;
 /// Hook on `__cxa_throw(void *obj, std::type_info *type, void (*dtor)(void *))`.
 fn report_cxx_throw(emu: &mut Emu) -> Result<()> {
     let (obj, tinfo) = (emu.cpu.x[0], emu.cpu.x[1]);
+    if exceptions::is_objc(emu, tinfo) {
+        emu.continue_original();
+        return Ok(());
+    }
     // type_info: {vtable, const char *name}; the name may carry a flag in its top bit.
     let name_ptr = emu.read_u64(tinfo + 8).unwrap_or(0) & 0x7fff_ffff_ffff_ffff;
     let name = emu.cstr(name_ptr).unwrap_or_default();
@@ -370,6 +375,7 @@ pub struct Emu {
     pub(crate) pointer_arrays: pointer_array::State,
     pub(crate) url_components: urlcomponents::State,
     pub(crate) streams: streams::State,
+    pub(crate) exceptions: exceptions::State,
     pub locales: locale::State,
     /// Fallback fonts for Chinese, Japanese and Korean.
     pub(crate) fallback: fallback::State,
@@ -521,6 +527,7 @@ impl Emu {
             pointer_arrays: Default::default(),
             url_components: Default::default(),
             streams: Default::default(),
+            exceptions: Default::default(),
             locales: Default::default(),
             fallback: Default::default(),
             localizable: Default::default(),

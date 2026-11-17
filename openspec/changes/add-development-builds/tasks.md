@@ -14,7 +14,7 @@
 - [x] 2.2b `crates/pomme-net`: the live network client (real HTTP and sockets) moved out of the CLI, so driver tests can run a development build against Metro. Check: the CLI's runs behave as before (`a_debug_build_loads_from_metro`), and a driver test boots the Debug build with it.
 - [x] 2.3 The HMR WebSocket to Metro; Fast Refresh. Check: the script edits the greeting and the test sees the new text with the tap count kept, as in 1.2.
 - [x] 2.4 Reload from Metro. Check: after `r`, the test sees "Tapped 0 times".
-- [ ] 2.5 With no Metro running, the screen matches the Simulator's (from 1.1's notes). Check: a case in `development_builds.rs`.
+- [x] 2.5 With no Metro running, the screen matches the Simulator's (from 1.1's notes). Check: a case in `development_builds.rs`.
 
 - [x] 2.6 Find why virtual time falls behind the wall clock with the HMR socket open (a run of 600 virtual seconds took over 19 real minutes). Check: a note in the design, and a fix if it's pomme's.
 - [ ] 2.7 Firebase in a Debug build: native Firebase configures (the real project's app ID in its logs), but React Native Firebase's JavaScript says "No Firebase App '[DEFAULT]' has been created" on hello-expo's `pommehello:///firebase` screen; the release build shows every line (online: auth anonymous, Firestore cache and server). Find what differs. Check: the Debug build's Firebase screen shows the same lines as the release build's.

@@ -2,15 +2,31 @@
 VALUE addressesMatch 1
 VALUE alertLevel 2000
 VALUE cacheLimits 5 1000
+VALUE catchOrder sub+finally
+VALUE caughtName ProbeName
+VALUE caughtReason probe reason
 VALUE containsAAfterTwo 0
 VALUE countA 2
 VALUE countAAfterRemove 1
 VALUE countMissing 0
 VALUE countedClass NSCountedSet
+VALUE describedError No script URL provided.
 VALUE firstFrameHasPlus 1
 VALUE firstFrameImage Devmisc
 VALUE firstFrameIndex 0
+VALUE keyDebugDescription NSDebugDescription
+VALUE keyDescription NSLocalizedDescription
+VALUE keyFailureReason NSLocalizedFailureReason
+VALUE keyRecoverySuggestion NSLocalizedRecoverySuggestion
+VALUE keyUnderlying NSUnderlyingError
 VALUE members 2
+VALUE monoName .AppleSystemUIFontMonospaced-Regular
+VALUE monoSize 14
 VALUE normalLevel 0
+VALUE plainError The operation couldn’t be completed. (ProbeDomain error 7.)
+VALUE raisedName Raised
+VALUE rethrownOuter a string
+VALUE sinceNil nan
 VALUE stackHasFrames 1
+VALUE stringCaughtAsId a string
 VALUE topWindow alert

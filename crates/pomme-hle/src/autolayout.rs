@@ -536,9 +536,10 @@ pub fn solve(emu: &mut Emu) -> Result<bool> {
     };
     propagate(emu, &mut s, &[&required]);
     propagate(emu, &mut s, &[&required, &optional]);
-    // Intrinsic content sizes, for views whose size is still open.
+    // Intrinsic content sizes, for views whose size is still open (a stack's
+    // arranged subviews get theirs from the stack, which lays them out next).
     for &i in &items {
-        if !auto(emu, i) {
+        if !auto(emu, i) || crate::stackview::is_arranged(emu, i) {
             continue;
         }
         let open = [s.known(i, 0).is_none(), s.known(i, 1).is_none()];

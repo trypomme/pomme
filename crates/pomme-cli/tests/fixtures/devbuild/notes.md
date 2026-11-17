@@ -32,3 +32,20 @@ mode), the app installed and launched with `xcrun simctl`.
   and the state is gone ("Tapped 2 times" becomes "Tapped 0 times").
 - `POST /reload` answers 200 on Expo's dev server but does **not** reload
   the app.
+
+## No Metro (`ios26-no-metro.png`)
+
+- With Metro stopped, React Native shows its error screen (RedBox): a red
+  header with the message "No script URL provided. Make sure the packager
+  is running or you have embedded a JS bundle in your application
+  bundle.", a blank line, then "unsanitizedScriptURLString = (null)", in
+  the monospaced system font; a black body; and four buttons along the
+  bottom.
+- The buttons' titles depend on the build: a Simulator build adds the
+  keyboard shortcuts ("Dismiss (ESC)", "Reload (⌘R)", "Copy (⌥⌘C)", "Extra
+  Info (⌘E)"); a device build, which is what pomme runs, has "Dismiss",
+  "Reload JS", "Copy" and "Extra Info" (React Native's
+  `RCTRedBoxController`, by `TARGET_OS_SIMULATOR`).
+- On the way, `RCTFatal` throws and catches its own exception (@try/@catch)
+  before React Native shows the screen.
+

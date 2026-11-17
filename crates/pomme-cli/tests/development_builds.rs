@@ -149,3 +149,35 @@ fn recursive_description_as_on_ios() {
     let differences: Vec<String> = want.iter().filter(|(k, v)| got.get(*k) != Some(*v)).map(|(k, v)| format!("{k}: iOS {v:?}, pomme {:?}", got.get(k))).collect();
     assert!(differences.is_empty(), "{}\n\nconsole:\n{}", differences.join("\n"), emu.console);
 }
+
+/// With no Metro, React Native's error screen (RedBox), as on the iOS 26
+/// Simulator (tests/fixtures/devbuild/notes.md, `ios26-no-metro.png`): its
+/// message, and the device build's four buttons. React Native catches its
+/// own fatal error (`RCTFatal`'s @try/@catch) to get there. Needs the Debug
+/// build (`POMME_DEV_APP`) but no Metro: pomme's network here is offline.
+#[test]
+fn a_debug_build_without_metro() {
+    use pomme_hle::driver::{drive, id, text_containing};
+    let Some(app) = std::env::var_os("POMME_DEV_APP").map(std::path::PathBuf::from) else {
+        eprintln!("skipped: set POMME_DEV_APP to a Debug build of hello-expo");
+        return;
+    };
+    let sysroot = std::path::Path::new("../../vendor/sysroot").canonicalize().unwrap();
+    let opts = pomme_loader::LoadOptions { sysroot: Some(sysroot) };
+    let mut emu = pomme_hle::Emu::new(pomme_loader::load_with(&app, &opts).unwrap()).unwrap();
+    drive(&mut emu, |app| {
+        let message = app.wait_for(&id("redbox-error"))?.label.unwrap_or_default();
+        assert!(
+            message.starts_with("No script URL provided. Make sure the packager is running or you have embedded a JS bundle in your application bundle."),
+            "the error screen says {message:?}"
+        );
+        assert!(message.ends_with("unsanitizedScriptURLString = (null)"), "the error screen says {message:?}");
+        for (button, title) in [("redbox-dismiss", "Dismiss"), ("redbox-reload", "Reload JS"), ("redbox-copy", "Copy"), ("redbox-extra", "Extra Info")] {
+            let b = app.find(&id(button))?.unwrap_or_else(|| panic!("no {button}"));
+            assert_eq!(b.label.as_deref(), Some(title));
+        }
+        assert!(app.find(&text_containing("Hello from pomme"))?.is_none());
+        Ok(())
+    })
+    .unwrap();
+}

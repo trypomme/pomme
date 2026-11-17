@@ -1303,6 +1303,12 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (s, w) = (f(e, 0), f(e, 1));
         ret_font(e, ".SFUI-Regular", s, w)
     }),
+    // Named as on iOS (tests/fixtures/devmisc); drawn with pomme's text font
+    // (docs/differences-from-ios.md).
+    ("UIFont", true, "monospacedSystemFontOfSize:weight:", |e| {
+        let (s, w) = (f(e, 0), f(e, 1));
+        ret_font(e, ".AppleSystemUIFontMonospaced-Regular", s, w)
+    }),
     // An app's registered face, by its PostScript, full or family name, at its
     // weight; any other name, the system font under that name.
     ("UIFont", true, "fontWithName:size:", |e| {

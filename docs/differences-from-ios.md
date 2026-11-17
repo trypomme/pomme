@@ -18,6 +18,7 @@ instead:
 | iOS | pomme |
 |---|---|
 | SF Pro (the system font) | Inter |
+| SF Mono (the monospaced system font) | Inter, for now: its name is iOS's, its letters aren't monospaced |
 | PingFang, Hiragino, Apple SD Gothic (Chinese, Japanese, Korean) | Noto Sans CJK |
 | Arabic, Hebrew, Thai system fonts | Noto Sans for each script |
 | Apple Color Emoji | Noto Color Emoji |

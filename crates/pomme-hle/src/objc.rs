@@ -618,7 +618,7 @@ pub(crate) fn init(emu: &mut Emu) -> Result<()> {
             attach_category(emu, cat)?;
         }
     }
-    Ok(())
+    crate::exceptions::bind(emu)
 }
 
 /// The protocols Foundation's classes adopt (subclasses inherit them), so
@@ -1802,18 +1802,6 @@ fn get_uncaught_handler(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn objc_exception_throw(emu: &mut Emu) -> Result<()> {
-    let exc = emu.cpu.x[0];
-    // Uncaught: the app's handler hears it first (crash reporters record it there).
-    let handler = std::mem::take(&mut emu.uncaught_exception_handler);
-    if handler != 0 {
-        emu.call(handler, &[exc])?;
-    }
-    let mut text = |sel: &str| send(emu, exc, sel, &[]).ok().filter(|&s| s != 0).and_then(|s| crate::foundation::nsstring(emu, s).ok());
-    let (name, reason) = (text("name"), text("reason"));
-    Err(Stop::Unsupported(format!("uncaught Objective-C exception {}: {}", name.unwrap_or_default(), reason.unwrap_or_default())))
-}
-
 /// NSException {isa, name, reason, userInfo}: enough to describe what was thrown.
 fn exception_init(emu: &mut Emu, class_method: bool) -> Result<()> {
     let e = if class_method {
@@ -1884,7 +1872,7 @@ pub(crate) const EXCEPTION_METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSException", false, "name", |e| exception_field(e, 8)),
     ("NSException", false, "reason", |e| exception_field(e, 16)),
     ("NSException", false, "userInfo", |e| exception_field(e, 24)),
-    ("NSException", false, "raise", objc_exception_throw),
+    ("NSException", false, "raise", crate::exceptions::throw),
     ("NSException", false, "callStackSymbols", |e| {
         let a = crate::foundation::new_array_of(e, &[])?;
         e.ret(a);
@@ -1948,7 +1936,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_objc_setProperty_atomic_copy", objc_set_property_copy),
     ("_objc_setProperty_nonatomic_copy", objc_set_property_copy),
     ("_objc_copyStruct", objc_copy_struct),
-    ("_objc_exception_throw", objc_exception_throw),
+    ("_objc_exception_throw", crate::exceptions::throw),
     ("_objc_enumerationMutation", objc_enumeration_mutation),
 ];
 
@@ -2805,10 +2793,6 @@ fn objc_add_load_image_func(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-fn exceptions_unsupported(_: &mut Emu) -> Result<()> {
-    Err(Stop::Unsupported("Objective-C/C++ exception handling isn't implemented yet".into()))
-}
-
 pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
     ("_class_getInstanceMethod", class_get_instance_method),
     ("_class_getClassMethod", class_get_class_method),
@@ -2866,10 +2850,11 @@ pub(crate) const REFLECT_FUNCS: &[(&str, HostFn)] = &[
     ("_objc_setHook_getImageName", objc_set_hook_get_image_name),
     ("_objc_setHook_lazyClassNamer", objc_set_hook_lazy_class_namer),
     ("_objc_addLoadImageFunc", objc_add_load_image_func),
-    ("_objc_begin_catch", exceptions_unsupported),
-    ("_objc_end_catch", exceptions_unsupported),
-    ("_objc_exception_rethrow", exceptions_unsupported),
-    ("_objc_terminate", exceptions_unsupported),
+    ("_objc_begin_catch", crate::exceptions::begin_catch),
+    ("_objc_end_catch", crate::exceptions::end_catch),
+    ("_objc_exception_rethrow", crate::exceptions::rethrow),
+    ("_objc_terminate", crate::exceptions::objc_terminate),
+    ("___objc_personality_v0", crate::exceptions::personality),
 ];
 
 /// Make the guest memory at `at` a class: a method-less subclass of `base`

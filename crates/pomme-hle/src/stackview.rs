@@ -120,6 +120,11 @@ fn place(distribution: u64, length: f64, gap: f64, sizes: &[Option<f64>]) -> Vec
     out
 }
 
+/// Whether `v` is one of a stack's arranged subviews.
+pub(crate) fn is_arranged(emu: &Emu, v: u64) -> bool {
+    emu.stacks.arranged.values().any(|l| l.contains(&v))
+}
+
 /// Lay out every stack's arranged subviews (outer stacks first); whether any moved.
 pub fn arrange(emu: &mut Emu) -> Result<bool> {
     let mut stacks: Vec<(usize, u64)> = Vec::new();

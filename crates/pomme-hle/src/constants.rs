@@ -43,6 +43,12 @@ const STRING_PREFIXES: &[&str] = &[
 
 /// String constants whose values aren't their names: (name, value).
 const STRINGS: &[(&str, &str)] = &[
+    // NSError's userInfo keys (tests/fixtures/devmisc, iOS 26 Simulator).
+    ("NSLocalizedDescriptionKey", "NSLocalizedDescription"),
+    ("NSLocalizedFailureReasonErrorKey", "NSLocalizedFailureReason"),
+    ("NSLocalizedRecoverySuggestionErrorKey", "NSLocalizedRecoverySuggestion"),
+    ("NSUnderlyingErrorKey", "NSUnderlyingError"),
+    ("NSDebugDescriptionErrorKey", "NSDebugDescription"),
     // CFNetwork's proxy keys (tests/fixtures/proxies, iOS 26 Simulator).
     ("kCFHTTPVersion1_0", "HTTP/1.0"),
     ("kCFHTTPVersion1_1", "HTTP/1.1"),
