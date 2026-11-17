@@ -5,6 +5,9 @@
 #   push to main    the same, plus the downloadable packages (on the run's Summary page)
 #   tag v*          the packages attached to a GitHub Release
 #
+# A pull request that only touches docs (openspec/, docs/, *.md) builds nothing: its Desktop
+# and Web checks pass at once, so they can stay required checks without blocking it.
+#
 # Release assets keep the same names in every release, so
 # https://github.com/<owner>/<repo>/releases/latest/download/<name> always points at the newest:
 #   pomme-macos-arm64.zip  pomme-windows-x64.zip  pomme-linux-x64.tar.gz
@@ -49,10 +52,36 @@ env:
   PACKAGE: ${{ github.event_name != 'pull_request' }}
 
 jobs:
+  # Does this run need to build anything? Not for a pull request that only changes docs.
+  changes:
+    name: Changes
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files="$(git diff --name-only "$BASE...$HEAD")"
+          echo "$files"
+          code="$(echo "$files" | grep -vE '^(openspec/|docs/)|\.md$' | grep -q . && echo true || echo false)"
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   # The open-source iOS system libraries apps load as guest code (scripts/build-sysroot.sh).
   # arm64 iOS code, the same for every host: built once on a Mac and cached until its scripts change.
   sysroot:
     name: Sysroot
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -89,8 +118,11 @@ jobs:
 
   desktop:
     name: Desktop (${{ matrix.name }})
-    needs: sysroot
-    runs-on: ${{ matrix.os }}
+    needs: [changes, sysroot]
+    # Runs (and passes at once on a cheap runner) for docs-only changes too, so the
+    # per-platform checks always report; a failed sysroot fails it rather than skipping it.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ needs.changes.outputs.code == 'true' && matrix.os || 'ubuntu-24.04' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -105,34 +137,45 @@ jobs:
         shell: bash
     env:
       HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      RUN: ${{ needs.changes.outputs.code }}
     steps:
+      - name: Docs only
+        if: env.RUN != 'true'
+        run: echo "only docs changed; nothing to build"
+      - name: Check sysroot
+        if: env.RUN == 'true' && needs.sysroot.result != 'success'
+        run: echo "::error::the sysroot job didn't succeed (${{ needs.sysroot.result }})"; exit 1
       - uses: actions/checkout@v4
+        if: env.RUN == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: env.RUN == 'true'
         with:
           key: ${{ matrix.name }}
       - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+        if: env.RUN == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           # NASM for openh264's assembly (screen recordings); without it, slower C. X11, Wayland
           # and Vulkan are loaded at run time, so they need no headers here.
           sudo apt-get install -y --no-install-recommends nasm
       - name: Select Xcode
-        if: runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS'
         run: .github/scripts/select-xcode.sh
 
       - name: Build
+        if: env.RUN == 'true'
         run: cargo build --release --locked -p pomme
 
       - uses: actions/download-artifact@v4
-        if: runner.os == 'macOS' || env.PACKAGE == 'true'
+        if: env.RUN == 'true' && (runner.os == 'macOS' || env.PACKAGE == 'true')
         with:
           name: sysroot
       # On the Mac the fixture tests build tiny iOS apps with Xcode and run them on the sysroot;
       # elsewhere they skip themselves and the rest run.
       - name: Test
-        if: runner.os == 'macOS' || matrix.name == 'linux-x64'
+        if: env.RUN == 'true' && (runner.os == 'macOS' || matrix.name == 'linux-x64')
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
             mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
@@ -140,7 +183,7 @@ jobs:
           cargo test --locked --workspace
 
       - name: Sign and notarize (macOS)
-        if: runner.os == 'macOS' && env.PACKAGE == 'true' && env.HAS_MACOS_SIGNING == 'true'
+        if: env.RUN == 'true' && runner.os == 'macOS' && env.PACKAGE == 'true' && env.HAS_MACOS_SIGNING == 'true'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -151,10 +194,10 @@ jobs:
         run: .github/scripts/sign-macos.sh target/release/pomme
 
       - name: Package
-        if: env.PACKAGE == 'true'
+        if: env.RUN == 'true' && env.PACKAGE == 'true'
         run: .github/scripts/package.sh pomme-${{ matrix.name }} target/release/${{ matrix.exe }} ${{ matrix.sysroot }}
       - uses: actions/upload-artifact@v4
-        if: env.PACKAGE == 'true'
+        if: env.RUN == 'true' && env.PACKAGE == 'true'
         with:
           name: pomme-${{ matrix.name }}
           path: dist/*
@@ -166,6 +209,7 @@ jobs:
   demo:
     name: Web demo app
     needs: sysroot
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -216,32 +260,46 @@ jobs:
   # (index.html, its scripts and pkg/), plus helloexpo.pfs when the demo job made one.
   web:
     name: Web
-    needs: demo
+    needs: [changes, demo]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      RUN: ${{ needs.changes.outputs.code }}
     steps:
+      - name: Docs only
+        if: env.RUN != 'true'
+        run: echo "only docs changed; nothing to build"
+      - name: Check demo
+        if: env.RUN == 'true' && env.PACKAGE == 'true' && needs.demo.result != 'success'
+        run: echo "::error::the demo job didn't succeed (${{ needs.demo.result }})"; exit 1
       - uses: actions/checkout@v4
+        if: env.RUN == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN == 'true'
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        if: env.RUN == 'true'
         with:
           key: web
       - name: Install wasm-pack
+        if: env.RUN == 'true'
         run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
       # As scripts/build-web.sh builds it (a 32 MB stack; SIMD).
       - name: Build
+        if: env.RUN == 'true'
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -C link-arg=-zstack-size=33554432 -C target-feature=+simd128
         run: wasm-pack build crates/pomme-web --release --target no-modules --out-dir "$PWD/web/pkg" --no-typescript
       - uses: actions/download-artifact@v4
-        if: env.PACKAGE == 'true'
+        if: env.RUN == 'true' && (env.PACKAGE == 'true')
         continue-on-error: true  # no demo artifact without the Firebase config secret
         with:
           name: demo
           path: demo
       - name: Package
-        if: env.PACKAGE == 'true'
+        if: env.RUN == 'true' && (env.PACKAGE == 'true')
         run: |
           mkdir -p dist stage/pomme-web
           if [ -f demo/helloexpo.pfs ]; then cp demo/helloexpo.pfs stage/pomme-web/; else echo "::warning::pomme-web.zip has no helloexpo.pfs"; fi
@@ -251,7 +309,7 @@ jobs:
           (cd stage && zip -qr9 ../dist/pomme-web.zip pomme-web)
           ls -lh dist/
       - uses: actions/upload-artifact@v4
-        if: env.PACKAGE == 'true'
+        if: env.RUN == 'true' && (env.PACKAGE == 'true')
         with:
           name: pomme-web
           path: dist/*
