@@ -39,13 +39,15 @@ The reference is the alerts probe app (`tests/fixtures/alerts`) on the iOS
   one. Tapping outside an alert does nothing.
 - Alerts and action sheets are visible to accessibility, so tests and the
   test driver can find and tap their buttons by title.
+- Text fields in alerts (`addTextFieldWithConfigurationHandler:`, React
+  Native's `Alert.prompt`): the first takes the keyboard, and the alert moves
+  to the middle of what the keyboard leaves.
+- The dark appearance as well as the light.
 - Every size, colour, font, corner, and animation curve is measured on the
   iOS 26 Simulator with probe apps, as the project's rules say.
 
 Out of scope:
 
-- Text fields in alerts (`addTextFieldWithConfigurationHandler:`, used by
-  React Native's `Alert.prompt`). A later change.
 - iPad popovers (`popoverPresentationController`): pomme presents iPhones.
 - The system's own alerts (permission prompts and the like): pomme copies
   the app, not the phone around it.

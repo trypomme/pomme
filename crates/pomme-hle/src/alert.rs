@@ -36,19 +36,58 @@ const BELOW_LONE: f64 = 4.0;
 /// `long` case: 18 + 20 + 20).
 const MESSAGE_LINE_GAP: f64 = 2.0;
 const BUTTON_INSET: f64 = 16.0;
+// Text fields (the `field` and `fields` cases): a capsule 290 × 48, 15 pt in
+// from the box, 12 pt below the header; joined one under another, with a
+// separator; the buttons 20 pt below, and the box's bottom 15.67 below them.
+const FIELD_INSET: f64 = 15.0;
+const FIELD_TOP: f64 = 12.0;
+const FIELD_HEIGHT: f64 = 48.0;
+const FIELD_TEXT: [f64; 4] = [15.0, 7.0, 260.0, 35.0];
+const BELOW_FIELDS: f64 = 20.0;
+const BOTTOM_WITH_FIELDS: f64 = 15.67;
+const SEPARATOR: [f64; 4] = [0.235, 0.235, 0.263, 0.176];
 const BUTTON_HEIGHT: f64 = 48.0;
 const BUTTON_GAP: f64 = 8.0;
 
-// Colours (notes.md; light appearance).
-const LABEL: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
-/// The message: what's under it × 0.45 over every backdrop measured, as black at 55%.
-const SECONDARY: [f64; 4] = [0.0, 0.0, 0.0, 0.55];
-/// A disabled action's title, as drawn on its fill.
-const DISABLED: [f64; 4] = [0.235, 0.235, 0.263, 0.24];
-const RED: [f64; 4] = [1.0, 56.0 / 255.0, 60.0 / 255.0, 1.0];
+// Colours (notes.md), light and dark.
+struct Colors {
+    label: [f64; 4],
+    /// The message: in light, what's under it × 0.45 (black at 55%); in dark,
+    /// what's under it + 153 (an additive blend: `MESSAGE_BLEND`).
+    message: [f64; 4],
+    /// A disabled action's title, as drawn on its fill.
+    disabled: [f64; 4],
+    red: [f64; 4],
+    /// The preferred action's tint (its fill: render.rs, ALERT_TINTED_FILL).
+    preferred: [f64; 4],
+}
+
+const LIGHT: Colors = Colors {
+    label: [0.0, 0.0, 0.0, 1.0],
+    message: [0.0, 0.0, 0.0, 0.55],
+    disabled: [0.235, 0.235, 0.263, 0.24],
+    red: [1.0, 56.0 / 255.0, 60.0 / 255.0, 1.0],
+    preferred: [0.0, 0.533, 1.0, 1.0],
+};
+
+const DARK: Colors = Colors {
+    label: [1.0, 1.0, 1.0, 1.0],
+    message: [0.6, 0.6, 0.6, 1.0],
+    disabled: [235.0 / 255.0, 235.0 / 255.0, 245.0 / 255.0, 0.25],
+    red: [1.0, 66.0 / 255.0, 69.0 / 255.0, 1.0],
+    preferred: [0.0, 0.569, 1.0, 1.0],
+};
+
 const WHITE: [f64; 4] = [1.0, 1.0, 1.0, 1.0];
-/// The preferred action's tint (its fill: render.rs, ALERT_TINTED_FILL).
-const PREFERRED_FILL: [f64; 4] = [0.0, 0.533, 1.0, 1.0];
+
+/// The dimming behind it: black at 20% (dark, 48%).
+pub(crate) fn dimming(emu: &Emu) -> [f64; 4] {
+    [0.0, 0.0, 0.0, if emu.appearance.dark { 0.48 } else { 0.2 }]
+}
+
+fn colors(emu: &Emu) -> &'static Colors {
+    if emu.appearance.dark { &DARK } else { &LIGHT }
+}
 
 // UIFontWeight.
 const REGULAR: f64 = 0.0;
@@ -113,21 +152,29 @@ fn round(emu: &mut Emu, v: u64, radius: f64) -> Result<()> {
 #[derive(Clone, Copy)]
 struct TextStyle {
     font: (&'static str, f64, f64),
-    color: [f64; 4],
+    /// The message's colours (else the label's).
+    message: bool,
     /// Extra room between lines.
     line_gap: f64,
     centred: bool,
 }
 
 /// The title or message with both: semibold 17, and secondary 15 with 2 pt more between lines.
-const TITLE: TextStyle = TextStyle { font: (".SFUI-Semibold", 17.0, SEMIBOLD), color: LABEL, line_gap: 0.0, centred: false };
-const MESSAGE: TextStyle = TextStyle { font: (".SFUI-Regular", 15.0, REGULAR), color: SECONDARY, line_gap: MESSAGE_LINE_GAP, centred: false };
+const TITLE: TextStyle = TextStyle { font: (".SFUI-Semibold", 17.0, SEMIBOLD), message: false, line_gap: 0.0, centred: false };
+const MESSAGE: TextStyle = TextStyle { font: (".SFUI-Regular", 15.0, REGULAR), message: true, line_gap: MESSAGE_LINE_GAP, centred: false };
 /// Either one alone: regular 17, centred.
-const LONE: TextStyle = TextStyle { font: (".SFUI-Regular", 17.0, REGULAR), color: LABEL, line_gap: 0.0, centred: true };
+const LONE: TextStyle = TextStyle { font: (".SFUI-Regular", 17.0, REGULAR), message: false, line_gap: 0.0, centred: true };
 
 /// A label of `text` at y, the text's width, wrapping; returns its height.
 fn label(emu: &mut Emu, parent: u64, text: &str, style: &TextStyle, y: f64, attributed: u64) -> Result<f64> {
-    let TextStyle { font, color, line_gap, centred } = *style;
+    let TextStyle { font, message, line_gap, centred } = *style;
+    // (In dark, a header text is added to what's under it: the title + 242,
+    // the message + 153.)
+    let color = match (message, emu.appearance.dark) {
+        (true, _) => colors(emu).message,
+        (false, true) => [242.0 / 255.0, 242.0 / 255.0, 242.0 / 255.0, 1.0],
+        (false, false) => colors(emu).label,
+    };
     let l = new_of(emu, "UILabel", [TEXT_X, y, WIDTH - 2.0 * TEXT_X, 0.0])?;
     if centred {
         bag_set(emu, l, "textAlignment", 1);
@@ -144,6 +191,12 @@ fn label(emu: &mut Emu, parent: u64, text: &str, style: &TextStyle, y: f64, attr
     let c = crate::uiview::new_color(emu, color)?;
     bag_set(emu, l, "textColor", c);
     bag_set(emu, l, "numberOfLines", 0);
+    if emu.appearance.dark {
+        // (Added to what's under it: Core Animation's plus-lighter filter.)
+        let layer = send(emu, l, "layer", &[])?;
+        let f = foundation::new_nsstring(emu, "plusL")?;
+        bag_set(emu, layer, "compositingFilter", f);
+    }
     if line_gap > 0.0 {
         objc::bag_set_f64(emu, l, "pomme.lineSpacing", line_gap);
     }
@@ -181,12 +234,13 @@ fn button(emu: &mut Emu, vc: u64, parent: u64, action: u64, frame: [f64; 4]) -> 
     round(emu, b, BUTTON_HEIGHT / 2.0)?;
     let title = bag_get(emu, action, "pomme.title").unwrap_or(0);
     send(emu, b, "setTitle:forState:", &[title, 0])?;
+    let palette = colors(emu);
     let color = if preferred {
         WHITE
     } else if style == DESTRUCTIVE {
-        RED
+        palette.red
     } else {
-        LABEL
+        palette.label
     };
     // (UIKit's private `titleTextColor`, set by key, wins: React Native's dev menu.)
     let c = match bag_get(emu, action, "pomme.titleTextColor").filter(|&c| c != 0) {
@@ -194,7 +248,7 @@ fn button(emu: &mut Emu, vc: u64, parent: u64, action: u64, frame: [f64; 4]) -> 
         None => crate::uiview::new_color(emu, color)?,
     };
     send(emu, b, "setTitleColor:forState:", &[c, 0])?;
-    let d = crate::uiview::new_color(emu, DISABLED)?;
+    let d = crate::uiview::new_color(emu, colors(emu).disabled)?;
     send(emu, b, "setTitleColor:forState:", &[d, 2])?;
     let tl = send(emu, b, "titleLabel", &[])?;
     let f = crate::uiview::new_font(emu, if preferred { ".SFUI-Semibold" } else { ".SFUI-Medium" }, 17.0, if preferred { SEMIBOLD } else { MEDIUM })?;
@@ -202,18 +256,8 @@ fn button(emu: &mut Emu, vc: u64, parent: u64, action: u64, frame: [f64; 4]) -> 
     let enabled = bag_get(emu, action, "pomme.disabled").unwrap_or(0) == 0;
     send(emu, b, "setEnabled:", &[enabled as u64])?;
     // The capsule's fill, behind the title: it colours the glass under it (render.rs).
-    let cls = objc::host_class(emu, "UIGlassEffect")?;
-    let effect = send(emu, cls, "effectWithStyle:", &[if preferred { crate::glass::ALERT_TINTED_FILL } else { crate::glass::ALERT_FILL }])?;
-    if preferred {
-        let tint = crate::uiview::new_color(emu, PREFERRED_FILL)?;
-        bag_set(emu, effect, "pommeTint", tint);
-    }
-    let cls = objc::host_class(emu, "UIVisualEffectView")?;
-    let fill = send(emu, cls, "alloc", &[])?;
-    let fill = send(emu, fill, "initWithEffect:", &[effect])?;
-    set_frame(emu, fill, [0.0, 0.0, frame[2], frame[3]]);
-    round(emu, fill, BUTTON_HEIGHT / 2.0)?;
-    crate::uiview::view_mut(emu, fill).user_interaction = false;
+    let tint = if preferred { crate::uiview::new_color(emu, colors(emu).preferred)? } else { 0 };
+    let fill = fill_view(emu, if preferred { crate::glass::ALERT_TINTED_FILL } else { crate::glass::ALERT_FILL }, tint, [0.0, 0.0, frame[2], frame[3]])?;
     send(emu, b, "insertSubview:atIndex:", &[fill, 0])?;
     bag_set(emu, b, "pomme.alertAction", action);
     let sel = objc::intern(emu, "_pommeAlertActionTapped:")?;
@@ -221,6 +265,75 @@ fn button(emu: &mut Emu, vc: u64, parent: u64, action: u64, frame: [f64; 4]) -> 
     send(emu, b, "addTarget:action:forControlEvents:", &[vc, sel, 1 << 6])?;
     send(emu, parent, "addSubview:", &[b])?;
     Ok(())
+}
+
+/// The text fields, in the order they were added.
+fn fields(emu: &mut Emu, vc: u64) -> Result<Vec<u64>> {
+    let list = bag_get(emu, vc, "pomme.textFields").unwrap_or(0);
+    if list == 0 {
+        return Ok(Vec::new());
+    }
+    foundation::array_values(emu, list)
+}
+
+/// Whether it has text fields (then the keyboard comes up with it).
+pub(crate) fn has_fields(emu: &mut Emu, vc: u64) -> Result<bool> {
+    Ok(!fields(emu, vc)?.is_empty())
+}
+
+/// The first text field, which has the keyboard when the alert is up.
+pub(crate) fn first_field(emu: &mut Emu, vc: u64) -> Result<u64> {
+    Ok(fields(emu, vc)?.first().copied().unwrap_or(0))
+}
+
+/// The fields' capsules from `y` in the box: one group, its outer corners
+/// round; returns where they end.
+fn lay_out_fields(emu: &mut Emu, parent: u64, list: &[u64], mut y: f64) -> Result<f64> {
+    let n = list.len();
+    for (i, &f) in list.iter().enumerate() {
+        let capsule = fill_view(emu, crate::glass::ALERT_FILL, 0, [FIELD_INSET, y, WIDTH - 2.0 * FIELD_INSET, FIELD_HEIGHT])?;
+        // CACornerMask: top left 1, top right 2, bottom left 4, bottom right 8.
+        let mut mask = 0;
+        if i == 0 {
+            mask |= 1 | 2;
+        }
+        if i + 1 == n {
+            mask |= 4 | 8;
+        }
+        let l = send(emu, capsule, "layer", &[])?;
+        crate::calayer::layer_mut(emu, l).masked_corners = mask;
+        crate::uiview::view_mut(emu, capsule).user_interaction = true;
+        send(emu, parent, "addSubview:", &[capsule])?;
+        set_frame(emu, f, FIELD_TEXT);
+        let font = crate::uiview::new_font(emu, ".SFUI-Regular", 17.0, REGULAR)?;
+        bag_set(emu, f, "font", font);
+        let content = send(emu, capsule, "contentView", &[])?;
+        send(emu, content, "addSubview:", &[f])?;
+        if i + 1 < n {
+            let line = new_of(emu, "UIView", [FIELD_TEXT[0], FIELD_HEIGHT - 1.0, FIELD_TEXT[2], 1.0])?;
+            let c = crate::uiview::new_color(emu, SEPARATOR)?;
+            send(emu, line, "setBackgroundColor:", &[c])?;
+            send(emu, content, "addSubview:", &[line])?;
+        }
+        y += FIELD_HEIGHT;
+    }
+    Ok(y)
+}
+
+/// A rounded view of one of the alert's fills (render.rs), at `frame`.
+fn fill_view(emu: &mut Emu, style: u64, tint: u64, frame: [f64; 4]) -> Result<u64> {
+    let cls = objc::host_class(emu, "UIGlassEffect")?;
+    let effect = send(emu, cls, "effectWithStyle:", &[style])?;
+    if tint != 0 {
+        bag_set(emu, effect, "pommeTint", tint);
+    }
+    let cls = objc::host_class(emu, "UIVisualEffectView")?;
+    let v = send(emu, cls, "alloc", &[])?;
+    let v = send(emu, v, "initWithEffect:", &[effect])?;
+    set_frame(emu, v, frame);
+    round(emu, v, frame[3] / 2.0)?;
+    crate::uiview::view_mut(emu, v).user_interaction = false;
+    Ok(v)
 }
 
 /// Build the box (the controller's view) for what it holds now; its size.
@@ -257,7 +370,12 @@ pub(crate) fn build(emu: &mut Emu, vc: u64) -> Result<[f64; 2]> {
     let side_by_side = n == 2 && !is_action_sheet(emu, vc);
     let order = shown_order(emu, vc, side_by_side)?;
     let inner = WIDTH - 2.0 * BUTTON_INSET;
-    let mut top = y + BUTTON_INSET;
+    let list = fields(emu, vc)?;
+    let mut top = if list.is_empty() {
+        y + BUTTON_INSET
+    } else {
+        lay_out_fields(emu, content, &list, y + FIELD_TOP)? + BELOW_FIELDS
+    };
     if side_by_side {
         let w = (inner - BUTTON_GAP) / 2.0;
         for (i, &a) in order.iter().enumerate() {
@@ -278,7 +396,8 @@ pub(crate) fn build(emu: &mut Emu, vc: u64) -> Result<[f64; 2]> {
     // behind stays.
     let name = bag_get(emu, vc, "pomme.alertTitle").or_else(|| bag_get(emu, vc, "pomme.message")).unwrap_or(0);
     send(emu, bx, "setAccessibilityLabel:", &[name])?;
-    let height = if n > 0 { top + BUTTON_INSET } else { y };
+    let bottom = if list.is_empty() { BUTTON_INSET } else { BOTTOM_WITH_FIELDS };
+    let height = if n > 0 { top + bottom } else { y };
     set_frame(emu, bx, [0.0, 0.0, WIDTH, height]);
     set_frame(emu, content, [0.0, 0.0, WIDTH, height]);
     Ok([WIDTH, height])
@@ -411,7 +530,29 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         bag_set(e, vc, "pomme.preferredAction", a);
         Ok(())
     }),
-    (AC, false, "textFields", |e| ret(e, 0)),
+    (AC, false, "textFields", |e| {
+        let vc = e.arg(0);
+        let list = fields(e, vc)?;
+        let a = foundation::new_array_of(e, &list)?;
+        ret(e, a)
+    }),
+    // A text field (the app configures it in the block), shown below the message.
+    (AC, false, "addTextFieldWithConfigurationHandler:", |e| {
+        let (vc, handler) = (e.arg(0), e.arg(2));
+        let f = new_of(e, "UITextField", FIELD_TEXT)?;
+        let mut list = bag_get(e, vc, "pomme.textFields").unwrap_or(0);
+        if list == 0 {
+            let cls = objc::host_class(e, "NSMutableArray")?;
+            list = send(e, cls, "new", &[])?;
+            bag_set(e, vc, "pomme.textFields", list);
+        }
+        send(e, list, "addObject:", &[f])?;
+        send(e, f, "release", &[])?;
+        if handler != 0 {
+            crate::libsystem::call_block(e, handler, &[f])?;
+        }
+        Ok(())
+    }),
     // iPad only: there's no popover on an iPhone.
     (AC, false, "popoverPresentationController", |e| ret(e, 0)),
     (AC, false, "_pommeAlertActionTapped:", |e| {

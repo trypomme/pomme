@@ -43,7 +43,8 @@ fn differences(case: &str, emu: &mut pomme_hle::Emu) -> Vec<String> {
             wrong.push(format!("{k}: no button at {:?} (pomme's: {buttons:?})", f));
         }
     }
-    for (k, w) in want.iter().filter(|(k, _)| !k.starts_with("button") && *k != "box") {
+    // (A field's wrappers on iOS are its private views: `fieldN_upM`.)
+    for (k, w) in want.iter().filter(|(k, _)| !k.starts_with("button") && *k != "box" && !k.contains("_up")) {
         let Some(g) = got.get(k) else {
             wrong.push(format!("{k}: not reported (iOS {})", w.join(" ")));
             continue;
@@ -85,7 +86,7 @@ fn differences(case: &str, emu: &mut pomme_hle::Emu) -> Vec<String> {
 #[test]
 fn alerts_and_action_sheets_are_laid_out_as_on_ios() {
     let mut all = Vec::new();
-    for case in ["alert2", "alert3", "styles", "disabled", "sheet", "titleonly", "messageonly", "long"] {
+    for case in ["alert2", "alert3", "styles", "disabled", "sheet", "titleonly", "messageonly", "long", "field", "fields"] {
         let Some(mut emu) = run(case, 4.0) else { return };
         for d in differences(case, &mut emu) {
             all.push(format!("{case}: {d}"));
@@ -94,24 +95,29 @@ fn alerts_and_action_sheets_are_laid_out_as_on_ios() {
     assert!(all.is_empty(), "{}", all.join("\n"));
 }
 
-/// The drawn colours at the sampled points (`points.txt`; `ios26-pixels-*.txt`),
-/// over teal, white, black and orange: the dimming, the glass, the buttons'
-/// fills and the texts' ink.
+/// The drawn colours at the sampled points (`points.txt`; `ios26-pixels-*.txt`,
+/// `ios26-dark-pixels-*.txt`), over teal, white, black and orange, light and
+/// dark: the dimming, the glass, the buttons' fills and the texts' ink.
 #[test]
 fn alerts_are_drawn_as_on_ios() {
     let mut wrong = Vec::new();
-    for case in ["styles", "disabled", "styles-white", "styles-black", "styles-orange"] {
-        let Some(mut emu) = run(case, 4.0) else { return };
+    let cases = ["styles", "disabled", "styles-white", "styles-black", "styles-orange"];
+    for (case, dark) in cases.iter().map(|&c| (c, false)).chain(cases.iter().map(|&c| (c, true))) {
+        let Some(mut emu) = common::boot("alerts") else { return };
+        emu.appearance.dark = dark;
+        pomme_hle::libsystem::set_env(&mut emu, "PROBE_VARIANT", case);
+        common::views(&mut emu, 4.0);
+        let file = if dark { format!("dark-pixels-{case}") } else { format!("pixels-{case}") };
         let png = emu.screenshot_png(3.0).unwrap();
         if let Some(dir) = std::env::var_os("POMME_ALERT_SHOTS") {
-            std::fs::write(std::path::Path::new(&dir).join(format!("pomme-{case}.png")), &png).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join(format!("pomme-{file}.png")), &png).unwrap();
         }
         let pix = pomme_hle::render::render(&mut emu, 3.0).unwrap();
         let at = |x: f64, y: f64| {
             let c = pix.pixel((x * 3.0) as u32, (y * 3.0) as u32).unwrap();
             [c.red() as i32, c.green() as i32, c.blue() as i32]
         };
-        let text = std::fs::read_to_string(format!("{}/tests/fixtures/alerts/ios26-pixels-{case}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let text = std::fs::read_to_string(format!("{}/tests/fixtures/alerts/ios26-{file}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
         // name → [(x, y, iOS colour)]
         let mut by_name: BTreeMap<String, Vec<(f64, f64, [i32; 3])>> = BTreeMap::new();
         for l in text.lines().filter(|l| l.starts_with("PIXEL ")) {
@@ -134,7 +140,7 @@ fn alerts_are_drawn_as_on_ios() {
             // One point: its colour. A line along a title: the ink, the pixel farthest from where the line starts.
             let (want, got) = if pts.len() == 1 { (ios[0], ours[0]) } else { (far(&ios), far(&ours)) };
             if (0..3).any(|i| (want[i] - got[i]).abs() > 12) {
-                wrong.push(format!("{case} {name}: iOS {want:?}, pomme {got:?}"));
+                wrong.push(format!("{file} {name}: iOS {want:?}, pomme {got:?}"));
             }
         }
     }
@@ -351,5 +357,23 @@ fn alerts_for_accessibility() {
                 assert_eq!(texts, 0, "{case}: {label:?} is also text inside its button\n{}", pomme_hle::accessibility::describe(&shown));
             }
         }
+    }
+}
+
+/// Text fields (`field-tap`, `fields-tap`): the first has the keyboard; what's
+/// typed reaches it, and the handler reads it (ios26-events.txt).
+#[test]
+fn text_fields_take_what_is_typed() {
+    use pomme_hle::driver::text;
+    for case in ["field-tap", "fields-tap"] {
+        let Some((ev, _)) = drive_case(case, |app| {
+            app.type_text("Ada")?;
+            app.run_for(0.5)?;
+            app.tap(&text("OK")).map(|_| ())
+        }) else {
+            return;
+        };
+        let want = ios_events(case).last().unwrap().1.clone();
+        assert_eq!(ev.last().map(|e| e.1.as_str()), Some(want.as_str()), "{case}: {ev:?}");
     }
 }

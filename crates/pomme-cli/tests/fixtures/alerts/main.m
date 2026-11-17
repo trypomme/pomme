@@ -13,6 +13,7 @@
 #import <UIKit/UIKit.h>
 
 static CFAbsoluteTime t0;
+static NSString *keyboardFrame = @"none";
 static void event(NSString *what) {
     printf("EVENT %.3f %s\n", CFAbsoluteTimeGetCurrent() - t0, what.UTF8String);
     fflush(stdout);
@@ -119,11 +120,21 @@ static void animating(CALayer *l, NSString *path, double t) {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title
                                                                message:message
                                                         preferredStyle:sheet ? UIAlertControllerStyleActionSheet : UIAlertControllerStyleAlert];
+    __block __weak UIAlertController *weakA = nil;
     void (^h)(UIAlertAction *) = ^(UIAlertAction *x) {
-        event([NSString stringWithFormat:@"handler %@ presented %@", x.title, self.presentedViewController ? @"yes" : @"no"]);
+        NSMutableString *texts = [NSMutableString string];
+        for (UITextField *f in weakA.textFields) [texts appendFormat:@" field \"%@\"", f.text];
+        event([NSString stringWithFormat:@"handler %@ presented %@%@", x.title, self.presentedViewController ? @"yes" : @"no", texts]);
     };
     NSMutableArray<NSString *> *titles = [NSMutableArray array];
-    if ([@[ @"alert2", @"titleonly", @"messageonly", @"long" ] containsObject:variant]) {
+    weakA = a;
+    // field: one text field (a placeholder); fields: a login and a secure password.
+    if ([variant isEqualToString:@"field"] || [variant isEqualToString:@"fields"]) {
+        [a addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = @"Name"; }];
+        if ([variant isEqualToString:@"fields"])
+            [a addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = @"Password"; f.secureTextEntry = YES; }];
+    }
+    if ([@[ @"alert2", @"titleonly", @"messageonly", @"long", @"field", @"fields" ] containsObject:variant]) {
         [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:h]];
         [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:h]];
     } else if ([variant isEqualToString:@"alert3"]) {
@@ -175,6 +186,14 @@ static void animating(CALayer *l, NSString *path, double t) {
                 else
                     printf("VALUE label%s none\n", key.UTF8String);
             }
+            for (NSUInteger i = 0; i < a.textFields.count; i++) {
+                UITextField *f = a.textFields[i];
+                printf("VALUE field%lu %s placeholder %s font %s %.2f first %d secure %d\n", (unsigned long)i, rect([f convertRect:f.bounds toView:w]).UTF8String, f.placeholder.UTF8String, f.font.fontName.UTF8String, f.font.pointSize, f.isFirstResponder, f.secureTextEntry);
+                UIView *box = f.superview;
+                for (int up = 0; box && up < 4; up++, box = box.superview)
+                    printf("VALUE field%lu_up%d %s %s bg %s radius %.2f\n", (unsigned long)i, up, NSStringFromClass(box.class).UTF8String, rect([box convertRect:box.bounds toView:w]).UTF8String, rgba(box.backgroundColor).UTF8String, box.layer.cornerRadius);
+            }
+            printf("VALUE keyboard %s\n", keyboardFrame.UTF8String);
             NSMutableArray *found = [NSMutableArray array];
             collect(w, @"_UIAlertControllerFilledBackgroundView", found);
             for (NSUInteger i = 0; i < found.count; i++) {
@@ -213,6 +232,10 @@ static void animating(CALayer *l, NSString *path, double t) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
     t0 = CFAbsoluteTimeGetCurrent();
+    [NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardDidShowNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        keyboardFrame = rect([n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue]);
+        event(@"keyboard shown");
+    }];
     return YES;
 }
 @end

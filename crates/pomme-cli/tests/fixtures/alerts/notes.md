@@ -97,3 +97,38 @@ What fits all four (within 3 levels):
   title and message as static text, and each action as a button labelled
   with its title, at its capsule's frame.
 - The screen behind stays in the tree.
+
+## Text fields (`field`, `fields`, `field-tap`, `fields-tap`)
+
+- Each field is a capsule like the buttons' (the grey fill, radius 24),
+  290 × 48 at x 50, its text field 15 pt in (260 × 35, 7 pt down), SF Regular
+  17, placeholder in the tertiary label colour.
+- The first is 12 pt below the header; more follow with no gap, joined: the
+  first rounds only its top corners, the last only its bottom, with a 1 pt
+  separator (0.235, 0.235, 0.263 at 17.6%) 15 pt in, at the bottom of each
+  but the last. The buttons are 20 pt below the fields; the box's bottom
+  15.67 below the buttons.
+- The first field has the keyboard as the alert comes up (iPhone 16e: its
+  top at 509), and the box is in the middle of the space between the safe
+  area's top (47) and the keyboard: its centre at y 278.
+- What's typed is in `textFields` when the handler runs ("handler OK …
+  field \"Ada\"").
+
+## Dark (`ios26-dark-*.png`, `ios26-dark-pixels-*.txt`)
+
+| | white | black | orange | teal |
+|---|---|---|---|---|
+| dimmed backdrop | 133,133,133 | 0,0,0 | 133,67,0 | 0,109,116 |
+| glass | 62,62,62 | 17,17,17 | 84,38,0 | 0,63,68 |
+| grey fill | 91,91,91 | 47,47,47 | 117,66,24 | 25,94,100 |
+| blue fill | 31,176,255 | 9,154,255 | 42,164,255 | 0,177,255 |
+| message ink | 215,215,215 | 170,170,170 | 237,191,153 | 153,216,221 |
+
+- The dimming: black at 48%.
+- The glass: 66.2% toward 25.7, then 2.15× as saturated.
+- The grey fill: the glass 30 levels lighter, 1.1× as saturated.
+- The blue fill: the tint (0, 145, 255) plus half the glass.
+- The title and the message are added to what's under them (plus-lighter):
+  + 242 and + 153. Action titles are white, a destructive one 255,66,69, a
+  disabled one (235, 235, 245) at 25%.
+

@@ -127,3 +127,35 @@ SHALL open as an action sheet when a Debug build is shaken.
 
 - **WHEN** a Debug build of hello-expo is shaken
 - **THEN** React Native's dev menu shows its choices as on the Simulator, and tapping "Reload" reloads the JavaScript
+
+### Requirement: Text fields
+
+An alert's text fields (`addTextFieldWithConfigurationHandler:`) SHALL be
+shown below its texts as on the iOS 26 Simulator: capsules 290 × 48, 12 pt
+below the header, joined one under another with a separator line, and the
+buttons 20 pt below them. The first SHALL have the keyboard once the alert is
+up, and the alert SHALL sit in the middle of the space between the safe
+area's top and the keyboard. What is typed SHALL be in `textFields` when an
+action's handler runs.
+
+#### Scenario: Two fields
+
+- **WHEN** the alerts probe presents an alert with a login field and a secure password field
+- **THEN** the box is at 35, 146, 320 × 264, the fields' text is at y 237.33 and 285.33, and the keyboard's top is at 509
+
+#### Scenario: Typing
+
+- **WHEN** the user types "Ada" and taps OK
+- **THEN** the handler reads "Ada" from the first field
+
+### Requirement: Dark appearance
+
+In the dark appearance, alerts SHALL be drawn as the iOS 26 Simulator draws
+them (`ios26-dark-pixels-*.txt`): the dimming black at 48%, a darker glass,
+light fills, and the title and message added to what's under them.
+
+#### Scenario: Over four backgrounds
+
+- **WHEN** the alerts probe's styles case is shown in dark over teal, white, black and orange
+- **THEN** each sampled colour is within 12 levels of the Simulator's
+

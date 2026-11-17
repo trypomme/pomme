@@ -16,3 +16,9 @@ EVENT alert2-code 1.118 present
 EVENT alert2-code 1.589 presented
 EVENT alert2-code 3.738 dismiss in code
 EVENT alert2-code 4.180 dismissed presented no
+EVENT field-tap 1.116 present
+EVENT field-tap 1.641 presented
+EVENT field-tap 5.813 handler OK presented no field "Ada"
+EVENT fields-tap 1.127 present
+EVENT fields-tap 1.650 presented
+EVENT fields-tap 5.721 handler OK presented no field "Ada" field ""

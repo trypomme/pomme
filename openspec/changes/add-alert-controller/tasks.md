@@ -29,3 +29,10 @@
 ## 5. Documentation
 
 - [x] 5.1 `docs/differences-from-ios.md`: anything about alerts that ends up different from the Simulator (for example, text wrapping from the font). Check: the page lists it, or says nothing changed.
+
+## 6. Text fields and the dark appearance
+
+- [x] 6.1 Measure text fields (`field`, `fields`, `field-tap`, `fields-tap`: layout, keyboard, typing) and the dark appearance (`ios26-dark-pixels-*.txt` over four backgrounds). Check: the recordings and notes.md.
+- [x] 6.2 `addTextFieldWithConfigurationHandler:` and `textFields` in `alert.rs`; the first field takes the keyboard; the alert re-centres above it. Check: `tests/alerts.rs` (layout of `field` and `fields`, `text_fields_take_what_is_typed`).
+- [x] 6.3 Dark: the alert's glass, fills and dimming (`render.rs`, `alert.rs`), the header texts added to what's under them. Check: `alerts_are_drawn_as_on_ios` in dark over four backgrounds.
+

@@ -282,6 +282,13 @@ fn react_natives_alerts() {
         check(app, &alert)?;
         app.tap(&text("Delete"))?;
         app.wait_for(&text("Alert: Delete"))?;
+        // Alert.prompt: an alert with a text field, which has the keyboard.
+        app.tap(&id("show-prompt"))?;
+        app.wait_for(&text("Your name"))?;
+        app.run_for(1.0)?;
+        app.type_text("Ada")?;
+        app.tap(&text("OK"))?;
+        app.wait_for(&text("Prompt: Ada"))?;
         app.tap(&id("show-sheet"))?;
         app.wait_for(&text("Share the note"))?;
         app.run_for(1.0)?;

@@ -1600,12 +1600,15 @@ fn present(emu: &mut Emu) -> Result<()> {
         } else {
             new_view(emu, [0.0, 0.0, w, h])?
         };
-        let black = crate::uiview::new_color(emu, SHEET_DIMMING)?;
+        let black = crate::uiview::new_color(emu, crate::alert::dimming(emu))?;
         send(emu, dim, "setBackgroundColor:", &[black])?;
         send(emu, container, "addSubview:", &[dim])?;
         let size = crate::alert::build(emu, vc)?;
         let safe = crate::orientation::safe_area(emu);
-        let mid = (safe[0] + h - safe[2]) / 2.0;
+        // In the middle of the safe area, or of what the keyboard leaves when
+        // a text field brings it up (tests/fixtures/alerts, `field`).
+        let bottom = if crate::alert::has_fields(emu, vc)? { h - crate::orientation::keyboard_height(emu, true) } else { h - safe[2] };
+        let mid = (safe[0] + bottom) / 2.0;
         set_frame_of(emu, vview, [(w - size[0]) / 2.0, mid - size[1] / 2.0, size[0], size[1]]);
         send(emu, container, "addSubview:", &[vview])?;
         (dim, 0)
@@ -1775,6 +1778,8 @@ fn alert_close_fire(emu: &mut Emu) -> Result<()> {
     crate::animation::end_transition(emu, l);
     view_mut(emu, bx).alpha = 0.0;
     view_mut(emu, p.dim).alpha = 0.0;
+    // (A text field gives the keyboard back.)
+    send(emu, bx, "endEditing:", &[1])?;
     let dl = send(emu, p.dim, "layer", &[])?;
     transition(emu, dl, Prop::Opacity, Val::N(1.0), Val::N(0.0), timing, duration);
     Ok(())
@@ -1799,6 +1804,13 @@ fn present_done(emu: &mut Emu, vc: u64) -> Result<()> {
         }
     }
     send(emu, vc, "viewDidAppear:", &[1])?;
+    if p.alert {
+        // Its first text field takes the keyboard.
+        let f = crate::alert::first_field(emu, vc)?;
+        if f != 0 {
+            send(emu, f, "becomeFirstResponder", &[])?;
+        }
+    }
     if p.covers {
         // Covered, the screen behind leaves the window (it comes back to be dismissed to).
         let pv = send(emu, p.presenter, "view", &[])?;

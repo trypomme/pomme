@@ -1,0 +1,23 @@
+# The alerts fixture on the iOS 26.0 Simulator (iPhone 16e): what it reports (frames, sizes), in points.
+VALUE alertView 35.00 146.00 320.00 264.00
+VALUE box 35.00 146.00 320.00 264.00 radius 34.00
+VALUE button0 199.00 346.33 140.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE button1 51.00 346.33 140.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE dimming 0.00 0.00 390.00 844.00 bg 0.000 0.000 0.000 0.200
+VALUE field0 65.00 237.33 260.00 35.00 placeholder Name font .SFUI-Regular 17.00 first 1 secure 0
+VALUE field0_up0 UIView 50.00 230.33 290.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE field0_up1 UIView 50.00 230.33 290.00 48.00 bg nil radius 0.00
+VALUE field0_up2 _UIAlertControllerTextFieldView 50.00 230.33 290.00 48.00 bg nil radius 0.00
+VALUE field0_up3 UIView 35.00 230.33 320.00 48.00 bg nil radius 0.00
+VALUE field1 65.00 285.33 260.00 35.00 placeholder Password font .SFUI-Regular 17.00 first 0 secure 1
+VALUE field1_up0 UIView 50.00 278.33 290.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
+VALUE field1_up1 UIView 50.00 278.33 290.00 48.00 bg nil radius 0.00
+VALUE field1_up2 _UIAlertControllerTextFieldView 50.00 278.33 290.00 48.00 bg nil radius 0.00
+VALUE field1_up3 UIView 35.00 278.33 320.00 48.00 bg nil radius 0.00
+VALUE keyboard 0.00 509.00 390.00 335.00
+VALUE labelCancel 94.00 360.33 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelDeletethenote 65.00 168.00 260.00 20.33 font .SFUI-Semibold 17.00 color 0.000 0.000 0.000 1.000 align 4
+VALUE labelOK 257.00 360.33 24.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelThiscantbeundone 65.00 196.00 260.00 18.00 font .SFUI-Regular 15.00 color 0.235 0.235 0.263 0.600 align 4
+VALUE sameWindow 1
+VALUE window UIWindow level 0

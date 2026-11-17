@@ -320,8 +320,8 @@ const CONTAINER: &str = "UIGlassContainerEffect";
 pub const REGULAR: u64 = 0;
 pub const CLEAR: u64 = 1;
 /// pomme's own materials for UIAlertController (alert.rs; tests/fixtures/alerts,
-/// fitted over teal, white, black and orange): the box's glass, an action's
-/// grey fill on it, and the preferred action's tinted fill.
+/// fitted over teal, white, black and orange, light and dark): the box's
+/// glass, an action's grey fill on it, and the preferred action's tinted fill.
 pub const ALERT: u64 = 100;
 pub const ALERT_FILL: u64 = 101;
 pub const ALERT_TINTED_FILL: u64 = 102;

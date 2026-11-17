@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { ActionSheetIOS, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// React Native's alerts: Alert.alert (an alert with two buttons) and
-// ActionSheetIOS (an action sheet with a destructive choice and a cancel),
+// React Native's alerts: Alert.alert (an alert with two buttons),
+// Alert.prompt (one with a text field) and ActionSheetIOS (an action sheet
+// with a destructive choice and a cancel),
 // both UIAlertController underneath. The screen says which button was
 // chosen. Reached with the pommehello:///alerts link.
 
@@ -19,6 +20,9 @@ export default function AlertsScreen() {
       { text: 'Delete', style: 'destructive', onPress: () => setChosen('Alert: Delete') },
     ]);
 
+  const showPrompt = () =>
+    Alert.prompt('Your name', undefined, (name) => setChosen(`Prompt: ${name}`));
+
   const showSheet = () =>
     ActionSheetIOS.showActionSheetWithOptions(
       { title: 'Share the note', options: ['Cancel', 'Copy Link', 'Delete'], cancelButtonIndex: 0, destructiveButtonIndex: 2 },
@@ -29,6 +33,9 @@ export default function AlertsScreen() {
     <View style={[styles.screen, { paddingTop: top + 24 }]}>
       <Pressable testID="show-alert" style={styles.button} onPress={showAlert}>
         <Text style={styles.buttonText}>Show alert</Text>
+      </Pressable>
+      <Pressable testID="show-prompt" style={styles.button} onPress={showPrompt}>
+        <Text style={styles.buttonText}>Show prompt</Text>
       </Pressable>
       <Pressable testID="show-sheet" style={styles.button} onPress={showSheet}>
         <Text style={styles.buttonText}>Show action sheet</Text>

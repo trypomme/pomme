@@ -2072,21 +2072,23 @@ fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h:
         let mut o = if clear {
             c.map(|v| 1.0 - (1.0 - (0.925 * v + 0.075)).max(0.0).powf(1.15))
         } else if fill {
-            // An alert action's grey fill: what's under it, 20 levels darker, 1.27× as saturated.
-            saturate(c.map(|v| v - 20.0 / 255.0), 1.27)
+            // An alert action's grey fill: what's under it 20 levels darker and
+            // 1.27× as saturated (dark: 30 lighter, 1.1×).
+            if g.dark { saturate(c.map(|v| v + 30.0 / 255.0), 1.1) } else { saturate(c.map(|v| v - 20.0 / 255.0), 1.27) }
         } else if tinted_fill {
-            // The preferred action's fill: the tint times what's under it; its
-            // blue only half so (system blue over teal, white, black and orange).
+            // The preferred action's fill: the tint times what's under it, its
+            // blue only half so (dark: the tint plus half of what's under it).
             let tc = tint.unwrap_or([0.0, 0.533, 1.0, 1.0]);
-            [tc[0] * c[0], tc[1] * c[1], tc[2] * (0.5 + 0.5 * c[2])]
+            if g.dark { std::array::from_fn(|i| tc[i] + 0.5 * c[i]) } else { [tc[0] * c[0], tc[1] * c[1], tc[2] * (0.5 + 0.5 * c[2])] }
         } else {
-            // (Dark: 78% toward 0.175, 2.6× as saturated. An alert's: 70.6% toward 0.994, 2.5×.)
-            let (mix, toward, sat) = if g.dark {
-                (0.784, 0.175, 2.6)
-            } else if g.style == crate::glass::ALERT {
-                (0.706, 0.994, 2.5)
-            } else {
-                (0.7, 0.977, 1.8)
+            // (Dark: 78% toward 0.175, 2.6× as saturated. An alert's: 70.6% toward
+            // 0.994, 2.5×; dark, 66.2% toward 0.101, 2.15×.)
+            let alert = g.style == crate::glass::ALERT;
+            let (mix, toward, sat) = match (alert, g.dark) {
+                (true, true) => (0.662, 0.101, 2.15),
+                (true, false) => (0.706, 0.994, 2.5),
+                (false, true) => (0.784, 0.175, 2.6),
+                (false, false) => (0.7, 0.977, 1.8),
             };
             saturate(c.map(|v| (1.0 - mix) * v + mix * toward), sat)
         };
