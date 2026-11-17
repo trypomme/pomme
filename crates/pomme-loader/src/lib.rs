@@ -634,5 +634,11 @@ fn resolve_dylib_path(install: &str, loader: &Path, app_dir: &Path, rpaths: &[St
     } else {
         vec![expand(install)]
     };
-    candidates.into_iter().find(|c| vfs::is_file(c)).map(|c| vfs::canonicalize(&c))
+    // The app's own code loads only what's inside the app: on a phone that's
+    // all there is. (A Debug build's rpaths also name Xcode's build folder,
+    // `../PackageFrameworks` beside the .app, for previews; a second copy of a
+    // framework from there would have state of its own.)
+    let bundle = vfs::canonicalize(app_dir);
+    let in_app = vfs::canonicalize(loader).starts_with(&bundle);
+    candidates.into_iter().filter(|c| vfs::is_file(c)).map(|c| vfs::canonicalize(&c)).find(|c| !in_app || c.starts_with(&bundle))
 }

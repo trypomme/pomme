@@ -171,7 +171,7 @@ static void animating(CALayer *l, NSString *path, double t) {
                 UILabel *l = labelWithText(w, s);
                 NSString *key = [[s componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet] componentsJoinedByString:@""];
                 if (l)
-                    printf("VALUE label%s %s font %s %.2f color %s\n", key.UTF8String, rect([l convertRect:l.bounds toView:w]).UTF8String, l.font.fontName.UTF8String, l.font.pointSize, rgba(drawnColor(l)).UTF8String);
+                    printf("VALUE label%s %s font %s %.2f color %s align %ld\n", key.UTF8String, rect([l convertRect:l.bounds toView:w]).UTF8String, l.font.fontName.UTF8String, l.font.pointSize, rgba(drawnColor(l)).UTF8String, (long)l.textAlignment);
                 else
                     printf("VALUE label%s none\n", key.UTF8String);
             }

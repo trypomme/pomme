@@ -4,8 +4,8 @@ VALUE box 35.00 365.33 320.00 126.33 radius 34.00
 VALUE button0 199.00 427.67 140.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
 VALUE button1 51.00 427.67 140.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
 VALUE dimming 0.00 0.00 390.00 844.00 bg 0.000 0.000 0.000 0.200
-VALUE labelCancel 94.00 441.67 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelDeletethenote 65.00 387.33 260.00 20.33 font .SFUI-Regular 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelOK 257.00 441.67 24.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
+VALUE labelCancel 94.00 441.67 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelDeletethenote 65.00 387.33 260.00 20.33 font .SFUI-Regular 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelOK 257.00 441.67 24.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
 VALUE sameWindow 1
 VALUE window UIWindow level 0

@@ -23,6 +23,9 @@ public func fcntl(_ fd: Int32, _ cmd: Int32, _ value: Int32) -> Int32 {
     _pomme_fcntl(fd, cmd, value)
 }
 
+/// No error (MacTypes' `noErr`): Debug builds read it rather than inline it.
+public var noErr: OSStatus { 0 }
+
 public var MAP_FAILED: UnsafeMutableRawPointer! {
     UnsafeMutableRawPointer(bitPattern: -1)
 }

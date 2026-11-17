@@ -17,14 +17,14 @@
 - [x] 2.5 With no Metro running, the screen matches the Simulator's (from 1.1's notes). Check: a case in `development_builds.rs`.
 
 - [x] 2.6 Find why virtual time falls behind the wall clock with the HMR socket open (a run of 600 virtual seconds took over 19 real minutes). Check: a note in the design, and a fix if it's pomme's.
-- [ ] 2.7 Firebase in a Debug build: native Firebase configures (the real project's app ID in its logs), but React Native Firebase's JavaScript says "No Firebase App '[DEFAULT]' has been created" on hello-expo's `pommehello:///firebase` screen; the release build shows every line (online: auth anonymous, Firestore cache and server). Find what differs. Check: the Debug build's Firebase screen shows the same lines as the release build's.
+- [x] 2.7 Firebase in a Debug build: native Firebase configures (the real project's app ID in its logs), but React Native Firebase's JavaScript says "No Firebase App '[DEFAULT]' has been created" on hello-expo's `pommehello:///firebase` screen; the release build shows every line (online: auth anonymous, Firestore cache and server). Find what differs. Check: the Debug build's Firebase screen shows the same lines as the release build's. (Found: the Debug build's rpaths also name Xcode's build folder, so pomme loaded a second FirebaseCore from `PackageFrameworks` beside the .app; the loader now keeps an app's code to its bundle. Then `PersonNameComponents` and `Darwin.noErr` for Debug Swift code, and the phone's clock at now for TLS in tests. `firebase_in_a_debug_build`.)
 
 ## 3. Shake and the developer menu
 
 - [x] 3.1 `UIResponder` motion methods, passing to the next responder (React Native's dev menu swaps `UIWindow`'s at startup). Check: the Debug build gets past `+[RCTDevMenu initialize]`.
 - [x] 3.2 `Event::Shake` in `crates/pomme-hle/src/host.rs` delivering the motion events measured in 1.4; the driver's `shake()`. Check: the shake probe's output matches `ios26.txt`.
 - [ ] 3.3 Device ▸ Shake (⌃⌘Z / Ctrl+Alt+Z) in `crates/pomme-desktop`. Check: by hand, the dev menu appears.
-- [ ] 3.4 React Native's developer menu appears on a shake in a plain Debug build, and its Reload works. Check: a case in `development_builds.rs`.
+- [x] 3.4 React Native's developer menu appears on a shake in a plain Debug build, and its Reload works. Check: a case in `development_builds.rs`.
 
 ## 4. Expo development builds
 

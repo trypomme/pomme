@@ -109,10 +109,33 @@ fn round(emu: &mut Emu, v: u64, radius: f64) -> Result<()> {
     Ok(())
 }
 
-/// A label of `text` at y, the text's width, wrapping with `line_gap` more
-/// between lines; returns its height.
-fn label(emu: &mut Emu, parent: u64, text: &str, font: (&str, f64, f64), color: [f64; 4], y: f64, line_gap: f64) -> Result<f64> {
+/// How a header text is drawn (notes.md).
+#[derive(Clone, Copy)]
+struct TextStyle {
+    font: (&'static str, f64, f64),
+    color: [f64; 4],
+    /// Extra room between lines.
+    line_gap: f64,
+    centred: bool,
+}
+
+/// The title or message with both: semibold 17, and secondary 15 with 2 pt more between lines.
+const TITLE: TextStyle = TextStyle { font: (".SFUI-Semibold", 17.0, SEMIBOLD), color: LABEL, line_gap: 0.0, centred: false };
+const MESSAGE: TextStyle = TextStyle { font: (".SFUI-Regular", 15.0, REGULAR), color: SECONDARY, line_gap: MESSAGE_LINE_GAP, centred: false };
+/// Either one alone: regular 17, centred.
+const LONE: TextStyle = TextStyle { font: (".SFUI-Regular", 17.0, REGULAR), color: LABEL, line_gap: 0.0, centred: true };
+
+/// A label of `text` at y, the text's width, wrapping; returns its height.
+fn label(emu: &mut Emu, parent: u64, text: &str, style: &TextStyle, y: f64, attributed: u64) -> Result<f64> {
+    let TextStyle { font, color, line_gap, centred } = *style;
     let l = new_of(emu, "UILabel", [TEXT_X, y, WIDTH - 2.0 * TEXT_X, 0.0])?;
+    if centred {
+        bag_set(emu, l, "textAlignment", 1);
+    }
+    if attributed != 0 {
+        // (The app's own fonts and colours, where its string has them.)
+        bag_set(emu, l, "attributedText", attributed);
+    }
     // (pomme's UILabel keeps these as stored properties.)
     let s = foundation::new_nsstring(emu, text)?;
     bag_set(emu, l, "text", s);
@@ -165,7 +188,11 @@ fn button(emu: &mut Emu, vc: u64, parent: u64, action: u64, frame: [f64; 4]) -> 
     } else {
         LABEL
     };
-    let c = crate::uiview::new_color(emu, color)?;
+    // (UIKit's private `titleTextColor`, set by key, wins: React Native's dev menu.)
+    let c = match bag_get(emu, action, "pomme.titleTextColor").filter(|&c| c != 0) {
+        Some(c) => c,
+        None => crate::uiview::new_color(emu, color)?,
+    };
     send(emu, b, "setTitleColor:forState:", &[c, 0])?;
     let d = crate::uiview::new_color(emu, DISABLED)?;
     send(emu, b, "setTitleColor:forState:", &[d, 2])?;
@@ -206,17 +233,21 @@ pub(crate) fn build(emu: &mut Emu, vc: u64) -> Result<[f64; 2]> {
     let title = bag_get(emu, vc, "pomme.alertTitle").unwrap_or(0);
     let message = bag_get(emu, vc, "pomme.message").unwrap_or(0);
     let (title, message) = (string(emu, title)?, string(emu, message)?);
-    // The header: both texts (a semibold title, a secondary message), or the one alone (regular 17).
+    let at = bag_get(emu, vc, "pomme.attributedTitle").unwrap_or(0);
+    let am = bag_get(emu, vc, "pomme.attributedMessage").unwrap_or(0);
+    // The header: both texts (a semibold title, a secondary message, left-aligned),
+    // or the one alone (regular 17, centred).
     let mut y = TEXT_TOP;
     match (&title, &message) {
         (Some(t), Some(m)) => {
-            y += label(emu, content, t, (".SFUI-Semibold", 17.0, SEMIBOLD), LABEL, y, 0.0)?;
+            y += label(emu, content, t, &TITLE, y, at)?;
             y += TEXT_GAP;
-            y += label(emu, content, m, (".SFUI-Regular", 15.0, REGULAR), SECONDARY, y, MESSAGE_LINE_GAP)?;
+            y += label(emu, content, m, &MESSAGE, y, am)?;
             y += BELOW_MESSAGE;
         }
         (Some(t), None) | (None, Some(t)) => {
-            y += label(emu, content, t, (".SFUI-Regular", 17.0, REGULAR), LABEL, y, 0.0)?;
+            let a = if title.is_some() { at } else { am };
+            y += label(emu, content, t, &LONE, y, a)?;
             y += BELOW_LONE;
         }
         (None, None) => y = 0.0,
@@ -280,6 +311,15 @@ pub(crate) fn tapped_outside(emu: &mut Emu, vc: u64) -> Result<()> {
     Ok(())
 }
 
+/// An attributed title or message: its text, and the string itself (drawn as given).
+fn set_attributed(emu: &mut Emu, vc: u64, a: u64, text_key: &'static str, key: &'static str) -> Result<()> {
+    let s = if a != 0 { send(emu, a, "string", &[])? } else { 0 };
+    set_string(emu, vc, text_key, s)?;
+    let a = if a != 0 { send(emu, a, "copy", &[])? } else { 0 };
+    bag_set(emu, vc, key, a);
+    Ok(())
+}
+
 fn set_string(emu: &mut Emu, o: u64, key: &'static str, s: u64) -> Result<()> {
     let s = if s != 0 { send(emu, s, "copy", &[])? } else { 0 };
     bag_set(emu, o, key, s);
@@ -328,6 +368,16 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     (AC, false, "setMessage:", |e| {
         let (vc, s) = (e.arg(0), e.arg(2));
         set_string(e, vc, "pomme.message", s)
+    }),
+    // UIKit's private attributed title and message, set by key (React Native's
+    // dev menu: `setValue:forKey:@"_attributedTitle"`): their text.
+    (AC, false, "set_attributedTitle:", |e| {
+        let (vc, a) = (e.arg(0), e.arg(2));
+        set_attributed(e, vc, a, "pomme.alertTitle", "pomme.attributedTitle")
+    }),
+    (AC, false, "set_attributedMessage:", |e| {
+        let (vc, a) = (e.arg(0), e.arg(2));
+        set_attributed(e, vc, a, "pomme.message", "pomme.attributedMessage")
     }),
     (AC, false, "preferredStyle", |e| {
         let v = bag_get(e, e.arg(0), "pomme.alertStyle").unwrap_or(1);
@@ -384,6 +434,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     }),
     (AA, false, "style", |e| {
         let v = bag_get(e, e.arg(0), "pomme.style").unwrap_or(0);
+        ret(e, v)
+    }),
+    (AA, false, "setTitleTextColor:", |e| {
+        let (a, c) = (e.arg(0), e.arg(2));
+        if c != 0 {
+            send(e, c, "retain", &[])?;
+        }
+        bag_set(e, a, "pomme.titleTextColor", c);
+        Ok(())
+    }),
+    (AA, false, "titleTextColor", |e| {
+        let v = bag_get(e, e.arg(0), "pomme.titleTextColor").unwrap_or(0);
         ret(e, v)
     }),
     (AA, false, "isEnabled", |e| {

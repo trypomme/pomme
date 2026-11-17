@@ -2002,7 +2002,17 @@ fn draw_glass(p: &mut Painter, g: &crate::glass::Glass, shape: &[El], w: f32, h:
     let fill = g.style == crate::glass::ALERT_FILL;
     let tinted_fill = g.style == crate::glass::ALERT_TINTED_FILL;
     let flat = fill || tinted_fill;
-    let sigma = if clear { 1.75 } else if flat { 0.0 } else { 2.5 } * k;
+    // (An alert's glass blurs more: σ 6.2 pt, from the edge of what's under React
+    // Native's dev menu on the Simulator, tests/fixtures/devbuild/ios26-dev-menu.png.)
+    let sigma = if clear {
+        1.75
+    } else if flat {
+        0.0
+    } else if g.style == crate::glass::ALERT {
+        6.2
+    } else {
+        2.5
+    } * k;
     let pts = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| apply(t, x, y));
     let margin = (3.0 * sigma).ceil() + 1.0;
     let x0 = (pts.iter().map(|q| q.0).fold(f32::MAX, f32::min) - margin).floor() as i32;

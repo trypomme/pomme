@@ -1,0 +1,10 @@
+# React Native's dev menu in hello-expo's Debug build on the iOS 26.0 Simulator (iPhone 16e), after Device > Shake, from axe describe-ui: <type> "<label>" x y w h.
+Sheet "React Native Dev Menu" 35.00 197.33 320.00 462.33
+StaticText "React Native Dev Menu" 65.00 219.33 260.00 20.33
+Button "Reload" 51.00 259.67 288.00 48.00
+Button "Open DevTools" 51.00 315.67 288.00 48.00
+Button "Toggle Element Inspector" 51.00 371.67 288.00 48.00
+Button "Disable Fast Refresh" 51.00 427.67 288.00 48.00
+Button "Show Perf Monitor" 51.00 483.67 288.00 48.00
+Button "Configure Bundler" 51.00 539.67 288.00 48.00
+Button "Cancel" 51.00 595.67 288.00 48.00

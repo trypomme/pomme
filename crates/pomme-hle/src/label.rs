@@ -90,7 +90,15 @@ pub fn lay_out(emu: &mut Emu, v: u64, width: f64) -> Result<LabelText> {
         }
     }
     // (Natural by default, as drawn in the view's direction.)
-    let alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(4) & 0xff;
+    let mut alignment = objc::bag_get(emu, v, "textAlignment").unwrap_or(4) & 0xff;
+    // Attributed text's paragraph style sets it, as UIKit's label takes it from there.
+    if attrs != 0 {
+        let key = foundation::new_nsstring(emu, "NSParagraphStyleAttributeName")?;
+        let para = send(emu, attrs, "objectForKey:", &[key])?;
+        if let Some(a) = (para != 0).then(|| objc::bag_get(emu, para, "alignment")).flatten() {
+            alignment = a & 0xff;
+        }
+    }
     let alignment = crate::direction::resolve_alignment(emu, v, alignment)?;
     Ok(LabelText { text, lines, font: f, color, alignment })
 }

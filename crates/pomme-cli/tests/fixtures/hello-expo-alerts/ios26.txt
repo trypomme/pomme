@@ -1,0 +1,11 @@
+# hello-expo's alerts screen (pommehello:///alerts) in its Debug build on the iOS 26.0 Simulator (iPhone 16e), from axe describe-ui: <dialog> <type> "<label>" x y w h.
+alert Sheet "Delete the note?" 35.00 352.33 320.00 152.33
+alert StaticText "Delete the note?" 65.00 374.33 260.00 20.33
+alert StaticText "This can't be undone." 65.00 402.33 260.00 18.00
+alert Button "Cancel" 51.00 440.67 140.00 48.00
+alert Button "Delete" 199.00 440.67 140.00 48.00
+sheet Sheet "Share the note" 35.00 309.33 320.00 238.33
+sheet StaticText "Share the note" 65.00 331.33 260.00 20.33
+sheet Button "Copy Link" 51.00 371.67 288.00 48.00
+sheet Button "Delete" 51.00 427.67 288.00 48.00
+sheet Button "Cancel" 51.00 483.67 288.00 48.00

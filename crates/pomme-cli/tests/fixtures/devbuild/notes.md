@@ -49,3 +49,14 @@ mode), the app installed and launched with `xcrun simctl`.
 - On the way, `RCTFatal` throws and catches its own exception (@try/@catch)
   before React Native shows the screen.
 
+## The dev menu (`ios26-dev-menu.png`, `ios26-dev-menu.txt`)
+
+- Device > Shake shows React Native's dev menu: an action sheet (on iOS 26,
+  a box in the middle of the screen) titled "React Native Dev Menu" in bold,
+  centred, with Reload, Open DevTools, Toggle Element Inspector, Disable Fast
+  Refresh, Show Perf Monitor, Configure Bundler, and Cancel in red.
+- React Native sets the title and the Cancel colour through UIKit's private
+  keys (`_attributedTitle`, `titleTextColor`).
+- The glass blurs what's behind it more than other glass: σ about 6.2 pt
+  (the red button's edge under it spreads over 16 pt, 10–90%).
+

@@ -755,6 +755,36 @@ fn make_key_and_visible(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// Hiding the key window makes the topmost window still shown key, as UIKit does
+/// (React Native's alert window hides itself once a button is chosen).
+fn rekey_if_gone(emu: &mut Emu, w: u64) {
+    if emu.ui.key_window == w {
+        emu.ui.key_window = emu.ui.windows.iter().rev().copied().find(|&o| o != w && emu.ui.views.views.get(&o).is_some_and(|v| !v.hidden)).unwrap_or(0);
+    }
+}
+
+fn window_set_hidden(emu: &mut Emu) -> Result<()> {
+    let (w, h) = (emu.arg(0), emu.arg(2) & 0xff != 0);
+    set_hidden(emu)?;
+    if h {
+        rekey_if_gone(emu, w);
+    }
+    Ok(())
+}
+
+/// `windowScene = nil` takes a window off the screen.
+fn window_set_scene(emu: &mut Emu) -> Result<()> {
+    let (w, scene) = (emu.arg(0), emu.arg(2));
+    if scene == 0 {
+        emu.ui.windows.retain(|&o| o != w);
+        rekey_if_gone(emu, w);
+    } else if !emu.ui.windows.contains(&w) {
+        emu.ui.windows.push(w);
+        order_windows(emu);
+    }
+    Ok(())
+}
+
 fn make_key(emu: &mut Emu) -> Result<()> {
     emu.ui.key_window = emu.arg(0);
     Ok(())
@@ -1509,7 +1539,8 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIWindow", false, "rootViewController", root_view_controller),
     ("UIWindow", false, "setRootViewController:", set_root_view_controller),
     ("UIWindow", false, "windowScene", window_scene),
-    ("UIWindow", false, "setWindowScene:", noop),
+    ("UIWindow", false, "setWindowScene:", window_set_scene),
+    ("UIWindow", false, "setHidden:", window_set_hidden),
     ("UIWindow", false, "screen", window_screen),
     ("UIView", false, "description", |e| {
         let v = e.arg(0);

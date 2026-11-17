@@ -22,9 +22,9 @@
 
 ## 4. React Native
 
-- [ ] 4.1 `apps/hello-expo`: an alerts screen (`pommehello:///alerts`) with buttons that call `Alert.alert` (two buttons) and `ActionSheetIOS.showActionSheetWithOptions`, showing the chosen button's text. Record it on the Simulator (screenshots, the text after each choice). Check: notes and screenshots in `crates/pomme-cli/tests/fixtures/hello-expo-alerts/`.
-- [ ] 4.2 The same screen in pomme. Check: a case in `crates/pomme-cli/tests/hello_expo.rs` taps each button and choice and waits for the chosen text.
-- [ ] 4.3 React Native's dev menu on Shake in the Debug build, recorded on the Simulator (its title, choices and order). Then in pomme. Check: `tests/development_builds.rs` shakes, waits for the dev menu's "Reload" and taps it, and the app reloads ("Tapped 0 times"). This closes tasks 3.3 and 3.4 of `add-development-builds`.
+- [x] 4.1 `apps/hello-expo`: an alerts screen (`pommehello:///alerts`) with buttons that call `Alert.alert` (two buttons) and `ActionSheetIOS.showActionSheetWithOptions`, showing the chosen button's text. Record it on the Simulator (screenshots, the text after each choice). Check: notes and screenshots in `crates/pomme-cli/tests/fixtures/hello-expo-alerts/`.
+- [x] 4.2 The same screen in pomme. Check: `react_natives_alerts` in `crates/pomme-cli/tests/development_builds.rs` (the Debug build with Metro, as the screen is JavaScript only) taps each button and choice and waits for the chosen text.
+- [x] 4.3 React Native's dev menu on Shake in the Debug build, recorded on the Simulator (its title, choices and order). Then in pomme. Check: `tests/development_builds.rs` shakes, waits for the dev menu's "Reload" and taps it, and the app reloads ("Tapped 0 times"). This closes tasks 3.3 and 3.4 of `add-development-builds`.
 
 ## 5. Documentation
 

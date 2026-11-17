@@ -151,6 +151,8 @@ These are gaps, not decisions. They'll close over time:
 - Development builds (Debug builds that load JavaScript from Metro,
   `expo-dev-client`): in progress, see the `add-development-builds` change.
 - SwiftUI covers the common views, not all of them.
+- Alerts and action sheets (UIAlertController): the light appearance only,
+  and no text fields yet (React Native's `Alert.prompt`).
 
 For any particular app, `pomme coverage App.app` lists exactly what it
 needs that pomme doesn't have.

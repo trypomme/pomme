@@ -17,7 +17,8 @@ messageonly, long), screenshots at
   260. The title's top is 22 pt below the box's top; the message's top is
   7.67 pt below the title's bottom. The header is 72.33 pt tall with both.
 - With only a title, or only a message (`titleonly`, `messageonly`): that
-  one text is SF Regular 17, black, 22 pt below the box's top, and the
+  one text is SF Regular 17, black, centred (the label's alignment is 1;
+  with both, they're natural, left), 22 pt below the box's top, and the
   header ends 4 pt below it (46.33 tall). With both, the header ends
   4.33 pt below the message. A message that wraps (`long`, three lines)
   is 58 pt tall: the first line 18, each further line 20.

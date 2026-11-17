@@ -5,10 +5,10 @@ VALUE button0 51.00 384.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
 VALUE button1 51.00 440.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
 VALUE button2 51.00 496.67 288.00 48.00 bg 0.463 0.463 0.502 0.120 radius 24.00
 VALUE dimming 0.00 0.00 390.00 844.00 bg 0.000 0.000 0.000 0.200
-VALUE labelCancel 168.00 510.67 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelDeletethenote 65.00 318.33 260.00 20.33 font .SFUI-Semibold 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelDontSave 152.67 454.67 84.67 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelSave 176.33 398.67 37.67 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000
-VALUE labelThiscantbeundone 65.00 346.33 260.00 18.00 font .SFUI-Regular 15.00 color 0.235 0.235 0.263 0.600
+VALUE labelCancel 168.00 510.67 54.00 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelDeletethenote 65.00 318.33 260.00 20.33 font .SFUI-Semibold 17.00 color 0.000 0.000 0.000 1.000 align 4
+VALUE labelDontSave 152.67 454.67 84.67 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelSave 176.33 398.67 37.67 20.33 font .SFUI-Medium 17.00 color 0.000 0.000 0.000 1.000 align 1
+VALUE labelThiscantbeundone 65.00 346.33 260.00 18.00 font .SFUI-Regular 15.00 color 0.235 0.235 0.263 0.600 align 4
 VALUE sameWindow 1
 VALUE window UIWindow level 0

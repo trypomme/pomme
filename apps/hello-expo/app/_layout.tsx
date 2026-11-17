@@ -23,6 +23,7 @@ export default function RootLayout() {
         <Stack.Screen name="storage" options={{ title: 'Storage' }} />
         <Stack.Screen name="lock" options={{ title: 'Lock' }} />
         <Stack.Screen name="firebase" options={{ title: 'Firebase' }} />
+        <Stack.Screen name="alerts" options={{ title: 'Alerts' }} />
         <Stack.Screen name="tabs" options={{ headerShown: false }} />
         <Stack.Screen name="glass" options={{ title: 'Glass' }} />
         <Stack.Screen name="moretabs" options={{ headerShown: false }} />
