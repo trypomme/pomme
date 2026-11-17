@@ -42,6 +42,10 @@ if [ ! -d "$VENDOR/swift" ]; then
 fi
 
 CACHES="$VENDOR/swift/Runtimes/Core/cmake/caches/Vendors/Apple"
+# CMP0195 (CMake 4.1+): CMake itself writes the module as Swift.swiftmodule/<triple>.swiftmodule,
+# the nested layout the runtime's emit_swift_interface uses. With it OLD, newer CMake passes its
+# own -emit-module-path Swift.swiftmodule (a file) last, and writing the .swiftinterface into
+# that "directory" fails. Older CMake ignores the setting.
 cmake -G Ninja -S "$VENDOR/swift/Runtimes/Core" -B "$VENDOR/build/swift-core" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
   -C "$CACHES/arm64-iPhoneOS.cmake" \
@@ -54,7 +58,8 @@ cmake -G Ninja -S "$VENDOR/swift/Runtimes/Core" -B "$VENDOR/build/swift-core" \
   -DSwiftCore_ENABLE_CRASH_REPORTER_CLIENT=OFF \
   -DSwiftCore_ENABLE_BACKTRACING=OFF \
   -DSwiftCore_OPTIMIZATION_REMARKS=OFF \
-  -DSwiftCore_ENABLE_CONCURRENCY=ON
+  -DSwiftCore_ENABLE_CONCURRENCY=ON \
+  -DCMAKE_POLICY_DEFAULT_CMP0195=NEW
 
 ninja -C "$VENDOR/build/swift-core"
 ninja -C "$VENDOR/build/swift-core" install
