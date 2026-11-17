@@ -18,10 +18,14 @@ TIMEOUT=$(command -v timeout || command -v gtimeout) || { echo "needs timeout (b
 
 # name|extra pomme arguments. Times are virtual seconds after launch.
 case "$APP" in
+  # Wonderous opens on a three-page intro; swiping left past it lands on the home screen
+  # (one wonder at a time, left/right for the next, up for its details).
   wonderous) SCENARIOS=(
       "launch|--seconds 10"
-      "swipe-up|--swipe 200,700>200,250@8 --seconds 12"
-      "next-wonder|--swipe 360,450>40,450@8 --seconds 12"
+      "intro-2|--swipe 360,450>40,450@8 --seconds 12"
+      "home|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --swipe 360,450>40,450@12 --swipe 360,450>40,450@14 --seconds 20"
+      "home-next|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --swipe 360,450>40,450@12 --swipe 360,450>40,450@14 --swipe 360,450>40,450@18 --seconds 24"
+      "details|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --swipe 360,450>40,450@12 --swipe 360,450>40,450@14 --swipe 200,700>200,200@18 --seconds 24"
     ) ;;
   gallery) SCENARIOS=(
       "launch|--seconds 10"
