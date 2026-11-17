@@ -2,7 +2,7 @@
 
 ## 1. Check browsers
 
-- [ ] 1.1 Record which current browsers have JSPI (Chrome, Edge, Safari 27+, Firefox) in the design, from each browser's release notes or by opening a test page in it. Check: the design lists each one, with its version.
+- [x] 1.1 Record which current browsers have JSPI (Chrome, Edge, Safari 27+, Firefox) in the design, from each browser's release notes or by opening a test page in it. Check: the design lists each one, with its version.
 
 ## 2. Messages in place of shared memory
 
@@ -18,6 +18,6 @@
 
 ## 4. Docs and follow-ups
 
-- [ ] 4.1 `README.md` and `web/tests/README.md`: JSPI is required; no special headers; how to embed the page. Check: updated.
+- [x] 4.1 `README.md` and `web/tests/README.md`: JSPI is required; no special headers; how to embed the page. Check: updated.
 - [ ] 4.2 `openspec/specs/hosts/browser/spec.md` purpose text: drop SharedArrayBuffer from "Words used here" when this change is archived. Check: updated at archive time.
 - [ ] 4.3 Load the web view test page with a third-party site in the browser without the isolation headers, and note in the design whether pages that were refused before now load. Check: a sentence in the design.

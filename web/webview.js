@@ -1,8 +1,8 @@
 // Web views in the browser: each WKWebView the app makes is an <iframe> under
 // the screen's canvas, where pomme leaves a hole in its frames (so views the
 // app draws above the page still cover it). The worker sends commands
-// ({type: 'webview', json}); events go back as JSON messages in a
-// SharedArrayBuffer ring (see crates/pomme-web/src/lib.rs, BrowserEngine).
+// ({type: 'webview', json}); events go back to it as JSON messages
+// (see crates/pomme-web/src/lib.rs, BrowserEngine).
 //
 // A page the app builds (loadHTMLString:baseURL:) is the frame's srcdoc, with a
 // prelude first: it puts every navigation to the app's navigation delegate (the
@@ -14,28 +14,13 @@
 'use strict';
 
 const WebViews = (() => {
-  const RING = 1 << 20; // as WEB_RING in the worker
-  const sab = new SharedArrayBuffer(8 + RING);
-  const header = new Int32Array(sab, 0, 2);
-  const ring = new Uint8Array(sab, 8, RING);
-  const encoder = new TextEncoder();
   const pages = new Map(); // page id → state
-  let layer, canvas, wake, screenWidth = 390;
+  let layer, canvas, send, screenWidth = 390;
   let next = 0; // ids for navigations pages start (the worker's are below 2^32)
   const ENGINE_IDS = 2 ** 32;
 
   function emit(page, event) {
-    const bytes = encoder.encode(JSON.stringify([page, event]));
-    const w = Atomics.load(header, 0) >>> 0, r = Atomics.load(header, 1) >>> 0;
-    if (RING - ((w - r) >>> 0) < bytes.length + 4) {
-      console.warn('[pomme] web view events overflowed; dropped', event);
-      return;
-    }
-    const put = (i, b) => { ring[(w + i) % RING] = b; };
-    for (let i = 0; i < 4; i++) put(i, (bytes.length >>> (8 * i)) & 255);
-    bytes.forEach((b, i) => put(4 + i, b));
-    Atomics.store(header, 0, (w + 4 + bytes.length) | 0);
-    wake();
+    send(JSON.stringify([page, event]));
   }
 
   const policy = (page, id, url, kind) => emit(page, { Policy: { id, url, method: 'GET', main_frame: true, kind } });
@@ -79,8 +64,6 @@ const WebViews = (() => {
 
   function create(page, cfg) {
     const iframe = document.createElement('iframe');
-    // Under cross-origin isolation, frames that don't opt in (YouTube's player) load only credentialless.
-    iframe.setAttribute('credentialless', '');
     iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
     iframe.style.cssText = `position:absolute;left:0;top:0;border:0;transform-origin:0 0;display:none;width:${cfg.width}px;height:${cfg.height}px;background:#fff`;
     layer.insertBefore(iframe, canvas);
@@ -188,9 +171,8 @@ const WebViews = (() => {
   }
 
   return {
-    sab,
-    attach(theLayer, theCanvas, width, wakeWorker) {
-      layer = theLayer; canvas = theCanvas; screenWidth = width; wake = wakeWorker;
+    attach(theLayer, theCanvas, width, sendToWorker) {
+      layer = theLayer; canvas = theCanvas; screenWidth = width; send = sendToWorker;
       new ResizeObserver(() => pages.forEach((p) => p.rect && place(p))).observe(canvas);
       setInterval(() => pages.forEach((p, id) => title(id, p)), 500);
     },

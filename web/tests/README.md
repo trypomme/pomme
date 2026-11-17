@@ -1,7 +1,7 @@
 # Browser tests
 
-These tests run pomme's browser build in headless Chromium, the way a user
-opens it: `scripts/web-test.sh` builds the WebAssembly and the app's bundle,
+These tests run pomme's browser build in headless Chromium (and WebKit, for a
+browser without JSPI), the way a user opens it: `scripts/web-test.sh` builds the WebAssembly and the app's bundle,
 serves `web/`, and `run.mjs` drives the page with Playwright.
 
 ## Setup (once)
@@ -9,7 +9,8 @@ serves `web/`, and `run.mjs` drives the page with Playwright.
 ```bash
 cd web/tests
 npm install                      # Playwright, the version in package.json
-npx playwright install chromium  # its Chromium (about 300 MB)
+npx playwright install chromium webkit  # its Chromium (about 300 MB) and WebKit
+npx playwright install-deps webkit      # on Linux: WebKit's system libraries
 ```
 
 `scripts/build-web.sh` needs `wasm-pack` (`cargo install wasm-pack`) and the
@@ -26,7 +27,8 @@ the zip it names and unpack it yourself with `ditto -x -k <zip>
 scripts/web-test.sh hello-expo        # waits for the first frame, saves web/tests/out/hello-expo.png
 scripts/web-test.sh hello-expo --wait "First frame" --see "Tapped 0" --tap 195,265 --see "Tapped 1 time"
 NO_BUILD=1 scripts/web-test.sh …      # reuse the last build
-QUERY=stats scripts/web-test.sh …     # add page options (?stats, ?nojspi)
+QUERY=stats scripts/web-test.sh …     # add page options (?stats; ?nojspi shows the no-JSPI message)
+scripts/web-test.sh embed --see "Tapped 0" --tap 195,265 --see "Tapped 1"   # hello-expo in a frame on another site
 scripts/web-test.sh hello-skia --compare   # the browser's frame against the command line's
 scripts/web-test.sh all               # every browser test (the apps must be built)
 ```
@@ -38,8 +40,17 @@ for each app are in `scripts/web-test.sh`.
 
 Steps run in order: `--wait TEXT` (the page's status or log), `--see TEXT`
 (the app's accessibility tree, which the page mirrors as ARIA), `--tap X,Y` (in
-points), `--sleep MS`. `--out FILE` saves the screen at the end. `--no-jspi`
-starts Chromium without JSPI, `--no-webgpu` without WebGPU. The page's log is printed at the end, and the
+points), `--taps "X,Y X,Y…"` (back to back, not waiting for the app), `--sleep MS`.
+`--out FILE` saves the screen at the end. `--no-jspi` starts Chromium without
+JSPI, `--no-webgpu` without WebGPU, `--browser webkit` uses WebKit instead.
+`--embed PORT` (what `scripts/web-test.sh embed` adds) serves a plain page on
+`localhost:PORT` that shows the pomme page (on `127.0.0.1`, so another origin)
+in an iframe, and runs the steps inside the frame (`embed.mjs`).
+
+The page needs no special headers (`scripts/serve-web.py` sends none), and it
+needs JSPI: without it, it shows "pomme needs a browser with JSPI" and doesn't
+start the app. `scripts/web-test.sh all` checks both, with `?nojspi` and in
+WebKit 26 (which has no JSPI), and runs hello-expo embedded in Chromium. The page's log is printed at the end, and the
 script exits 1 when a step fails.
 
 ## What JSPI costs
@@ -47,7 +58,8 @@ script exits 1 when a step fails.
 With JSPI the emulator pauses after each frame and while the app is idle
 (see `openspec/changes/add-flutter-in-browser/design.md`). Measured on
 2026-11-15 with hello-expo in headless Chromium 141 on an M1 Mac mini, with
-`QUERY=stats` and `QUERY="stats&nojspi"`:
+`QUERY=stats` and `QUERY="stats&nojspi"`, before pomme required JSPI (the
+no-JSPI column is the blocking path since removed):
 
 | | JSPI | No JSPI (`?nojspi`) |
 | --- | --- | --- |

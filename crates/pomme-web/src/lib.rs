@@ -1,17 +1,18 @@
 //! pomme in the browser. The emulator runs in a Web Worker, and `run` doesn't
-//! return while the app runs. With JSPI (WebAssembly JavaScript Promise
-//! Integration) it pauses in `pommePause` while the app is idle and after each
-//! frame, giving the browser a break (its GPU work is sent, its answers
-//! arrive); without JSPI it blocks there in `Atomics.wait`, as it always did.
+//! return while the app runs. It needs JSPI (WebAssembly JavaScript Promise
+//! Integration): it pauses in `pommePause` while the app is idle and after
+//! each frame, giving the browser a break (its GPU work is sent, its answers
+//! arrive, and the page's messages reach the worker). No shared memory, so the
+//! page needs no special headers and runs embedded in other sites.
 //! The page talks to it through:
 //!
-//! - **input**: a SharedArrayBuffer viewed as an `Int32Array`. Slot 0 counts
-//!   events written; events are 4 ints each in a ring of [`RING`] starting at
-//!   slot [`HEADER`]: a touch is (phase, x×100, y×100, 0), and what the screen
-//!   reader did to an element (see below) is ([`AX_EVENT`] + action, the
-//!   element's id low 32 bits, high 32 bits, 0). The page writes an event,
-//!   bumps the count and `Atomics.notify`s; the worker reads them when the app
-//!   is idle, pausing in `pommePause` until the next deadline otherwise.
+//! - **input**: the page posts each event to the worker, which queues it;
+//!   `pommeTakeInput()` returns what's queued as an `Int32Array`, 4 ints per
+//!   event: a touch is (phase, x×100, y×100, 0), and what the screen reader
+//!   did to an element (see below) is ([`AX_EVENT`] + action, the element's id
+//!   low 32 bits, high 32 bits, 0). The emulator takes them when the app is
+//!   idle, pausing in `pommePause` until the next deadline otherwise (new
+//!   input ends that pause early).
 //! - **frames**: the worker calls the global `pommeFrame(rgba, width, height)`
 //!   (defined by the worker script), which posts the pixels to the page.
 //! - **accessibility**: the screen's accessibility tree, whenever it changes,
@@ -26,8 +27,7 @@
 //! - **web views**: pages run in the browser itself, in frames the page puts
 //!   under the screen (web/webview.js) where pomme leaves a hole. The worker's
 //!   commands go out through the global `pommeWebView(json)`; the page's events
-//!   come back through a second SharedArrayBuffer, a byte ring of messages (see
-//!   [`BrowserEngine`]).
+//!   come back as messages the worker queues (see [`BrowserEngine`]).
 //!
 //! Virtual time follows the wall clock while the app is idle; when the guest
 //! is busy it simply falls behind and catches up, as a slow phone would.
@@ -39,8 +39,6 @@ use pomme_hle::{Emu, Stop};
 use std::path::PathBuf;
 use wasm_bindgen::prelude::*;
 
-const HEADER: u32 = 8;
-const RING: u32 = 256;
 /// The first input "phase" that's a screen reader's action: + 0 activate,
 /// 1 increment, 2 decrement, 3 focus (touch phases are 0–4).
 const AX_EVENT: i32 = 16;
@@ -61,39 +59,29 @@ extern "C" {
     fn performance_measure(name: &str, options: &JsValue);
     #[wasm_bindgen(js_name = pommeDisplay)]
     fn pomme_display(width: f64, height: f64, path: &str);
-    /// Wait up to `ms`, or until the page has written past `seen` events.
-    /// With JSPI the emulator pauses here and the browser runs (its GPU work
-    /// is sent, its answers arrive); `ms` 0 gives it one task. Without JSPI
-    /// it blocks in `Atomics.wait`. The worker swaps in its own function for
-    /// this import (web/worker.js), so only numbers may cross it.
+    /// Pause up to `ms`, or until the page sends input: the browser runs
+    /// meanwhile (its GPU work is sent, its answers and the page's messages
+    /// arrive); `ms` 0 gives it one task. The worker swaps in a
+    /// `WebAssembly.Suspending` for this import (web/worker.js), so only
+    /// numbers may cross it.
     #[wasm_bindgen(js_name = pommePause)]
-    fn pomme_pause(ms: f64, seen: i32);
+    fn pomme_pause(ms: f64);
+    /// The page's input events queued since the last call, 4 ints each.
+    #[wasm_bindgen(js_name = pommeTakeInput)]
+    fn pomme_take_input() -> js_sys::Int32Array;
+    /// The page's web view events queued since the last call: JSON `[page, event]` strings.
+    #[wasm_bindgen(js_name = pommeTakeWebViewEvents)]
+    fn pomme_take_web_view_events() -> js_sys::Array;
     /// Why the app stopped (`run` returns nothing: with JSPI it's a promise).
     #[wasm_bindgen(js_name = pommeStopped)]
     fn pomme_stopped(why: &str);
 }
 
-/// Bytes of the web view event ring (after its two-int header: bytes written, bytes read).
-pub const WEB_RING: u32 = 1 << 20;
-
 /// Web views' pages in the browser's own frames (web/webview.js shows them).
 /// Commands are JSON `[page, command]` handed to `pommeWebView`; events come
-/// back as JSON `[page, event]` messages in the ring, each a little-endian
-/// u32 length and the bytes, the page writing and the worker reading.
-struct BrowserEngine {
-    header: js_sys::Int32Array,
-    ring: js_sys::Uint8Array,
-}
-
-impl BrowserEngine {
-    fn new(sab: &js_sys::SharedArrayBuffer) -> Self {
-        BrowserEngine { header: js_sys::Int32Array::new_with_byte_offset_and_length(sab, 0, 2), ring: js_sys::Uint8Array::new_with_byte_offset_and_length(sab, 8, WEB_RING) }
-    }
-
-    fn byte(&self, at: u32) -> u8 {
-        self.ring.get_index(at % WEB_RING)
-    }
-}
+/// back as JSON `[page, event]` messages, which the worker queues until
+/// [`poll`](pomme_hle::webkit::WebEngine::poll) takes them.
+struct BrowserEngine;
 
 impl pomme_hle::webkit::WebEngine for BrowserEngine {
     fn send(&mut self, page: pomme_hle::webkit::PageId, cmd: pomme_hle::webkit::Command) {
@@ -103,19 +91,14 @@ impl pomme_hle::webkit::WebEngine for BrowserEngine {
     }
 
     fn poll(&mut self) -> Vec<(pomme_hle::webkit::PageId, pomme_hle::webkit::Event)> {
-        let written = js_sys::Atomics::load(&self.header, 0).unwrap_or(0) as u32;
-        let mut read = js_sys::Atomics::load(&self.header, 1).unwrap_or(0) as u32;
         let mut out = Vec::new();
-        while written.wrapping_sub(read) >= 4 {
-            let len = u32::from_le_bytes([self.byte(read), self.byte(read + 1), self.byte(read + 2), self.byte(read + 3)]);
-            let bytes: Vec<u8> = (0..len).map(|i| self.byte(read + 4 + i)).collect();
-            read = read.wrapping_add(4 + len);
-            match serde_json::from_slice(&bytes) {
+        for json in pomme_take_web_view_events().iter() {
+            let json = json.as_string().unwrap_or_default();
+            match serde_json::from_str(&json) {
                 Ok(ev) => out.push(ev),
-                Err(e) => pomme_log(&format!("web view: bad event ({e}): {}", String::from_utf8_lossy(&bytes))),
+                Err(e) => pomme_log(&format!("web view: bad event ({e}): {json}")),
             }
         }
-        let _ = js_sys::Atomics::store(&self.header, 1, read as i32);
         out
     }
 
@@ -129,8 +112,6 @@ impl pomme_hle::webkit::WebEngine for BrowserEngine {
 }
 
 struct WebHost {
-    input: js_sys::Int32Array,
-    read: i32,
     /// wall ms − virtual ms, fixed when the app first idles.
     base: Option<f64>,
     /// Wall time of the last progress line in the console.
@@ -144,26 +125,23 @@ struct WebHost {
 
 impl WebHost {
     fn take_events(&mut self) -> Vec<Event> {
-        let written = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
-        let mut out = Vec::new();
-        while self.read < written {
-            let at = HEADER + (self.read as u32 % RING) * 4;
-            let get = |i: u32| self.input.get_index(at + i);
-            let kind = get(0);
-            let action = match kind - AX_EVENT {
-                0 => Some(Action::Activate),
-                1 => Some(Action::Increment),
-                2 => Some(Action::Decrement),
-                3 => Some(Action::Focus),
-                _ => None,
-            };
-            out.push(match action {
-                Some(action) => Event::Accessibility { id: get(1) as u32 as u64 | (get(2) as u32 as u64) << 32, action },
-                None => Event::Touch(Input { at_ns: 0, phase: kind as u64, x: get(1) as f64 / 100.0, y: get(2) as f64 / 100.0 }),
-            });
-            self.read += 1;
-        }
-        out
+        let input = pomme_take_input().to_vec();
+        input
+            .chunks_exact(4)
+            .map(|e| {
+                let action = match e[0] - AX_EVENT {
+                    0 => Some(Action::Activate),
+                    1 => Some(Action::Increment),
+                    2 => Some(Action::Decrement),
+                    3 => Some(Action::Focus),
+                    _ => None,
+                };
+                match action {
+                    Some(action) => Event::Accessibility { id: e[1] as u32 as u64 | (e[2] as u32 as u64) << 32, action },
+                    None => Event::Touch(Input { at_ns: 0, phase: e[0] as u64, x: e[1] as f64 / 100.0, y: e[2] as f64 / 100.0 }),
+                }
+            })
+            .collect()
     }
 }
 
@@ -193,8 +171,7 @@ impl Host for WebHost {
                 }
                 return Idle::Advance;
             }
-            let seen = js_sys::Atomics::load(&self.input, 0).unwrap_or(0);
-            pomme_pause(wait_ms.min(1000.0), seen);
+            pomme_pause(wait_ms.min(1000.0));
         }
     }
 
@@ -205,8 +182,8 @@ impl Host for WebHost {
             pomme_display(w, h, &pomme_hle::render::display_svg_path(self.device, f.orientation));
         }
         pomme_frame(f.rgba, f.width, f.height);
-        // A break for the browser after each frame (with JSPI): its GPU work goes out.
-        pomme_pause(0.0, js_sys::Atomics::load(&self.input, 0).unwrap_or(0));
+        // A break for the browser after each frame: its GPU work goes out, the page's messages come in.
+        pomme_pause(0.0);
         if let Some(stats) = self.stats.as_mut() {
             // In the browser's performance tools too (the worker's track).
             if let Some(t) = f.timing {
@@ -281,15 +258,9 @@ impl pomme_hle::net::Net for XhrNet {
     }
 }
 
-thread_local! {
-    /// The page's input ring, for the GPU's pause hook (a plain `fn()`).
-    static INPUT: std::cell::RefCell<Option<js_sys::Int32Array>> = const { std::cell::RefCell::new(None) };
-}
-
 /// pomme-hle's pause hook: one browser task, so the GPU's work and answers get through.
 fn pause_once() {
-    let seen = INPUT.with(|i| i.borrow().as_ref().map_or(0, |a| js_sys::Atomics::load(a, 0).unwrap_or(0)));
-    pomme_pause(0.0, seen);
+    pomme_pause(0.0);
 }
 
 fn log_line(line: &str) {
@@ -306,24 +277,19 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 /// Mount `bundle` (from `pomme bundle`) and run its app until it stops,
 /// presenting iOS `ios` ("18.6", "26"; empty for the default); with
 /// `frame_stats`, how smoothly frames arrive goes to the console each second.
-/// `jspi`: whether the worker made `pommePause` pause (then Metal can use the
-/// GPU, waiting by pausing; without it, Metal draws nothing).
 /// Runs until the app stops, then tells the page why through `pommeStopped`.
-/// With JSPI the worker calls it through `WebAssembly.promising`, so it
-/// returns nothing (the glue can't read a value out of a promise).
+/// The worker calls it through `WebAssembly.promising`, so it returns nothing
+/// (the glue can't read a value out of a promise).
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: String, web_views: js_sys::SharedArrayBuffer, frame_stats: bool, jspi: bool) {
+pub fn run(bundle: Vec<u8>, scale: f32, ios: String, frame_stats: bool) {
     pomme_hle::host::set_log_hook(Some(log_line));
-    if jspi {
-        INPUT.with(|i| *i.borrow_mut() = Some(input.clone()));
-        pomme_hle::host::set_pause_hook(Some(pause_once));
-    }
-    match run_inner(bundle, input, scale, &ios, &web_views, frame_stats) {
+    pomme_hle::host::set_pause_hook(Some(pause_once));
+    match run_inner(bundle, scale, &ios, frame_stats) {
         Ok(s) | Err(s) => pomme_stopped(&s),
     }
 }
 
-fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, web_views: &js_sys::SharedArrayBuffer, frame_stats: bool) -> Result<String, String> {
+fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool) -> Result<String, String> {
     let app = app_path(&bundle).ok_or("the bundle has no .app")?;
     pomme_loader::vfs::mount(&bundle)?;
     drop(bundle);
@@ -337,8 +303,8 @@ fn run_inner(bundle: Vec<u8>, input: js_sys::Int32Array, scale: f32, ios: &str, 
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
     *emu.net.client = Some(Box::new(XhrNet));
-    *emu.webkit.engine = Some(Box::new(BrowserEngine::new(web_views)));
-    *emu.live.host = Some(Box::new(WebHost { input, read: 0, base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));
+    *emu.webkit.engine = Some(Box::new(BrowserEngine));
+    *emu.live.host = Some(Box::new(WebHost { base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));
     pomme_log("running");
     let r = emu.run_main();
     let steps = emu.cpu.steps;
