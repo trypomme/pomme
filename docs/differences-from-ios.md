@@ -53,10 +53,10 @@ that come with a link, its windows and screen) still follows iOS.
 
 - **The instruction count is the clock.** On the command line and in tests,
   virtual time moves with the instructions the app runs, and skips ahead
-  when every thread is waiting. So the same run gives the same result every
-  time, and a test that waits 10 seconds finishes much faster.
-- **Input happens at virtual times** (`--tap 195,265@3`), so scripted runs
-  repeat exactly.
+  when every thread is waiting. So a test that waits 10 seconds finishes
+  much faster, and the same input gives the same result.
+- **Input happens at virtual times** (`--tap 195,265@3`), not at wall-clock
+  times.
 - **The desktop window and the browser follow the wall clock** while the
   app is idle, so animations look right to a person.
 
@@ -65,7 +65,7 @@ that come with a link, its windows and screen) still follows iOS.
 Every `pomme run` starts with an empty data container, empty defaults and
 an empty keychain. Within a run, Relaunch keeps them, as quitting and
 reopening an app does. The clipboard starts empty too (unless
-`--clipboard host`), so runs repeat.
+`--clipboard host`).
 
 ### Signed and encrypted apps
 

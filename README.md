@@ -11,9 +11,9 @@ replacements (HLE) for the iOS system libraries the app calls into.
 | `crates/pomme-macho` | Mach-O parsing: segments, dylibs, imports, fixups (chained + dyld_info), export trie. |
 | `crates/pomme-loader` | Our `dyld`: maps the app and its bundled frameworks into guest memory and links them. System libraries found in the sysroot are loaded as guest code; every other system symbol binds to a trapping HLE stub. |
 | `crates/pomme-mem` | Guest address space shared by the loader and CPU. |
-| `crates/pomme-hle` | pomme's own system libraries, in Rust: stub dispatch and image initializers, a deterministic heap, an Objective-C runtime (classes from the app's metadata, synthesized system classes, `objc_msgSend`, reflection and Swift hooks), most of the libSystem the app and runtimes use (strings, libm, printf, time, dispatch, TLS, dyld queries), and the first bits of Foundation and UIKit. |
+| `crates/pomme-hle` | pomme's own system libraries, in Rust: stub dispatch and image initializers, a heap, an Objective-C runtime (classes from the app's metadata, synthesized system classes, `objc_msgSend`, reflection and Swift hooks), most of the libSystem the app and runtimes use (strings, libm, printf, time, dispatch, TLS, dyld queries), and the first bits of Foundation and UIKit. |
 | `vendor/sysroot` | (built, not committed) Open-source system libraries compiled for arm64 and run as guest code: the Swift runtime, libc++, CoreFoundation with ICU, and Swift Foundation (swift-foundation built as module `Foundation`, plus pomme's Objective-C bridging overlay in `scripts/sysroot/swift-foundation-overlay`). See `scripts/build-sysroot.sh`; `scripts/sysroot/` holds the small shims and patch CoreFoundation needs. |
-| `crates/pomme-cpu` | arm64 user-mode interpreter: integer, loads/stores, atomics, scalar FP and a NEON lane engine. Deterministic; instruction count is the clock. |
+| `crates/pomme-cpu` | arm64 user-mode interpreter: integer, loads/stores, atomics, scalar FP and a NEON lane engine. Virtual time comes from the instruction count. |
 | `crates/pomme-cli` | `pomme` command-line tool. |
 | `apps/hello-expo` | Skeleton Expo app — the first guest we want to boot. |
 | `scripts/` | Build helpers. |
@@ -145,7 +145,7 @@ Debugging:
   for react-native-gesture-handler's pan and tap gestures.
 - The clipboard: `--clipboard host` shares this machine's clipboard with the app (paste in
   what you copied; the app's copies land here); `--clipboard 'some text'` starts it with
-  text, and the default is empty, so runs repeat. `--paste 'Ada@4'` pastes "Ada" (copied by
+  text, and by default it starts empty. `--paste 'Ada@4'` pastes "Ada" (copied by
   another app) into whatever has focus at 4 s; `--paste '@4'` pastes what's there. Reads
   of another app's text count iOS's "Allow Paste" prompts, answered by
   `--paste-permission allow|deny`; tests drive the same through `emu.clipboard`.
@@ -153,8 +153,7 @@ Debugging:
   with a test driving it step by step: find an element by accessibility identifier or text,
   tap it, type, swipe, wait until something shows (`app.tap(&id("name"))?`,
   `app.type_text("Ada")?`, `app.wait_for(&text("Hello, Ada!"))?`). The test runs in lockstep
-  with the app and takes its turns on the main run loop while the app is idle, so runs stay
-  deterministic; a wait that times out reports what the screen had. Elements come from
+  with the app and takes its turns on the main run loop while the app is idle. A wait that times out reports what the screen had. Elements come from
   UIAccessibility, which pomme's UIKit implements (identifiers, labels, values, traits,
   frames, containers), so React Native's `testID`, SwiftUI's `.accessibilityIdentifier` and
   Flutter's `Semantics(identifier:)` all work: Flutter builds its semantics tree once
@@ -377,7 +376,7 @@ draws it with Inter because SF Pro can't be redistributed.
      Inter's glyph outlines — `pomme run … --screenshot out.png` gives **hello-expo's first frame**. Not yet: images, shadows, gradients, emoji, the status bar
    - Touch input ✅: `UITouch`, `UIEvent`, hit testing through apps' own `hitTest:` overrides,
      gesture recognizers (React Native's touch handler is one), the responder chain. Input is
-     scripted at virtual times, so runs repeat exactly:
+     scripted at virtual times:
      `pomme run … --tap 195,438@3 --tap 195,438@4 --screenshot out.png` → **"Tapped 2 times"**.
      `cargo test` boots hello-expo, taps twice and checks the screen (when the app is built)
    - Browser host ✅: the emulator compiled to WebAssembly runs in a Web Worker; the app and the
@@ -402,7 +401,7 @@ draws it with Inter because SF Pro can't be redistributed.
      so a navigation push in hello-expo renders a frame in ~25 ms in the browser (from ~100)
    - Networking ✅: `NSURLRequest`, `NSURLSession` data tasks (delegate and completion-handler),
      `NSHTTPURLResponse`, through one `Net` interface: real HTTP in the CLI (`--offline`, and
-     `--fixture URL=FILE` for deterministic runs), synchronous XHR in the browser, `Fixtures` in
+     `--fixture URL=FILE` to answer a URL from a file), synchronous XHR in the browser, `Fixtures` in
      tests. Responses arrive on the main run loop a little later in virtual time, one delegate
      callback per turn, as on a device. With `NSTimer`, `NSRegularExpression` (Rust `regex`),
      `UIGraphicsImageRenderer`, path clipping, more of the Foundation overlay (`CharacterSet`,
@@ -425,16 +424,16 @@ draws it with Inter because SF Pro can't be redistributed.
 5. Hosts: native window (Windows/macOS), WASM + canvas (web)
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,
    arm64 → WebAssembly translation in the browser (as v86 does for x86). It must count
-   instructions per block so the clock, and so determinism, are unchanged. The interpreter
+   instructions per block so virtual time is unchanged. The interpreter
    stays as the reference.
 
 ## Design constraints (keep these true)
 
-These keep deterministic replay and rr-style time-travel debugging cheap to add later:
+These keep record-and-replay and rr-style time-travel debugging cheap to add later:
 
-- **One host thread runs all guest threads**, switched by a deterministic scheduler
+- **One host thread runs all guest threads**, switched by the scheduler
   every N instructions.
 - **Instruction count is the clock** for scheduling and replay positions.
-- **Every source of non-determinism goes through one HLE layer**: time, randomness,
+- **Every outside input goes through one HLE layer**: time, randomness,
   network, filesystem, input events. A recording is just that layer's inputs.
 - **Guest memory is snapshottable** (plain owned buffers, no host pointers into it).
