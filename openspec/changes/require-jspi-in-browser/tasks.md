@@ -14,7 +14,7 @@
 
 - [ ] 3.1 `scripts/serve-web.py`: no isolation headers. `scripts/web-test.sh`: `all` without the no-JSPI app run, with a `?nojspi` run that waits for the message. Check: `scripts/web-test.sh all` passes.
 - [ ] 3.2 `web/tests/embed.mjs` and a `scripts/web-test.sh embed` case: a plain page on `localhost` embeds the page from `127.0.0.1`; tap hello-expo inside the frame. Check: passes in Chromium. In WebKit 26 (no JSPI), the frame shows the "needs a browser with JSPI" message.
-- [ ] 3.3 Taps while busy: two taps sent during a navigation push both arrive, in order. Check: a case in `web/tests/run.mjs` steps (or `embed.mjs`) passes.
+- [ ] 3.3 Taps while busy: the counter and then Details, sent back to back, both arrive, in order (the counter counts, the app pushes Details). Check: a case in `web/tests/run.mjs` steps (or `embed.mjs`) passes.
 
 ## 4. Docs and follow-ups
 

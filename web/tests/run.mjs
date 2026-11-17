@@ -6,6 +6,7 @@
 // Steps run in order:
 //   --wait TEXT      until the page's status or log has TEXT ("First frame" for the first frame)
 //   --see TEXT       until the app's accessibility tree shows TEXT (a label or value)
+//   --gone TEXT      until it doesn't (the screen that showed it went)
 //   --tap X,Y        a tap at (X, Y) in points
 //   --taps "X,Y X,Y…"  taps back to back (30 ms apart), not waiting for the app
 //   --sleep MS       wait MS milliseconds
@@ -43,7 +44,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--points') opt.points = args[++i].trim().split(/\s+/).map((p) => p.split(',').map(Number));
   else if (a === '--tolerance') opt.tolerance = Number(args[++i]);
   else if (a === '--ref-scale') opt.refScale = Number(args[++i]);
-  else if (['--wait', '--see', '--tap', '--taps', '--sleep'].includes(a)) opt.steps.push([a.slice(2), args[++i]]);
+  else if (['--wait', '--see', '--gone', '--tap', '--taps', '--sleep'].includes(a)) opt.steps.push([a.slice(2), args[++i]]);
   else throw new Error(`unknown argument: ${a}`);
 }
 if (!opt.url) throw new Error('--url is required');
@@ -84,12 +85,12 @@ try {
         if (Date.now() > until) throw new Error(`timed out waiting for "${value}"`);
         await page.waitForTimeout(100);
       }
-    } else if (kind === 'see') {
+    } else if (kind === 'see' || kind === 'gone') {
       await app.waitForFunction(
-        (t) => [...document.querySelectorAll('#accessibility *')].some((e) =>
+        ([t, want]) => want === [...document.querySelectorAll('#accessibility *')].some((e) =>
           (e.getAttribute('aria-label') || '').includes(t) || (e.textContent || '').includes(t) ||
           (e.getAttribute('aria-valuetext') || '').includes(t)),
-        value, { timeout, polling: 100 });
+        [value, kind === 'see'], { timeout, polling: 100 });
     } else if (kind === 'tap' || kind === 'taps') {
       const r = await app.locator('#screen').boundingBox();
       const held = kind === 'tap' ? 80 : 30;

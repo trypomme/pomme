@@ -35,8 +35,8 @@ on a canvas at 2 pixels per point.
 
 #### Scenario: Taps while the app is busy
 
-- **WHEN** the user taps twice while the app is drawing frames
-- **THEN** both taps arrive, in order, by the end of the next frame
+- **WHEN** the user taps hello-expo's counter and then its Details link, the second tap while the app is still busy with the first
+- **THEN** both taps arrive, in order: the counter counts once and the app pushes the Details screen
 
 ### Requirement: The emulator pauses for the browser
 
@@ -44,8 +44,9 @@ The emulator SHALL pause after each frame and while the app is idle. A
 pause SHALL give the browser a real break (a new task), not only a
 microtask, so the browser's GPU work is sent, its answers arrive, and the
 page's messages reach the worker. The emulator SHALL continue from the same
-place after a pause. While the app is idle, a new event from the page SHALL
-end the pause early.
+place after a pause. While the app is idle, new input from the page
+(touches and screen-reader actions) SHALL end the pause early. Web view
+events SHALL reach the app within one live-page poll (16 ms) while pages run.
 
 #### Scenario: Input while idle
 
