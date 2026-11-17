@@ -37,7 +37,7 @@ case "$APP" in
       # Gallery is deprecated and pins packages from 2023 (win32 5.0.9 no longer compiles):
       # take the newest its constraints allow. It imports its strings from the synthetic
       # package:flutter_gen, which Flutter dropped: they're generated into lib/l10n now.
-      grep -rlZ 'package:flutter_gen/gen_l10n/' lib test | xargs -0 sed -i '' 's#package:flutter_gen/gen_l10n/#package:gallery/l10n/#g'
+      grep -rl 'package:flutter_gen/gen_l10n/' lib test | xargs perl -pi -e 's#package:flutter_gen/gen_l10n/#package:gallery/l10n/#g'
       flutter pub upgrade
     else
       flutter pub get

@@ -25,9 +25,8 @@ on:
       - .github/workflows/compat.yml
       - scripts/compat/**
 
-concurrency:
-  group: compat-${{ github.ref }}
-  cancel-in-progress: true
+# No cancelling on a new push: Bluesky alone takes ~45 minutes to build, and a run that
+# finishes still reports on the apps it reached.
 
 permissions:
   contents: read
