@@ -20,7 +20,7 @@
 - [x] 2.6 Navigation: the push comes from the left and the pop leaves to the left; the back button (and its chevron) on the right, its tap area too; the back swipe from the right edge (`navigation.rs`, `render.rs`). Check: `cargo test --test rtl` (`push_and_pop_from_the_left` against the measured curves mirrored, `back_button_on_the_right`, `back_swipe_from_the_right_edge`).
 - [x] 2.7a Tab bar: mirrored, tabs in reverse order, a badge at its image's top left (`tabbar.rs`). Check: `cargo test --test tab_bar right_to_left_bar`.
 - [x] 2.7b Switch, slider and segmented control: their parts mirrored in the control and touches mirrored on the way in (`valuecontrols.rs`). Check: `cargo test --test rtl controls_mirror tapping_the_leftmost_segment_selects_the_last`.
-- [ ] 2.7c Table cells (image on the right, disclosure on the left, recorded in `fixtures/rtlcontrols`) once pomme has UITableView, which it doesn't yet.
+- [x] 2.7c Table cells (image on the right, disclosure on the left, recorded in `fixtures/rtlcontrols`). Check: `cargo test --test rtl table_cell_mirrors` (added with UITableView, `add-table-view` 2.2).
 - [x] 2.8 Images flipped for right to left (`imageFlippedForRightToLeftLayoutDirection`, `flipsForRightToLeftLayoutDirection`) draw mirrored in a right-to-left view; symbols with `forward` or `backward` in their name mirror there (`chevron.forward`, `arrow.backward`, now mapped and measured). Check: `cargo test --test rtl images_that_flip`.
 
 ## 3. Implement shaping and bidi

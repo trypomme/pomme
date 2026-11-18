@@ -558,25 +558,26 @@ impl App {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = *position;
         }
-        let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
-        let used = match event {
+        let command = command_held(cfg!(target_os = "macos"), self.modifiers);
+        let kind = match event {
             WindowEvent::KeyboardInput { event: key, .. } => {
                 if command && key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Character(c) if c.as_str() == "w" || c.as_str() == "q") {
                     self.close(event_loop);
                 }
-                true
+                ToPanel::Key
             }
-            WindowEvent::Ime(_) => true,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } if !over_panel => {
+            WindowEvent::Ime(_) => ToPanel::Key,
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let on_screen = self.point_at(self.cursor).is_some();
-                if on_screen && let Some(p) = self.panel.as_mut() {
+                if !over_panel && on_screen && let Some(p) = self.panel.as_mut() {
                     p.close();
                 }
-                on_screen
+                ToPanel::Press { over_panel, on_screen }
             }
-            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. } => over_panel,
-            _ => false,
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. } => ToPanel::Pointer { over_panel },
+            _ => ToPanel::Other,
         };
+        let used = panel_uses(kind);
         // (A moved cursor over the panel still redraws it: buttons light up.)
         if used || over_panel {
             window.request_redraw();
@@ -642,6 +643,67 @@ fn face_id_sheet(pix: &mut Pixmap, screen: [f32; 4], scale: f32) {
     }
 }
 
+/// A window event, as the open Open URL panel sees it.
+#[derive(Clone, Copy, Debug)]
+enum ToPanel {
+    /// A key or typed text (IME).
+    Key,
+    /// The left button pressed: on the panel, or else on the phone's screen or not.
+    Press { over_panel: bool, on_screen: bool },
+    /// Other pointer movement, buttons and scrolling.
+    Pointer { over_panel: bool },
+    Other,
+}
+
+/// Whether the open panel uses an event up, so the app never gets it. Every
+/// key is the panel's (the app's text field doesn't change behind it); a
+/// click on the screen outside the panel closes the panel and isn't a touch;
+/// the bezel still drags the phone.
+fn panel_uses(e: ToPanel) -> bool {
+    match e {
+        ToPanel::Key => true,
+        ToPanel::Press { over_panel, on_screen } => over_panel || on_screen,
+        ToPanel::Pointer { over_panel } => over_panel,
+        ToPanel::Other => false,
+    }
+}
+
+/// Whether the shortcut key is down: ⌘ on macOS, Ctrl elsewhere.
+fn command_held(mac: bool, m: ModifiersState) -> bool {
+    if mac { m.super_key() } else { m.control_key() }
+}
+
+/// What a key pressed with the shortcut key does, as the Simulator's menus
+/// have it (⌘ on macOS, Ctrl elsewhere): ⌘← / ⌘→ turn the phone, ⌘W / ⌘Q
+/// close, ⌘S saves the screen, ⌘R records it, ⇧⌘R relaunches the app, ⌘L
+/// opens a link, and Device ▸ Shake is ⌃⌘Z on macOS and Ctrl+Alt+Z
+/// elsewhere. With ⌥ too, the Face ID shortcuts go by the key, not the
+/// character (⌥M is µ on a Mac). None: nothing, and the key doesn't reach
+/// the app either.
+fn shortcut(mac: bool, m: ModifiersState, physical: PhysicalKey, logical: &Key) -> Option<Action> {
+    if !command_held(mac, m) {
+        return None;
+    }
+    if m.alt_key() {
+        let PhysicalKey::Code(code) = physical else { return None };
+        if !mac && code == KeyCode::KeyZ {
+            return Some(Action::Shake);
+        }
+        return face_shortcut(code).map(Action::Face);
+    }
+    match logical {
+        Key::Named(NamedKey::ArrowLeft) => Some(Action::Rotate(true)),
+        Key::Named(NamedKey::ArrowRight) => Some(Action::Rotate(false)),
+        Key::Character(c) if c.as_str() == "w" || c.as_str() == "q" => Some(Action::Close),
+        Key::Character(c) if c.as_str() == "s" => Some(Action::SaveScreen),
+        Key::Character(c) if c.as_str() == "l" => Some(Action::OpenUrl),
+        Key::Character(c) if mac && m.control_key() && c.eq_ignore_ascii_case("z") => Some(Action::Shake),
+        Key::Character(c) if m.shift_key() && c.eq_ignore_ascii_case("r") => Some(Action::Relaunch),
+        Key::Character(c) if c.as_str() == "r" => Some(Action::Record),
+        _ => None,
+    }
+}
+
 /// The Simulator's Features ▸ Face ID shortcuts (with ⌥⌘): M a matching face,
 /// N a non-matching one; E (not one of the Simulator's) toggles Enrolled.
 fn face_shortcut(code: KeyCode) -> Option<Face> {
@@ -684,6 +746,51 @@ fn screen_point(fit: (f32, f32, f32), screen: [f32; 4], scale: f32, p: (f32, f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key with modifiers, as the window gets it.
+    fn key(mac: bool, m: ModifiersState, code: KeyCode, c: &str) -> Option<Action> {
+        shortcut(mac, m, PhysicalKey::Code(code), &Key::Character(c.into()))
+    }
+
+    #[test]
+    fn shake_is_ctrl_cmd_z_on_macos_and_ctrl_alt_z_elsewhere() {
+        let (cmd, ctrl, alt) = (ModifiersState::SUPER, ModifiersState::CONTROL, ModifiersState::ALT);
+        assert_eq!(key(true, cmd | ctrl, KeyCode::KeyZ, "z"), Some(Action::Shake));
+        assert_eq!(key(false, ctrl | alt, KeyCode::KeyZ, "z"), Some(Action::Shake));
+        // Not Ctrl+Alt+Z on a Mac, nor ⌘Z alone anywhere (that's Undo in the app's field).
+        assert_eq!(key(true, ctrl | alt, KeyCode::KeyZ, "z"), None);
+        assert_eq!(key(true, cmd, KeyCode::KeyZ, "z"), None);
+        assert_eq!(key(false, ctrl, KeyCode::KeyZ, "z"), None);
+    }
+
+    #[test]
+    fn menu_shortcuts() {
+        let (cmd, ctrl, shift, alt) = (ModifiersState::SUPER, ModifiersState::CONTROL, ModifiersState::SHIFT, ModifiersState::ALT);
+        for (mac, c) in [(true, cmd), (false, ctrl)] {
+            assert_eq!(key(mac, c, KeyCode::KeyL, "l"), Some(Action::OpenUrl));
+            assert_eq!(key(mac, c, KeyCode::KeyS, "s"), Some(Action::SaveScreen));
+            assert_eq!(key(mac, c, KeyCode::KeyR, "r"), Some(Action::Record));
+            assert_eq!(key(mac, c | shift, KeyCode::KeyR, "R"), Some(Action::Relaunch));
+            assert_eq!(key(mac, c, KeyCode::KeyW, "w"), Some(Action::Close));
+            assert_eq!(shortcut(mac, c, PhysicalKey::Code(KeyCode::ArrowLeft), &Key::Named(NamedKey::ArrowLeft)), Some(Action::Rotate(true)));
+            // ⌥⌘M on a Mac types µ: the key decides.
+            assert_eq!(key(mac, c | alt, KeyCode::KeyM, "µ"), Some(Action::Face(Face::Matching)));
+            // Without the shortcut key, keys are the app's.
+            assert_eq!(key(mac, ModifiersState::empty(), KeyCode::KeyL, "l"), None);
+        }
+    }
+
+    #[test]
+    fn keys_never_reach_the_app_while_the_panel_is_open() {
+        assert!(panel_uses(ToPanel::Key));
+        // A click on the screen beside the panel closes it; it isn't a touch.
+        assert!(panel_uses(ToPanel::Press { over_panel: false, on_screen: true }));
+        assert!(panel_uses(ToPanel::Press { over_panel: true, on_screen: true }));
+        // The bezel still drags the phone; redraws, resizes and the rest go on as usual.
+        assert!(!panel_uses(ToPanel::Press { over_panel: false, on_screen: false }));
+        assert!(!panel_uses(ToPanel::Pointer { over_panel: false }));
+        assert!(!panel_uses(ToPanel::Other));
+    }
 
     #[test]
     fn face_id_shortcuts() {
@@ -879,39 +986,20 @@ impl ApplicationHandler<ToWindow> for App {
                 }
             },
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } if event.state == ElementState::Pressed => {
-                let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
                 // On macOS the menu bar has these shortcuts too. AppKit gives a key
                 // to the menu or the window, never both: whichever gets it acts.
-                // ⌥ changes the character (⌥M is µ on a Mac): the Face ID shortcuts go by the key.
-                if command && self.modifiers.alt_key() {
-                    if !cfg!(target_os = "macos") && event.physical_key == PhysicalKey::Code(KeyCode::KeyZ) {
-                        self.send(Event::Shake);
-                        return;
-                    }
-                    if let PhysicalKey::Code(code) = event.physical_key
-                        && let Some(face) = face_shortcut(code)
-                    {
-                        if face == Face::ToggleEnrolled
+                if command_held(cfg!(target_os = "macos"), self.modifiers) {
+                    if let Some(a) = shortcut(cfg!(target_os = "macos"), self.modifiers, event.physical_key, &event.logical_key) {
+                        if a == Action::Face(Face::ToggleEnrolled)
                             && let Some(m) = &self.menus
                         {
                             m.toggled_enrolled();
                         }
-                        self.send(Event::Face(face));
+                        self.act(event_loop, a);
                     }
                     return;
                 }
                 match &event.logical_key {
-                    Key::Named(NamedKey::ArrowLeft) if command => self.rotate(true),
-                    Key::Named(NamedKey::ArrowRight) if command => self.rotate(false),
-                    // No title bar to close it with: ⌘W / ⌘Q.
-                    Key::Character(c) if command && (c.as_str() == "w" || c.as_str() == "q") => self.close(event_loop),
-                    Key::Character(c) if command && c.as_str() == "s" => self.act(event_loop, Action::SaveScreen),
-                    Key::Character(c) if command && c.as_str() == "l" => self.act(event_loop, Action::OpenUrl),
-                    // ⌃⌘Z: Device ▸ Shake (macOS; elsewhere Ctrl+Alt+Z, above).
-                    Key::Character(c) if command && self.modifiers.control_key() && cfg!(target_os = "macos") && c.eq_ignore_ascii_case("z") => self.act(event_loop, Action::Shake),
-                    Key::Character(c) if command && self.modifiers.shift_key() && c.eq_ignore_ascii_case("r") => self.act(event_loop, Action::Relaunch),
-                    Key::Character(c) if command && c.as_str() == "r" => self.act(event_loop, Action::Record),
-                    _ if command => {}
                     Key::Named(NamedKey::Enter) => self.send(Event::Key('\n')),
                     Key::Named(NamedKey::Backspace) => self.send(Event::Key('\u{8}')),
                     Key::Named(NamedKey::ArrowLeft) => self.send(Event::Key(pomme_hle::textinput::KEY_LEFT)),
