@@ -117,3 +117,32 @@ This is lower than the design's first estimate (4 to 8 on desktop, 3 to 6
 in the browser). The reason is that the first estimate counted the speedup
 of the CPU part only. The gates in milestones 3 and 5 (at least 2 times
 faster) still look safe.
+
+## Ways to go past 5 times, later
+
+The estimate above is for a plain block JIT. These steps could push the
+whole run further. Each one is measured on its own, after milestone 5:
+
+- **Make the 8% in pomme's Rust code smaller.** The hottest stubs are
+  `memcpy`, `memcmp`, `memset_pattern16`, `memmove`, `strlen`, `malloc`,
+  `objc_msgSend` and the mutex calls (about 1 million exits a run). Faster
+  Rust versions, or running the simple ones (`memcpy`, `memset`, `strlen`)
+  as translated guest code with no exit, cut both the 8% and the exit cost.
+  This raises the ceiling from about 12 times.
+- **Hermes's interpreter loop.** 70% of the work is Hermes running
+  JavaScript bytecode: a loop that jumps through a table to one handler
+  per bytecode. The JIT sees this as many short blocks joined by indirect
+  jumps. Two things help: a small cache of the last targets at each
+  indirect jump (so `BR` usually goes straight to the next handler), and
+  joining a handler's blocks into one longer unit.
+- **Keep guest registers in host registers across chained blocks**, not
+  only inside one block, and drop flag results that nothing reads.
+- **A second tier.** Re-translate the hottest few thousand blocks as
+  larger regions (loops and traces), with Cranelift's optimizer, as
+  browsers do for JavaScript.
+- **Native execution on Apple silicon** (`add-native-cpu`) for live use on
+  Macs. It runs the app at close to the Mac's own speed, far past 10 times,
+  but it is not deterministic.
+
+Together these could reach about 6 to 10 times on desktop for the whole
+run. This is a guess, and each step must earn its place with numbers.
