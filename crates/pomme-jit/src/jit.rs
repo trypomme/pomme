@@ -149,17 +149,15 @@ impl Engine for EvalEngine {
 #[derive(Debug)]
 struct Entry {
     block: Rc<Block>,
-    runs: u32,
     /// The engine's handle, once translated.
     code: Option<usize>,
-    queued: bool,
 }
 
 /// How many queued blocks are translated together.
 const BATCH: usize = 64;
-/// Translate a smaller batch after this many block runs, so blocks don't
-/// wait long for the batch to fill.
-const FLUSH_EVERY: u64 = 1 << 20;
+/// Translate a smaller batch after this many interpreted instructions, so
+/// blocks don't wait long for the batch to fill.
+const FLUSH_EVERY: u64 = 1 << 22;
 
 #[derive(Debug)]
 pub struct Jit {
@@ -167,6 +165,8 @@ pub struct Jit {
     entries: PcMap<Entry>,
     /// Translated blocks by pc, checked before `entries`.
     fast: Vec<Fast>,
+    /// Block runs on the interpreter, by fast-table slot.
+    counts: Vec<u32>,
     queue: Vec<u64>,
     /// The memory's code generation the entries are valid for.
     generation: u64,
@@ -178,6 +178,10 @@ pub struct Jit {
     /// Called with [`Jit::report`] every [`REPORT_EVERY`] block runs (for measuring).
     pub log: Option<fn(&str)>,
     next_report: u64,
+    /// A clock in ms, for timing what the JIT does (with `log`).
+    pub clock: Option<fn() -> f64>,
+    /// ms in the interpreter, in translated code, and translating.
+    times: [f64; 3],
 }
 
 /// What the JIT did, for measuring.
@@ -209,6 +213,7 @@ impl Jit {
             engine,
             entries: PcMap::default(),
             fast: vec![NO_FAST; FAST_SLOTS],
+            counts: vec![0; FAST_SLOTS],
             queue: Vec::new(),
             generation: 0,
             threshold: 50,
@@ -216,6 +221,8 @@ impl Jit {
             stats: Stats::default(),
             log: None,
             next_report: REPORT_EVERY,
+            clock: None,
+            times: [0.0; 3],
         }
     }
 
@@ -224,7 +231,10 @@ impl Jit {
         let s = &self.stats;
         let insns = (s.insns_translated + s.insns_interpreted + s.single_steps).max(1);
         format!(
-            "jit: {:.1}% of instructions translated ({} block runs, {:.2} insns each, {} entered from pomme), {} interpreted runs, {} single steps; {} blocks lifted, {} dropped, {} translated, {} in the table; {}",
+            "jit: {:.0} ms interpreting, {:.0} ms in translated code, {:.0} ms translating; {:.1}% of instructions translated ({} block runs, {:.2} insns each, {} entered from pomme), {} interpreted runs, {} single steps; {} blocks lifted, {} dropped, {} translated, {} in the table; {}",
+            self.times[0],
+            self.times[1],
+            self.times[2],
             100.0 * s.insns_translated as f64 / insns as f64,
             s.runs_translated,
             s.insns_translated as f64 / s.runs_translated.max(1) as f64,
@@ -258,14 +268,19 @@ impl Jit {
         self.generation = mem.code_generation();
     }
 
+    fn now(&self) -> f64 {
+        self.clock.map_or(0.0, |c| c())
+    }
+
     fn translate_queue(&mut self) {
+        let t = self.now();
         let pcs = std::mem::take(&mut self.queue);
         let blocks: Vec<Rc<Block>> = pcs.iter().map(|pc| self.entries[pc].block.clone()).collect();
         let handles = self.engine.compile(&blocks);
         self.stats.translated += blocks.len() as u64;
         for (pc, h) in pcs.iter().zip(handles) {
             if let Some(e) = self.entries.get_mut(pc) {
-                // Handle 0 is "not translated" for an engine that failed (it stays queued, so it isn't tried again).
+                // Handle 0 is "not translated" for an engine that failed (it stays in the map, so it is not tried again).
                 e.code = (h != 0 || !self.engine.zero_means_failed()).then_some(h);
                 if e.code.is_some() {
                     self.fast[fast_slot(*pc)] = Fast { pc: *pc, handle: h, len: e.block.len() as u64, block: Rc::as_ptr(&e.block) };
@@ -273,65 +288,44 @@ impl Jit {
             }
         }
         self.since_flush = 0;
+        self.times[2] += self.now() - t;
     }
 
     /// Run translated code from block `block`, counting what ran.
     fn call(&mut self, handle: usize, block: &Block, cpu: &mut Cpu, mem: &mut Memory, stop: u64) -> Result<(), Exit> {
         let mut link = Link { fast: self.fast.as_ptr() as usize, stop, chained: 0 };
         let before = cpu.steps;
+        let t = self.now();
         let r = self.engine.call(handle, block, cpu, mem, &mut link);
+        self.times[1] += self.now() - t;
         self.stats.runs_translated += 1 + link.chained;
         self.stats.calls += 1;
         self.stats.insns_translated += cpu.steps - before;
         r
     }
 
-    /// Run the block at `cpu.pc`, which fits before the stop: translated if
-    /// it is, otherwise on the interpreter. None if it can't be fetched.
-    fn run_block(&mut self, cpu: &mut Cpu, mem: &mut Memory, stop: u64) -> Option<Result<(), Exit>> {
-        let pc = cpu.pc;
-        let room = stop - cpu.steps;
-        let f = self.fast[fast_slot(pc)];
-        if f.pc == pc && f.len <= room {
-            // SAFETY: `f.block` belongs to an entry still in `entries` (the
-            // table is cleared whenever entries are dropped).
-            return Some(self.call(f.handle, unsafe { &*f.block }, cpu, mem, stop));
-        }
-        let e = match self.entries.entry(pc) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let ops = pomme_cpu::fetch_block(pc, mem)?;
-                mem.mark_code(pc);
-                self.stats.lifted += 1;
-                v.insert(Entry { block: Rc::new(lift(pc, ops)), runs: 0, code: None, queued: false })
-            }
-        };
-        if e.block.len() as u64 > room {
-            return None;
-        }
-        if let Some(h) = e.code {
-            // Translated, but its slot was taken by another block: put it back.
-            let block = e.block.clone();
-            self.fast[fast_slot(pc)] = Fast { pc, handle: h, len: block.len() as u64, block: Rc::as_ptr(&block) };
-            return Some(self.call(h, &block, cpu, mem, stop));
-        }
-        e.runs += 1;
-        if e.runs >= self.threshold && !e.queued {
-            e.queued = true;
+    /// A block became hot: lift it and queue it for translation.
+    fn hot(&mut self, pc: u64, mem: &mut Memory) {
+        if let std::collections::hash_map::Entry::Vacant(v) = self.entries.entry(pc)
+            && let Some(ops) = pomme_cpu::fetch_block(pc, mem)
+        {
+            mem.mark_code(pc);
+            self.stats.lifted += 1;
+            v.insert(Entry { block: Rc::new(lift(pc, ops)), code: None });
             self.queue.push(pc);
         }
-        let len = e.block.len() as u64;
-        self.since_flush += 1;
-        self.stats.runs_interpreted += 1;
-        self.stats.insns_interpreted += len;
-        if self.queue.len() >= BATCH || (!self.queue.is_empty() && self.since_flush >= FLUSH_EVERY) {
-            self.translate_queue();
+    }
+
+    /// Put translated block `pc` back in the fast table if it lost its slot
+    /// to another block; true if it is translated.
+    fn refill(&mut self, pc: u64) -> bool {
+        match self.entries.get(&pc) {
+            Some(e @ Entry { code: Some(h), .. }) => {
+                self.fast[fast_slot(pc)] = Fast { pc, handle: *h, len: e.block.len() as u64, block: Rc::as_ptr(&e.block) };
+                true
+            }
+            _ => false,
         }
-        // Exactly this block, on the interpreter.
-        Some(match cpu.run(mem, len) {
-            Exit::StepLimit | Exit::Returned => Ok(()),
-            exit => Err(exit),
-        })
     }
 }
 
@@ -340,6 +334,7 @@ impl Backend for Jit {
         // The same stops as `Cpu::run`: the budget, or the next profiler sample.
         let limit = cpu.steps.saturating_add(budget.steps);
         let stop = if cpu.sample_at == 0 { limit } else { limit.min(cpu.sample_at) };
+        let mut hot = Vec::new();
         loop {
             if cpu.pc == HOST_RETURN {
                 return Exit::Returned;
@@ -350,12 +345,56 @@ impl Backend for Jit {
             if self.generation != mem.code_generation() {
                 self.code_changed(mem);
             }
-            let r = match self.run_block(cpu, mem, stop) {
-                Some(r) => r,
-                // Doesn't fit before the stop, or can't be fetched: one instruction.
-                None => {
+            let pc = cpu.pc;
+            let f = self.fast[fast_slot(pc)];
+            let r = if f.pc == pc {
+                if f.len <= stop - cpu.steps {
+                    // SAFETY: `f.block` belongs to an entry still in
+                    // `entries` (the table is cleared whenever entries go).
+                    self.call(f.handle, unsafe { &*f.block }, cpu, mem, stop)
+                } else {
+                    // Doesn't fit before the stop: one instruction.
                     self.stats.single_steps += 1;
                     cpu.step(mem)
+                }
+            } else {
+                // The interpreter, until it reaches a translated block. It
+                // counts block runs in `counts` (a direct-mapped table: a
+                // shared slot only makes a block hot sooner).
+                let (fast, counts, threshold) = (&self.fast, &mut self.counts, self.threshold);
+                let mut runs = 0u64;
+                let before = cpu.steps;
+                let t = self.clock.map_or(0.0, |c| c());
+                let exit = cpu.run_until(mem, stop - cpu.steps, |pc| {
+                    let slot = fast_slot(pc);
+                    if fast[slot].pc == pc {
+                        return true;
+                    }
+                    runs += 1;
+                    let c = &mut counts[slot];
+                    *c = c.saturating_add(1);
+                    // Hot now; or hot before, and maybe translated but pushed
+                    // out of the fast table by another block.
+                    if *c == threshold || (*c > threshold && *c % 256 == 0) {
+                        hot.push(pc);
+                    }
+                    false
+                });
+                self.times[0] += self.now() - t;
+                self.stats.runs_interpreted += runs;
+                self.stats.insns_interpreted += cpu.steps - before;
+                self.since_flush += cpu.steps - before;
+                for pc in hot.drain(..) {
+                    if !self.refill(pc) {
+                        self.hot(pc, mem);
+                    }
+                }
+                if self.queue.len() >= BATCH || (!self.queue.is_empty() && self.since_flush >= FLUSH_EVERY) {
+                    self.translate_queue();
+                }
+                match exit {
+                    None | Some(Exit::StepLimit) | Some(Exit::Returned) => Ok(()),
+                    Some(exit) => Err(exit),
                 }
             };
             if let Some(log) = self.log {
@@ -379,6 +418,7 @@ impl Backend for Jit {
         let mut j = Jit::new(self.engine.fresh());
         j.threshold = self.threshold;
         j.log = self.log;
+        j.clock = self.clock;
         Box::new(j)
     }
 }

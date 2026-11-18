@@ -88,7 +88,7 @@ fn sync(caller: &mut Caller<'_, Host>, to_mem: bool) {
 
 /// Run `block` as WebAssembly on `cpu` and `mem`.
 fn run_wasm(block: &Block, cpu: &mut Cpu, mem: &mut Memory, layout: &wasm::Layout) -> Result<(), Exit> {
-    let bytes = wasm::module(&[block], layout);
+    let bytes = wasm::module(&[block], layout, None);
     let engine = Engine::default();
     let module = Module::new(&engine, &bytes[..]).expect("a valid module");
     let host = Host { mem: std::mem::take(mem), cpu: cpu.clone(), block: block.clone(), exit: None, wmem: None, tlb: layout.tlb.is_some() };

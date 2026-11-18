@@ -304,6 +304,41 @@ impl pomme_hle::net::Net for XhrNet {
     }
 }
 
+/// With `?stats`: how fast the CPU runs, in the console every few seconds
+/// (time inside the backend, so it leaves out pomme's own Rust code).
+#[derive(Debug)]
+struct Timed {
+    inner: Box<dyn pomme_cpu::Backend>,
+}
+
+thread_local! {
+    /// (ms inside the backend, instructions, ms when last logged)
+    static TIMED: std::cell::Cell<(f64, u64, f64)> = const { std::cell::Cell::new((0.0, 0, 0.0)) };
+}
+
+impl pomme_cpu::Backend for Timed {
+    fn run(&mut self, cpu: &mut pomme_cpu::Cpu, mem: &mut pomme_mem::Memory, budget: pomme_cpu::Budget) -> pomme_cpu::Exit {
+        let (t, steps) = (now_ms(), cpu.steps);
+        let exit = self.inner.run(cpu, mem, budget);
+        let end = now_ms();
+        let (mut ms, mut n, mut logged) = TIMED.get();
+        ms += end - t;
+        n += cpu.steps - steps;
+        if end - logged > 2000.0 {
+            logged = end;
+            pomme_log(&format!("cpu ({}): {:.0} M instructions in {:.0} ms, {:.1} MIPS", self.inner.name(), n as f64 / 1e6, ms, n as f64 / ms / 1e3));
+        }
+        TIMED.set((ms, n, logged));
+        exit
+    }
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+    fn box_clone(&self) -> Box<dyn pomme_cpu::Backend> {
+        Box::new(Timed { inner: self.inner.box_clone() })
+    }
+}
+
 /// pomme-hle's pause hook: one browser task, so the GPU's work and answers get through.
 fn pause_once() {
     pomme_pause(0.0);
@@ -350,11 +385,16 @@ fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool, cpu: &st
         emu.system.os = ios.parse()?;
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
+    let frame_stats_cpu = frame_stats;
     #[cfg(target_arch = "wasm32")]
-    if cpu == "jit" {
+    // "jit", or "jit:N" to translate blocks after N runs on the interpreter.
+    if let Some(threshold) = cpu.strip_prefix("jit").and_then(|t| if t.is_empty() { Some(None) } else { t.strip_prefix(':').map(|n| n.parse().ok()) }) {
         match pomme_jit::web::WasmEngine::new() {
             Some(engine) => {
                 let mut jit = pomme_jit::jit::Jit::new(Box::new(engine));
+                if let Some(t) = threshold {
+                    jit.threshold = t;
+                }
                 if frame_stats {
                     jit.log = Some(log_line);
                 }
@@ -366,6 +406,10 @@ fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool, cpu: &st
     }
     #[cfg(not(target_arch = "wasm32"))]
     let _ = cpu;
+    if frame_stats_cpu {
+        let inner = std::mem::replace(&mut emu.backend, Box::new(pomme_cpu::Interpreter));
+        emu.backend = Box::new(Timed { inner });
+    }
     *emu.net.client = Some(Box::new(XhrNet::default()));
     *emu.webkit.engine = Some(Box::new(BrowserEngine));
     *emu.live.host = Some(Box::new(WebHost { base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));

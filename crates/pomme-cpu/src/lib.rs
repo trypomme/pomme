@@ -161,23 +161,39 @@ impl Cpu {
         // One check covers both the budget and the next profiler sample.
         let stop = if self.sample_at == 0 { limit } else { limit.min(self.sample_at) };
         let mut blocks = std::mem::take(&mut self.blocks);
-        let exit = self.run_blocks(&mut blocks, mem, stop);
+        let exit = self.run_blocks(&mut blocks, mem, stop, |_| false);
+        self.blocks = blocks;
+        exit.unwrap_or(Exit::StepLimit)
+    }
+
+    /// [`Cpu::run`], asking `visit(pc)` before each whole block: when it
+    /// says true, stop there (before the block) and return None. A JIT uses
+    /// it to run cold code here and take over where it has translated code.
+    pub fn run_until(&mut self, mem: &mut Memory, max_steps: u64, visit: impl FnMut(u64) -> bool) -> Option<Exit> {
+        let limit = self.steps.saturating_add(max_steps);
+        let stop = if self.sample_at == 0 { limit } else { limit.min(self.sample_at) };
+        let mut blocks = std::mem::take(&mut self.blocks);
+        let exit = self.run_blocks(&mut blocks, mem, stop, visit);
         self.blocks = blocks;
         exit
     }
 
-    fn run_blocks(&mut self, blocks: &mut block::Blocks, mem: &mut Memory, stop: u64) -> Exit {
+    #[inline(always)]
+    fn run_blocks(&mut self, blocks: &mut block::Blocks, mem: &mut Memory, stop: u64, mut visit: impl FnMut(u64) -> bool) -> Option<Exit> {
         loop {
             if self.pc == HOST_RETURN {
-                return Exit::Returned;
+                return Some(Exit::Returned);
             }
             if self.steps >= stop {
-                return if self.sample_at != 0 && self.steps >= self.sample_at { Exit::Sample } else { Exit::StepLimit };
+                return Some(if self.sample_at != 0 && self.steps >= self.sample_at { Exit::Sample } else { Exit::StepLimit });
             }
             // A whole block when it fits before the stop; otherwise one instruction at a time.
             let room = stop - self.steps;
             match blocks.get(self.pc, mem) {
                 Some(b) if b.len() as u64 <= room => {
+                    if visit(self.pc) {
+                        return None;
+                    }
                     #[cfg(feature = "stats")]
                     stats::with(|s| {
                         s.blocks_run += 1;
@@ -194,7 +210,7 @@ impl Cpu {
                     });
                     for op in b {
                         if let Err(exit) = self.exec_op(op, mem) {
-                            return exit;
+                            return Some(exit);
                         }
                     }
                 }
@@ -202,7 +218,7 @@ impl Cpu {
                     #[cfg(feature = "stats")]
                     stats::with(|s| s.single_steps += 1);
                     if let Err(exit) = self.step(mem) {
-                        return exit;
+                        return Some(exit);
                     }
                 }
             }

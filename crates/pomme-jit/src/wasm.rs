@@ -129,25 +129,36 @@ const STORE: u32 = 1;
 const HELPER: u32 = 2;
 /// Function indices of the blocks start after the imported helpers.
 const FIRST_BLOCK: u32 = 3;
+/// The type of a block's entry, `b<i>(cpu, ctx) -> status`.
+const BLOCK_TYPE: u32 = 3;
+/// The type of the module's one real function, `run(cpu, ctx, block) -> status`.
+const RUN_TYPE: u32 = 4;
 
-/// Parameters and locals of a block function.
+/// Parameters and locals of `run`.
 const CPU: u32 = 0;
 const CTX: u32 = 1;
-const ENTRY: u32 = 2;
+/// Which of the module's blocks runs next.
+const INDEX: u32 = 2;
+const ENTRY: u32 = 3;
 /// Scratch for inline loads and stores: the untagged address (i64), the TLB
 /// entry's address and the host address (i32).
-const ADDR: u32 = 3;
-const SLOT: u32 = 4;
-const HOST: u32 = 5;
-const FIRST_VALUE: u32 = 6;
+const ADDR: u32 = 4;
+const SLOT: u32 = 5;
+const HOST: u32 = 6;
+const FIRST_VALUE: u32 = 7;
 
 /// A module with one exported function per block, `b0`, `b1`, ….
-pub fn module(blocks: &[&Block], layout: &Layout) -> Vec<u8> {
+///
+/// With chaining, `first_handle` is the table index `b0` will get (the
+/// others follow it): a block then goes on to a block of the same module
+/// with a direct tail call, which is cheaper than one through the table.
+pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> Vec<u8> {
     let mut types = TypeSection::new();
     types.ty().function([ValType::I32, ValType::I64, ValType::I32], [ValType::I64]); // load
     types.ty().function([ValType::I32, ValType::I64, ValType::I64, ValType::I32], [ValType::I32]); // store
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // helper
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // a block
+    types.ty().function([ValType::I32, ValType::I32, ValType::I32], [ValType::I32]); // run
 
     let mut imports = ImportSection::new();
     imports.import("env", "load", EntityType::Function(0));
@@ -171,11 +182,26 @@ pub fn module(blocks: &[&Block], layout: &Layout) -> Vec<u8> {
     let mut funcs = FunctionSection::new();
     let mut exports = ExportSection::new();
     let mut code = CodeSection::new();
-    for (i, b) in blocks.iter().enumerate() {
-        funcs.function(3);
+    // Blocks of this module by pc: (index in the module, table index).
+    let here: std::collections::HashMap<u64, (u32, u32)> = match first_handle {
+        Some(first) => blocks.iter().enumerate().map(|(i, b)| (b.pc, (i as u32, first + i as u32))).collect(),
+        None => Default::default(),
+    };
+    // b<i>: run(cpu, ctx, i).
+    let run = FIRST_BLOCK + blocks.len() as u32;
+    for i in 0..blocks.len() {
+        funcs.function(BLOCK_TYPE);
         exports.export(&format!("b{i}"), ExportKind::Func, FIRST_BLOCK + i as u32);
-        code.function(&function(b, layout));
+        let mut f = Function::new([]);
+        f.instruction(&I::LocalGet(CPU));
+        f.instruction(&I::LocalGet(CTX));
+        f.instruction(&I::I32Const(i as i32));
+        f.instruction(&if layout.chain.is_some() { I::ReturnCall(run) } else { I::Call(run) });
+        f.instruction(&I::End);
+        code.function(&f);
     }
+    funcs.function(RUN_TYPE);
+    code.function(&run_function(blocks, layout, &here));
 
     let mut m = Module::new();
     m.section(&types).section(&imports).section(&funcs).section(&exports).section(&code);
@@ -190,6 +216,8 @@ struct Gen<'a> {
     f: Function,
     layout: &'a Layout,
     block: &'a Block,
+    /// How many labels out the dispatch loop is, from the block's own code.
+    to_loop: u32,
 }
 
 impl Gen<'_> {
@@ -262,7 +290,7 @@ impl Gen<'_> {
     /// At the end of a block (pc and the step count written): go on to the
     /// next block if it is translated, fits before the stop, and no code was
     /// written; otherwise fall through (and return 0).
-    fn chain(&mut self, c: &Chain) {
+    fn chain(&mut self, c: &Chain, direct: &[(u32, u32)]) {
         let len = self.block.len() as i64;
         let next = self.block.next;
         self.i(I::Block(wasm_encoder::BlockType::Empty));
@@ -311,12 +339,24 @@ impl Gen<'_> {
         self.i(I::I64Const(1));
         self.i(I::I64Add);
         self.i(I::I64Store(mem(c.ctx_chained, 3)));
-        // return its_code(cpu, ctx)
+        // A block of this module (the table says it is current): go round
+        // the dispatch loop to it.
+        for &(index, handle) in direct {
+            self.i(I::LocalGet(SLOT));
+            self.i(I::I32Load(mem(c.handle, 2)));
+            self.i(I::I32Const(handle as i32));
+            self.i(I::I32Eq);
+            self.i(I::If(wasm_encoder::BlockType::Empty));
+            self.i(I::I32Const(index as i32));
+            self.i(I::LocalSet(INDEX));
+            self.i(I::Br(self.to_loop + 2));
+            self.i(I::End);
+        }
         self.i(I::LocalGet(CPU));
         self.i(I::LocalGet(CTX));
         self.i(I::LocalGet(SLOT));
         self.i(I::I32Load(mem(c.handle, 2)));
-        self.i(I::ReturnCallIndirect { type_index: 3, table_index: 0 });
+        self.i(I::ReturnCallIndirect { type_index: BLOCK_TYPE, table_index: 0 });
         self.i(I::End);
     }
 
@@ -396,9 +436,65 @@ impl Gen<'_> {
     }
 }
 
-fn function(block: &Block, layout: &Layout) -> Function {
-    let locals = [(2u32, ValType::I64), (2, ValType::I32), (block.values, ValType::I64)];
-    let mut g = Gen { f: Function::new(locals), layout, block };
+/// Where a block may go next, among the blocks of its module: its
+/// fall-through and the constants it computes (a branch's target is one).
+fn successors(block: &Block, here: &std::collections::HashMap<u64, (u32, u32)>) -> Vec<(u32, u32)> {
+    let fall = block.pc.wrapping_add(4 * block.len() as u64);
+    let mut out = Vec::new();
+    let consts = block.insts.iter().filter_map(|i| match i {
+        Inst::Const { value, .. } => Some(*value),
+        _ => None,
+    });
+    for pc in std::iter::once(fall).chain(consts) {
+        if let Some(&t) = here.get(&pc)
+            && !out.contains(&t)
+            && out.len() < 4
+        {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// `run(cpu, ctx, index)`: every block of the module, picked by a dispatch
+/// loop, so a block goes on to another of the module's blocks with a branch.
+///
+/// ```text
+/// loop $dispatch
+///   block $bN-1 … block $b0
+///     br_table index        ;; to the end of $b<index>
+///   end  <block 0's code>   ;; returns, or sets index and goes round
+///   …
+/// end
+/// ```
+fn run_function(blocks: &[&Block], layout: &Layout, here: &std::collections::HashMap<u64, (u32, u32)>) -> Function {
+    let values = blocks.iter().map(|b| b.values).max().unwrap_or(0);
+    let locals = [(2u32, ValType::I64), (2, ValType::I32), (values, ValType::I64)];
+    let mut f = Function::new(locals);
+    let n = blocks.len() as u32;
+    f.instruction(&I::Loop(wasm_encoder::BlockType::Empty));
+    for _ in 0..n {
+        f.instruction(&I::Block(wasm_encoder::BlockType::Empty));
+    }
+    f.instruction(&I::LocalGet(INDEX));
+    let targets: Vec<u32> = (0..n).collect();
+    f.instruction(&I::BrTable(targets.into(), n.saturating_sub(1)));
+    for (k, block) in blocks.iter().enumerate() {
+        f.instruction(&I::End);
+        let mut g = Gen { f, layout, block, to_loop: n - 1 - k as u32 };
+        block_code(&mut g, here);
+        f = g.f;
+    }
+    f.instruction(&I::End); // the loop
+    f.instruction(&I::Unreachable);
+    f.instruction(&I::End);
+    f
+}
+
+/// One block's code, inside `run`: it ends by returning or going round the
+/// dispatch loop.
+fn block_code(g: &mut Gen, here: &std::collections::HashMap<u64, (u32, u32)>) {
+    let (block, layout) = (g.block, g.layout);
     // entry = cpu.steps
     g.i(I::LocalGet(CPU));
     g.i(I::I64Load(mem(layout.steps, 3)));
@@ -526,9 +622,8 @@ fn function(block: &Block, layout: &Layout) -> Function {
     g.set(Loc::Pc, |s| s.val(next));
     g.steps(block.len() as u64);
     if let Some(c) = layout.chain {
-        g.chain(&c);
+        g.chain(&c, &successors(block, here));
     }
     g.i(I::I32Const(0));
-    g.i(I::End);
-    g.f
+    g.i(I::Return);
 }

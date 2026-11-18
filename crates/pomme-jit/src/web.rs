@@ -50,11 +50,12 @@ impl WasmEngine {
 
     fn try_compile(&mut self, blocks: &[Rc<Block>]) -> Result<Vec<usize>, JsValue> {
         let refs: Vec<&Block> = blocks.iter().map(|b| &**b).collect();
-        let bytes = wasm::module(&refs, &self.layout);
+        // The table indices first, so blocks can call each other directly.
+        let first = self.table.grow(blocks.len() as u32)?;
+        let bytes = wasm::module(&refs, &self.layout, Some(first));
         let module = WebAssembly::Module::new(&Uint8Array::from(&bytes[..]).into())?;
         let instance = WebAssembly::Instance::new(&module, &self.imports)?;
         let exports = instance.exports();
-        let first = self.table.grow(blocks.len() as u32)?;
         let mut handles = Vec::with_capacity(blocks.len());
         for i in 0..blocks.len() {
             let f: js_sys::Function = Reflect::get(&exports, &format!("b{i}").into())?.dyn_into()?;
