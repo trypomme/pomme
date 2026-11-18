@@ -5,11 +5,16 @@
 #   bluesky    Bluesky's social-app (Expo, React Native)     test only: its artwork, icons and marks
 #                                                            aren't MIT (see its ASSETS.md); don't publish
 #
-# Each app is built from a pinned upstream commit (scripts/compat/build.sh) on GitHub's macOS
-# runners, then run in pomme through a few scenarios (scripts/compat/run.sh). An app crashing or
+# Each app is built from a pinned upstream commit (scripts/compat/build.sh) on the Mac runner
+# (the Mac mini, or GitHub's Macs if the MACOS_RUNNER variable says so), then run in pomme through a few scenarios (scripts/compat/run.sh). An app crashing or
 # reaching an API pomme lacks is a finding, not a failure: the job fails only if an app or pomme
 # doesn't build. The run's Summary page has the table; the "compat-<app>" artifacts hold the
 # screenshots, logs and coverage reports (JSON).
+#
+# When it runs: only before a release. build.yml calls it for every v* tag, and the release waits
+# for it, so a release can't go out if an app or pomme stops building. It takes over an hour
+# (Bluesky alone is ~45 minutes), so it doesn't run on pull requests or on a schedule. To run it
+# at any other time, use "Run workflow" on the Actions tab.
 name: App compatibility
 
 on:
@@ -18,12 +23,12 @@ on:
       apps:
         description: Apps to run (JSON list)
         default: '["wonderous", "gallery", "bluesky"]'
-  schedule:
-    - cron: '0 18 * * 0'  # weekly, Monday morning in Melbourne
-  pull_request:
-    paths:
-      - .github/workflows/compat.yml
-      - scripts/compat/**
+  workflow_call:
+    inputs:
+      apps:
+        description: Apps to run (JSON list)
+        type: string
+        default: '["wonderous", "gallery", "bluesky"]'
 
 # One run at a time per branch; a newer push waits rather than cancelling (Bluesky alone takes
 # ~45 minutes to build) and replaces any run still waiting.
@@ -44,7 +49,7 @@ jobs:
   # As in build.yml (same cache key, so whichever runs first builds it).
   sysroot:
     name: Sysroot
-    runs-on: macos-26
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -58,8 +63,9 @@ jobs:
           key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
       - name: Build sysroot
         if: steps.cache.outputs.cache-hit != 'true'
+        # Install only what's missing: the Mac mini runner can't write to Homebrew (as in build.yml).
         run: |
-          brew install ninja bash
+          for f in ninja bash cmake; do [ -x "$(brew --prefix)/bin/$f" ] || brew install "$f"; done
           scripts/build-sysroot.sh
       - name: Pack sysroot
         run: tar -czf sysroot.tar.gz -C vendor/sysroot .
@@ -73,7 +79,7 @@ jobs:
   pomme:
     name: pomme (macOS)
     needs: sysroot
-    runs-on: macos-26
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -92,13 +98,13 @@ jobs:
   app:
     name: ${{ matrix.app }}
     needs: [sysroot, pomme]
-    runs-on: macos-26
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        app: ${{ fromJSON(github.event.inputs.apps || '["wonderous", "gallery", "bluesky"]') }}
+        app: ${{ fromJSON(inputs.apps || '["wonderous", "gallery", "bluesky"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
@@ -112,6 +118,15 @@ jobs:
         if: matrix.app == 'bluesky'
         with:
           node-version: 24
+      # Expo's prebuild runs `pod install`. GitHub's Macs have CocoaPods; install it for this user
+      # if the runner doesn't.
+      - name: CocoaPods
+        if: matrix.app == 'bluesky'
+        run: |
+          if ! command -v pod >/dev/null; then
+            gem install --user-install cocoapods
+            echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+          fi
       - name: Build ${{ matrix.app }}
         id: build
         run: |
@@ -138,7 +153,7 @@ jobs:
       - name: Run in pomme
         run: |
           chmod +x bin/pomme
-          brew install coreutils  # timeout
+          command -v timeout >/dev/null || command -v gtimeout >/dev/null || brew install coreutils  # timeout
           scripts/compat/run.sh ${{ matrix.app }} "${{ steps.build.outputs.app }}" results/${{ matrix.app }} bin/pomme
       - name: Summary
         if: always()
