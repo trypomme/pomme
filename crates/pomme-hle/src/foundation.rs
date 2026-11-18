@@ -878,9 +878,51 @@ fn integer_value(emu: &mut Emu) -> Result<()> {
 
 fn double_value(emu: &mut Emu) -> Result<()> {
     let s = nsstring(emu, emu.arg(0))?;
-    let v: f64 = s.trim().parse().unwrap_or(0.0);
-    emu.cpu.q[0] = v.to_bits() as u128;
+    emu.cpu.q[0] = leading_double(&s).to_bits() as u128;
     Ok(())
+}
+
+fn float_value(emu: &mut Emu) -> Result<()> {
+    let s = nsstring(emu, emu.arg(0))?;
+    emu.cpu.q[0] = (leading_double(&s) as f32).to_bits() as u128;
+    Ok(())
+}
+
+/// `-doubleValue`'s parse: leading whitespace, then the longest prefix that's
+/// a decimal number ("12.5px" → 12.5); 0 when there's none.
+fn leading_double(s: &str) -> f64 {
+    let t = s.trim_start();
+    let b = t.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while b.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    let mut any = digits(&mut i);
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        any |= digits(&mut i);
+    }
+    if !any {
+        return 0.0;
+    }
+    let mantissa = i;
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        if digits(&mut j) {
+            i = j;
+        }
+    }
+    t[..i].parse().or_else(|_| t[..mantissa].parse()).unwrap_or(0.0)
 }
 
 fn bool_value_string(emu: &mut Emu) -> Result<()> {
@@ -4767,6 +4809,7 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSString", false, "integerValue", integer_value),
     ("NSString", false, "longLongValue", integer_value),
     ("NSString", false, "doubleValue", double_value),
+    ("NSString", false, "floatValue", float_value),
     ("NSString", false, "boolValue", bool_value_string),
     ("NSString", false, "componentsSeparatedByString:", components_separated),
     ("NSString", false, "substringFromIndex:", substring_from),
@@ -5383,5 +5426,20 @@ mod padding_tests {
         assert_eq!(pad("abc", 9, ". ", 1), "abc . . .");
         assert_eq!(pad("abc", 2, ". ", 0), "ab");
         assert_eq!(pad("7", 4, "0", 0), "7000");
+    }
+}
+
+#[cfg(test)]
+mod leading_double_tests {
+    use super::leading_double;
+
+    #[test]
+    fn parses_the_numeric_prefix() {
+        assert_eq!(leading_double(" 12.5px"), 12.5);
+        assert_eq!(leading_double("-.5"), -0.5);
+        assert_eq!(leading_double("1e3,"), 1000.0);
+        assert_eq!(leading_double("2e"), 2.0);
+        assert_eq!(leading_double("abc"), 0.0);
+        assert_eq!(leading_double("-"), 0.0);
     }
 }
