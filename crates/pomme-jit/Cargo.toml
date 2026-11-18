@@ -1,0 +1,10 @@
+[package]
+name = "pomme-jit"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "pomme's JIT: arm64 blocks lifted to a small IR, for WebAssembly and native back ends"
+
+[dependencies]
+pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
+pomme-mem = { version = "0.1.0", path = "../pomme-mem" }

@@ -3020,6 +3020,7 @@ dependencies = [
  "pomme-cpu",
  "pomme-desktop",
  "pomme-hle",
+ "pomme-jit",
  "pomme-loader",
  "pomme-macho",
  "pomme-net",
@@ -3083,6 +3084,14 @@ dependencies = [
  "unicode-bidi",
  "unicode-linebreak",
  "wgpu",
+]
+
+[[package]]
+name = "pomme-jit"
+version = "0.1.0"
+dependencies = [
+ "pomme-cpu",
+ "pomme-mem",
 ]
 
 [[package]]

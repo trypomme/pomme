@@ -14,34 +14,37 @@
 
 ## 2. IR and front end
 
-- [ ] 2.1 Create `crates/pomme-jit` with `src/ir.rs` (the IR from design decision 2). Check: `cargo test -p pomme-jit` builds and `cargo check --target wasm32-unknown-unknown -p pomme-jit` works.
-- [ ] 2.2 In `crates/pomme-cpu`, add a `pub` way to run one decoded `Op` (the helper from decision 4). Check: a test runs a block op by op through it and gets the same state as `Cpu::run`.
-- [ ] 2.3 Write `src/eval.rs`, the test-only IR evaluator, and `src/lift.rs` for `Op::Generic` only (every instruction becomes a helper call). Check: `crates/pomme-jit/tests/lift.rs` runs 100,000 random encodings on the interpreter and on the evaluator and compares every register and byte written.
-- [ ] 2.4 Lift the integer `Op` forms to real IR: moves, arithmetic, logic, bitfields, selects, compares with flags kept in the block. Check: `tests/lift.rs` passes for each form, with flags compared.
-- [ ] 2.5 Lift loads, stores and pairs, with the fault path from decision 5. Check: `tests/lift.rs` passes, plus a test with an unmapped address in the middle of a block.
-- [ ] 2.6 Lift branches: `B`, `BL`, `B.cond`, `CBZ`, `TBZ`, `BR`, `BLR`, `RET`, and exits (`BRK`, `SVC`). Check: `tests/lift.rs` passes, and the CPU conformance fixture runs on the evaluator with the same results.
+- [x] 2.1 Create `crates/pomme-jit` with `src/ir.rs` (the IR from design decision 2). Check: `cargo test -p pomme-jit` builds. (`cargo check --target wasm32-unknown-unknown -p pomme-jit` is checked by CI's web build once the browser uses the crate, in section 3.)
+- [x] 2.2 In `crates/pomme-cpu`, make the decoded `Op`, `decode`, `Cpu::exec_op` (the helper from decision 4) and `fetch_block` public. Check: `tests/lift.rs` runs helpers through `exec_op` and matches the interpreter.
+- [x] 2.3 Write `src/eval.rs`, the test-only IR evaluator, and `src/lift.rs`, where every form without a translation becomes a helper call. Check: `crates/pomme-jit/tests/lift.rs` runs 200,000 random instructions on the interpreter and on the evaluator and compares every register, flag, the pc, the step count, the exit and every byte of memory.
+- [x] 2.4 Lift the integer `Op` forms to real IR: moves, arithmetic, logic, bitfields, selects, compares, with registers and flags kept in the block. Check: `tests/lift.rs` passes, and a planted bug in the carry flag or in a register extension makes it fail.
+- [x] 2.5 Lift loads, stores and pairs, with the fault path from decision 5. Check: `tests/lift.rs` passes; its random blocks (50,000, up to 13 instructions) include faults and exits in the middle.
+- [x] 2.6 Lift branches: `B`, `BL`, `B.cond`, `CBZ`, `TBZ`, `BR`, `BLR`, `RET`; exits (`BRK`, `SVC`) run as helpers. Check: `tests/lift.rs` passes. In place of the conformance fixture (it needs Xcode, so it runs only on the Mac): `POMME_CPU=ir-eval` runs a whole app with every block lifted and evaluated (`src/backend.rs`), and `scripts/cpu-compare.sh` on hello-expo gives the same instructions, report and screen as the interpreter.
 
-## 3. Cranelift back end (desktop)
+## 3. The JIT in the browser (WebAssembly back end)
 
-- [ ] 3.1 Write `src/clif.rs` (feature `cranelift`): IR to Cranelift, one function per block, with the calling convention from decisions 5 and 6 (no chaining yet). Check: `tests/lift.rs` also runs every random encoding through Cranelift and compares.
-- [ ] 3.2 Write `src/cache.rs` and `src/dispatch.rs`: the pc table, run counts, the threshold, invalidation by page, and the `Backend` implementation. Run `crates/pomme-cpu/tests/blocks.rs` on the JIT too. Check: those tests pass on the JIT, with a threshold of 1 so every block is translated.
-- [ ] 3.3 Add `--cpu jit` to `crates/pomme-cli/src/main.rs`, with the messages from the `hosts/cli` delta. Check: `pomme run <hello-expo.app> --cpu jit --trace` says tracing uses the interpreter.
-- [ ] 3.4 Run the CPU conformance fixture on the JIT, in `crates/pomme-jit/tests/conformance.rs`, sharing the setup with `crates/pomme-cpu/tests/run.rs`. Check: all four builds give the same results.
-- [ ] 3.5 Add the lockstep check (`POMME_JIT_CHECK=1`) from decision 14. Check: a test that breaks one lifted instruction on purpose is caught, and the check prints that block.
-- [ ] 3.6 Compare and measure: `ARGS_OLD="--cpu interpreter" ARGS_NEW="--cpu jit" scripts/cpu-compare.sh` on hello-expo, on Linux x86-64 and on the Mac mini. Add it to CI for changes under `crates/pomme-cpu`, `crates/pomme-mem` and `crates/pomme-jit`. Check: identical results; the speed is in `crates/pomme-jit/README.md`. Gate: if the JIT is not at least 2x faster than the interpreter, stop and write down why before going on.
+Thai asked for the browser first, because the web demo is what people see.
+So the JIT's loop and tools come with the WebAssembly back end, and the
+desktop back end follows in section 4.
 
-## 4. Make the desktop JIT fast
+- [ ] 3.1 Write `src/cache.rs` and `src/dispatch.rs`: the pc table, run counts, the threshold, invalidation by page, and the `Backend` implementation (it grows from `src/backend.rs`). Run `crates/pomme-cpu/tests/blocks.rs` on it too, with the evaluator in place of translated code. Check: those tests pass with a threshold of 1, so every block is translated.
+- [ ] 3.2 Add `--cpu jit` to `crates/pomme-cli/src/main.rs`, with the messages from the `hosts/cli` delta, and `?cpu=jit` to the web page. Check: `pomme run <hello-expo.app> --cpu jit --trace` says tracing uses the interpreter.
+- [ ] 3.3 Add the lockstep check (`POMME_JIT_CHECK=1`) from decision 14. Check: a test that breaks one lifted instruction on purpose is caught, and the check prints that block.
+- [ ] 3.4 Write `src/wasm.rs` (feature `wasm`): IR to a WebAssembly module with `wasm-encoder`, importing pomme's memory and function table, with the calling convention from decisions 5 and 6. Check: a test runs the random instructions and blocks of `tests/lift.rs` through the module (in Node, run by `scripts/web-test.sh`) and compares with the interpreter.
+- [ ] 3.5 Export the function table from the web build (`scripts/build-web.sh`), and install modules from the JIT in `crates/pomme-web/src/lib.rs` and `web/worker.js`. Batch hot blocks into one module. Check: hello-expo runs in Chromium with `?cpu=jit`, and the browser test's screenshots match.
+- [ ] 3.6 Make it fast: chaining through the table with the stop check (decision 6), and the TLB lookup inline for loads and stores (give the TLB a stable layout in `crates/pomme-mem/src/lib.rs`). Check: the tests above pass; speed in `measurements.md` after each step.
+- [ ] 3.7 Run the browser tests in Chromium and WebKit with the JIT on. Check: `scripts/web-test.sh` passes both ways.
+- [ ] 3.8 Measure in Chromium and WebKit: hello-expo launch and three taps, and the time spent making modules. Check: the numbers are in `measurements.md`. Gate: at least 2x faster in Chromium than the interpreter, or stop and write down why. If module cost is a large share, move compiling to `WebAssembly.compile` in the background. When the gate passes, suggest release v0.1.2 to Thai.
 
-- [ ] 4.1 Chaining through the table, with the stop check (decision 6). Check: blocks tests pass; `cpu-compare.sh` identical; speed in the README.
-- [ ] 4.2 Keep guest registers in host values inside a block, written back only at exits and helper calls. Check: `tests/lift.rs` and `cpu-compare.sh` pass; speed in the README.
-- [ ] 4.3 Inline the TLB lookup for loads and stores. Give the TLB a stable layout in `crates/pomme-mem/src/lib.rs`. Check: the same; speed in the README.
+## 4. The JIT on the desktop (Cranelift back end)
 
-## 5. WebAssembly back end (browser)
+- [ ] 4.1 Write `src/clif.rs` (feature `cranelift`): IR to Cranelift, one function per block, with the same calling convention, chaining and inline TLB as the WebAssembly back end. Check: `tests/lift.rs` also runs every random instruction and block through Cranelift and compares.
+- [ ] 4.2 Run the CPU conformance fixture on the JIT, in `crates/pomme-jit/tests/conformance.rs`, sharing the setup with `crates/pomme-cpu/tests/run.rs` (on the Mac mini). Check: all four builds give the same results.
+- [ ] 4.3 Compare and measure: `ARGS_OLD="--cpu interpreter" ARGS_NEW="--cpu jit" scripts/cpu-compare.sh` on hello-expo, on Linux x86-64 and on the Mac mini. Add it to CI for changes under `crates/pomme-cpu`, `crates/pomme-mem` and `crates/pomme-jit`. Check: identical results; the speed is in `measurements.md`. Gate: at least 2x faster than the interpreter, or stop and write down why.
 
-- [ ] 5.1 Write `src/wasm.rs` (feature `wasm`): IR to a WebAssembly module with `wasm-encoder`, importing pomme's memory and function table. Check: a Node test (`crates/pomme-jit/tests/wasm.mjs`, run by `scripts/web-test.sh`) loads a module for a small block and gets the same result as the interpreter.
-- [ ] 5.2 Export the function table from the web build (`scripts/build-web.sh`), and install modules from the JIT in `crates/pomme-web/src/lib.rs` and `web/worker.js`. Batch hot blocks into one module. Check: hello-expo runs in Chromium with `?cpu=jit`, and the browser test's screenshots match.
-- [ ] 5.3 Run the browser tests in Chromium and WebKit with the JIT on. Check: `scripts/web-test.sh` passes both ways.
-- [ ] 5.4 Measure in Chromium and WebKit: hello-expo launch and three taps, and the time spent making modules. Check: the numbers are in the README. Gate: at least 2x faster in Chromium than the interpreter. If module cost is a large share, move compiling to `WebAssembly.compile` in the background.
+## 5. Keep values in registers longer
+
+- [ ] 5.1 Keep guest registers in host values across chained blocks, not only inside one block, and drop flag results nothing reads. Check: `tests/lift.rs` and `cpu-compare.sh` pass on both back ends; speed in `measurements.md`.
 
 ## 6. Other tools
 

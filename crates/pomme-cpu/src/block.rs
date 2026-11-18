@@ -103,9 +103,9 @@ impl Blocks {
 
 /// Instructions in a page: a page's blocks map to this many consecutive slots.
 const PAGE_INSNS: usize = (PAGE_SIZE / 4) as usize;
-const _: () = assert!(SLOTS % PAGE_INSNS == 0);
+const _: () = assert!(SLOTS.is_multiple_of(PAGE_INSNS));
 
-fn fetch(pc: u64, mem: &Memory) -> Option<Box<[Op]>> {
+pub(crate) fn fetch(pc: u64, mem: &Memory) -> Option<Box<[Op]>> {
     let page_end = (pc | (PAGE_SIZE - 1)) + 1;
     // Decoded on the stack, then copied into one allocation of the right size.
     let mut ops = [Op::Nop; MAX_LEN];

@@ -249,8 +249,8 @@ test with NaN and denormal inputs checks it (task 7.3).
 - `coverage` works with the JIT if it records blocks; task 6.2 checks this.
 - Snapshots work: translations are a cache, not part of the state. A
   restore throws them away.
-- At first, `auto` does not pick the JIT. When milestone 5 is done and the
-  comparison checks have passed in CI for two weeks, a small follow-up
+- At first, `auto` does not pick the JIT. When milestone 3 (the browser) is
+  done and the comparison checks have passed in CI for two weeks, a small follow-up
   makes `auto` pick the JIT wherever native execution is not used. Thai
   decides when.
 
@@ -307,20 +307,25 @@ the browser, against main after #17.
 | # | Milestone | What it proves | Rough size |
 | --- | --- | --- | --- |
 | 0 | Measure: time in guest code against time in pomme's Rust code; block lengths; how often code is written | The size of the possible gain, before any JIT code | 2–3 days |
-| 1 | Shared ground: `Backend` trait, code tracked per page, compare script with `--cpu` | Nothing changes: same counts and screens | 1 week |
-| 2 | IR, front end, evaluator, helpers for everything else | The front end is correct on random instructions | 2 weeks |
-| 3 | Cranelift back end, no chaining | First real speed number on the desktop. Gate: at least 2x faster, or we stop and rethink | 2 weeks |
-| 4 | Chaining, flags kept in the block, inline TLB | Most of the desktop gain | 1–2 weeks |
-| 5 | WebAssembly back end in the browser | The browser gain. Gate: at least 2x faster in Chromium | 2–3 weeks |
+| 1 | Shared ground: `Backend` trait, code tracked per page, compare script options | Nothing changes: same counts and screens | 1 week |
+| 2 | IR, front end, evaluator, helpers for everything else | The front end is correct on random instructions and on a whole app | 2 weeks |
+| 3 | The JIT loop and the WebAssembly back end in the browser, with chaining and the inline TLB | The browser gain. Gate: at least 2x faster in Chromium, or we stop and rethink | 3–4 weeks |
+| 4 | Cranelift back end on the desktop | The desktop gain. Gate: at least 2x faster | 2 weeks |
+| 5 | Keep values in registers across blocks | More of the gain on both | 1 week |
 | 6 | Translate the hottest helper calls (common floating point, NEON, atomics) | The rest of the gain, guided by measurements | 1–2 weeks |
 | 7 | Docs, and the follow-up to make `auto` pick the JIT | | 2–3 days |
+
+The browser comes before the desktop because the web demo is what people
+see first (Thai's call). WebAssembly is harder to debug than native code,
+but two checks run natively and need no browser: the IR evaluator for the
+front end, and the lockstep check for the whole JIT.
 
 In total about 10 to 13 weeks of focused work, in about 10 to 14 pull
 requests.
 
 ## Expected speed
 
-These are estimates, not measurements. Milestones 3 and 5 replace them with
+These are estimates, not measurements. Milestones 3 and 4 replace them with
 real numbers. Milestone 0 lowered them: see `measurements.md` in this change
 (about 3.5 to 5 times on desktop and 2.5 to 4 times in the browser, for the
 whole run).
@@ -353,7 +358,7 @@ whole run).
   create and compile, and browsers limit how many functions and modules are
   practical. Answer: batch many blocks into one module; translate only hot
   blocks; compile in the background if needed (decision 7 says this is
-  safe). Milestone 5 measures it in Chromium and WebKit.
+  safe). Milestone 3 measures it in Chromium and WebKit.
 - **Invalidation and chaining together.** A chained jump must never reach a
   block that was thrown away. Answer: chaining goes through the table at
   first (decision 6), so removing a block from the table is enough.
@@ -380,6 +385,6 @@ whole run).
 - What share of the time is in pomme's Rust code, and how long are blocks
   on average? Milestone 0 answers both.
 - When should `auto` pick the JIT by default? Decision 13 proposes after
-  milestone 5 plus two weeks of green comparison checks. Thai decides.
+  milestone 3 plus two weeks of green comparison checks. Thai decides.
 - Should the browser compile modules in the background from the start?
-  Milestone 5 decides from measurements.
+  Milestone 3 decides from measurements.
