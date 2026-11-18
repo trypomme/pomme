@@ -26,7 +26,7 @@ case "$APP" in
       "intro-2|--swipe 360,450>40,450@8 --seconds 12"
       "home|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --seconds 20"
       "home-next|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 360,450>40,450@18 --seconds 24"
-      # Opening a wonder hangs in the Google Maps SDK (waitForConfigsToLoad): a step cap keeps the screenshot.
+      # Opening a wonder stops in the Google Maps SDK as it makes its map renderer: a step cap keeps the screenshot.
       "details|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 200,700>200,200@18 --seconds 24 --steps 3000000000"
     ) ;;
   gallery) SCENARIOS=(
