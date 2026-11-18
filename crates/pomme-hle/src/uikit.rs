@@ -826,7 +826,33 @@ fn begin_background_task(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
+/// -[UIFeedbackGenerator init…]: the generator itself, as -[NSObject init] makes it.
+fn feedback_init(e: &mut Emu) -> Result<()> {
+    let o = e.arg(0);
+    e.ret(o);
+    Ok(())
+}
+
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    // Metal Performance Shaders: none here. Its kernels' init returns nil, as on a GPU that
+    // MPS doesn't support (MPSSupportsMTLDevice is false), and Flutter scales images itself.
+    ("MPSKernel", false, "initWithDevice:", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    // Haptics: there's nothing to vibrate, so feedback generators make no feedback.
+    ("UIImpactFeedbackGenerator", false, "initWithStyle:", feedback_init),
+    ("UIImpactFeedbackGenerator", false, "initWithStyle:view:", feedback_init),
+    ("UIFeedbackGenerator", false, "initForView:", feedback_init),
+    ("UIFeedbackGenerator", false, "prepare", |_| Ok(())),
+    ("UIImpactFeedbackGenerator", false, "impactOccurred", |_| Ok(())),
+    ("UIImpactFeedbackGenerator", false, "impactOccurredWithIntensity:", |_| Ok(())),
+    ("UIImpactFeedbackGenerator", false, "impactOccurredAtLocation:", |_| Ok(())),
+    ("UIImpactFeedbackGenerator", false, "impactOccurredWithIntensity:atLocation:", |_| Ok(())),
+    ("UISelectionFeedbackGenerator", false, "selectionChanged", |_| Ok(())),
+    ("UISelectionFeedbackGenerator", false, "selectionChangedAtLocation:", |_| Ok(())),
+    ("UINotificationFeedbackGenerator", false, "notificationOccurred:", |_| Ok(())),
+    ("UINotificationFeedbackGenerator", false, "notificationOccurred:atLocation:", |_| Ok(())),
     ("NSObject", false, "performSelector:withObject:afterDelay:", perform_after_delay),
     ("NSObject", false, "performSelector:withObject:afterDelay:inModes:", perform_after_delay),
     ("NSObject", true, "cancelPreviousPerformRequestsWithTarget:", cancel_performs),
