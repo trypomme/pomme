@@ -501,6 +501,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 /// and `preferredStatusBarStyle`. Light content is white, dark content
 /// black, and the default follows the appearance.
 pub fn appearance(emu: &mut Emu) -> Result<(bool, bool)> {
+    if let Some((hidden, style)) = emu.app_status_bar {
+        return Ok((hidden, light_content(emu, style)));
+    }
     let Some(&window) = emu.ui.windows.last() else { return Ok((false, false)) };
     let root = objc::send(emu, window, "rootViewController", &[])?;
     if root == 0 {
@@ -526,17 +529,50 @@ pub fn appearance(emu: &mut Emu) -> Result<(bool, bool)> {
     let s = deciding(emu, "childViewControllerForStatusBarStyle")?;
     // UIStatusBarStyle: default (dark content in light mode, light in dark),
     // light content (1), dark content (3).
-    let light = match objc::send(emu, s, "preferredStatusBarStyle", &[])? {
+    let style = objc::send(emu, s, "preferredStatusBarStyle", &[])?;
+    Ok((hidden, light_content(emu, style)))
+}
+
+fn light_content(emu: &Emu, style: u64) -> bool {
+    match style {
         1 => true,
         3 => false,
         _ => emu.appearance.dark,
+    }
+}
+
+/// The app's own status bar, when Info.plist says its view controllers don't
+/// decide it (`UIViewControllerBasedStatusBarAppearance` NO).
+pub(crate) fn app_based(info: Option<&plist::Dictionary>) -> Option<(bool, u64)> {
+    let info = info?;
+    if info.get("UIViewControllerBasedStatusBarAppearance").and_then(|v| v.as_boolean()) != Some(false) {
+        return None;
+    }
+    let hidden = info.get("UIStatusBarHidden").and_then(|v| v.as_boolean()).unwrap_or(false);
+    let style = match info.get("UIStatusBarStyle").and_then(|v| v.as_string()) {
+        Some("UIStatusBarStyleLightContent") => 1,
+        Some("UIStatusBarStyleDarkContent") => 3,
+        _ => 0,
     };
-    Ok((hidden, light))
+    Some((hidden, style))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_based_status_bar_from_info_plist() {
+        let mut d = plist::Dictionary::new();
+        assert_eq!(app_based(Some(&d)), None);
+        d.insert("UIViewControllerBasedStatusBarAppearance".into(), false.into());
+        assert_eq!(app_based(Some(&d)), Some((false, 0)));
+        d.insert("UIStatusBarStyle".into(), "UIStatusBarStyleLightContent".into());
+        d.insert("UIStatusBarHidden".into(), true.into());
+        assert_eq!(app_based(Some(&d)), Some((true, 1)));
+        d.insert("UIViewControllerBasedStatusBarAppearance".into(), true.into());
+        assert_eq!(app_based(Some(&d)), None);
+    }
 
     #[test]
     fn times_read_as_on_the_status_bar() {
