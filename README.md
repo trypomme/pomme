@@ -477,3 +477,21 @@ These keep record-and-replay and rr-style time-travel debugging cheap to add lat
 - **Every outside input goes through one HLE layer**: time, randomness,
   network, filesystem, input events. A recording is just that layer's inputs.
 - **Guest memory is snapshottable** (plain owned buffers, no host pointers into it).
+
+## Licence
+
+pomme is open source under the [MIT licence](LICENSE).
+
+A few files in this repository come from other projects and keep their own
+licences. They are all permissive, so you can use them alongside pomme's MIT
+licence:
+
+- `apps/hello-expo-font/assets/fonts/`: the Roboto and Roboto Slab fonts,
+  under the Apache License 2.0 (see the `LICENSE.md` file in that folder).
+- `crates/pomme-cli/tests/fixtures/ytplayer/`: Google's YouTube player helper,
+  used as a test app, under the Apache License 2.0.
+- `scripts/sysroot/*.patch`: changes to Apple's open source
+  [swift-foundation](https://github.com/swiftlang/swift-foundation) and
+  [swift-corelibs-foundation](https://github.com/swiftlang/swift-corelibs-foundation),
+  under the Apache License 2.0 with the Runtime Library Exception, like the
+  code they change.
