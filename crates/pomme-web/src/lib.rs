@@ -324,18 +324,20 @@ fn app_path(bytes: &[u8]) -> Option<String> {
 /// presenting iOS `ios` ("18.6", "26"; empty for the default); with
 /// `frame_stats`, how smoothly frames arrive goes to the console each second.
 /// Runs until the app stops, then tells the page why through `pommeStopped`.
+/// `cpu` picks how guest code runs: "jit" translates hot code to WebAssembly,
+/// anything else (or a browser that refuses) keeps the interpreter.
 /// The worker calls it through `WebAssembly.promising`, so it returns nothing
 /// (the glue can't read a value out of a promise).
 #[wasm_bindgen]
-pub fn run(bundle: Vec<u8>, scale: f32, ios: String, frame_stats: bool) {
+pub fn run(bundle: Vec<u8>, scale: f32, ios: String, frame_stats: bool, cpu: String) {
     pomme_hle::host::set_log_hook(Some(log_line));
     pomme_hle::host::set_pause_hook(Some(pause_once));
-    match run_inner(bundle, scale, &ios, frame_stats) {
+    match run_inner(bundle, scale, &ios, frame_stats, &cpu) {
         Ok(s) | Err(s) => pomme_stopped(&s),
     }
 }
 
-fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool) -> Result<String, String> {
+fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool, cpu: &str) -> Result<String, String> {
     let app = app_path(&bundle).ok_or("the bundle has no .app")?;
     pomme_loader::vfs::mount(&bundle)?;
     drop(bundle);
@@ -348,6 +350,22 @@ fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool) -> Resul
         emu.system.os = ios.parse()?;
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
+    #[cfg(target_arch = "wasm32")]
+    if cpu == "jit" {
+        match pomme_jit::web::WasmEngine::new() {
+            Some(engine) => {
+                let mut jit = pomme_jit::jit::Jit::new(Box::new(engine));
+                if frame_stats {
+                    jit.log = Some(log_line);
+                }
+                emu.backend = Box::new(jit);
+                pomme_log("CPU: JIT (hot code becomes WebAssembly)");
+            }
+            None => pomme_log("CPU: the JIT could not start here, using the interpreter"),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = cpu;
     *emu.net.client = Some(Box::new(XhrNet::default()));
     *emu.webkit.engine = Some(Box::new(BrowserEngine));
     *emu.live.host = Some(Box::new(WebHost { base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));

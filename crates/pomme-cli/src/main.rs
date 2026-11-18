@@ -936,7 +936,9 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
     // For checking the JIT's front end on whole apps (slow): every block
     // runs through the IR evaluator instead of the interpreter.
     if std::env::var("POMME_CPU").as_deref() == Ok("ir-eval") {
-        emu.backend = Box::new(pomme_jit::backend::IrEval::default());
+        let mut jit = pomme_jit::jit::Jit::new(Box::new(pomme_jit::jit::EvalEngine));
+        jit.threshold = std::env::var("POMME_JIT_THRESHOLD").ok().and_then(|t| t.parse().ok()).unwrap_or(1);
+        emu.backend = Box::new(jit);
     }
     emu.present(device);
     clipboard.apply(&mut emu)?;

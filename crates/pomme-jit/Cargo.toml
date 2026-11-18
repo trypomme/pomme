@@ -8,3 +8,11 @@ description = "pomme's JIT: arm64 blocks lifted to a small IR, for WebAssembly a
 [dependencies]
 pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
 pomme-mem = { version = "0.1.0", path = "../pomme-mem" }
+wasm-encoder = "0.263.0"
+
+[dev-dependencies]
+wasmi = "2.0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.107"
+wasm-bindgen = "0.2.130"

@@ -86,7 +86,7 @@ function useJspi() {
   };
 }
 
-async function start({ bundle, scale, ios, frameStats }) {
+async function start({ bundle, scale, ios, frameStats, cpu }) {
   if (!hasJspi()) {
     self.postMessage({ type: 'nojspi' });
     return;
@@ -102,7 +102,7 @@ async function start({ bundle, scale, ios, frameStats }) {
     if (!res.ok) throw new Error(`${bundle}: ${res.status} ${res.statusText}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     self.pommeLog(`Booting (${(bytes.length / 1e6).toFixed(0)} MB)…`);
-    wasm_bindgen.run(bytes, scale, ios || '', !!frameStats); // reports through pommeStopped
+    wasm_bindgen.run(bytes, scale, ios || '', !!frameStats, cpu || ''); // reports through pommeStopped
   } catch (err) {
     self.pommeStopped(String((err && err.stack) || err));
   }

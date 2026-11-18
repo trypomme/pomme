@@ -11,7 +11,10 @@
 //! exactly the interpreter's registers, memory, exits, pc and instruction
 //! count. The interpreter is the reference.
 
-pub mod backend;
 pub mod eval;
 pub mod ir;
+pub mod jit;
 pub mod lift;
+pub mod wasm;
+#[cfg(target_arch = "wasm32")]
+pub mod web;

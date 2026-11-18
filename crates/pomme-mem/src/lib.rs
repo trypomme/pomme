@@ -85,8 +85,10 @@ pub enum MemError {
 /// TLB slots (direct-mapped by page number).
 const TLB_SLOTS: usize = 1024;
 
-/// A page recently found in a region.
+/// A page recently found in a region. `repr(C)` because translated code
+/// reads entries itself (see [`Memory::tlb_layout`]).
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 struct TlbEntry {
     /// The page number (untagged address / [`PAGE_SIZE`]); `u64::MAX` when empty.
     page: u64,
@@ -145,7 +147,41 @@ impl Default for Memory {
     }
 }
 
+/// Where the TLB is and how its entries are laid out, for translated code
+/// that does what [`Memory::read_u64`] and friends do on a hit itself: an
+/// access of `n` bytes at untagged address `a` may go straight to
+/// `host + a % PAGE_SIZE` when the entry at slot `(a / PAGE_SIZE) % slots`
+/// has `page == a / PAGE_SIZE`, `host != 0` and `a % PAGE_SIZE + n <=
+/// PAGE_SIZE`, and for a store also `writable != 0`. Anything else must go
+/// through the methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlbLayout {
+    /// The address of the first entry. It stays the same for this `Memory`.
+    pub base: usize,
+    pub slots: u32,
+    /// Bytes from one entry to the next.
+    pub stride: u32,
+    /// Offsets in an entry: the page number (u64), the host address (usize)
+    /// and whether stores may go straight there (a bool).
+    pub page: u32,
+    pub host: u32,
+    pub writable: u32,
+}
+
 impl Memory {
+    /// The TLB, for translated code (see [`TlbLayout`]).
+    pub fn tlb_layout(&self) -> TlbLayout {
+        use std::mem::{offset_of, size_of};
+        TlbLayout {
+            base: self.tlb.as_ptr() as usize,
+            slots: TLB_SLOTS as u32,
+            stride: size_of::<std::cell::Cell<TlbEntry>>() as u32,
+            page: offset_of!(TlbEntry, page) as u32,
+            host: offset_of!(TlbEntry, host) as u32,
+            writable: offset_of!(TlbEntry, writable) as u32,
+        }
+    }
+
     #[inline(always)]
     fn slot(&self, addr: u64) -> &std::cell::Cell<TlbEntry> {
         &self.tlb[(addr / PAGE_SIZE) as usize & (TLB_SLOTS - 1)]

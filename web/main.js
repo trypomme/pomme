@@ -9,6 +9,7 @@ const AX_EVENT = 16; // + the action: a screen reader's, on an element
 const params = new URLSearchParams(location.search);
 const bundle = params.get('app') || 'helloexpo.pfs';
 const ios = params.get('ios') || ''; // e.g. ?ios=18.6
+const cpu = params.get('cpu') || ''; // ?cpu=jit: translate hot code to WebAssembly
 const frameStats = params.has('stats'); // ?stats: frame rate and stutters in the console
 const jspi = !params.has('nojspi') && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function'; // ?nojspi: as if the browser had none
 const NO_JSPI = 'pomme needs a browser with JSPI: Chrome or Edge 137, Firefox 153, Safari 27, or later.';
@@ -65,7 +66,7 @@ worker.onmessage = (e) => {
     console.warn('[pomme]', m.text);
   }
 };
-worker.postMessage({ type: 'start', bundle, scale: SCALE, ios, frameStats });
+worker.postMessage({ type: 'start', bundle, scale: SCALE, ios, frameStats, cpu });
 
 // Pointer → touch phases (UITouchPhase: began 0, moved 1, ended 3, cancelled 4), in points.
 function send(phase, ev) {
