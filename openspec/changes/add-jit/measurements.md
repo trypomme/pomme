@@ -124,6 +124,37 @@ in the browser). The reason is that the first estimate counted the speedup
 of the CPU part only. The gates in milestones 3 and 4 (at least 2 times
 faster) still look safe.
 
+## The browser JIT so far (milestone 3)
+
+Measured in headless Chromium on hello-expo: launch and the first seconds,
+about 420 million guest instructions, after which the app goes idle. The
+interpreter runs them at about 68 million instructions a second.
+
+| Version | Million instructions a second |
+| --- | --- |
+| Interpreter | 68 |
+| JIT, one block at a time, translated after 500 runs | 47 |
+| JIT, registers kept in the module across its blocks, one shared way out, memory fast path written into the code | 49 |
+| The same, translated after 2,000 runs | 53 |
+| The same, translated after 5,000 runs | 61 |
+
+What we learned:
+
+- **The translated code itself is fast** (about 115 to 165 million
+  instructions a second once Chrome has optimized it), but this run is
+  too short for it to pay off. Each translated instruction runs only a
+  few thousand times before the app goes idle.
+- **Chrome's compiling is the cost.** Chrome first runs new WebAssembly
+  with a quick, slow compiler and optimizes it later. Forcing the
+  optimizing compiler from the start (31) or never optimizing (31) are
+  both slower. Translating fewer blocks (a higher threshold) helps
+  because less code is compiled.
+- **Code size matters most.** Writing registers back only at one shared
+  exit made the code 3 times smaller (18 MB to 6 MB for 11,000 blocks)
+  and won back what keeping registers in locals had cost.
+- **About half the jumps between blocks stay inside one module**; the
+  other half go to another module and reload the registers.
+
 ## Ways to go past 5 times, later
 
 The estimate above is for a plain block JIT. These steps could push the

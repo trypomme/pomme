@@ -4,8 +4,9 @@
 //! three helpers from pomme. Each block becomes one exported function
 //! `b<i>(cpu, ctx) -> status`:
 //!
-//! - `cpu` is the address of the `Cpu` struct; registers and flags are read
-//!   and written there, at the offsets in [`Layout`].
+//! - `cpu` is the address of the `Cpu` struct, with the registers and flags
+//!   at the offsets in [`Layout`]. The module keeps them in locals while its
+//!   blocks run one after another, and writes them back on the way out.
 //! - `ctx` is the address of the run's [`crate::jit::Ctx`]; it is passed to
 //!   the helpers, and its first word is set when a load or store faults.
 //! - The status is 0 when the whole block ran, 1 when it stopped (the exit
@@ -134,11 +135,6 @@ const BLOCK_TYPE: u32 = 3;
 /// The type of the module's one real function, `run(cpu, ctx, block) -> status`.
 const RUN_TYPE: u32 = 4;
 
-/// The types of `ld<N>(cpu, ctx, addr) -> value` and `st<N>(cpu, ctx, addr, value) -> faulted`
-/// (`cpu` only so that `ctx` is local 1, as in `run`).
-const LD_TYPE: u32 = 5;
-const ST_TYPE: u32 = 6;
-
 /// Parameters and locals of `run`.
 const CPU: u32 = 0;
 const CTX: u32 = 1;
@@ -164,8 +160,6 @@ pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> 
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // helper
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // a block
     types.ty().function([ValType::I32, ValType::I32, ValType::I32], [ValType::I32]); // run
-    types.ty().function([ValType::I32, ValType::I32, ValType::I64], [ValType::I64]); // ld
-    types.ty().function([ValType::I32, ValType::I32, ValType::I64, ValType::I64], [ValType::I32]); // st
 
     let mut imports = ImportSection::new();
     imports.import("env", "load", EntityType::Function(0));
@@ -189,11 +183,6 @@ pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> 
     let mut funcs = FunctionSection::new();
     let mut exports = ExportSection::new();
     let mut code = CodeSection::new();
-    // Blocks of this module by pc: (index in the module, table index).
-    let here: std::collections::HashMap<u64, (u32, u32)> = match first_handle {
-        Some(first) => blocks.iter().enumerate().map(|(i, b)| (b.pc, (i as u32, first + i as u32))).collect(),
-        None => Default::default(),
-    };
     // b<i>: run(cpu, ctx, i).
     let run = FIRST_BLOCK + blocks.len() as u32;
     for i in 0..blocks.len() {
@@ -208,14 +197,7 @@ pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> 
         code.function(&f);
     }
     funcs.function(RUN_TYPE);
-    code.function(&run_function(blocks, layout, &here));
-    // ld1 … ld8, st1 … st8.
-    for store in [false, true] {
-        for bytes in [1, 2, 4, 8] {
-            funcs.function(if store { ST_TYPE } else { LD_TYPE });
-            code.function(&mem_function(layout, bytes, store));
-        }
-    }
+    code.function(&run_function(blocks, layout, first_handle));
 
     let mut m = Module::new();
     m.section(&types).section(&imports).section(&funcs).section(&exports).section(&code);
@@ -232,9 +214,84 @@ struct Gen<'a> {
     block: &'a Block,
     /// How many labels out the dispatch loop is, from the block's own code.
     to_loop: u32,
-    /// The function index of the module's `ld1`; `ld2`, `ld4`, `ld8`, `st1`,
-    /// `st2`, `st4` and `st8` follow it.
-    mem_fns: u32,
+    /// Guest registers and flags live in locals while `run` runs (see
+    /// [`Regs`]); the `Cpu` struct is only up to date on the way out.
+    regs: &'a Regs,
+    /// How many blocks the module has.
+    blocks: u32,
+}
+
+/// The guest state `run` keeps in locals: the registers and flags any of
+/// its blocks reads or writes, loaded when `run` starts and written back
+/// whenever code outside it may look (an exit, a helper, another module).
+/// The step count lives in a local too.
+struct Regs {
+    used: Vec<Loc>,
+    /// The ones some block writes: only these can differ from the `Cpu` struct.
+    written: Vec<Loc>,
+    /// The local of X0; X1…X30, SP, N, Z, C and V follow it, then the step
+    /// count, then the pc to leave with (i64), the status to return and the
+    /// table index to go on to (i32).
+    base: u32,
+}
+
+impl Regs {
+    const COUNT: u32 = 36;
+
+    fn index(loc: Loc) -> u32 {
+        match loc {
+            Loc::X(r) => r as u32,
+            Loc::Sp => 31,
+            Loc::N => 32,
+            Loc::Z => 33,
+            Loc::C => 34,
+            Loc::Vf => 35,
+            Loc::Pc => unreachable!("pc stays in the Cpu struct"),
+        }
+    }
+
+    fn local(&self, loc: Loc) -> u32 {
+        self.base + Self::index(loc)
+    }
+
+    fn steps(&self) -> u32 {
+        self.base + Self::COUNT
+    }
+
+    fn pc_out(&self) -> u32 {
+        self.base + Self::COUNT + 1
+    }
+
+    fn status(&self) -> u32 {
+        self.base + Self::COUNT + 2
+    }
+
+    fn handle(&self) -> u32 {
+        self.base + Self::COUNT + 3
+    }
+
+    fn new(blocks: &[&Block], base: u32) -> Regs {
+        let mut seen = [false; Self::COUNT as usize];
+        let mut wrote = [false; Self::COUNT as usize];
+        let mut mark = |loc: Loc, write: bool| {
+            if loc != Loc::Pc {
+                seen[Self::index(loc) as usize] = true;
+                wrote[Self::index(loc) as usize] |= write;
+            }
+        };
+        for b in blocks {
+            for inst in &b.insts {
+                match inst {
+                    Inst::Get { loc, .. } => mark(*loc, false),
+                    Inst::Set { loc, .. } => mark(*loc, true),
+                    Inst::Load { at, .. } | Inst::Store { at, .. } => at.dirty.iter().for_each(|(loc, _)| mark(*loc, true)),
+                    _ => {}
+                }
+            }
+        }
+        let all = || (0..31).map(Loc::X).chain([Loc::Sp, Loc::N, Loc::Z, Loc::C, Loc::Vf]);
+        Regs { used: all().filter(|l| seen[Self::index(*l) as usize]).collect(), written: all().filter(|l| wrote[Self::index(*l) as usize]).collect(), base }
+    }
 }
 
 impl Gen<'_> {
@@ -252,6 +309,57 @@ impl Gen<'_> {
 
     /// Push guest state `loc` (as i64).
     fn get(&mut self, loc: Loc) {
+        if loc != Loc::Pc {
+            self.i(I::LocalGet(self.regs.local(loc)));
+            return;
+        }
+        self.load_from_cpu(loc);
+    }
+
+    /// Store the value pushed by `push` into guest state `loc`.
+    fn set(&mut self, loc: Loc, push: impl FnOnce(&mut Self)) {
+        if loc == Loc::Pc {
+            return self.store_to_cpu(loc, push);
+        }
+        push(self);
+        if matches!(loc, Loc::N | Loc::Z | Loc::C | Loc::Vf) {
+            // A flag is a bool: 1 for any value that isn't 0.
+            self.i(I::I64Const(0));
+            self.i(I::I64Ne);
+            self.i(I::I64ExtendI32U);
+        }
+        self.i(I::LocalSet(self.regs.local(loc)));
+    }
+
+    /// Load the registers `run` keeps in locals from the `Cpu` struct.
+    fn load_regs(&mut self) {
+        for loc in self.regs.used.clone() {
+            self.load_from_cpu(loc);
+            self.i(I::LocalSet(self.regs.local(loc)));
+        }
+    }
+
+    /// Write the registers `run` keeps in locals (the ones it may have
+    /// changed) back to the `Cpu` struct.
+    fn store_regs(&mut self) {
+        let l = *self.layout;
+        for loc in self.regs.written.clone() {
+            self.i(I::LocalGet(CPU));
+            self.i(I::LocalGet(self.regs.local(loc)));
+            // Flags in locals are already 0 or 1.
+            self.i(match loc {
+                Loc::X(r) => I::I64Store(mem(l.x + 8 * r as u32, 3)),
+                Loc::Sp => I::I64Store(mem(l.sp, 3)),
+                Loc::N => I::I64Store8(mem(l.n, 0)),
+                Loc::Z => I::I64Store8(mem(l.z, 0)),
+                Loc::C => I::I64Store8(mem(l.c, 0)),
+                _ => I::I64Store8(mem(l.v, 0)),
+            });
+        }
+    }
+
+    /// Push guest state `loc` from the `Cpu` struct.
+    fn load_from_cpu(&mut self, loc: Loc) {
         let l = self.layout;
         self.i(I::LocalGet(CPU));
         match loc {
@@ -265,8 +373,8 @@ impl Gen<'_> {
         }
     }
 
-    /// Store the value pushed by `push` into guest state `loc`.
-    fn set(&mut self, loc: Loc, push: impl FnOnce(&mut Self)) {
+    /// Store the value pushed by `push` into `loc` in the `Cpu` struct.
+    fn store_to_cpu(&mut self, loc: Loc, push: impl FnOnce(&mut Self)) {
         let l = *self.layout;
         self.i(I::LocalGet(CPU));
         push(self);
@@ -307,7 +415,7 @@ impl Gen<'_> {
     /// At the end of a block (pc and the step count written): go on to the
     /// next block if it is translated, fits before the stop, and no code was
     /// written; otherwise fall through (and return 0).
-    fn chain(&mut self, c: &Chain, direct: &[(u32, u32)]) {
+    fn chain(&mut self, c: &Chain, first_handle: Option<u32>) {
         let len = self.block.len() as i64;
         let next = self.block.next;
         self.i(I::Block(wasm_encoder::BlockType::Empty));
@@ -335,9 +443,8 @@ impl Gen<'_> {
         self.i(I::I64Ne);
         self.i(I::BrIf(0));
         // it would end past the stop: no
-        self.i(I::LocalGet(ENTRY));
-        self.i(I::I64Const(len));
-        self.i(I::I64Add);
+        let _ = len;
+        self.i(I::LocalGet(self.regs.steps()));
         self.i(I::LocalGet(SLOT));
         self.i(I::I64Load(mem(c.len, 3)));
         self.i(I::I64Add);
@@ -356,39 +463,58 @@ impl Gen<'_> {
         self.i(I::I64Const(1));
         self.i(I::I64Add);
         self.i(I::I64Store(mem(c.ctx_chained, 3)));
-        // A block of this module (the table says it is current): go round
-        // the dispatch loop to it.
-        for &(index, handle) in direct {
-            self.i(I::LocalGet(SLOT));
-            self.i(I::I32Load(mem(c.handle, 2)));
-            self.i(I::I32Const(handle as i32));
-            self.i(I::I32Eq);
-            self.i(I::If(wasm_encoder::BlockType::Empty));
-            self.i(I::I32Const(index as i32));
-            self.i(I::LocalSet(INDEX));
-            self.i(I::Br(self.to_loop + 2));
-            self.i(I::End);
-        }
-        self.i(I::LocalGet(CPU));
-        self.i(I::LocalGet(CTX));
         self.i(I::LocalGet(SLOT));
         self.i(I::I32Load(mem(c.handle, 2)));
-        self.i(I::ReturnCallIndirect { type_index: BLOCK_TYPE, table_index: 0 });
+        self.i(I::LocalSet(self.regs.handle()));
+        // A block of this module (its table index is one of the module's):
+        // go round the dispatch loop to it, with the registers in locals.
+        if let Some(first) = first_handle {
+            self.i(I::LocalGet(self.regs.handle()));
+            self.i(I::I32Const(first as i32));
+            self.i(I::I32Sub);
+            self.i(I::LocalTee(INDEX));
+            self.i(I::I32Const(self.blocks as i32));
+            self.i(I::I32LtU);
+            self.i(I::BrIf(self.to_loop + 1));
+        }
+        // Another module's block: it reads the state from the Cpu struct
+        // (the shared exit after the loop writes it back).
+        self.val(next);
+        self.i(I::LocalSet(self.regs.pc_out()));
+        self.i(I::Br(self.to_loop + 3));
         self.i(I::End);
     }
 
+    /// Leave `run` through its shared exit (which writes the registers, the
+    /// step count and pc back), returning `status`; `depth` is how many
+    /// labels the code is inside, beyond the block's own level.
+    fn leave(&mut self, status: i32, depth: u32) {
+        self.i(I::I32Const(status));
+        self.i(I::LocalSet(self.regs.status()));
+        self.i(I::Br(self.to_loop + 1 + depth));
+    }
+
     /// The code after a call that pushed an i32 "stopped" flag: if set, write
-    /// back what `at` lists, move to its instruction and return 1.
-    fn stop_if(&mut self, at: Option<&ExitPoint>) {
+    /// back what `at` lists, move to its instruction and return 1. Without
+    /// `at` (a helper, which wrote the `Cpu` struct itself), just return 1.
+    fn stop_if(&mut self, at: Option<&ExitPoint>, depth: u32) {
         self.i(I::If(wasm_encoder::BlockType::Empty));
         if let Some(at) = at {
             for &(loc, v) in &at.dirty {
                 self.set(loc, |s| s.val(v));
             }
-            self.at_insn(at.insn);
+            let pc = self.block.pc.wrapping_add(4 * at.insn as u64);
+            self.i(I::I64Const(pc as i64));
+            self.i(I::LocalSet(self.regs.pc_out()));
+            self.i(I::LocalGet(ENTRY));
+            self.i(I::I64Const(at.insn as i64));
+            self.i(I::I64Add);
+            self.i(I::LocalSet(self.regs.steps()));
+            self.leave(1, depth + 1);
+        } else {
+            self.i(I::I32Const(1));
+            self.i(I::Return);
         }
-        self.i(I::I32Const(1));
-        self.i(I::Return);
         self.i(I::End);
     }
 }
@@ -453,79 +579,6 @@ fn tlb_hit(f: &mut Function, t: &InlineTlb, addr: u32, bytes: u8, store: bool) {
     f.instruction(&I::I32Add);
 }
 
-fn size_index(bytes: u8) -> u32 {
-    match bytes {
-        1 => 0,
-        2 => 1,
-        4 => 2,
-        _ => 3,
-    }
-}
-
-/// `ld<bytes>(cpu, ctx, addr) -> value` or `st<bytes>(cpu, ctx, addr, value) ->
-/// faulted`: straight to memory when the TLB has the page, otherwise
-/// through pomme's helper (which sets the context's fault word for a load).
-/// Small, so the browser can inline it into `run`.
-fn mem_function(layout: &Layout, bytes: u8, store: bool) -> Function {
-    // Locals at the same indices as in `run`: ADDR, SLOT and HOST.
-    let i64s = if store { 1 } else { 2 };
-    let mut f = Function::new([(i64s, ValType::I64), (2, ValType::I32)]);
-    const ADDR_PARAM: u32 = 2;
-    const VALUE_PARAM: u32 = 3;
-    if let Some(t) = layout.tlb {
-        f.instruction(&I::Block(wasm_encoder::BlockType::Empty));
-        tlb_hit(&mut f, &t, ADDR_PARAM, bytes, store);
-        if store {
-            f.instruction(&I::LocalGet(VALUE_PARAM));
-            f.instruction(&match bytes {
-                1 => I::I64Store8(mem(0, 0)),
-                2 => I::I64Store16(mem(0, 0)),
-                4 => I::I64Store32(mem(0, 0)),
-                _ => I::I64Store(mem(0, 0)),
-            });
-            f.instruction(&I::I32Const(0));
-        } else {
-            f.instruction(&match bytes {
-                1 => I::I64Load8U(mem(0, 0)),
-                2 => I::I64Load16U(mem(0, 0)),
-                4 => I::I64Load32U(mem(0, 0)),
-                _ => I::I64Load(mem(0, 0)),
-            });
-        }
-        f.instruction(&I::Return);
-        f.instruction(&I::End);
-    }
-    f.instruction(&I::LocalGet(CTX));
-    f.instruction(&I::LocalGet(ADDR_PARAM));
-    if store {
-        f.instruction(&I::LocalGet(VALUE_PARAM));
-    }
-    f.instruction(&I::I32Const(bytes as i32));
-    f.instruction(&I::Call(if store { STORE } else { LOAD }));
-    f.instruction(&I::End);
-    f
-}
-
-/// Where a block may go next, among the blocks of its module: its
-/// fall-through and the constants it computes (a branch's target is one).
-fn successors(block: &Block, here: &std::collections::HashMap<u64, (u32, u32)>) -> Vec<(u32, u32)> {
-    let fall = block.pc.wrapping_add(4 * block.len() as u64);
-    let mut out = Vec::new();
-    let consts = block.insts.iter().filter_map(|i| match i {
-        Inst::Const { value, .. } => Some(*value),
-        _ => None,
-    });
-    for pc in std::iter::once(fall).chain(consts) {
-        if let Some(&t) = here.get(&pc)
-            && !out.contains(&t)
-            && out.len() < 4
-        {
-            out.push(t);
-        }
-    }
-    out
-}
-
 /// `run(cpu, ctx, index)`: every block of the module, picked by a dispatch
 /// loop, so a block goes on to another of the module's blocks with a branch.
 ///
@@ -537,11 +590,23 @@ fn successors(block: &Block, here: &std::collections::HashMap<u64, (u32, u32)>) 
 ///   …
 /// end
 /// ```
-fn run_function(blocks: &[&Block], layout: &Layout, here: &std::collections::HashMap<u64, (u32, u32)>) -> Function {
+fn run_function(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> Function {
     let values = blocks.iter().map(|b| b.values).max().unwrap_or(0);
-    let locals = [(2u32, ValType::I64), (2, ValType::I32), (values, ValType::I64)];
+    let locals = [(2u32, ValType::I64), (2, ValType::I32), (values + Regs::COUNT + 2, ValType::I64), (2, ValType::I32)];
+    let regs = Regs::new(blocks, FIRST_VALUE + values);
     let mut f = Function::new(locals);
     let n = blocks.len() as u32;
+    // The registers and the step count into locals.
+    if let Some(first) = blocks.first() {
+        let mut g = Gen { f, layout, block: first, to_loop: 0, regs: &regs, blocks: n };
+        g.load_regs();
+        g.i(I::LocalGet(CPU));
+        g.i(I::I64Load(mem(layout.steps, 3)));
+        g.i(I::LocalSet(regs.steps()));
+        f = g.f;
+    }
+    f.instruction(&I::Block(wasm_encoder::BlockType::Empty)); // $chain_out
+    f.instruction(&I::Block(wasm_encoder::BlockType::Empty)); // $out
     f.instruction(&I::Loop(wasm_encoder::BlockType::Empty));
     for _ in 0..n {
         f.instruction(&I::Block(wasm_encoder::BlockType::Empty));
@@ -551,23 +616,51 @@ fn run_function(blocks: &[&Block], layout: &Layout, here: &std::collections::Has
     f.instruction(&I::BrTable(targets.into(), n.saturating_sub(1)));
     for (k, block) in blocks.iter().enumerate() {
         f.instruction(&I::End);
-        let mut g = Gen { f, layout, block, to_loop: n - 1 - k as u32, mem_fns: FIRST_BLOCK + n + 1 };
-        block_code(&mut g, here);
+        let mut g = Gen { f, layout, block, to_loop: n - 1 - k as u32, regs: &regs, blocks: n };
+        block_code(&mut g, first_handle);
         f = g.f;
     }
     f.instruction(&I::End); // the loop
     f.instruction(&I::Unreachable);
+    // $out and $chain_out: the registers, pc and the step count back to the
+    // Cpu struct; then return the status, or go on to the block at `handle`.
+    let write_back = |f: Function| {
+        let mut g = Gen { f, layout, block: blocks[0], to_loop: 0, regs: &regs, blocks: n };
+        g.store_regs();
+        g.i(I::LocalGet(CPU));
+        g.i(I::LocalGet(regs.pc_out()));
+        g.i(I::I64Store(mem(layout.pc, 3)));
+        g.i(I::LocalGet(CPU));
+        g.i(I::LocalGet(regs.steps()));
+        g.i(I::I64Store(mem(layout.steps, 3)));
+        g.f
+    };
+    f.instruction(&I::End); // $out
+    if !blocks.is_empty() {
+        f = write_back(f);
+    }
+    f.instruction(&I::LocalGet(regs.status()));
+    f.instruction(&I::Return);
+    f.instruction(&I::End); // $chain_out
+    if layout.chain.is_some() && !blocks.is_empty() {
+        f = write_back(f);
+        f.instruction(&I::LocalGet(CPU));
+        f.instruction(&I::LocalGet(CTX));
+        f.instruction(&I::LocalGet(regs.handle()));
+        f.instruction(&I::ReturnCallIndirect { type_index: BLOCK_TYPE, table_index: 0 });
+    } else {
+        f.instruction(&I::Unreachable);
+    }
     f.instruction(&I::End);
     f
 }
 
 /// One block's code, inside `run`: it ends by returning or going round the
 /// dispatch loop.
-fn block_code(g: &mut Gen, here: &std::collections::HashMap<u64, (u32, u32)>) {
+fn block_code(g: &mut Gen, first_handle: Option<u32>) {
     let (block, layout) = (g.block, g.layout);
-    // entry = cpu.steps
-    g.i(I::LocalGet(CPU));
-    g.i(I::I64Load(mem(layout.steps, 3)));
+    // entry = the step count
+    g.i(I::LocalGet(g.regs.steps()));
     g.i(I::LocalSet(ENTRY));
     for inst in &block.insts {
         match inst {
@@ -624,40 +717,76 @@ fn block_code(g: &mut Gen, here: &std::collections::HashMap<u64, (u32, u32)>) {
                 g.def(*dst);
             }
             Inst::Load { dst, addr, bytes, at } => {
-                g.i(I::LocalGet(CPU));
+                // Straight from memory when the TLB has the page; otherwise
+                // through pomme, which sets the context's first word if it faulted.
+                g.i(I::Block(wasm_encoder::BlockType::Result(ValType::I64)));
+                if let Some(t) = layout.tlb {
+                    g.i(I::Block(wasm_encoder::BlockType::Empty));
+                    tlb_hit(&mut g.f, &t, FIRST_VALUE + addr.0, *bytes, false);
+                    g.i(match bytes {
+                        1 => I::I64Load8U(mem(0, 0)),
+                        2 => I::I64Load16U(mem(0, 0)),
+                        4 => I::I64Load32U(mem(0, 0)),
+                        _ => I::I64Load(mem(0, 0)),
+                    });
+                    g.i(I::Br(1));
+                    g.i(I::End);
+                }
                 g.i(I::LocalGet(CTX));
                 g.val(*addr);
-                g.i(I::Call(g.mem_fns + size_index(*bytes)));
-                g.def(*dst);
-                // The context's first word says whether it faulted.
+                g.i(I::I32Const(*bytes as i32));
+                g.i(I::Call(LOAD));
                 g.i(I::LocalGet(CTX));
                 g.i(I::I32Load(mem(0, 2)));
-                g.stop_if(Some(at));
+                g.stop_if(Some(at), 1);
+                g.i(I::End);
+                g.def(*dst);
             }
             Inst::Store { addr, value, bytes, at } => {
-                g.i(I::LocalGet(CPU));
+                g.i(I::Block(wasm_encoder::BlockType::Empty));
+                if let Some(t) = layout.tlb {
+                    g.i(I::Block(wasm_encoder::BlockType::Empty));
+                    tlb_hit(&mut g.f, &t, FIRST_VALUE + addr.0, *bytes, true);
+                    g.val(*value);
+                    g.i(match bytes {
+                        1 => I::I64Store8(mem(0, 0)),
+                        2 => I::I64Store16(mem(0, 0)),
+                        4 => I::I64Store32(mem(0, 0)),
+                        _ => I::I64Store(mem(0, 0)),
+                    });
+                    g.i(I::Br(1));
+                    g.i(I::End);
+                }
                 g.i(I::LocalGet(CTX));
                 g.val(*addr);
                 g.val(*value);
-                g.i(I::Call(g.mem_fns + 4 + size_index(*bytes)));
-                g.stop_if(Some(at));
+                g.i(I::I32Const(*bytes as i32));
+                g.i(I::Call(STORE));
+                g.stop_if(Some(at), 1);
+                g.i(I::End);
             }
             Inst::Helper { insn } => {
-                // The helper runs the instruction from its own pc and step count.
+                // The helper runs the instruction on the Cpu struct, from
+                // its own pc and step count, and may change any register.
+                g.store_regs();
                 g.at_insn(*insn);
                 g.i(I::LocalGet(CTX));
                 g.i(I::I32Const(*insn as i32));
                 g.i(I::Call(HELPER));
-                g.stop_if(None);
+                g.stop_if(None, 0);
+                g.load_regs();
             }
         }
     }
-    let next = block.next;
-    g.set(Loc::Pc, |s| s.val(next));
-    g.steps(block.len() as u64);
+    // The step count after the block, then on to the next block or out.
+    g.i(I::LocalGet(ENTRY));
+    g.i(I::I64Const(block.len() as i64));
+    g.i(I::I64Add);
+    g.i(I::LocalSet(g.regs.steps()));
     if let Some(c) = layout.chain {
-        g.chain(&c, &successors(block, here));
+        g.chain(&c, first_handle);
     }
-    g.i(I::I32Const(0));
-    g.i(I::Return);
+    g.val(block.next);
+    g.i(I::LocalSet(g.regs.pc_out()));
+    g.leave(0, 0);
 }
