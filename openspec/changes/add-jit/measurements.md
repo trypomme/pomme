@@ -146,15 +146,15 @@ whole run further. Each one is measured on its own, after milestones 3 and 4:
 - **A second tier.** Re-translate the hottest few thousand blocks as
   larger regions (loops and traces), with Cranelift's optimizer, as
   browsers do for JavaScript.
-- **Translate ahead of time (prewarming).** `pomme bundle` runs the app
-  once, records which blocks are hot, and ships their translated
-  WebAssembly with the bundle. The browser compiles it while the bundle
-  downloads (and caches it for the next visit), so the app starts with its
-  hot code already translated instead of spending its first seconds
-  finding and compiling it. pomme loads apps at the same addresses every
-  run, so the translations match; translations never change results, and
-  per-page code tracking still drops one whose code was rewritten. It
-  costs a few MB of download per app.
+- **Start warm (prewarming).** pomme must run anybody's app, so this
+  can't rely on preparing each app. Two forms work for any app: the
+  browser keeps an app's translated code after its first run (so later
+  launches start with their hot code ready), and pomme ships translations
+  of the hot code in the system libraries every app shares (the Swift
+  runtime and the rest of the sysroot), if they load at the same addresses
+  in every app or the translations can be moved to where they land.
+  Translations never change results, and per-page code tracking still
+  drops one whose code was rewritten.
 - **Native execution on Apple silicon** (`add-native-cpu`) for live use on
   Macs. It runs the app at close to the Mac's own speed, far past 10 times,
   but it is not deterministic.
