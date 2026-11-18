@@ -1,0 +1,61 @@
+diff --git a/stdlib/public/runtime/ProtocolConformance.cpp b/stdlib/public/runtime/ProtocolConformance.cpp
+--- a/stdlib/public/runtime/ProtocolConformance.cpp
++++ b/stdlib/public/runtime/ProtocolConformance.cpp
+@@ -690,6 +690,37 @@ struct ConformanceState {
+   bool scanSectionsBackwards;
+   bool envAllowCacheByDescriptors;
+ 
++  // pomme: each section's conformance records grouped by protocol, built the
++  // first time a lookup scans that section. iOS answers lookups from dyld's
++  // prebuilt tables instead; without them, every cache miss walked every
++  // record of every image. A lookup now visits only the records for its
++  // protocol, in the same order, so it finds the same conformances.
++  using RecordList = std::vector<const ProtocolConformanceDescriptor *>;
++  struct SectionIndex {
++    llvm::DenseMap<const ProtocolDescriptor *, RecordList> ByProtocol;
++  };
++  Mutex IndexLock;
++  llvm::DenseMap<const ProtocolConformanceRecord *, SectionIndex *> Indexes;
++
++  /// The records in `section` for `protocol`, in section order (null: none).
++  /// An index never changes once built, so it is read without the lock.
++  const RecordList *recordsFor(const ConformanceSection &section,
++                               const ProtocolDescriptor *protocol) {
++    SectionIndex *index = IndexLock.withLock([&] {
++      auto &slot = Indexes[section.begin()];
++      if (!slot) {
++        slot = new SectionIndex();
++        for (const auto &record : section) {
++          auto *descriptor = record.get();
++          slot->ByProtocol[descriptor->getProtocol()].push_back(descriptor);
++        }
++      }
++      return slot;
++    });
++    auto found = index->ByProtocol.find(protocol);
++    return found == index->ByProtocol.end() ? nullptr : &found->second;
++  }
++
+ #if USE_DYLD_SHARED_CACHE_CONFORMANCE_TABLES
+   uintptr_t dyldSharedCacheStart;
+   uintptr_t dyldSharedCacheEnd;
+@@ -1486,12 +1517,15 @@ swift_conformsToProtocolMaybeInstantiateSuperclasses(
+       }
+     };
+ 
++    auto records = C.recordsFor(section, protocol);
++    if (!records)
++      return;
+     if (C.scanSectionsBackwards) {
+-      for (const auto &record : llvm::reverse(section))
+-        processDescriptor(*record.get());
++      for (auto descriptor : llvm::reverse(*records))
++        processDescriptor(*descriptor);
+     } else {
+-      for (const auto &record : section)
+-        processDescriptor(*record.get());
++      for (auto descriptor : *records)
++        processDescriptor(*descriptor);
+     }
+   };
+ 

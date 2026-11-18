@@ -29,7 +29,7 @@ pub(crate) fn ends_block(insn: u32) -> bool {
 
 /// Block slots, direct-mapped by address: a lookup is one array read. Two
 /// hot blocks sharing a slot just fetch each other out (fetching is cheap).
-const SLOTS: usize = 1 << 14;
+const SLOTS: usize = 1 << 16;
 
 #[derive(Clone)]
 pub struct Blocks {
@@ -72,15 +72,18 @@ impl Blocks {
 
 fn fetch(pc: u64, mem: &Memory) -> Option<Box<[Op]>> {
     let page_end = (pc | (PAGE_SIZE - 1)) + 1;
-    let mut ops = Vec::new();
+    // Decoded on the stack, then copied into one allocation of the right size.
+    let mut ops = [Op::Nop; MAX_LEN];
+    let mut n = 0;
     let mut a = pc;
-    while a < page_end && ops.len() < MAX_LEN {
+    while a < page_end && n < MAX_LEN {
         let insn = mem.read_u32(a).ok()?;
-        ops.push(decode(insn, a));
+        ops[n] = decode(insn, a);
+        n += 1;
         if ends_block(insn) {
             break;
         }
         a += 4;
     }
-    (!ops.is_empty()).then(|| ops.into_boxed_slice())
+    (n > 0).then(|| Box::from(&ops[..n]))
 }

@@ -124,7 +124,7 @@ impl Cpu {
         Ok(())
     }
 
-    fn shift_reg(&self, v: u64, kind: u32, amount: u32, sf: bool) -> u64 {
+    pub(crate) fn shift_reg(&self, v: u64, kind: u32, amount: u32, sf: bool) -> u64 {
         let width = if sf { 64 } else { 32 };
         let v = v & ones(width);
         let r = match kind {
@@ -142,7 +142,7 @@ impl Cpu {
         r & ones(width)
     }
 
-    fn extend_reg(&self, rm: u32, option: u32, shift: u32) -> u64 {
+    pub(crate) fn extend_reg(&self, rm: u32, option: u32, shift: u32) -> u64 {
         let v = self.xr(rm);
         let e = match option {
             0 => v as u8 as u64,

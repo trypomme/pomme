@@ -469,7 +469,10 @@ draws it with Inter because SF Pro can't be redistributed.
 6. Speed: a JIT backend behind the same `Cpu`/`Exit` interface — native code on desktop,
    arm64 → WebAssembly translation in the browser (as v86 does for x86). It must count
    instructions per block so virtual time is unchanged. The interpreter
-   stays as the reference.
+   stays as the reference. `scripts/cpu-compare.sh OLD_POMME NEW_POMME [app]`
+   runs the same app and taps on two builds and checks they retire the same
+   instructions and show the same report and screen, then says how much faster
+   the new one is: run it for every change to the CPU or the memory.
 
 ## Design constraints (keep these true)
 
