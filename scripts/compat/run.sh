@@ -21,15 +21,13 @@ case "$APP" in
   # Wonderous opens on a three-page intro, then the home screen
   # (one wonder at a time, left/right for the next, up for its details).
   wonderous) SCENARIOS=(
-      # Dark mode, as Wonderous is dark: it doesn't set a status bar style, so iOS's
-      # default follows the appearance (light icons in dark mode).
       # Swipe through the intro; the arrow on its last page leaves it.
-      "launch|--appearance dark --seconds 10"
-      "intro-2|--appearance dark --swipe 360,450>40,450@8 --seconds 12"
-      "home|--appearance dark --swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --seconds 20"
-      "home-next|--appearance dark --swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 360,450>40,450@18 --seconds 24"
+      "launch|--seconds 10"
+      "intro-2|--swipe 360,450>40,450@8 --seconds 12"
+      "home|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --seconds 20"
+      "home-next|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 360,450>40,450@18 --seconds 24"
       # Opening a wonder hangs in the Google Maps SDK (waitForConfigsToLoad): a step cap keeps the screenshot.
-      "details|--appearance dark --swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 200,700>200,200@18 --seconds 24 --steps 3000000000"
+      "details|--swipe 360,450>40,450@8 --swipe 360,450>40,450@10 --tap 334,753@13 --swipe 200,700>200,200@18 --seconds 24 --steps 3000000000"
     ) ;;
   gallery) SCENARIOS=(
       "launch|--seconds 10"
