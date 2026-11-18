@@ -82,7 +82,9 @@ jobs:
     name: Sysroot
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-26
+    # Mac jobs run on the Mac mini for now. To go back to GitHub's Macs, set the org or
+    # repo variable MACOS_RUNNER to "macos-26" (with the quotes).
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +101,8 @@ jobs:
         # The scripts need bash 4+ (macOS's /bin/bash 3.2 rejects "${empty[@]}" under set -u);
         # Homebrew's comes first on the runner's PATH.
         run: |
-          brew install ninja bash
+          # Install only what's missing: the Mac mini runner can't write to Homebrew.
+          for f in ninja bash cmake; do brew list "$f" >/dev/null 2>&1 || brew install "$f"; done
           bash --version | head -1; cmake --version | head -1
           scripts/build-sysroot.sh
       # Two archives: one keeping symlinks (macOS, Linux), one with them followed, for
@@ -123,13 +126,14 @@ jobs:
     # per-platform checks always report; a failed sysroot fails it rather than skipping it.
     if: ${{ !cancelled() }}
     # matrix.os is JSON, so a runner can be a label list (the Vultr runner) or one name.
-    runs-on: ${{ fromJSON(needs.changes.outputs.code == 'true' && matrix.os || '["self-hosted","vultr"]') }}
+    # matrix.os "mac" means the Mac runner (see the sysroot job).
+    runs-on: ${{ fromJSON(needs.changes.outputs.code != 'true' && '["self-hosted","vultr"]' || matrix.os == 'mac' && (vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') || matrix.os) }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: macos-arm64,   os: '"macos-26"',         exe: pomme,     sysroot: sysroot.tar.gz }
+          - { name: macos-arm64,   os: 'mac',                exe: pomme,     sysroot: sysroot.tar.gz }
           - { name: windows-x64,   os: '"windows-latest"',   exe: pomme.exe, sysroot: sysroot-nosymlinks.tar.gz }
           - { name: linux-x64,     os: '["self-hosted","vultr"]', exe: pomme,     sysroot: sysroot.tar.gz }
           - { name: linux-arm64,   os: '"ubuntu-24.04-arm"', exe: pomme,     sysroot: sysroot.tar.gz }
@@ -213,7 +217,7 @@ jobs:
     name: Web demo app
     needs: sysroot
     if: github.event_name != 'pull_request'
-    runs-on: macos-26
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 90
     env:
       HAS_FIREBASE_CONFIG: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
@@ -243,8 +247,8 @@ jobs:
         env:
           GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
         run: |
-          brew install bash
-          .github/scripts/select-xcode.sh
+          brew list bash >/dev/null 2>&1 || brew install bash
+          source .github/scripts/select-xcode.sh
           echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
           mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
           scripts/build-hello-expo.sh
