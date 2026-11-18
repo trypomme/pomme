@@ -49,54 +49,61 @@ jobs:
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
     timeout-minutes: 60
     env:
-      HAS_FIREBASE_CONFIG: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
+      RUN: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
     outputs:
       ran: ${{ steps.done.outputs.ran }}
     steps:
       - name: Skip
-        if: env.HAS_FIREBASE_CONFIG != 'true'
+        if: env.RUN != 'true'
         run: echo "::notice::no HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret; browser tests skipped"
       - uses: actions/checkout@v4
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
       - name: Select Xcode
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
         run: .github/scripts/select-xcode.sh
-      # build.yml saves it from main; this job only reads it.
+      # build.yml saves it; this job only reads it. A pull request that changes the
+      # sysroot's scripts has no cached sysroot until build.yml has built it: then the
+      # browser tests are skipped (with a warning) rather than building it twice.
       - name: Restore sysroot
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        id: sysroot
+        if: env.RUN == 'true'
         uses: actions/cache/restore@v4
         with:
           path: vendor/sysroot
           key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
-          fail-on-cache-miss: true
+      - name: No sysroot yet
+        if: env.RUN == 'true' && steps.sysroot.outputs.cache-hit != 'true'
+        run: |
+          echo "::warning::no cached sysroot for these sysroot scripts yet (build.yml builds it); browser tests skipped"
+          echo "RUN=false" >> "$GITHUB_ENV"
       - name: Cache hello-expo
         id: app
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
         uses: actions/cache@v4
         with:
           path: apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
           key: hello-expo-${{ env.SWIFT_TAG }}-${{ hashFiles('apps/hello-expo/**', '!apps/hello-expo/ios/**', '!apps/hello-expo/node_modules/**', 'scripts/build-app.sh') }}
       - uses: actions/setup-node@v4
-        if: env.HAS_FIREBASE_CONFIG == 'true' && steps.app.outputs.cache-hit != 'true'
+        if: env.RUN == 'true' && steps.app.outputs.cache-hit != 'true'
         with:
           node-version: 22
       - name: Build hello-expo
-        if: env.HAS_FIREBASE_CONFIG == 'true' && steps.app.outputs.cache-hit != 'true'
+        if: env.RUN == 'true' && steps.app.outputs.cache-hit != 'true'
         env:
           GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
+        # bash 4+ (Homebrew's) is already the runner's shell; the runner can't write to Homebrew.
         run: |
-          brew list bash >/dev/null 2>&1 || brew install bash
           echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
           scripts/build-hello-expo.sh
       - uses: dtolnay/rust-toolchain@stable
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
       - uses: Swatinem/rust-cache@v2
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
         with:
           key: macos-arm64
           save-if: false
       - name: Bundle
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
         run: |
           cargo build --release --locked -p pomme
           ./target/release/pomme bundle apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app -o helloexpo.pfs
@@ -104,14 +111,14 @@ jobs:
           # The Mac mini is short of disk: drop what the next run rebuilds anyway.
           rm -rf apps/hello-expo/ios/build/Build/Intermediates.noindex apps/hello-expo/node_modules
       - uses: actions/upload-artifact@v4
-        if: env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.RUN == 'true'
         with:
           name: helloexpo-pfs
           path: helloexpo.pfs
           retention-days: 3
           compression-level: 0
       - id: done
-        run: echo "ran=${{ env.HAS_FIREBASE_CONFIG }}" >> "$GITHUB_OUTPUT"
+        run: echo "ran=${{ env.RUN }}" >> "$GITHUB_OUTPUT"
 
   browser:
     name: Browser tests
