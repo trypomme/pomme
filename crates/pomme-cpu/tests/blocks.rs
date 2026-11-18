@@ -79,3 +79,93 @@ fn rewriting_one_page_keeps_the_other_pages_code_right() {
     mem.write_u32(CODE + 4, MOVZ_X0_5).unwrap(); // mov x0, #5 replaces the add
     assert_eq!((run(&mut cpu, &mut mem, CODE), run(&mut cpu, &mut mem, OTHER)), (5, 3));
 }
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+}
+
+/// Encodings random bits rarely hit: (fixed bits, bits left random).
+const TEMPLATES: &[(u32, u32)] = &[
+    (0x2a00_03e0, 0x801f_001f), // mov
+    (0x1100_0000, 0xe07f_ffff), // add/sub imm
+    (0x3900_0000, 0xc0ff_ffff), // ldr/str imm
+    (0x2800_0000, 0x81ff_ffff), // ldp/stp
+    (0x1280_0000, 0xe07f_ffff), // move wide
+    (0x1000_0000, 0xff7f_ffff), // adr/adrp
+    (0x1200_0000, 0xe07f_ffff), // logical imm
+    (0x1300_0000, 0xe07f_ffff), // bitfield
+    (0x0a00_0000, 0xe0ff_ffff), // logical reg
+    (0x0b00_0000, 0xe0df_ffff), // add/sub reg
+    (0x0b20_0000, 0xe0df_ffff), // add/sub ext
+    (0x1a40_0800, 0xc01f_f00f), // ccmp/ccmn
+    (0x1a80_0000, 0xc01f_f7ff), // csel family
+    (0x3800_0000, 0xc4ff_ffff), // ldr/str single, imm9 and register
+    (0x3820_0800, 0xc4df_f3ff), // ldr/str register offset
+    (0x5800_0000, 0x00ff_ffff), // ldr literal (reads pc; slow path)
+    (0x9b00_0000, 0x00ff_ffff), // madd/msub and friends (slow path)
+    (0x1e20_0000, 0x00ff_ffff), // scalar floating point (slow path)
+    (0x5400_0000, 0x0000_01ef), // b.cond, a few instructions on
+    (0xb400_0000, 0x0100_01ff), // cbz/cbnz, a few instructions on
+    (0x1400_0000, 0x0000_0007), // b, a few instructions on
+];
+
+/// Random code, run in blocks with random budgets, stops where running it
+/// one instruction at a time does, with the same registers, count and memory.
+#[test]
+fn blocks_match_single_steps() {
+    const DATA: u64 = 0x2000_0000;
+    let mut r = Rng(0x2545_f491_4f6c_dd1d);
+    for _ in 0..20_000 {
+        let n = 1 + r.next() as usize % 40;
+        let mut code: Vec<u32> = (0..n)
+            .map(|_| {
+                let (fixed, free) = TEMPLATES[r.next() as usize % TEMPLATES.len()];
+                fixed | (r.next() as u32 & free)
+            })
+            .collect();
+        code.push(RET);
+        let (mut a, mut ma) = setup(&code);
+        ma.map(DATA, 0x8000, Prot::RW, "data").unwrap();
+        for i in 0..30 {
+            // Mostly addresses in the data, sometimes anything (a fault).
+            a.x[i] = if r.next() % 8 == 0 { r.next() } else { DATA + (r.next() % 0x7000) & !7 };
+        }
+        a.sp = DATA + 0x4000;
+        a.set_nzcv(r.next() & 0xf000_0000);
+        let (mut b, mut mb) = (a.clone(), ma.clone());
+        let budget = 1 + r.next() % 120;
+        // Warm the cache sometimes, so blocks run from it.
+        if r.next() % 2 == 0 {
+            let (mut c, mut mc) = (a.clone(), ma.clone());
+            call(&mut c, &mut mc, budget);
+            b.blocks = c.blocks;
+        }
+
+        a.pc = CODE;
+        a.x[30] = HOST_RETURN;
+        let stop = a.steps + budget;
+        let ea = loop {
+            if a.pc == HOST_RETURN {
+                break Exit::Returned;
+            }
+            if a.steps >= stop {
+                break Exit::StepLimit;
+            }
+            if let Err(e) = a.step(&mut ma) {
+                break e;
+            }
+        };
+        let eb = call(&mut b, &mut mb, budget);
+        let what = format!("{code:08x?} budget {budget}");
+        assert_eq!(ea, eb, "{what}");
+        assert_eq!((a.x, a.sp, a.pc, a.nzcv(), a.steps), (b.x, b.sp, b.pc, b.nzcv(), b.steps), "{what}");
+        assert_eq!(a.q, b.q, "{what}");
+        assert_eq!(ma.read(DATA, 0x8000).unwrap(), mb.read(DATA, 0x8000).unwrap(), "{what}");
+    }
+}

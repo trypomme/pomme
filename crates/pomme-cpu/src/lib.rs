@@ -223,10 +223,8 @@ impl Cpu {
                             }
                         }
                     });
-                    for op in b {
-                        if let Err(exit) = self.exec_op(op, mem) {
-                            return Some(exit);
-                        }
+                    if let Err(exit) = self.exec_block(b, mem) {
+                        return Some(exit);
                     }
                 }
                 _ => {

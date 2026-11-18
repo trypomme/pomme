@@ -353,8 +353,52 @@ impl Cpu {
     /// A JIT calls this for the instructions it does not translate.
     #[inline(always)]
     pub fn exec_op(&mut self, op: &Op, mem: &mut Memory) -> Step {
-        let next = match *op {
-            Op::Generic(insn) => return self.exec(insn, mem),
+        if let Op::Generic(insn) = *op {
+            return self.exec(insn, mem);
+        }
+        self.pc = self.exec_fast(op, mem)?;
+        self.steps += 1;
+        Ok(())
+    }
+
+    /// Run a block's ops, the block starting at pc: as running them one by
+    /// one with [`Cpu::exec_op`]. Only the last op may branch (see
+    /// block.rs), so pc and the step count are set once, before it; an op
+    /// that stops sets them to its own instruction first, so the state at
+    /// the stop is the same.
+    #[inline(always)]
+    pub(crate) fn exec_block(&mut self, ops: &[Op], mem: &mut Memory) -> Step {
+        let Some((last, straight)) = ops.split_last() else {
+            return Ok(());
+        };
+        let (pc, steps) = (self.pc, self.steps);
+        for (i, op) in straight.iter().enumerate() {
+            let r = match *op {
+                // The full decoder reads pc (and may read the step count).
+                Op::Generic(insn) => {
+                    self.pc = pc + 4 * i as u64;
+                    self.steps = steps + i as u64;
+                    self.exec(insn, mem)
+                }
+                _ => self.exec_fast(op, mem).map(|_| ()),
+            };
+            if let Err(e) = r {
+                self.pc = pc + 4 * i as u64;
+                self.steps = steps + i as u64;
+                return Err(e);
+            }
+        }
+        self.pc = pc + 4 * straight.len() as u64;
+        self.steps = steps + straight.len() as u64;
+        self.exec_op(last, mem)
+    }
+
+    /// Run a decoded op other than [`Op::Generic`], at pc: the next pc.
+    /// It changes neither pc nor the step count.
+    #[inline(always)]
+    fn exec_fast(&mut self, op: &Op, mem: &mut Memory) -> Result<u64, crate::Exit> {
+        Ok(match *op {
+            Op::Generic(_) => unreachable!("decoded when it runs"),
             Op::Mov { rd, rm, sf } => {
                 let v = self.slot_w(rm, sf);
                 self.set_slot_w(rd, sf, v);
@@ -581,10 +625,7 @@ impl Cpu {
                 target
             }
             Op::Nop => self.pc.wrapping_add(4),
-        };
-        self.pc = next;
-        self.steps += 1;
-        Ok(())
+        })
     }
 }
 
