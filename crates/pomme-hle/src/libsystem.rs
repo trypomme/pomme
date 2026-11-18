@@ -2020,9 +2020,15 @@ fn dlsym(emu: &mut Emu) -> Result<()> {
         h => emu.p.images.iter().find(|i| i.header == h).and_then(|i| i.symbol(&name)),
     };
     // Not in a guest image: a system function pomme implements (libSystem and friends).
+    // A system framework pomme loads as guest code (Foundation from the sysroot) still
+    // gets the fallback, since pomme implements part of its C API (NSSearchPathForDirectoriesInDomains).
+    let system = |h: u64| match emu.p.images.iter().find(|i| i.header == h) {
+        None => true,
+        Some(i) => i.install_name.as_deref().is_some_and(is_system_library),
+    };
     let addr = match addr {
         Some(a) => Some(a),
-        None if matches!(handle, RTLD_DEFAULT | RTLD_NEXT | RTLD_SELF) || !emu.p.images.iter().any(|i| i.header == handle) => match emu.functions.get(name.as_str()).copied() {
+        None if matches!(handle, RTLD_DEFAULT | RTLD_NEXT | RTLD_SELF) || system(handle) => match emu.functions.get(name.as_str()).copied() {
             Some(f) => Some(emu.host_thunk(f)?),
             None => None,
         },

@@ -899,11 +899,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         ret_rect(e, f);
         Ok(())
     }),
-    ("UIApplication", false, "statusBarStyle", ret_zero),
-    ("UIApplication", false, "setStatusBarStyle:", noop),
-    ("UIApplication", false, "setStatusBarStyle:animated:", noop),
-    ("UIApplication", false, "setStatusBarHidden:", noop),
-    ("UIApplication", false, "setStatusBarHidden:withAnimation:", noop),
+    // The app's own status bar (UIViewControllerBasedStatusBarAppearance NO):
+    // a view-controller-based app's calls change nothing, as on iOS.
+    ("UIApplication", false, "statusBarStyle", |e| {
+        let style = e.app_status_bar.map_or(0, |(_, s)| s);
+        e.ret(style);
+        Ok(())
+    }),
+    ("UIApplication", false, "setStatusBarStyle:", set_status_bar_style),
+    ("UIApplication", false, "setStatusBarStyle:animated:", set_status_bar_style),
+    ("UIApplication", false, "setStatusBarHidden:", set_status_bar_hidden),
+    ("UIApplication", false, "setStatusBarHidden:withAnimation:", set_status_bar_hidden),
+    ("UIApplication", false, "setStatusBarHidden:animated:", set_status_bar_hidden),
     ("UIApplication", false, "preferredContentSizeCategory", |e| {
         // The same string pomme binds to UIContentSizeCategoryLarge (see constants.rs).
         let s = foundation::new_nsstring(e, "UIContentSizeCategoryLarge")?;
@@ -1012,3 +1019,19 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("UIDevice", false, "identifierForVendor", ret_zero),
     ("UIDevice", false, "self", ret_self),
 ];
+
+fn set_status_bar_style(emu: &mut Emu) -> Result<()> {
+    let style = emu.arg(2);
+    if let Some((_, s)) = emu.app_status_bar.as_mut() {
+        *s = style;
+    }
+    Ok(())
+}
+
+fn set_status_bar_hidden(emu: &mut Emu) -> Result<()> {
+    let hidden = emu.arg(2) & 0xff != 0;
+    if let Some((h, _)) = emu.app_status_bar.as_mut() {
+        *h = hidden;
+    }
+    Ok(())
+}

@@ -342,6 +342,11 @@ pub struct Emu {
     /// The app takes the whole screen (`UIRequiresFullScreen`): an iPad's
     /// bottom inset is larger than a windowed app's.
     pub full_screen: bool,
+    /// The status bar as the app sets it, not its view controllers
+    /// (`UIViewControllerBasedStatusBarAppearance` NO): hidden, and its
+    /// `UIStatusBarStyle`. Info.plist's `UIStatusBarHidden` and
+    /// `UIStatusBarStyle` start it; `-[UIApplication setStatusBar…]` change it.
+    pub app_status_bar: Option<(bool, u64)>,
     /// A live host (browser, window) and its frames and input.
     pub live: host::State,
     /// The network (see net.rs) and URL-loading objects.
@@ -435,6 +440,7 @@ impl Emu {
         self.hardware = hardware;
         self.device = hardware.for_app(&families);
         self.full_screen = dict.and_then(|d| d.get("UIRequiresFullScreen")).and_then(|v| v.as_boolean()).unwrap_or(false);
+        self.app_status_bar = statusbar::app_based(dict);
     }
 
     /// Set up a loaded process: stack, TLS, heap and the Objective-C runtime.
@@ -505,6 +511,7 @@ impl Emu {
             device: device::default(),
             hardware: device::default(),
             full_screen: false,
+            app_status_bar: None,
             live: Default::default(),
             net: Default::default(),
             webkit: Default::default(),

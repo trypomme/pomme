@@ -57,6 +57,9 @@ struct PipelineKey {
     topology: u64,
     cull: u64,
     winding: u64,
+    /// Index type of an indexed strip draw (0 none, 1 uint16, 2 uint32): Metal pipelines don't
+    /// fix it, but wgpu needs it on the pipeline (it also sets which index restarts a strip).
+    strip_index: u64,
 }
 
 struct Pipeline {
@@ -91,7 +94,8 @@ impl Gpu {
         let adapter_name = if info.name.is_empty() { format!("{:?} (the browser hides the GPU's name)", info.backend) } else { info.name };
         let (device, queue) = crate::host::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("pomme metal"),
-            required_features: adapter.features() & wgpu::Features::DEPTH32FLOAT_STENCIL8,
+            // Clamp-to-border is Metal's clamp-to-zero; WebGPU in a browser lacks it (see `address`).
+            required_features: adapter.features() & (wgpu::Features::DEPTH32FLOAT_STENCIL8 | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER),
             required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -337,11 +341,13 @@ fn topology(p: u64) -> wgpu::PrimitiveTopology {
     }
 }
 
-fn address(a: u64) -> wgpu::AddressMode {
+/// Metal's clamp-to-zero and clamp-to-border-color need wgpu's clamp-to-border; without it
+/// (WebGPU) they clamp to the edge instead, close enough for most draws.
+fn address(a: u64, border: bool) -> wgpu::AddressMode {
     match a {
         2 => wgpu::AddressMode::Repeat,
         3 => wgpu::AddressMode::MirrorRepeat,
-        4 | 5 => wgpu::AddressMode::ClampToBorder,
+        4 | 5 if border => wgpu::AddressMode::ClampToBorder,
         _ => wgpu::AddressMode::ClampToEdge,
     }
 }
@@ -385,13 +391,14 @@ fn sampler<'a>(g: &'a mut Gpu, emu: &Emu, s: u64) -> &'a wgpu::Sampler {
             Some(Obj::Sampler(d)) => d.clone(),
             _ => SamplerDesc::default(),
         };
+        let border = g.device.features().contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER);
         let smp = g.device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: address(d.address[0]),
-            address_mode_v: address(d.address[1]),
+            address_mode_u: address(d.address[0], border),
+            address_mode_v: address(d.address[1], border),
             mag_filter: filter(d.mag),
             min_filter: filter(d.min),
             mipmap_filter: if d.mip == 2 { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
-            border_color: d.address.iter().any(|&a| a >= 4).then_some(wgpu::SamplerBorderColor::TransparentBlack),
+            border_color: (border && d.address.iter().any(|&a| a >= 4)).then_some(wgpu::SamplerBorderColor::TransparentBlack),
             ..Default::default()
         });
         g.samplers.insert(s, smp);
@@ -552,7 +559,11 @@ fn pipeline(g: &mut Gpu, emu: &Emu, key: &PipelineKey, targets: &[Option<wgpu::T
             vertex: wgpu::VertexState { module: &vm.module, entry_point: Some(&vep.name), compilation_options: Default::default(), buffers: &buffers },
             primitive: wgpu::PrimitiveState {
                 topology: topology(key.topology),
-                strip_index_format: None,
+                strip_index_format: match key.strip_index {
+                    1 => Some(wgpu::IndexFormat::Uint16),
+                    2 => Some(wgpu::IndexFormat::Uint32),
+                    _ => None,
+                },
                 front_face: if key.winding == 1 { wgpu::FrontFace::Ccw } else { wgpu::FrontFace::Cw },
                 cull_mode: match key.cull {
                     1 => Some(wgpu::Face::Front),
@@ -631,7 +642,11 @@ fn run_pass(g: &mut Gpu, emu: &Emu, encoder: &mut wgpu::CommandEncoder, pass: &P
     let mut mirrored: HashMap<(u64, u64), u64> = HashMap::new();
     let mut prepared = Vec::new();
     for d in &pass.draws {
-        let key = PipelineKey { pipeline: d.state.pipeline, depth_stencil: d.state.depth_stencil, topology: d.primitive, cull: d.state.cull, winding: d.state.winding };
+        let strip_index = match &d.call {
+            DrawCall::Indexed { index_type, .. } if matches!(d.primitive, 2 | 4) => if *index_type == 1 { 2 } else { 1 },
+            _ => 0,
+        };
+        let key = PipelineKey { pipeline: d.state.pipeline, depth_stencil: d.state.depth_stencil, topology: d.primitive, cull: d.state.cull, winding: d.state.winding, strip_index };
         let p = pipeline(g, emu, &key, &targets, depth_format, samples);
         let pl = match p.as_ref() {
             Ok(pl) => pl,
