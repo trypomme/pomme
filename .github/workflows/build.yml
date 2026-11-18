@@ -102,7 +102,8 @@ jobs:
         # Homebrew's comes first on the runner's PATH.
         run: |
           # Install only what's missing: the Mac mini runner can't write to Homebrew.
-          for f in ninja bash cmake; do brew list "$f" >/dev/null 2>&1 || brew install "$f"; done
+          # (`brew list` also needs write access there, so check for the files instead.)
+          for f in ninja bash cmake; do [ -x "$(brew --prefix)/bin/$f" ] || brew install "$f"; done
           bash --version | head -1; cmake --version | head -1
           scripts/build-sysroot.sh
       # Two archives: one keeping symlinks (macOS, Linux), one with them followed, for
@@ -247,7 +248,7 @@ jobs:
         env:
           GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
         run: |
-          brew list bash >/dev/null 2>&1 || brew install bash
+          [ -x "$(brew --prefix)/bin/bash" ] || brew install bash
           source .github/scripts/select-xcode.sh
           echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
           mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
