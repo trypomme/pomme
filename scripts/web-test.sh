@@ -45,9 +45,10 @@ case "$APP" in
   *.ipa)         PATH_APP="$APP"; APP="$(basename "$APP" .ipa)" ;;
   *) echo "unknown app: $APP" >&2; exit 1 ;;
 esac
-[ -e "$PATH_APP" ] || { echo "not built: $PATH_APP" >&2; exit 1; }
-[ -d "$ROOT/web/tests/node_modules/playwright" ] || { echo "install Playwright first (see web/tests/README.md)" >&2; exit 1; }
 BUNDLE="$(basename "$PATH_APP")"; BUNDLE="${BUNDLE%.app}"; BUNDLE="${BUNDLE%.ipa}.pfs"
+# With NO_BUILD, the bundle alone will do (CI builds it on a Mac and tests on Linux).
+[ -e "$PATH_APP" ] || { [ -n "${NO_BUILD:-}" ] && [ -e "$ROOT/web/$BUNDLE" ]; } || { echo "not built: $PATH_APP" >&2; exit 1; }
+[ -d "$ROOT/web/tests/node_modules/playwright" ] || { echo "install Playwright first (see web/tests/README.md)" >&2; exit 1; }
 
 [ -n "${NO_BUILD:-}" ] || "$ROOT/scripts/build-web.sh" "$PATH_APP"
 

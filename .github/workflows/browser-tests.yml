@@ -1,0 +1,170 @@
+# pomme's browser build, tested the way a user opens it: hello-expo in headless
+# Chromium and WebKit (scripts/web-test.sh, web/tests/).
+#
+#   bundle   (Mac runner) hello-expo built with Xcode, packed by `pomme bundle` into
+#            helloexpo.pfs. The .app is cached until the app changes, so a run is
+#            usually a restore and a bundle. The sysroot comes from build.yml's cache.
+#   browser  (Linux runner) the WebAssembly build, and the hello-expo cases of
+#            `scripts/web-test.sh all`.
+#
+# Only for changes that can reach the browser build, to keep the Mac runner free.
+# Needs the HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret (see build.yml); skipped without it.
+name: Browser tests
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'web/**'
+      - 'apps/hello-expo/**'
+      - 'scripts/web-test.sh'
+      - 'scripts/serve-web.py'
+      - 'scripts/build-app.sh'
+      - 'Cargo.lock'
+      - '.github/workflows/browser-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'web/**'
+      - 'apps/hello-expo/**'
+      - 'scripts/web-test.sh'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+concurrency:
+  group: browser-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SWIFT_TAG: swift-6.3.2-RELEASE  # as build.yml
+
+jobs:
+  bundle:
+    name: Bundle hello-expo
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
+    timeout-minutes: 60
+    env:
+      HAS_FIREBASE_CONFIG: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
+    outputs:
+      ran: ${{ steps.done.outputs.ran }}
+    steps:
+      - name: Skip
+        if: env.HAS_FIREBASE_CONFIG != 'true'
+        run: echo "::notice::no HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret; browser tests skipped"
+      - uses: actions/checkout@v4
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+      - name: Select Xcode
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        run: .github/scripts/select-xcode.sh
+      # build.yml saves it from main; this job only reads it.
+      - name: Restore sysroot
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: vendor/sysroot
+          key: sysroot-${{ env.SWIFT_TAG }}-${{ hashFiles('scripts/build-sysroot.sh', 'scripts/sysroot/**', 'scripts/swiftui/**', 'scripts/combine/**') }}
+          fail-on-cache-miss: true
+      - name: Cache hello-expo
+        id: app
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        uses: actions/cache@v4
+        with:
+          path: apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app
+          key: hello-expo-${{ env.SWIFT_TAG }}-${{ hashFiles('apps/hello-expo/**', '!apps/hello-expo/ios/**', '!apps/hello-expo/node_modules/**', 'scripts/build-app.sh') }}
+      - uses: actions/setup-node@v4
+        if: env.HAS_FIREBASE_CONFIG == 'true' && steps.app.outputs.cache-hit != 'true'
+        with:
+          node-version: 22
+      - name: Build hello-expo
+        if: env.HAS_FIREBASE_CONFIG == 'true' && steps.app.outputs.cache-hit != 'true'
+        env:
+          GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
+          scripts/build-hello-expo.sh
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          key: macos-arm64
+          save-if: false
+      - name: Bundle
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        run: |
+          cargo build --release --locked -p pomme
+          ./target/release/pomme bundle apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app -o helloexpo.pfs
+          ls -lh helloexpo.pfs
+          # The Mac mini is short of disk: drop what the next run rebuilds anyway.
+          rm -rf apps/hello-expo/ios/build/Build/Intermediates.noindex apps/hello-expo/node_modules
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_FIREBASE_CONFIG == 'true'
+        with:
+          name: helloexpo-pfs
+          path: helloexpo.pfs
+          retention-days: 3
+          compression-level: 0
+      - id: done
+        run: echo "ran=${{ env.HAS_FIREBASE_CONFIG }}" >> "$GITHUB_OUTPUT"
+
+  browser:
+    name: Browser tests
+    needs: bundle
+    if: needs.bundle.outputs.ran == 'true'
+    runs-on: [self-hosted, vultr]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+          save-if: false
+      - name: Install wasm-pack
+        run: command -v wasm-pack || curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Build (WebAssembly)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -C link-arg=-zstack-size=33554432 -C target-feature=+simd128
+        run: wasm-pack build crates/pomme-web --release --target no-modules --out-dir "$PWD/web/pkg" --no-typescript
+      - uses: actions/download-artifact@v4
+        with:
+          name: helloexpo-pfs
+          path: web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Playwright
+        working-directory: web/tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      # The hello-expo cases of `scripts/web-test.sh all`: a tap; two taps while the app is
+      # busy, which must arrive in order; the page without JSPI; the page in a frame on
+      # another origin's page; and WebKit, which has no JSPI.
+      - name: Browser tests
+        env:
+          NO_BUILD: '1'
+        run: |
+          set -o pipefail
+          mkdir -p web/tests/out
+          T=scripts/web-test.sh
+          $T hello-expo --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+          $T hello-expo --timeout 240 --see "Tapped 0" --taps "195,265 240,508" --gone "Hello from pomme" --sleep 1500 --tap 38,69 --see "Tapped 1 time"
+          QUERY=nojspi $T hello-expo --wait "needs a browser with JSPI"
+          $T embed --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
+          $T embed --browser webkit --wait "needs a browser with JSPI"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-screens
+          path: web/tests/out/
+          if-no-files-found: ignore
+          retention-days: 7
