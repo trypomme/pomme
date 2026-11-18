@@ -8,6 +8,8 @@
 //! call back into guest code with [`Emu::call`] — e.g. `UIApplicationMain`
 //! calling the app delegate.
 
+#[cfg(feature = "cpu-time")]
+pub mod cpu_stats;
 pub mod accessibility;
 pub mod coverage;
 pub mod driver;
@@ -861,7 +863,12 @@ impl Emu {
     fn run_until_return(&mut self) -> Result<()> {
         loop {
             let budget = self.max_steps.saturating_sub(self.cpu.steps);
-            match self.cpu.run(&mut self.p.memory, budget) {
+            #[cfg(feature = "cpu-time")]
+            let t0 = std::time::Instant::now();
+            let exit = self.cpu.run(&mut self.p.memory, budget);
+            #[cfg(feature = "cpu-time")]
+            cpu_stats::add(t0.elapsed());
+            match exit {
                 Exit::Returned => return Ok(()),
                 exit => self.service_trap(exit)?,
             }
@@ -871,6 +878,8 @@ impl Emu {
     /// Handle a CPU exit that needs the host: a stub call, a hooked function,
     /// or a host thunk. Anything else is a stop.
     pub(crate) fn service_trap(&mut self, exit: Exit) -> Result<()> {
+        #[cfg(feature = "cpu-time")]
+        cpu_stats::exit(&exit, self.p.stubs.at(self.cpu.pc).is_some());
         match exit {
             Exit::Sample => {
                 profile::sample(self);

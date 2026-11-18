@@ -23,3 +23,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tiny-skia = "0.12"
 pomme-video = { path = "../pomme-video" }
 mp4 = "0.14.0"
+
+[features]
+# Print where the CPU time goes after a run (see openspec/changes/add-jit, task 0).
+# `cpu-time` only times the CPU; `cpu-stats` also counts blocks, which slows the CPU down.
+cpu-time = ["pomme-hle/cpu-time"]
+cpu-stats = ["cpu-time", "pomme-cpu/stats"]

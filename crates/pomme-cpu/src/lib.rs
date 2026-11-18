@@ -15,6 +15,8 @@ mod dp;
 mod fp;
 mod ldst;
 mod neon;
+#[cfg(feature = "stats")]
+pub mod stats;
 
 use pomme_mem::{MemError, Memory};
 
@@ -130,6 +132,20 @@ impl Cpu {
             let room = stop - self.steps;
             match blocks.get(self.pc, mem) {
                 Some(b) if b.len() as u64 <= room => {
+                    #[cfg(feature = "stats")]
+                    stats::with(|s| {
+                        s.blocks_run += 1;
+                        s.block_insns += b.len() as u64;
+                        if s.len_hist.is_empty() { s.len_hist.resize(33, 0); }
+                        s.len_hist[b.len()] += 1;
+                        *s.block_runs.entry(self.pc).or_default() += 1;
+                        for op in b {
+                            if let fast::Op::Generic(insn) = op {
+                                *s.generic.entry(insn & !0x001f_03ff).or_default() += 1;
+                                s.generic_total += 1;
+                            }
+                        }
+                    });
                     for op in b {
                         if let Err(exit) = self.exec_op(op, mem) {
                             return exit;
@@ -137,6 +153,8 @@ impl Cpu {
                     }
                 }
                 _ => {
+                    #[cfg(feature = "stats")]
+                    stats::with(|s| s.single_steps += 1);
                     if let Err(exit) = self.step(mem) {
                         return exit;
                     }
