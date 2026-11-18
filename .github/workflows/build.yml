@@ -25,7 +25,9 @@
 # Other optional secrets:
 #   HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST  base64 of apps/hello-expo/GoogleService-Info.plist (not
 #                                         committed): with it, pomme-web.zip includes the hello-expo
-#                                         demo (helloexpo.pfs), which the web page opens by default
+#                                         demo (helloexpo.pfs), which the web page opens by default.
+#                                         pomme-web.zip always has Wonderous (wonderous.pfs), the
+#                                         app trypomme.dev's demo opens
 #   SITE_DISPATCH_TOKEN                   a token that can dispatch to trypomme/trypomme.dev: with it, a
 #                                         release tells the website to pick up the new web build now
 name: Build
@@ -211,61 +213,76 @@ jobs:
           path: dist/*
           compression-level: 0
 
-  # The web page's default app: hello-expo, built with Xcode and packed with the sysroot
-  # files it loads by `pomme bundle` into helloexpo.pfs. Needs the app's Firebase config,
-  # which isn't committed (HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST); skipped without it.
+  # The apps the web build ships, each packed with the sysroot files it loads by `pomme bundle`:
+  #   helloexpo.pfs  hello-expo, the web page's default app. Needs the app's Firebase config,
+  #                  which isn't committed (HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST); skipped without it.
+  #   wonderous.pfs  gskinner's Wonderous (Flutter, MIT), from the commit scripts/compat/build.sh
+  #                  pins. trypomme.dev's demo opens it (?app=wonderous.pfs).
   demo:
-    name: Web demo app
+    name: Web demo apps
     needs: sysroot
     if: github.event_name != 'pull_request'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","mac-mini"]') }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       HAS_FIREBASE_CONFIG: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST != '' }}
+      FLUTTER_VERSION: 3.47.9  # as compat.yml
     steps:
-      - name: Skip
-        if: env.PACKAGE != 'true' || env.HAS_FIREBASE_CONFIG != 'true'
-        run: echo "::notice::web build without the hello-expo demo (pull request, or no HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret)"
       - uses: actions/checkout@v4
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
       - uses: dtolnay/rust-toolchain@stable
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
       - uses: Swatinem/rust-cache@v2
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
         with:
           key: macos-arm64
           save-if: false
       - uses: actions/setup-node@v4
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
         with:
           node-version: 22
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
       - uses: actions/download-artifact@v4
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
         with:
           name: sysroot
+      - name: Build pomme
+        run: |
+          mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
+          cargo build --release --locked -p pomme
+          mkdir -p dist
       - name: Build hello-expo and bundle it
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
+        if: env.HAS_FIREBASE_CONFIG == 'true'
         env:
           GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST }}
         run: |
           [ -x "$(brew --prefix)/bin/bash" ] || brew install bash
           source .github/scripts/select-xcode.sh
           echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > apps/hello-expo/GoogleService-Info.plist
-          mkdir -p vendor/sysroot && tar -xzf sysroot.tar.gz -C vendor/sysroot
           scripts/build-hello-expo.sh
-          cargo build --release --locked -p pomme
-          mkdir -p dist
           ./target/release/pomme bundle apps/hello-expo/ios/build/Build/Products/Release-iphoneos/helloexpo.app -o dist/helloexpo.pfs
+      - name: No hello-expo
+        if: env.HAS_FIREBASE_CONFIG != 'true'
+        run: echo "::notice::web build without hello-expo (no HELLO_EXPO_GOOGLE_SERVICE_INFO_PLIST secret)"
+      # Flutter draws through Impeller's built-in shaders, from MSL that this engine's impellerc
+      # makes (scripts/flutter/impeller-msl.sh); `pomme bundle` packs the ones for the app's engine.
+      - name: Build Wonderous and bundle it
+        run: |
+          source .github/scripts/select-xcode.sh
+          ln -sfn "$FLUTTER_ROOT" "vendor/flutter-$FLUTTER_VERSION"
+          flutter precache --ios
+          scripts/flutter/impeller-msl.sh "$FLUTTER_VERSION"
+          set -o pipefail
+          app="$(scripts/compat/build.sh wonderous | tail -1)"
+          ./target/release/pomme bundle "$app" -o dist/wonderous.pfs
           ls -lh dist/
       - uses: actions/upload-artifact@v4
-        if: env.PACKAGE == 'true' && env.HAS_FIREBASE_CONFIG == 'true'
         with:
           name: demo
-          path: dist/helloexpo.pfs
+          path: dist/*.pfs
           retention-days: 7
+          compression-level: 0
 
   # The browser build: the emulator as WebAssembly and the page that hosts it
-  # (index.html, its scripts and pkg/), plus helloexpo.pfs when the demo job made one.
+  # (index.html, its scripts and pkg/), plus the apps the demo job made (helloexpo.pfs, wonderous.pfs).
   web:
     name: Web
     needs: [changes, demo]
@@ -302,7 +319,7 @@ jobs:
         run: wasm-pack build crates/pomme-web --release --target no-modules --out-dir "$PWD/web/pkg" --no-typescript
       - uses: actions/download-artifact@v4
         if: env.RUN == 'true' && (env.PACKAGE == 'true')
-        continue-on-error: true  # no demo artifact without the Firebase config secret
+        continue-on-error: true
         with:
           name: demo
           path: demo
@@ -310,7 +327,9 @@ jobs:
         if: env.RUN == 'true' && (env.PACKAGE == 'true')
         run: |
           mkdir -p dist stage/pomme-web
-          if [ -f demo/helloexpo.pfs ]; then cp demo/helloexpo.pfs stage/pomme-web/; else echo "::warning::pomme-web.zip has no helloexpo.pfs"; fi
+          for f in helloexpo.pfs wonderous.pfs; do
+            if [ -f "demo/$f" ]; then cp "demo/$f" stage/pomme-web/; else echo "::warning::pomme-web.zip has no $f"; fi
+          done
           cp web/*.html web/*.js stage/pomme-web/
           cp -r web/pkg stage/pomme-web/pkg
           rm -f stage/pomme-web/pkg/.gitignore stage/pomme-web/pkg/package.json
