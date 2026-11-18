@@ -143,18 +143,7 @@ impl Cpu {
     }
 
     pub(crate) fn extend_reg(&self, rm: u32, option: u32, shift: u32) -> u64 {
-        let v = self.xr(rm);
-        let e = match option {
-            0 => v as u8 as u64,
-            1 => v as u16 as u64,
-            2 => v as u32 as u64,
-            3 => v,
-            4 => v as u8 as i8 as i64 as u64,
-            5 => v as u16 as i16 as i64 as u64,
-            6 => v as u32 as i32 as i64 as u64,
-            _ => v,
-        };
-        e << shift
+        extend(self.xr(rm), option, shift)
     }
 
     pub(crate) fn dp_reg(&mut self, insn: u32) -> Step {
@@ -414,4 +403,20 @@ mod crc_tests {
             assert_eq!(crc32(!0, word, 8, castagnoli), one);
         }
     }
+}
+
+/// `v` extended as `option` says, then shifted left by `shift`.
+#[inline]
+pub(crate) fn extend(v: u64, option: u32, shift: u32) -> u64 {
+    let e = match option {
+        0 => v as u8 as u64,
+        1 => v as u16 as u64,
+        2 => v as u32 as u64,
+        3 => v,
+        4 => v as u8 as i8 as i64 as u64,
+        5 => v as u16 as i16 as i64 as u64,
+        6 => v as u32 as i32 as i64 as u64,
+        _ => v,
+    };
+    e << shift
 }

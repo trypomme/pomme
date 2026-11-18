@@ -55,11 +55,18 @@ impl From<MemError> for Exit {
 /// The result of one instruction: Ok, or the exit it stops with.
 pub type Step = Result<(), Exit>;
 
+// `repr(C)`: x, sp, zr and sink follow each other, so a decoded op's
+// register slot (see [`fast::SP`]) is an index from the start of the struct.
 #[derive(Debug, Clone, Default)]
+#[repr(C)]
 pub struct Cpu {
     /// X0..X30. Index 31 is never stored: it means XZR or SP depending on the instruction.
     pub x: [u64; 31],
     pub sp: u64,
+    /// Always 0: slot [`fast::ZR`].
+    zr: u64,
+    /// Written by ops whose destination is XZR, and never read for a result: slot [`fast::SINK`].
+    sink: u64,
     pub pc: u64,
     pub n: bool,
     pub z: bool,
@@ -137,6 +144,14 @@ impl Backend for Interpreter {
 /// retired (plus idle time skipped) move it.
 pub const TICKS_PER_SEC: u64 = 24_000_000;
 pub const STEPS_PER_SEC: u64 = 1_000_000_000;
+
+const _: () = {
+    use std::mem::offset_of;
+    assert!(offset_of!(Cpu, x) == 0);
+    assert!(offset_of!(Cpu, sp) == 8 * fast::SP as usize);
+    assert!(offset_of!(Cpu, zr) == 8 * fast::ZR as usize);
+    assert!(offset_of!(Cpu, sink) == 8 * fast::SINK as usize);
+};
 
 impl Cpu {
     /// Mach ticks since boot: instructions retired at [`STEPS_PER_SEC`], plus idle time skipped.
@@ -259,6 +274,35 @@ impl Cpu {
     }
 
     // ---- register access ----
+
+    /// Register slot `s` of a decoded op (see [`fast::SP`]).
+    #[inline(always)]
+    pub(crate) fn slot(&self, s: u8) -> u64 {
+        // SAFETY: slots 0..=SINK are the u64 fields x, sp, zr and sink, in
+        // that order at the start of the repr(C) struct (checked below);
+        // `min` keeps a slot from an op made by hand in bounds.
+        unsafe { *(self as *const Cpu).cast::<u64>().add(s.min(fast::SINK) as usize) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_slot(&mut self, s: u8, v: u64) {
+        debug_assert!(s != fast::ZR, "the zero register is never written");
+        // SAFETY: as in `slot`.
+        unsafe { *(self as *mut Cpu).cast::<u64>().add(s.min(fast::SINK) as usize) = v }
+    }
+
+    /// Slot `s` as 32 or 64 bits (zero-extended).
+    #[inline(always)]
+    pub(crate) fn slot_w(&self, s: u8, sf: bool) -> u64 {
+        let v = self.slot(s);
+        if sf { v } else { v as u32 as u64 }
+    }
+
+    /// Write a 32- or 64-bit result to slot `s` (32-bit results zero the top half).
+    #[inline(always)]
+    pub(crate) fn set_slot_w(&mut self, s: u8, sf: bool, v: u64) {
+        self.set_slot(s, if sf { v } else { v as u32 as u64 });
+    }
 
     /// Xn, where 31 is XZR.
     #[inline]

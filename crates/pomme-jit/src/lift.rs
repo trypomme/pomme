@@ -6,7 +6,7 @@
 //! `tests/lift.rs` checks every form against the interpreter.
 
 use crate::ir::{BinOp, Block, ExitPoint, Inst, Loc, V};
-use pomme_cpu::fast::{Addr, Kind, Op};
+use pomme_cpu::fast::{self, Addr, Kind, Op};
 use std::collections::HashMap;
 
 /// Lift the block `ops`, which starts at `pc`.
@@ -164,24 +164,31 @@ impl Lifter {
         ExitPoint { insn: self.insn, dirty: self.dirty() }
     }
 
-    /// Xn, where 31 is XZR.
+    /// Register slot `r` of a decoded op (see [`pomme_cpu::fast::SP`]):
+    /// X0..X30, SP, or the zero register (its write slot reads as 0 here:
+    /// only an op whose result is dropped reads it).
     fn xr(&mut self, r: u8) -> V {
-        if r == 31 { self.c(0) } else { self.get(Loc::X(r)) }
+        match r {
+            0..=30 => self.get(Loc::X(r)),
+            fast::SP => self.get(Loc::Sp),
+            _ => self.c(0),
+        }
     }
 
-    /// Xn, where 31 is SP.
     fn xsp(&mut self, r: u8) -> V {
-        if r == 31 { self.get(Loc::Sp) } else { self.get(Loc::X(r)) }
+        self.xr(r)
     }
 
     fn set_xr(&mut self, r: u8, v: V) {
-        if r != 31 {
-            self.set(Loc::X(r), v);
+        match r {
+            0..=30 => self.set(Loc::X(r), v),
+            fast::SP => self.set(Loc::Sp, v),
+            _ => {}
         }
     }
 
     fn set_xsp(&mut self, r: u8, v: V) {
-        if r == 31 { self.set(Loc::Sp, v) } else { self.set(Loc::X(r), v) }
+        self.set_xr(r, v)
     }
 
     /// `v` cut to 32 bits unless `sf`.
@@ -195,7 +202,7 @@ impl Lifter {
     }
 
     fn wr(&mut self, r: u8, sf: bool, v: V) {
-        if r != 31 {
+        if r != fast::SINK {
             let v = self.width(v, sf);
             self.set_xr(r, v);
         }

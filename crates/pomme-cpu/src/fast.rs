@@ -13,6 +13,34 @@ use crate::ldst::{load, mask, store};
 use crate::{Cpu, Step, bit, bits, decode_bit_masks, ones, ror, sext};
 use pomme_mem::Memory;
 
+/// Register fields of an [`Op`] are slots, not register numbers: 0 to 30
+/// are X0 to X30, then [`SP`], [`ZR`] and [`SINK`]. Whether register 31 of
+/// an encoding means the stack pointer or the zero register is settled when
+/// it is decoded, so running it is a plain read or write of a slot.
+/// (A SIMD&FP register field stays a register number.)
+pub const SP: u8 = 31;
+/// The zero register, read: always 0.
+pub const ZR: u8 = 32;
+/// The zero register, written: the value is dropped. An op that reads its
+/// destination only to write it back (MOVK, BFM) reads this slot too, which
+/// is harmless since the result is dropped.
+pub const SINK: u8 = 33;
+
+/// The slot of a register field read as Xn or XZR.
+fn zr(r: u32) -> u8 {
+    if r == 31 { ZR } else { r as u8 }
+}
+
+/// The slot of a register field written as Xn or XZR.
+fn zw(r: u32) -> u8 {
+    if r == 31 { SINK } else { r as u8 }
+}
+
+/// The slot of a register field read or written as Xn or SP.
+fn xsp(r: u32) -> u8 {
+    r as u8
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
     /// Any instruction, decoded when it runs.
@@ -93,15 +121,15 @@ pub enum Kind {
 
 /// Decode `insn` at `pc` into a fast form if it has one.
 pub fn decode(insn: u32, pc: u64) -> Op {
-    let (rd, rn) = (bits(insn, 4, 0) as u8, bits(insn, 9, 5) as u8);
+    let (rd, rn) = (bits(insn, 4, 0), bits(insn, 9, 5));
     let sf = bit(insn, 31);
     // ORR (shifted register) with rn = zr, no shift: MOV.
     if insn & 0x7fe0_ffe0 == 0x2a00_03e0 {
-        return Op::Mov { rd, rm: bits(insn, 20, 16) as u8, sf };
+        return Op::Mov { rd: zw(rd), rm: zr(bits(insn, 20, 16)), sf };
     }
     // MOVZ.
     if insn & 0x7f80_0000 == 0x5280_0000 && (sf || !bit(insn, 22)) {
-        return Op::Movz { rd, imm: (bits(insn, 20, 5) as u64) << (bits(insn, 22, 21) * 16), sf };
+        return Op::Movz { rd: zw(rd), imm: (bits(insn, 20, 5) as u64) << (bits(insn, 22, 21) * 16), sf };
     }
     // ADD/SUB (immediate).
     if insn & 0x1f80_0000 == 0x1100_0000 {
@@ -110,7 +138,8 @@ pub fn decode(insn: u32, pc: u64) -> Op {
             imm <<= 12;
         }
         let sub = bit(insn, 30);
-        return Op::AddImm { rd, rn, b: if sub { !imm } else { imm }, carry: sub, sf, s: bit(insn, 29) };
+        let s = bit(insn, 29);
+        return Op::AddImm { rd: if s { zw(rd) } else { xsp(rd) }, rn: xsp(rn), b: if sub { !imm } else { imm }, carry: sub, sf, s };
     }
     // LDR/STR (immediate, unsigned offset), integer registers, plain load or store.
     if insn & 0x3f00_0000 == 0x3900_0000 {
@@ -119,21 +148,23 @@ pub fn decode(insn: u32, pc: u64) -> Op {
         let off = bits(insn, 21, 10) as u64 * bytes as u64;
         let rt = rd;
         match bits(insn, 23, 22) {
-            0 => return Op::Str { rt, rn, off, bytes },
-            1 => return Op::Ldr { rt, rn, off, bytes },
+            0 => return Op::Str { rt: zr(rt), rn: xsp(rn), off, bytes },
+            1 => return Op::Ldr { rt: zw(rt), rn: xsp(rn), off, bytes },
             _ => {}
         }
     }
     // LDP/STP of integer registers (not LDPSW, not SIMD): opc 00 (w) or 10 (x).
     if insn & 0x3a00_0000 == 0x2800_0000 && !bit(insn, 26) && matches!(bits(insn, 31, 30), 0 | 2) {
         let bytes = if bits(insn, 31, 30) == 2 { 8u8 } else { 4 };
+        let load = bit(insn, 22);
+        let slot = if load { zw } else { zr };
         return Op::Pair {
-            rt: rd,
-            rt2: bits(insn, 14, 10) as u8,
-            rn,
+            rt: slot(rd),
+            rt2: slot(bits(insn, 14, 10)),
+            rn: xsp(rn),
             off: sext(bits(insn, 21, 15) as u64, 7) * bytes as i64,
             bytes,
-            load: bit(insn, 22),
+            load,
             mode: bits(insn, 24, 23) as u8,
         };
     }
@@ -142,8 +173,8 @@ pub fn decode(insn: u32, pc: u64) -> Op {
         let shift = bits(insn, 22, 21) * 16;
         let imm = (bits(insn, 20, 5) as u64) << shift;
         match bits(insn, 30, 29) {
-            0b00 => return Op::Movz { rd, imm: !imm, sf },
-            0b11 => return Op::Movk { rd, shift: shift as u8, imm, sf },
+            0b00 => return Op::Movz { rd: zw(rd), imm: !imm, sf },
+            0b11 => return Op::Movk { rd: zw(rd), shift: shift as u8, imm, sf },
             _ => {}
         }
     }
@@ -151,13 +182,15 @@ pub fn decode(insn: u32, pc: u64) -> Op {
     if insn & 0x1f00_0000 == 0x1000_0000 {
         let imm = sext((bits(insn, 23, 5) << 2 | bits(insn, 30, 29)) as u64, 21);
         let v = if sf { (pc & !0xfff).wrapping_add((imm << 12) as u64) } else { pc.wrapping_add(imm as u64) };
-        return Op::Movz { rd, imm: v, sf: true };
+        return Op::Movz { rd: zw(rd), imm: v, sf: true };
     }
     // Logical (immediate).
     if insn & 0x1f80_0000 == 0x1200_0000 && (sf || !bit(insn, 22)) {
         let width = if sf { 64 } else { 32 };
         if let Some((imm, _)) = decode_bit_masks(bits(insn, 22, 22), bits(insn, 15, 10), bits(insn, 21, 16), true, width) {
-            return Op::LogicImm { rd, rn, imm, opc: bits(insn, 30, 29) as u8, sf };
+            // ANDS writes XZR; AND, ORR and EOR write SP.
+            let opc = bits(insn, 30, 29) as u8;
+            return Op::LogicImm { rd: if opc == 0b11 { zw(rd) } else { xsp(rd) }, rn: zr(rn), imm, opc, sf };
         }
     }
     // Bitfield: SBFM, BFM, UBFM.
@@ -165,16 +198,16 @@ pub fn decode(insn: u32, pc: u64) -> Op {
         let width = if sf { 64 } else { 32 };
         let (immr, imms) = (bits(insn, 21, 16), bits(insn, 15, 10));
         if let Some((wmask, tmask)) = decode_bit_masks(bits(insn, 22, 22), imms, immr, false, width) {
-            return Op::Bitfield { rd, rn, kind: bits(insn, 30, 29) as u8, immr: immr as u8, imms: imms as u8, wmask, tmask, sf };
+            return Op::Bitfield { rd: zw(rd), rn: zr(rn), kind: bits(insn, 30, 29) as u8, immr: immr as u8, imms: imms as u8, wmask, tmask, sf };
         }
     }
-    let rm = bits(insn, 20, 16) as u8;
+    let rm = bits(insn, 20, 16);
     // Logical (shifted register).
     if insn & 0x1f00_0000 == 0x0a00_0000 && (sf || !bit(insn, 15)) {
         return Op::Logic {
-            rd,
-            rn,
-            rm,
+            rd: zw(rd),
+            rn: zr(rn),
+            rm: zr(rm),
             kind: bits(insn, 23, 22) as u8,
             amount: bits(insn, 15, 10) as u8,
             invert: bit(insn, 21),
@@ -185,9 +218,9 @@ pub fn decode(insn: u32, pc: u64) -> Op {
     // ADD/SUB (shifted register).
     if insn & 0x1f20_0000 == 0x0b00_0000 && bits(insn, 23, 22) != 3 && (sf || !bit(insn, 15)) {
         return Op::AddReg {
-            rd,
-            rn,
-            rm,
+            rd: zw(rd),
+            rn: zr(rn),
+            rm: zr(rm),
             kind: bits(insn, 23, 22) as u8,
             amount: bits(insn, 15, 10) as u8,
             sub: bit(insn, 30),
@@ -197,24 +230,35 @@ pub fn decode(insn: u32, pc: u64) -> Op {
     }
     // ADD/SUB (extended register).
     if insn & 0x1f20_0000 == 0x0b20_0000 && bits(insn, 23, 22) == 0 && bits(insn, 12, 10) <= 4 {
+        let s = bit(insn, 29);
         return Op::AddExt {
-            rd,
-            rn,
-            rm,
+            rd: if s { zw(rd) } else { xsp(rd) },
+            rn: xsp(rn),
+            rm: zr(rm),
             option: bits(insn, 15, 13) as u8,
             shift: bits(insn, 12, 10) as u8,
             sub: bit(insn, 30),
-            s: bit(insn, 29),
+            s,
             sf,
         };
     }
     // CCMN / CCMP (register or immediate).
     if insn & 0x1fe0_0000 == 0x1a40_0000 && bit(insn, 29) && !bit(insn, 10) && !bit(insn, 4) {
-        return Op::Ccmp { rn, rm, imm: bit(insn, 11), cond: bits(insn, 15, 12) as u8, nzcv: bits(insn, 3, 0) as u8, sub: bit(insn, 30), sf };
+        let imm = bit(insn, 11);
+        // With an immediate, `rm` holds the 5-bit value.
+        return Op::Ccmp {
+            rn: zr(rn),
+            rm: if imm { rm as u8 } else { zr(rm) },
+            imm,
+            cond: bits(insn, 15, 12) as u8,
+            nzcv: bits(insn, 3, 0) as u8,
+            sub: bit(insn, 30),
+            sf,
+        };
     }
     // CSEL / CSINC / CSINV / CSNEG.
     if insn & 0x1fe0_0000 == 0x1a80_0000 && !bit(insn, 29) && !bit(insn, 11) {
-        return Op::Csel { rd, rn, rm, cond: bits(insn, 15, 12) as u8, op: (bits(insn, 30, 30) << 1 | bits(insn, 10, 10)) as u8, sf };
+        return Op::Csel { rd: zw(rd), rn: zr(rn), rm: zr(rm), cond: bits(insn, 15, 12) as u8, op: (bits(insn, 30, 30) << 1 | bits(insn, 10, 10)) as u8, sf };
     }
     // Load/store register, all single-register forms but the atomics.
     if insn & 0x3a00_0000 == 0x3800_0000 && !(!bit(insn, 24) && bit(insn, 21) && bits(insn, 11, 10) == 0) {
@@ -232,18 +276,18 @@ pub fn decode(insn: u32, pc: u64) -> Op {
     }
     // CBZ / CBNZ.
     if insn & 0x7e00_0000 == 0x3400_0000 {
-        return Op::Cbz { rt: rd, sf, nonzero: bit(insn, 24), target: pc.wrapping_add((sext(bits(insn, 23, 5) as u64, 19) * 4) as u64) };
+        return Op::Cbz { rt: zr(rd), sf, nonzero: bit(insn, 24), target: pc.wrapping_add((sext(bits(insn, 23, 5) as u64, 19) * 4) as u64) };
     }
     // TBZ / TBNZ.
     if insn & 0x7e00_0000 == 0x3600_0000 {
         let target = pc.wrapping_add((sext(bits(insn, 18, 5) as u64, 14) * 4) as u64);
-        return Op::Tbz { rt: rd, bit: ((bits(insn, 31, 31) << 5) | bits(insn, 23, 19)) as u8, nonzero: bit(insn, 24), target };
+        return Op::Tbz { rt: zr(rd), bit: ((bits(insn, 31, 31) << 5) | bits(insn, 23, 19)) as u8, nonzero: bit(insn, 24), target };
     }
     // RET, BR, BLR.
     match insn & 0xffff_fc1f {
-        0xd65f_0000 => return Op::Ret { rn },
-        0xd61f_0000 => return Op::Br { rn, link: false },
-        0xd63f_0000 => return Op::Br { rn, link: true },
+        0xd65f_0000 => return Op::Ret { rn: zr(rn) },
+        0xd61f_0000 => return Op::Br { rn: zr(rn), link: false },
+        0xd63f_0000 => return Op::Br { rn: zr(rn), link: true },
         _ => {}
     }
     // Hints.
@@ -256,7 +300,7 @@ pub fn decode(insn: u32, pc: u64) -> Op {
 /// A single-register load or store (not an atomic), as `Cpu::ldst` reads it;
 /// None for the forms left to it (prefetches, reserved encodings).
 fn decode_ldst(insn: u32) -> Option<Op> {
-    let (rt, rn) = (bits(insn, 4, 0) as u8, bits(insn, 9, 5) as u8);
+    let (rt, rn) = (bits(insn, 4, 0), bits(insn, 9, 5));
     let size = bits(insn, 31, 30);
     let opc = bits(insn, 23, 22);
     let (bytes, kind) = if bit(insn, 26) {
@@ -287,7 +331,7 @@ fn decode_ldst(insn: u32) -> Option<Op> {
             return None;
         }
         let shift = if bit(insn, 12) { bytes.trailing_zeros() } else { 0 };
-        Addr::Reg { rm: bits(insn, 20, 16) as u8, option: option as u8, shift: shift as u8 }
+        Addr::Reg { rm: zr(bits(insn, 20, 16)), option: option as u8, shift: shift as u8 }
     } else {
         let imm = sext(bits(insn, 20, 12) as u64, 9) as u64;
         match bits(insn, 11, 10) {
@@ -296,7 +340,12 @@ fn decode_ldst(insn: u32) -> Option<Op> {
             _ => Addr::Pre(imm),
         }
     };
-    Some(Op::LdSt { rt, rn, addr, bytes: bytes as u8, kind })
+    let rt = match kind {
+        Kind::Store => zr(rt),
+        Kind::Load | Kind::LoadSigned(_) => zw(rt),
+        Kind::VecLoad | Kind::VecStore => rt as u8,
+    };
+    Some(Op::LdSt { rt, rn: xsp(rn), addr, bytes: bytes as u8, kind })
 }
 
 impl Cpu {
@@ -307,41 +356,41 @@ impl Cpu {
         let next = match *op {
             Op::Generic(insn) => return self.exec(insn, mem),
             Op::Mov { rd, rm, sf } => {
-                let v = self.rd(rm as u32, sf);
-                self.wr(rd as u32, sf, v);
+                let v = self.slot_w(rm, sf);
+                self.set_slot_w(rd, sf, v);
                 self.pc.wrapping_add(4)
             }
             Op::Movz { rd, imm, sf } => {
-                self.wr(rd as u32, sf, imm);
+                self.set_slot_w(rd, sf, imm);
                 self.pc.wrapping_add(4)
             }
             Op::Movk { rd, shift, imm, sf } => {
-                let old = self.xr(rd as u32);
-                self.wr(rd as u32, sf, (old & !(0xffffu64 << shift)) | imm);
+                let old = self.slot(rd);
+                self.set_slot_w(rd, sf, (old & !(0xffffu64 << shift)) | imm);
                 self.pc.wrapping_add(4)
             }
             Op::AddReg { rd, rn, rm, kind, amount, sub, s, sf } => {
-                let a = self.rd(rn as u32, sf);
-                let b = self.shift_reg(self.xr(rm as u32), kind as u32, amount as u32, sf);
+                let a = self.slot_w(rn, sf);
+                let b = self.shift_reg(self.slot(rm), kind as u32, amount as u32, sf);
                 let r = if sub { self.add_with_carry(a, !b, true, sf, s) } else { self.add_with_carry(a, b, false, sf, s) };
-                self.wr(rd as u32, sf, r);
+                self.set_slot_w(rd, sf, r);
                 self.pc.wrapping_add(4)
             }
             Op::AddExt { rd, rn, rm, option, shift, sub, s, sf } => {
                 let width = if sf { 64 } else { 32 };
-                let a = self.xsp(rn as u32);
+                let a = self.slot(rn);
                 let a = if sf { a } else { a as u32 as u64 };
-                let b = self.extend_reg(rm as u32, option as u32, shift as u32) & ones(width);
+                let b = crate::dp::extend(self.slot(rm), option as u32, shift as u32) & ones(width);
                 let r = if sub { self.add_with_carry(a, !b, true, sf, s) } else { self.add_with_carry(a, b, false, sf, s) };
-                if s { self.wr(rd as u32, sf, r) } else { self.wr_sp(rd as u32, sf, r) }
+                self.set_slot_w(rd, sf, r);
                 self.pc.wrapping_add(4)
             }
             Op::Logic { rd, rn, rm, kind, amount, invert, opc, sf } => {
-                let mut b = self.shift_reg(self.xr(rm as u32), kind as u32, amount as u32, sf);
+                let mut b = self.shift_reg(self.slot(rm), kind as u32, amount as u32, sf);
                 if invert {
                     b = !b & ones(if sf { 64 } else { 32 });
                 }
-                let a = self.rd(rn as u32, sf);
+                let a = self.slot_w(rn, sf);
                 let r = match opc {
                     0b00 | 0b11 => a & b,
                     0b01 => a | b,
@@ -352,43 +401,43 @@ impl Cpu {
                     self.c = false;
                     self.v = false;
                 }
-                self.wr(rd as u32, sf, r);
+                self.set_slot_w(rd, sf, r);
                 self.pc.wrapping_add(4)
             }
             Op::LogicImm { rd, rn, imm, opc, sf } => {
-                let a = self.rd(rn as u32, sf);
+                let a = self.slot_w(rn, sf);
                 match opc {
-                    0b00 => self.wr_sp(rd as u32, sf, a & imm),
-                    0b01 => self.wr_sp(rd as u32, sf, a | imm),
-                    0b10 => self.wr_sp(rd as u32, sf, a ^ imm),
+                    0b00 => self.set_slot_w(rd, sf, a & imm),
+                    0b01 => self.set_slot_w(rd, sf, a | imm),
+                    0b10 => self.set_slot_w(rd, sf, a ^ imm),
                     _ => {
                         let r = a & imm;
                         self.set_nz(r, sf);
                         self.c = false;
                         self.v = false;
-                        self.wr(rd as u32, sf, r);
+                        self.set_slot_w(rd, sf, r);
                     }
                 }
                 self.pc.wrapping_add(4)
             }
             Op::Bitfield { rd, rn, kind, immr, imms, wmask, tmask, sf } => {
                 let width = if sf { 64 } else { 32 };
-                let src = self.rd(rn as u32, sf);
-                let dst = if kind == 1 { self.rd(rd as u32, sf) } else { 0 };
+                let src = self.slot_w(rn, sf);
+                let dst = if kind == 1 { self.slot_w(rd, sf) } else { 0 };
                 let bot = (dst & !wmask) | (ror(src, immr as u32, width) & wmask);
                 let top = if kind == 0 {
                     if (src >> imms) & 1 == 1 { ones(width) } else { 0 }
                 } else {
                     dst
                 };
-                self.wr(rd as u32, sf, (top & !tmask) | (bot & tmask));
+                self.set_slot_w(rd, sf, (top & !tmask) | (bot & tmask));
                 self.pc.wrapping_add(4)
             }
             Op::Csel { rd, rn, rm, cond, op, sf } => {
                 let r = if self.cond(cond as u32) {
-                    self.rd(rn as u32, sf)
+                    self.slot_w(rn, sf)
                 } else {
-                    let b = self.rd(rm as u32, sf);
+                    let b = self.slot_w(rm, sf);
                     match op {
                         0 => b,
                         1 => b.wrapping_add(1),
@@ -396,13 +445,13 @@ impl Cpu {
                         _ => b.wrapping_neg(),
                     }
                 };
-                self.wr(rd as u32, sf, r);
+                self.set_slot_w(rd, sf, r);
                 self.pc.wrapping_add(4)
             }
             Op::Ccmp { rn, rm, imm, cond, nzcv, sub, sf } => {
                 if self.cond(cond as u32) {
-                    let a = self.rd(rn as u32, sf);
-                    let b = if imm { rm as u64 } else { self.rd(rm as u32, sf) };
+                    let a = self.slot_w(rn, sf);
+                    let b = if imm { rm as u64 } else { self.slot_w(rm, sf) };
                     if sub {
                         self.add_with_carry(a, !b & ones(if sf { 64 } else { 32 }), true, sf, true);
                     } else {
@@ -414,11 +463,11 @@ impl Cpu {
                 self.pc.wrapping_add(4)
             }
             Op::LdSt { rt, rn, addr, bytes, kind } => {
-                let base = self.xsp(rn as u32);
+                let base = self.slot(rn);
                 let (at, writeback) = match addr {
                     Addr::Offset(off) => (base.wrapping_add(off), None),
                     Addr::Reg { rm, option, shift } => {
-                        let m = self.xr(rm as u32);
+                        let m = self.slot(rm);
                         let off = match option {
                             2 => m as u32 as u64,
                             6 => m as u32 as i32 as i64 as u64,
@@ -429,16 +478,16 @@ impl Cpu {
                     Addr::Pre(imm) => (base.wrapping_add(imm), Some(base.wrapping_add(imm))),
                     Addr::Post(imm) => (base, Some(base.wrapping_add(imm))),
                 };
-                let (rt, bytes) = (rt as u32, bytes as u32);
+                let bytes = bytes as u32;
                 match kind {
-                    Kind::Store => store(mem, at, bytes, (self.xr(rt) & mask(bytes)) as u128)?,
+                    Kind::Store => store(mem, at, bytes, (self.slot(rt) & mask(bytes)) as u128)?,
                     Kind::Load => {
                         let v = load(mem, at, bytes)? as u64;
-                        self.set_xr(rt, v);
+                        self.set_slot(rt, v);
                     }
                     Kind::LoadSigned(to64) => {
                         let v = sext(load(mem, at, bytes)? as u64, bytes * 8) as u64;
-                        self.set_xr(rt, if to64 { v } else { v as u32 as u64 });
+                        self.set_slot(rt, if to64 { v } else { v as u32 as u64 });
                     }
                     Kind::VecLoad => self.q[rt as usize] = load(mem, at, bytes)?,
                     Kind::VecStore => {
@@ -448,31 +497,31 @@ impl Cpu {
                     }
                 }
                 if let Some(wb) = writeback {
-                    self.set_xsp(rn as u32, wb);
+                    self.set_slot(rn, wb);
                 }
                 self.pc.wrapping_add(4)
             }
             Op::AddImm { rd, rn, b, carry, sf, s } => {
-                let a = self.xsp(rn as u32);
+                let a = self.slot(rn);
                 let a = if sf { a } else { a as u32 as u64 };
                 let r = self.add_with_carry(a, b, carry, sf, s);
-                if s { self.wr(rd as u32, sf, r) } else { self.wr_sp(rd as u32, sf, r) }
+                self.set_slot_w(rd, sf, r);
                 self.pc.wrapping_add(4)
             }
             Op::Ldr { rt, rn, off, bytes } => {
-                let addr = self.xsp(rn as u32).wrapping_add(off);
+                let addr = self.slot(rn).wrapping_add(off);
                 let v = match bytes {
                     1 => mem.read_u8(addr)? as u64,
                     2 => mem.read_u16(addr)? as u64,
                     4 => mem.read_u32(addr)? as u64,
                     _ => mem.read_u64(addr)?,
                 };
-                self.set_xr(rt as u32, v);
+                self.set_slot(rt, v);
                 self.pc.wrapping_add(4)
             }
             Op::Str { rt, rn, off, bytes } => {
-                let addr = self.xsp(rn as u32).wrapping_add(off);
-                let v = self.xr(rt as u32);
+                let addr = self.slot(rn).wrapping_add(off);
+                let v = self.slot(rt);
                 match bytes {
                     1 => mem.write_u8(addr, v as u8)?,
                     2 => mem.write_u16(addr, v as u16)?,
@@ -482,7 +531,7 @@ impl Cpu {
                 self.pc.wrapping_add(4)
             }
             Op::Pair { rt, rt2, rn, off, bytes, load, mode } => {
-                let base = self.xsp(rn as u32);
+                let base = self.slot(rn);
                 let addr = if mode == 0b01 { base } else { base.wrapping_add(off as u64) };
                 let second = addr.wrapping_add(bytes as u64);
                 if load {
@@ -491,10 +540,10 @@ impl Cpu {
                     } else {
                         (mem.read_u32(addr)? as u64, mem.read_u32(second)? as u64)
                     };
-                    self.set_xr(rt as u32, a);
-                    self.set_xr(rt2 as u32, b);
+                    self.set_slot(rt, a);
+                    self.set_slot(rt2, b);
                 } else {
-                    let (a, b) = (self.xr(rt as u32), self.xr(rt2 as u32));
+                    let (a, b) = (self.slot(rt), self.slot(rt2));
                     if bytes == 8 {
                         mem.write_u64(addr, a)?;
                         mem.write_u64(second, b)?;
@@ -504,7 +553,7 @@ impl Cpu {
                     }
                 }
                 if mode & 1 == 1 {
-                    self.set_xsp(rn as u32, base.wrapping_add(off as u64));
+                    self.set_slot(rn, base.wrapping_add(off as u64));
                 }
                 self.pc.wrapping_add(4)
             }
@@ -518,14 +567,14 @@ impl Cpu {
                 if self.cond(cond as u32) { target } else { self.pc.wrapping_add(4) }
             }
             Op::Cbz { rt, sf, nonzero, target } => {
-                if (self.rd(rt as u32, sf) == 0) != nonzero { target } else { self.pc.wrapping_add(4) }
+                if (self.slot_w(rt, sf) == 0) != nonzero { target } else { self.pc.wrapping_add(4) }
             }
-            Op::Ret { rn } => self.xr(rn as u32),
+            Op::Ret { rn } => self.slot(rn),
             Op::Tbz { rt, bit, nonzero, target } => {
-                if ((self.xr(rt as u32) >> bit) & 1 == 1) == nonzero { target } else { self.pc.wrapping_add(4) }
+                if ((self.slot(rt) >> bit) & 1 == 1) == nonzero { target } else { self.pc.wrapping_add(4) }
             }
             Op::Br { rn, link } => {
-                let target = self.xr(rn as u32);
+                let target = self.slot(rn);
                 if link {
                     self.x[30] = self.pc + 4;
                 }
@@ -663,6 +712,7 @@ mod tests {
             let rb = b.exec_op(&op, &mut mb);
             assert_eq!(format!("{ra:?}"), format!("{rb:?}"), "{insn:#010x} {op:?}");
             assert_eq!(state(&a), state(&b), "{insn:#010x} {op:?}");
+            assert_eq!(b.zr, 0, "{insn:#010x} {op:?} wrote the zero register");
             assert_eq!(ma.read(BASE, SIZE as usize).unwrap(), mb.read(BASE, SIZE as usize).unwrap(), "{insn:#010x} {op:?}");
         }
         // Every form was exercised.
