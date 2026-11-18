@@ -5,7 +5,7 @@
 //! fault, an instruction we don't implement yet, or a return to the host.
 //!
 //! Deterministic by construction: no host time, threads or randomness; the
-//! instruction counter is the only clock (see README "Design constraints").
+//! instruction counter is the only clock (see docs/development.md, "Design constraints").
 
 mod block;
 mod crypto;
