@@ -295,7 +295,7 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
         let budget = limit.saturating_sub(emu.cpu.steps).min(emu.max_steps.saturating_sub(emu.cpu.steps));
         #[cfg(feature = "cpu-time")]
         let t0 = std::time::Instant::now();
-        let exit = emu.cpu.run(&mut emu.p.memory, budget);
+        let exit = emu.backend.run(&mut emu.cpu, &mut emu.p.memory, pomme_cpu::Budget { steps: budget });
         #[cfg(feature = "cpu-time")]
         crate::cpu_stats::add(t0.elapsed());
         match exit {

@@ -46,15 +46,31 @@ pub struct Region {
     pub data: Vec<u8>,
     pub prot: Prot,
     pub name: String,
-    /// The CPU has cached decoded code from here: writing here changes the code generation.
-    has_code: bool,
+    /// One bit per page (counted from the region's first page): the CPU has
+    /// cached decoded code from that page, so writing it changes the code generation.
+    code_pages: Vec<u64>,
 }
 
 impl Region {
     pub fn end(&self) -> u64 {
         self.base + self.data.len() as u64
     }
+
+    /// The bit for `page` (a page number) in `code_pages`.
+    fn code_bit(&self, page: u64) -> (usize, u64) {
+        let i = (page - self.base / PAGE_SIZE) as usize;
+        (i / 64, 1 << (i % 64))
+    }
+
+    fn has_code(&self, page: u64) -> bool {
+        let (w, b) = self.code_bit(page);
+        self.code_pages.get(w).is_some_and(|x| x & b != 0)
+    }
 }
+
+/// The most code pages [`Memory`] remembers as written. A cache that falls
+/// further behind drops everything (see [`Memory::code_changes_since`]).
+const CODE_LOG_LEN: usize = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemError {
@@ -78,7 +94,7 @@ struct TlbEntry {
     /// Where the page's first byte is in the region's data, when the whole
     /// page lies in the region (0 when it doesn't): loads go straight there.
     host: usize,
-    /// `host` came from a mutable borrow and the region holds no cached
+    /// `host` came from a mutable borrow and the page holds no cached
     /// code: stores may go straight there too.
     writable: bool,
 }
@@ -98,6 +114,10 @@ pub struct Memory {
     tlb: Box<[std::cell::Cell<TlbEntry>]>,
     /// Bumped whenever code the CPU may have cached is written (see [`Memory::mark_code`]).
     code_generation: u64,
+    /// The pages written for the last generations: `code_log[i]` is the page
+    /// written to reach generation `code_log_base + i + 1`.
+    code_log: Vec<u64>,
+    code_log_base: u64,
 }
 
 /// A copy of the address space (a snapshot's): the regions and their
@@ -105,13 +125,23 @@ pub struct Memory {
 /// valid for the other; the TLB starts empty.
 impl Clone for Memory {
     fn clone(&self) -> Self {
-        Memory { regions: self.regions.clone(), ..Memory { code_generation: self.code_generation, ..Default::default() } }
+        Memory {
+            regions: self.regions.clone(),
+            code_log: self.code_log.clone(),
+            ..Memory { code_generation: self.code_generation, code_log_base: self.code_log_base, ..Default::default() }
+        }
     }
 }
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::EMPTY); TLB_SLOTS].into_boxed_slice(), code_generation: 0 }
+        Memory {
+            regions: Vec::new(),
+            tlb: vec![std::cell::Cell::new(TlbEntry::EMPTY); TLB_SLOTS].into_boxed_slice(),
+            code_generation: 0,
+            code_log: Vec::new(),
+            code_log_base: 0,
+        }
     }
 }
 
@@ -182,21 +212,30 @@ impl Memory {
         if let Some(other) = clash {
             return Err(MemError::Overlap { name, base, size, other: other.name.clone() });
         }
-        self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name, has_code: false });
+        let pages = (page_align_up(base + size) - base / PAGE_SIZE * PAGE_SIZE) / PAGE_SIZE;
+        let code_pages = vec![0; pages.div_ceil(64) as usize];
+        self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name, code_pages });
         // Indices after it moved.
         self.flush_tlb();
         Ok(&mut self.regions[idx])
     }
 
-    /// The CPU caches decoded code from `addr`'s region: writes there must
-    /// tell it (they bump [`Memory::code_generation`]).
+    /// The CPU caches decoded code from `addr`'s page: writes there must
+    /// tell it (they bump [`Memory::code_generation`] and are listed by
+    /// [`Memory::code_changes_since`]).
     pub fn mark_code(&mut self, addr: u64) {
-        if let Some(r) = self.region_of_mut(untag(addr))
-            && !r.has_code
+        let addr = untag(addr);
+        let page = addr / PAGE_SIZE;
+        if let Some(r) = self.region_of_mut(addr)
+            && !r.has_code(page)
         {
-            r.has_code = true;
-            // Its pages' stores must go the slow way now, to see the code.
-            self.flush_tlb();
+            let (w, b) = r.code_bit(page);
+            r.code_pages[w] |= b;
+            // Stores to this page must go the slow way now, to see the code.
+            let slot = self.slot(addr);
+            if slot.get().page == page {
+                slot.set(TlbEntry::EMPTY);
+            }
         }
     }
 
@@ -204,6 +243,42 @@ impl Memory {
     #[inline(always)]
     pub fn code_generation(&self) -> u64 {
         self.code_generation
+    }
+
+    /// The pages (page numbers: address / [`PAGE_SIZE`]) whose code was
+    /// written since `generation`, or None when that is too long ago to say
+    /// (then every cached page must be treated as written).
+    pub fn code_changes_since(&self, generation: u64) -> Option<&[u64]> {
+        let from = generation.checked_sub(self.code_log_base)? as usize;
+        self.code_log.get(from..)
+    }
+
+    /// Code in `page` of region `i` was written: tell the CPU's caches. The
+    /// page stops being marked; the CPU marks it again when it caches code
+    /// from it again.
+    fn code_written(&mut self, i: usize, page: u64) {
+        let r = &mut self.regions[i];
+        if !r.has_code(page) {
+            return;
+        }
+        let (w, b) = r.code_bit(page);
+        r.code_pages[w] &= !b;
+        if self.code_log.len() == CODE_LOG_LEN {
+            self.code_log_base = self.code_generation;
+            self.code_log.clear();
+        }
+        self.code_log.push(page);
+        self.code_generation += 1;
+    }
+
+    /// Bytes `addr..addr + len` of region `i` were written.
+    fn written(&mut self, i: usize, addr: u64, len: u64) {
+        if len == 0 {
+            return;
+        }
+        for page in addr / PAGE_SIZE..=(addr + len - 1) / PAGE_SIZE {
+            self.code_written(i, page);
+        }
     }
 
     #[inline(always)]
@@ -235,9 +310,7 @@ impl Memory {
             .get_mut(off..off + bytes.len())
             .ok_or(MemError::Unmapped(addr + bytes.len() as u64))?;
         dst.copy_from_slice(bytes);
-        if r.has_code {
-            self.code_generation += 1;
-        }
+        self.written(i, addr, bytes.len() as u64);
         Ok(())
     }
 
@@ -270,7 +343,7 @@ impl Memory {
         let addr = untag(addr);
         if let Some(p) = self.direct::<N>(addr, true) {
             // SAFETY: as in `read_n`; the entry is writable, so the pointer
-            // came from the region's data mutably and the region has no code.
+            // came from the region's data mutably and the page has no code.
             unsafe { std::ptr::write_unaligned(p as *mut [u8; N], bytes) };
             return Ok(());
         }
@@ -284,11 +357,11 @@ impl Memory {
         let off = (addr - r.base) as usize;
         let dst: &mut [u8; N] = r.data.get_mut(off..off + N).ok_or(MemError::Unmapped(addr + N as u64))?.try_into().unwrap();
         *dst = bytes;
-        if r.has_code {
-            self.code_generation += 1;
+        let page = addr / PAGE_SIZE;
+        if r.has_code(page) || r.has_code((addr + N as u64 - 1) / PAGE_SIZE) {
+            self.written(i, addr, N as u64);
         } else {
             // Later stores to this page can go straight to it.
-            let page = addr / PAGE_SIZE;
             if page * PAGE_SIZE >= r.base && (page + 1) * PAGE_SIZE <= r.end() {
                 let host = r.data.as_mut_ptr() as usize + (page * PAGE_SIZE - r.base) as usize;
                 self.slot(addr).set(TlbEntry { page, region: i as u32, host, writable: true });

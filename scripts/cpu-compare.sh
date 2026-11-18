@@ -10,6 +10,10 @@
 # report (views, registers, backtrace, system calls) and save the same
 # screenshot, byte for byte. Each build runs RUNS times (default 3); the
 # fastest wall time of each is shown. Change the taps with TAPS.
+#
+# ARGS_OLD and ARGS_NEW add options to one side only. To compare two ways of
+# running the CPU in one build (the interpreter and the JIT, say):
+#   ARGS_OLD="--cpu interpreter" ARGS_NEW="--cpu jit" scripts/cpu-compare.sh target/release/pomme target/release/pomme
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OLD="$1"; NEW="$2"
@@ -24,24 +28,24 @@ case "$APP" in
   *) SOURCE=("$APP") ;;
 esac
 
-run() { # run BINARY NAME: one run, its report in $OUT/NAME.txt and its screen in $OUT/NAME.png
+run() { # run BINARY NAME EXTRA: one run, its report in $OUT/NAME.txt and its screen in $OUT/NAME.png
   # shellcheck disable=SC2086
-  "$1" run "${SOURCE[@]}" --offline --steps 3000000000 --seconds 8 $TAPS --views \
+  "$1" run "${SOURCE[@]}" --offline --steps 3000000000 --seconds 8 $TAPS $3 --views \
     --screenshot "$OUT/$2.png" >"$OUT/$2.txt" 2>&1 || true
 }
 
-best() { # best NAME BINARY: fastest of RUNS runs, in seconds
+best() { # best NAME BINARY EXTRA: fastest of RUNS runs, in seconds
   local b=""
   for i in $(seq "$RUNS"); do
-    run "$2" "$1"
+    run "$2" "$1" "$3"
     local t; t=$(grep -o 'instructions in [0-9.]*s' "$OUT/$1.txt" | grep -o '[0-9.]*' | tail -1)
     b=$(awk -v t="$t" -v b="$b" 'BEGIN { print (b == "" || t < b) ? t : b }')
   done
   echo "$b"
 }
 
-T_OLD=$(best old "$OLD")
-T_NEW=$(best new "$NEW")
+T_OLD=$(best old "$OLD" "${ARGS_OLD:-}")
+T_NEW=$(best new "$NEW" "${ARGS_NEW:-}")
 
 # The report without the lines that name the screenshot or give wall times,
 # and without the "cpu stats:" section (a build with the cpu-time feature).
