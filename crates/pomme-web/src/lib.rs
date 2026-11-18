@@ -221,7 +221,14 @@ fn measure(name: &str, start_ms: f64, end_ms: f64) {
 }
 
 /// The network: synchronous XMLHttpRequest (fine in a worker), so CORS applies.
-struct XhrNet;
+/// Requests through the browser's XHR: in the background while the app runs
+/// (`start` and `poll`), or at once (`fetch`, for a host that needs the answer now).
+#[derive(Default)]
+struct XhrNet {
+    /// Requests out: the XHR, with the method and URL for errors.
+    out: std::collections::HashMap<pomme_hle::net::RequestId, (web_sys::XmlHttpRequest, String, String)>,
+    next: pomme_hle::net::RequestId,
+}
 
 /// Headers a browser won't let scripts set.
 fn forbidden(name: &str) -> bool {
@@ -230,31 +237,70 @@ fn forbidden(name: &str) -> bool {
     NAMES.contains(&n.as_str()) || n.starts_with("sec-") || n.starts_with("proxy-")
 }
 
+fn js_error(e: JsValue) -> String {
+    e.as_string().unwrap_or_else(|| format!("{e:?}"))
+}
+
+/// Open and send `req` (asynchronously or not).
+fn send_xhr(req: &pomme_hle::net::Request, background: bool) -> Result<web_sys::XmlHttpRequest, String> {
+    let xhr = web_sys::XmlHttpRequest::new().map_err(js_error)?;
+    xhr.open_with_async(&req.method, &req.url, background).map_err(js_error)?;
+    xhr.set_response_type(web_sys::XmlHttpRequestResponseType::Arraybuffer);
+    for (k, v) in &req.headers {
+        if !forbidden(k) {
+            xhr.set_request_header(k, v).map_err(js_error)?;
+        }
+    }
+    let sent = if req.body.is_empty() { xhr.send() } else { xhr.send_with_opt_u8_array(Some(&req.body)) };
+    sent.map_err(|e| format!("{} {}: {}", req.method, req.url, js_error(e)))?;
+    Ok(xhr)
+}
+
+/// The answer of a finished XHR.
+fn xhr_response(xhr: &web_sys::XmlHttpRequest, method: &str, url: &str) -> Result<pomme_hle::net::Response, String> {
+    let status = xhr.status().map_err(js_error)?;
+    if status == 0 {
+        return Err(format!("{method} {url}: network error (offline, or blocked by CORS)"));
+    }
+    let headers = xhr
+        .get_all_response_headers()
+        .map_err(js_error)?
+        .lines()
+        .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .collect();
+    let body = xhr.response().map(|b| js_sys::Uint8Array::new(&b).to_vec()).unwrap_or_default();
+    Ok(pomme_hle::net::Response { status, headers, body })
+}
+
 impl pomme_hle::net::Net for XhrNet {
     fn fetch(&mut self, req: &pomme_hle::net::Request) -> Result<pomme_hle::net::Response, String> {
-        let err = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
-        let xhr = web_sys::XmlHttpRequest::new().map_err(err)?;
-        xhr.open_with_async(&req.method, &req.url, false).map_err(err)?;
-        xhr.set_response_type(web_sys::XmlHttpRequestResponseType::Arraybuffer);
-        for (k, v) in &req.headers {
-            if !forbidden(k) {
-                xhr.set_request_header(k, v).map_err(err)?;
-            }
+        let xhr = send_xhr(req, false)?;
+        xhr_response(&xhr, &req.method, &req.url)
+    }
+
+    /// An asynchronous XHR: the browser runs it while the emulator pauses
+    /// (after each frame, and while the app idles).
+    fn start(&mut self, req: &pomme_hle::net::Request) -> Option<pomme_hle::net::RequestId> {
+        // A request that can't even be sent fails at once, through `fetch`.
+        let xhr = send_xhr(req, true).ok()?;
+        self.next += 1;
+        self.out.insert(self.next, (xhr, req.method.clone(), req.url.clone()));
+        Some(self.next)
+    }
+
+    fn poll(&mut self, id: pomme_hle::net::RequestId) -> Option<Result<pomme_hle::net::Response, String>> {
+        const DONE: u16 = 4;
+        if self.out.get(&id)?.0.ready_state() != DONE {
+            return None;
         }
-        let sent = if req.body.is_empty() { xhr.send() } else { xhr.send_with_opt_u8_array(Some(&req.body)) };
-        sent.map_err(|e| format!("{} {}: {}", req.method, req.url, err(e)))?;
-        let status = xhr.status().map_err(err)?;
-        if status == 0 {
-            return Err(format!("{} {}: network error (offline, or blocked by CORS)", req.method, req.url));
+        let (xhr, method, url) = self.out.remove(&id)?;
+        Some(xhr_response(&xhr, &method, &url))
+    }
+
+    fn forget(&mut self, id: pomme_hle::net::RequestId) {
+        if let Some((xhr, ..)) = self.out.remove(&id) {
+            let _ = xhr.abort();
         }
-        let headers = xhr
-            .get_all_response_headers()
-            .map_err(err)?
-            .lines()
-            .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
-            .collect();
-        let body = xhr.response().map(|b| js_sys::Uint8Array::new(&b).to_vec()).unwrap_or_default();
-        Ok(pomme_hle::net::Response { status, headers, body })
     }
 }
 
@@ -302,7 +348,7 @@ fn run_inner(bundle: Vec<u8>, scale: f32, ios: &str, frame_stats: bool) -> Resul
         emu.system.os = ios.parse()?;
     }
     pomme_log(&format!("presenting iOS {}", emu.system.os));
-    *emu.net.client = Some(Box::new(XhrNet));
+    *emu.net.client = Some(Box::new(XhrNet::default()));
     *emu.webkit.engine = Some(Box::new(BrowserEngine));
     *emu.live.host = Some(Box::new(WebHost { base: None, last_log: 0.0, stats: frame_stats.then(Default::default), device: emu.device, held: None }));
     pomme_log("running");

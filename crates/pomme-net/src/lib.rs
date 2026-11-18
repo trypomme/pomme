@@ -9,7 +9,7 @@
 #[cfg(target_os = "macos")]
 mod bonjour_macos;
 
-use pomme_hle::net::{Fixtures, HostSockets, Net, Readiness, Request, Response, Service, SocketId};
+use pomme_hle::net::{Fixtures, HostSockets, Net, Readiness, Request, RequestId, Response, Service, SocketId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -24,13 +24,42 @@ pub struct LiveNet {
     /// What each kind has found so far (by name), kept up to date on
     /// threads of its own.
     found: HashMap<String, Arc<Mutex<HashMap<String, Service>>>>,
+    /// Requests out in the background, each on a thread of its own: where its answer arrives.
+    out: HashMap<RequestId, std::sync::mpsc::Receiver<std::result::Result<Response, String>>>,
+    next: RequestId,
 }
 
 impl LiveNet {
     /// Live, with these canned answers first.
     pub fn new(fixtures: Fixtures) -> LiveNet {
-        LiveNet { fixtures, agent: ureq::Agent::new_with_defaults(), sockets: HostSockets::default(), #[cfg(not(target_os = "macos"))] mdns: None, found: HashMap::new() }
+        LiveNet {
+            fixtures,
+            agent: ureq::Agent::new_with_defaults(),
+            sockets: HostSockets::default(),
+            #[cfg(not(target_os = "macos"))]
+            mdns: None,
+            found: HashMap::new(),
+            out: HashMap::new(),
+            next: 0,
+        }
     }
+}
+
+/// Real HTTP: `req`'s answer.
+fn http(agent: &ureq::Agent, req: &Request) -> std::result::Result<Response, String> {
+    let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(&req.url);
+    for (k, v) in &req.headers {
+        b = b.header(k, v);
+    }
+    let request = b.body(req.body.clone()).map_err(|e| e.to_string())?;
+    let request = agent.configure_request(request).http_status_as_error(false).build();
+    let mut response = agent.run(request).map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let headers = response.headers().iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
+    // No 10 MB cap (ureq's default): iOS has none, and a development
+    // bundle from Metro is bigger than that.
+    let body = response.body_mut().with_config().limit(1 << 30).read_to_vec().map_err(|e| e.to_string())?;
+    Ok(Response { status, headers, body })
 }
 
 /// A resolved mDNS service as pomme's.
@@ -98,19 +127,38 @@ impl Net for LiveNet {
         if let Some(r) = self.fixtures.lookup(&req.url) {
             return Ok(r.clone());
         }
-        let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(&req.url);
-        for (k, v) in &req.headers {
-            b = b.header(k, v);
+        http(&self.agent, req)
+    }
+
+    /// Real HTTP on a thread of its own (the app's code still runs on one
+    /// thread); a fixture answers at once instead.
+    fn start(&mut self, req: &Request) -> Option<RequestId> {
+        if self.fixtures.lookup(&req.url).is_some() {
+            return None;
         }
-        let request = b.body(req.body.clone()).map_err(|e| e.to_string())?;
-        let request = self.agent.configure_request(request).http_status_as_error(false).build();
-        let mut response = self.agent.run(request).map_err(|e| e.to_string())?;
-        let status = response.status().as_u16();
-        let headers = response.headers().iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
-        // No 10 MB cap (ureq's default): iOS has none, and a development
-        // bundle from Metro is bigger than that.
-        let body = response.body_mut().with_config().limit(1 << 30).read_to_vec().map_err(|e| e.to_string())?;
-        Ok(Response { status, headers, body })
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (agent, req) = (self.agent.clone(), req.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(http(&agent, &req));
+        });
+        self.next += 1;
+        self.out.insert(self.next, rx);
+        Some(self.next)
+    }
+
+    fn poll(&mut self, id: RequestId) -> Option<std::result::Result<Response, String>> {
+        let answer = match self.out.get(&id)?.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the request's thread stopped".into()),
+        };
+        self.out.remove(&id);
+        Some(answer)
+    }
+
+    fn forget(&mut self, id: RequestId) {
+        // Its thread finishes on its own; the answer goes nowhere.
+        self.out.remove(&id);
     }
 
     fn resolve(&mut self, host: &str) -> std::result::Result<Vec<std::net::IpAddr>, String> {

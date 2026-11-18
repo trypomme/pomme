@@ -2,14 +2,20 @@
 //!
 //! Every request goes through one host interface, [`Net`], like every other
 //! source of non-determinism. The front end decides what that means: real
-//! HTTP (the CLI), synchronous XHR (the browser worker), or canned
-//! [`Fixtures`] (tests). With no `Net` the device is offline.
+//! HTTP (the CLI), XHR (the browser worker), or canned [`Fixtures`] (tests).
+//! With no `Net` the device is offline.
 //!
 //! A task's request is made when it resumes; the response is delivered on
-//! the main run loop a little later in virtual time ([`LATENCY`]), through
+//! the main run loop a little later in virtual time ([`LATENCY_S`]), through
 //! the session delegate (`didReceiveResponse`, `didReceiveData`,
-//! `didCompleteWithError`) or the task's completion handler. So a run with
-//! the same responses is the same run.
+//! `didCompleteWithError`) or the task's completion handler. In a headless
+//! run the answer is there at once, so a run with the same responses is the
+//! same run.
+//!
+//! In a live front end (the browser, the desktop window), a request the host
+//! can make in the background ([`Net::start`]) goes out while the app keeps
+//! running, as on a phone; the answer is delivered once it's back
+//! ([`pump`], whenever every thread waits), and never before [`LATENCY_S`].
 //!
 //! One exception, as on iOS: a completion handler on a session with no
 //! delegate queue of its own (the shared session, or `delegateQueue:nil`)
@@ -69,9 +75,26 @@ pub struct Service {
     pub txt: Vec<(String, Option<Vec<u8>>)>,
 }
 
+/// A request out in the background (see [`Net::start`]).
+pub type RequestId = u64;
+
 pub trait Net {
     /// Perform a request. Err: the request failed before any response (no network, bad host, …).
     fn fetch(&mut self, req: &Request) -> std::result::Result<Response, String>;
+
+    /// Send a request in the background, so the app keeps running while it's
+    /// out; [`Net::poll`] gives its answer. None: this host answers at once,
+    /// with [`Net::fetch`] (fixtures do, and so do requests a host can't send
+    /// in the background). Only live front ends ask.
+    fn start(&mut self, _req: &Request) -> Option<RequestId> {
+        None
+    }
+    /// The answer to a request [`Net::start`] sent, once it's back (then it's forgotten).
+    fn poll(&mut self, _id: RequestId) -> Option<std::result::Result<Response, String>> {
+        None
+    }
+    /// The app cancelled a request [`Net::start`] sent: stop it if it's still out, and forget it.
+    fn forget(&mut self, _id: RequestId) {}
 
     // Sockets (BSD sockets for apps that speak to servers themselves: gRPC,
     // WebSockets, ...). By default there's no network for them: names don't
@@ -258,6 +281,12 @@ struct Task {
     /// A download task: the body arrives as a temporary file.
     download: bool,
     result: Option<std::result::Result<Response, String>>,
+    /// The request is out in the background (see [`Net::start`]).
+    out: Option<RequestId>,
+    /// When it resumed (virtual ns): the answer isn't delivered before [`LATENCY_S`] after.
+    resumed_ns: u64,
+    /// The request, for `--log-requests` when its answer comes back.
+    sent: Option<(String, String)>,
 }
 
 #[derive(Clone, Default)]
@@ -573,7 +602,8 @@ fn task(emu: &Emu, t: u64) -> Task {
     emu.net.tasks.get(&t).cloned().unwrap_or_default()
 }
 
-/// `-resume`: make the request now; deliver the result after [`LATENCY_S`].
+/// `-resume`: make the request now; deliver the result after [`LATENCY_S`]
+/// (or, when it's out in the background, once it's back: see [`pump`]).
 fn resume(emu: &mut Emu) -> Result<()> {
     let t = emu.arg(0);
     let tk = task(emu, t);
@@ -585,35 +615,104 @@ fn resume(emu: &mut Emu) -> Result<()> {
     if r.body != 0 {
         request.body = foundation::data_bytes(emu, r.body)?;
     }
+    let live = emu.live.host.is_some();
     let result = if let Some(path) = request.url.strip_prefix("file://") {
-        read_file_url(emu, path)
+        Some(read_file_url(emu, path))
     } else if emu.network.path == crate::network::Path::Offline {
         // The phone has no network (--network offline): nothing goes out.
-        Err("offline".to_string())
+        Some(Err("offline".to_string()))
     } else {
         match emu.net.client.as_mut() {
-            Some(c) => c.fetch(&request),
-            None => Err("offline".to_string()),
+            // A live front end keeps the app running while the request is out.
+            Some(c) => match live.then(|| c.start(&request)).flatten() {
+                Some(id) => {
+                    let now = crate::threads::now_ns(emu);
+                    if let Some(x) = emu.net.tasks.get_mut(&t) {
+                        x.state = 0;
+                        x.out = Some(id);
+                        x.resumed_ns = now;
+                        x.sent = Some((request.method.clone(), request.url.clone()));
+                    }
+                    send(emu, t, "retain", &[])?;
+                    return Ok(());
+                }
+                None => Some(c.fetch(&request)),
+            },
+            None => Some(Err("offline".to_string())),
         }
     };
-    if emu.trace || emu.net.log_requests {
-        println!("[net] {} {} → {}", request.method, request.url, match &result {
-            Ok(r) => format!("{} ({} bytes)", r.status, r.body.len()),
-            Err(e) => e.clone(),
-        });
-    }
+    let result = result.unwrap_or(Err("offline".to_string()));
+    log_request(emu, &request.method, &request.url, &result);
     if let Some(x) = emu.net.tasks.get_mut(&t) {
         x.state = 0;
         x.result = Some(result);
     }
     send(emu, t, "retain", &[])?;
+    hand_over(emu, t, LATENCY_S)
+}
+
+fn log_request(emu: &Emu, method: &str, url: &str, result: &std::result::Result<Response, String>) {
+    if emu.trace || emu.net.log_requests {
+        println!("[net] {method} {url} → {}", match result {
+            Ok(r) => format!("{} ({} bytes)", r.status, r.body.len()),
+            Err(e) => e.clone(),
+        });
+    }
+}
+
+/// The task has its result: deliver it on the main run loop after `delay_s`,
+/// or, for a completion handler with no queue of the session's own, on a
+/// background queue now.
+fn hand_over(emu: &mut Emu, t: u64, delay_s: f64) -> Result<()> {
     let tk = task(emu, t);
     if tk.completion != 0 && !emu.net.own_queue.contains(&tk.session) {
         // A completion handler with no queue of the session's own: a background queue, now.
         let q = crate::libsystem::global_queue(emu)?;
         return crate::libsystem::submit_host(emu, q, deliver_from_queue, t);
     }
-    crate::uikit::after_on_main(emu, LATENCY_S, deliver, t)
+    crate::uikit::after_on_main(emu, delay_s, deliver, t)
+}
+
+/// How often [`pump`] looks at requests out in the background while the app idles.
+const POLL_NS: u64 = 16_000_000;
+
+/// Whether any request is out in the background.
+pub(crate) fn any_out(emu: &Emu) -> bool {
+    emu.net.tasks.values().any(|t| t.out.is_some())
+}
+
+/// The next time to look at requests out in the background (none out: `next` as it is).
+pub(crate) fn poll_deadline(emu: &Emu, next: Option<u64>) -> Option<u64> {
+    if !any_out(emu) {
+        return next;
+    }
+    let due = crate::threads::now_ns(emu) + POLL_NS;
+    Some(next.map_or(due, |n| n.min(due)))
+}
+
+/// Every thread waits: hand over the answers that came back for requests out
+/// in the background. True when one was handed over (something may run now).
+pub(crate) fn pump(emu: &mut Emu) -> Result<bool> {
+    let mut out: Vec<(u64, RequestId)> = emu.net.tasks.iter().filter_map(|(t, x)| x.out.map(|id| (*t, id))).collect();
+    if out.is_empty() {
+        return Ok(false);
+    }
+    out.sort();
+    let mut any = false;
+    for (t, id) in out {
+        let Some(result) = emu.net.client.as_mut().and_then(|c| c.poll(id)) else { continue };
+        let now = crate::threads::now_ns(emu);
+        let Some(x) = emu.net.tasks.get_mut(&t) else { continue };
+        x.out = None;
+        let (method, url) = x.sent.take().unwrap_or_default();
+        let resumed = x.resumed_ns;
+        x.result = Some(result.clone());
+        log_request(emu, &method, &url, &result);
+        let left = (LATENCY_S - now.saturating_sub(resumed) as f64 / 1e9).max(0.0);
+        hand_over(emu, t, left)?;
+        any = true;
+    }
+    Ok(any)
 }
 
 /// [`deliver`], run as dispatch work (its context is the task).
@@ -666,6 +765,14 @@ fn cancel(emu: &mut Emu) -> Result<()> {
         if x.state == 1 {
             x.state = 0;
             send(emu, t, "retain", &[])?;
+            return crate::uikit::after_on_main(emu, 0.0, deliver, t);
+        }
+        if let Some(id) = x.out.take() {
+            // Out in the background: the answer, if it still comes, is dropped.
+            x.sent = None;
+            if let Some(c) = emu.net.client.as_mut() {
+                c.forget(id);
+            }
             return crate::uikit::after_on_main(emu, 0.0, deliver, t);
         }
     }

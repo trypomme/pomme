@@ -1100,3 +1100,62 @@ fn header_right_button() {
     .unwrap();
     assert!(kept.contains("· 1 lines · 8 characters\""), "{kept}");
 }
+
+/// A live network whose answers come back on the third look: requests go
+/// out in the background (`start`), and the app runs while they're out.
+struct Slow {
+    fixtures: Fixtures,
+    out: Vec<(pomme_hle::net::RequestId, String, usize)>,
+    next: pomme_hle::net::RequestId,
+    started: Rc<AtomicUsize>,
+    fetched: Rc<AtomicUsize>,
+}
+
+impl Net for Slow {
+    fn fetch(&mut self, req: &Request) -> Result<Response, String> {
+        self.fetched.fetch_add(1, Ordering::Relaxed);
+        self.fixtures.fetch(req)
+    }
+
+    fn start(&mut self, req: &Request) -> Option<pomme_hle::net::RequestId> {
+        self.started.fetch_add(1, Ordering::Relaxed);
+        self.next += 1;
+        self.out.push((self.next, req.url.clone(), 0));
+        Some(self.next)
+    }
+
+    fn poll(&mut self, id: pomme_hle::net::RequestId) -> Option<Result<Response, String>> {
+        let i = self.out.iter().position(|o| o.0 == id)?;
+        self.out[i].2 += 1;
+        if self.out[i].2 < 3 {
+            return None;
+        }
+        let (_, url, _) = self.out.remove(i);
+        Some(self.fixtures.lookup(&url).cloned().ok_or_else(|| "no fixture".to_string()))
+    }
+
+    fn forget(&mut self, id: pomme_hle::net::RequestId) {
+        self.out.retain(|o| o.0 != id);
+    }
+}
+
+#[test]
+fn live_requests_go_out_in_the_background() {
+    let Some(mut emu) = boot() else { return };
+    let (started, fetched) = (Rc::new(AtomicUsize::new(0)), Rc::new(AtomicUsize::new(0)));
+    *emu.net.client = Some(Box::new(Slow { fixtures: repos(), out: Vec::new(), next: 0, started: started.clone(), fetched: fetched.clone() }));
+    let frames = Rc::new(RefCell::new((0, Vec::new())));
+    emu.live.scale = 1.0;
+    *emu.live.host = Some(Box::new(ScriptedHost { taps: vec![(3_000_000_000, TAP_BUTTON.0, TAP_BUTTON.1)], frames, end_ns: 6_000_000_000 }));
+    match emu.run_main() {
+        Ok(0) => {}
+        other => panic!("expected the host to quit, got {other:?}"),
+    }
+    *emu.live.host = None;
+    let views = emu.describe_views();
+    assert!(views.contains("\"Tapped 1 time\""), "{views}");
+    assert!(views.contains("\"vercel/swr ★ 31,415\""), "{views}");
+    assert!(views.contains("\"Promise.all: 3 repos, ★ 319,415\""), "{views}");
+    assert!(started.load(Ordering::Relaxed) >= 3, "{} started", started.load(Ordering::Relaxed));
+    assert_eq!(fetched.load(Ordering::Relaxed), 0, "a request waited for its answer");
+}
