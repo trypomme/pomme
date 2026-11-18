@@ -56,6 +56,10 @@ impl Blocks {
     #[inline]
     pub(crate) fn get(&mut self, pc: u64, mem: &mut Memory) -> Option<&[Op]> {
         if self.generation != mem.code_generation() || self.slots.is_empty() {
+            #[cfg(feature = "stats")]
+            if !self.slots.is_empty() {
+                crate::stats::with(|s| s.cache_flushes += 1);
+            }
             self.slots.clear();
             self.slots.resize(SLOTS, None);
             self.generation = mem.code_generation();
@@ -63,6 +67,8 @@ impl Blocks {
         let i = (pc as usize >> 2) & (SLOTS - 1);
         if !matches!(&self.slots[i], Some((at, _)) if *at == pc) {
             let block = fetch(pc, mem)?;
+            #[cfg(feature = "stats")]
+            crate::stats::with(|s| s.blocks_fetched += 1);
             mem.mark_code(pc);
             self.slots[i] = Some((pc, block));
         }

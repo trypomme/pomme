@@ -43,8 +43,12 @@ best() { # best NAME BINARY: fastest of RUNS runs, in seconds
 T_OLD=$(best old "$OLD")
 T_NEW=$(best new "$NEW")
 
-# The report without the lines that name the screenshot or give wall times.
-strip() { grep -v -e '^screenshot:' -e 'instructions in' "$1"; }
+# The report without the lines that name the screenshot or give wall times,
+# and without the "cpu stats:" section (a build with the cpu-time feature).
+strip() {
+  grep -v -e '^screenshot:' -e 'instructions in' "$1" |
+    awk '/^cpu stats:$/ { skip = 1; next } skip && /^$/ { skip = 0; next } !skip'
+}
 SAME=true
 if ! diff <(strip "$OUT/old.txt") <(strip "$OUT/new.txt") >"$OUT/diff.txt"; then
   echo "The reports differ:"; head -40 "$OUT/diff.txt"; SAME=false

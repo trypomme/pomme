@@ -321,7 +321,9 @@ requests.
 ## Expected speed
 
 These are estimates, not measurements. Milestones 3 and 5 replace them with
-real numbers.
+real numbers. Milestone 0 lowered them: see `measurements.md` in this change
+(about 3.5 to 5 times on desktop and 2.5 to 4 times in the browser, for the
+whole run).
 
 - A well-built block JIT spends about 10 to 25 host instructions per guest
   instruction, against about 80 for our interpreter after #17. Short blocks

@@ -9,3 +9,7 @@ pomme-mem = { version = "0.1.0", path = "../pomme-mem" }
 
 [dev-dependencies]
 pomme-loader = { path = "../pomme-loader" }
+
+[features]
+# Count blocks, block lengths and slow-path instructions (for measuring; no effect on results).
+stats = []

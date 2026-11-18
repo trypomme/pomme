@@ -2,9 +2,9 @@
 
 ## 0. Measure first
 
-- [ ] 0.1 Add to the summary of `pomme run` (in `crates/pomme-hle/src/lib.rs`) the host time spent inside `Cpu::run` and the host time spent in pomme's Rust code between runs. Check: `cargo run --release -- run <hello-expo.app> --tap 195,265@4` prints both, and the instruction count is unchanged.
-- [ ] 0.2 Count, for hello-expo's launch and three taps: blocks run, the average block length, the share of `Op::Generic` instructions and the 20 most common ones, and how many times code memory is written. Use a debug-only counter in `crates/pomme-cpu/src/block.rs`. Check: the numbers, with the date and commit, are in `crates/pomme-jit/README.md`.
-- [ ] 0.3 From 0.1 and 0.2, write the expected gain (the share of time the JIT can speed up). Check: the estimate is in the README, and Thai has seen it before section 3 starts.
+- [x] 0.1 Add to the summary of `pomme run` (in `crates/pomme-hle/src/lib.rs`, behind the `cpu-time` feature) the host time spent inside `Cpu::run` and the host time spent in pomme's Rust code between runs. Check: a `cpu-time` build prints both, and `scripts/cpu-compare.sh` shows the same instructions, report and screen.
+- [x] 0.2 Count, for hello-expo's launch and three taps: blocks run, the average block length, the share of `Op::Generic` instructions and the 20 most common ones, and how many times code memory is written. Use counters in `crates/pomme-cpu` behind the `stats` feature (`cpu-stats` in the CLI). Check: the numbers, with the date and commit, are in `measurements.md` in this change. (Not in `crates/pomme-jit/README.md`: that crate does not exist yet, and the workspace builds every folder in `crates/`.)
+- [x] 0.3 From 0.1 and 0.2, write the expected gain (the share of time the JIT can speed up). Check: the estimate is in `measurements.md`, and Thai has seen it before section 3 starts.
 
 ## 1. Shared ground
 

@@ -293,7 +293,12 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
     let limit = emu.cpu.steps + QUANTUM;
     let result = loop {
         let budget = limit.saturating_sub(emu.cpu.steps).min(emu.max_steps.saturating_sub(emu.cpu.steps));
-        match emu.cpu.run(&mut emu.p.memory, budget) {
+        #[cfg(feature = "cpu-time")]
+        let t0 = std::time::Instant::now();
+        let exit = emu.cpu.run(&mut emu.p.memory, budget);
+        #[cfg(feature = "cpu-time")]
+        crate::cpu_stats::add(t0.elapsed());
+        match exit {
             Exit::Returned => {
                 emu.th.threads[tid].run = Run::Done(emu.cpu.x[0]);
                 if emu.trace {

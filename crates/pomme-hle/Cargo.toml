@@ -40,3 +40,5 @@ wgpu = { version = "30.0.1", optional = true, default-features = false, features
 [features]
 default = ["gpu"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:pomme-msl"]
+# Measure host time inside and outside the CPU, and count exits (no effect on results).
+cpu-time = []
