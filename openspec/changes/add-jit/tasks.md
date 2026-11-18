@@ -8,9 +8,9 @@
 
 ## 1. Shared ground
 
-- [ ] 1.1 Add the `Backend` trait and `Budget` to `crates/pomme-cpu/src/lib.rs`, as in `add-native-cpu` task 2.1 (whichever change lands first adds it). Run guest code through it in `crates/pomme-hle/src/lib.rs` and `src/threads.rs`. Check: `cargo test` passes, and `scripts/cpu-compare.sh` shows the same instruction count, report and screen as main.
-- [ ] 1.2 Track code by page in `crates/pomme-mem/src/lib.rs`: one bit per 16 KiB page, a per-page generation, and a list of changed pages the CPU can read. Make `crates/pomme-cpu/src/block.rs` drop only the blocks of changed pages. Check: the tests in `crates/pomme-cpu/tests/blocks.rs` pass, a new test checks that a write to another page keeps a block, and `cpu-compare.sh` shows the same results.
-- [ ] 1.3 Teach `scripts/cpu-compare.sh` to compare two `--cpu` values in one build (`CPU_OLD=interpreter CPU_NEW=jit`). Check: comparing `interpreter` with itself passes.
+- [x] 1.1 Add the `Backend` trait and `Budget` to `crates/pomme-cpu/src/lib.rs`, as in `add-native-cpu` task 2.1 (whichever change lands first adds it). Run guest code through it in `crates/pomme-hle/src/lib.rs` and `src/threads.rs`. Check: `cargo test` passes, and `scripts/cpu-compare.sh` shows the same instruction count, report and screen as main.
+- [x] 1.2 Track code by page in `crates/pomme-mem/src/lib.rs`: one bit per 16 KiB page, a per-page generation, and a list of changed pages the CPU can read. Make `crates/pomme-cpu/src/block.rs` drop only the blocks of changed pages. Check: the tests in `crates/pomme-cpu/tests/blocks.rs` pass, a new test checks that a write to another page keeps a block, and `cpu-compare.sh` shows the same results.
+- [x] 1.3 Teach `scripts/cpu-compare.sh` to compare two ways of running in one build: `ARGS_OLD` and `ARGS_NEW` add options to one side (for example `ARGS_OLD="--cpu interpreter" ARGS_NEW="--cpu jit"`). Check: comparing a build with itself passes.
 
 ## 2. IR and front end
 
@@ -28,7 +28,7 @@
 - [ ] 3.3 Add `--cpu jit` to `crates/pomme-cli/src/main.rs`, with the messages from the `hosts/cli` delta. Check: `pomme run <hello-expo.app> --cpu jit --trace` says tracing uses the interpreter.
 - [ ] 3.4 Run the CPU conformance fixture on the JIT, in `crates/pomme-jit/tests/conformance.rs`, sharing the setup with `crates/pomme-cpu/tests/run.rs`. Check: all four builds give the same results.
 - [ ] 3.5 Add the lockstep check (`POMME_JIT_CHECK=1`) from decision 14. Check: a test that breaks one lifted instruction on purpose is caught, and the check prints that block.
-- [ ] 3.6 Compare and measure: `CPU_OLD=interpreter CPU_NEW=jit scripts/cpu-compare.sh` on hello-expo, on Linux x86-64 and on the Mac mini. Add it to CI for changes under `crates/pomme-cpu`, `crates/pomme-mem` and `crates/pomme-jit`. Check: identical results; the speed is in `crates/pomme-jit/README.md`. Gate: if the JIT is not at least 2x faster than the interpreter, stop and write down why before going on.
+- [ ] 3.6 Compare and measure: `ARGS_OLD="--cpu interpreter" ARGS_NEW="--cpu jit" scripts/cpu-compare.sh` on hello-expo, on Linux x86-64 and on the Mac mini. Add it to CI for changes under `crates/pomme-cpu`, `crates/pomme-mem` and `crates/pomme-jit`. Check: identical results; the speed is in `crates/pomme-jit/README.md`. Gate: if the JIT is not at least 2x faster than the interpreter, stop and write down why before going on.
 
 ## 4. Make the desktop JIT fast
 

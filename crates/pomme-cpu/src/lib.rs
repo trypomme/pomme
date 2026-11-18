@@ -86,6 +86,51 @@ pub struct Cpu {
     next_pc: u64,
 }
 
+/// When a backend must stop and give control back to pomme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    /// Instructions to retire at most (the run may stop earlier, at an exit).
+    pub steps: u64,
+}
+
+/// One way to run guest code: the interpreter, a JIT, or the host's own CPU.
+/// Every backend gives pomme the same exits with the same register state, so
+/// nothing above the CPU needs to know which one runs.
+pub trait Backend: std::fmt::Debug {
+    /// Run `cpu`'s thread until it needs the host or the budget is used up.
+    /// On return, every register in `cpu` is up to date and `cpu.steps` has moved.
+    fn run(&mut self, cpu: &mut Cpu, mem: &mut Memory, budget: Budget) -> Exit;
+    /// A short name for messages (`interpreter`, `jit`, `native`).
+    fn name(&self) -> &'static str;
+    /// A copy for a snapshot. Caches (decoded or translated code) need not be copied.
+    fn box_clone(&self) -> Box<dyn Backend>;
+}
+
+impl Clone for Box<dyn Backend> {
+    fn clone(&self) -> Self {
+        self.box_clone()
+    }
+}
+
+/// The interpreter as a [`Backend`]: [`Cpu::run`]. It is the reference that
+/// every other backend must match.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Interpreter;
+
+impl Backend for Interpreter {
+    fn run(&mut self, cpu: &mut Cpu, mem: &mut Memory, budget: Budget) -> Exit {
+        cpu.run(mem, budget.steps)
+    }
+
+    fn name(&self) -> &'static str {
+        "interpreter"
+    }
+
+    fn box_clone(&self) -> Box<dyn Backend> {
+        Box::new(*self)
+    }
+}
+
 /// The virtual clock: mach ticks run at 24 MHz (as on iOS devices) and each
 /// instruction takes 1 ns, a 1 GHz phone. Deterministic: only instructions
 /// retired (plus idle time skipped) move it.

@@ -4,9 +4,10 @@
 //!
 //! A block starts wherever execution arrives and ends at the first
 //! instruction that can change the flow (a branch, an exception or system
-//! instruction), at the end of its 16 KiB page, or at [`MAX_LEN`]. Blocks
-//! are dropped when code they came from is written ([`Memory::code_generation`]):
-//! pomme hooking a function, or writing a trampoline.
+//! instruction), at the end of its 16 KiB page, or at [`MAX_LEN`]. A page's
+//! blocks are dropped when code in that page is written
+//! ([`Memory::code_changes_since`]): pomme hooking a function, or writing a
+//! trampoline. Blocks of other pages stay.
 //!
 //! Executing a block is exactly executing its instructions one by one: the
 //! same results, the same instruction count at every exit (a fault mid-block
@@ -56,13 +57,7 @@ impl Blocks {
     #[inline]
     pub(crate) fn get(&mut self, pc: u64, mem: &mut Memory) -> Option<&[Op]> {
         if self.generation != mem.code_generation() || self.slots.is_empty() {
-            #[cfg(feature = "stats")]
-            if !self.slots.is_empty() {
-                crate::stats::with(|s| s.cache_flushes += 1);
-            }
-            self.slots.clear();
-            self.slots.resize(SLOTS, None);
-            self.generation = mem.code_generation();
+            self.code_changed(mem);
         }
         let i = (pc as usize >> 2) & (SLOTS - 1);
         if !matches!(&self.slots[i], Some((at, _)) if *at == pc) {
@@ -75,6 +70,40 @@ impl Blocks {
         self.slots[i].as_ref().map(|(_, b)| &b[..])
     }
 }
+
+impl Blocks {
+    /// Code was written since these blocks were fetched: drop the blocks of
+    /// the pages that changed, or every block when that is unknown.
+    #[cold]
+    fn code_changed(&mut self, mem: &Memory) {
+        match mem.code_changes_since(self.generation) {
+            Some(pages) if !self.slots.is_empty() => {
+                for &page in pages {
+                    // A page's blocks can only be in the slots its instructions map to.
+                    let first = ((page * PAGE_SIZE) as usize >> 2) & (SLOTS - 1);
+                    for slot in &mut self.slots[first..first + PAGE_INSNS] {
+                        if matches!(slot, Some((at, _)) if pomme_mem::untag(*at) / PAGE_SIZE == page) {
+                            *slot = None;
+                        }
+                    }
+                }
+            }
+            _ => {
+                #[cfg(feature = "stats")]
+                if !self.slots.is_empty() {
+                    crate::stats::with(|s| s.cache_flushes += 1);
+                }
+                self.slots.clear();
+                self.slots.resize(SLOTS, None);
+            }
+        }
+        self.generation = mem.code_generation();
+    }
+}
+
+/// Instructions in a page: a page's blocks map to this many consecutive slots.
+const PAGE_INSNS: usize = (PAGE_SIZE / 4) as usize;
+const _: () = assert!(SLOTS % PAGE_INSNS == 0);
 
 fn fetch(pc: u64, mem: &Memory) -> Option<Box<[Op]>> {
     let page_end = (pc | (PAGE_SIZE - 1)) + 1;

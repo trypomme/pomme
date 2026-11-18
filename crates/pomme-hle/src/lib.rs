@@ -264,6 +264,8 @@ impl<T> std::ops::DerefMut for External<T> {
 #[derive(Clone)]
 pub struct Emu {
     pub cpu: Cpu,
+    /// What runs guest code (the interpreter unless a front end picks another).
+    pub backend: Box<dyn pomme_cpu::Backend>,
     pub p: Process,
     pub heap: Heap,
     pub objc: Objc,
@@ -466,6 +468,7 @@ impl Emu {
 
         let mut emu = Emu {
             cpu,
+            backend: Box::new(pomme_cpu::Interpreter),
             p,
             heap: Heap::new(),
             objc: Objc::default(),
@@ -865,7 +868,7 @@ impl Emu {
             let budget = self.max_steps.saturating_sub(self.cpu.steps);
             #[cfg(feature = "cpu-time")]
             let t0 = std::time::Instant::now();
-            let exit = self.cpu.run(&mut self.p.memory, budget);
+            let exit = self.backend.run(&mut self.cpu, &mut self.p.memory, pomme_cpu::Budget { steps: budget });
             #[cfg(feature = "cpu-time")]
             cpu_stats::add(t0.elapsed());
             match exit {

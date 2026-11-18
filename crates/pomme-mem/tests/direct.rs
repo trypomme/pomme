@@ -55,6 +55,32 @@ fn stores_to_cached_code_change_the_code_generation() {
 }
 
 #[test]
+fn code_changes_are_tracked_by_page() {
+    let mut m = Memory::default();
+    m.map(A, 3 * PAGE_SIZE, Prot::RW, "code").unwrap();
+    m.mark_code(A);
+    m.mark_code(A + 2 * PAGE_SIZE + 0x40);
+    let g = m.code_generation();
+    // A page with no cached code: nothing changes.
+    m.write_u32(A + PAGE_SIZE + 8, 1).unwrap();
+    m.write(A + PAGE_SIZE + 16, &[1, 2, 3]).unwrap();
+    assert_eq!(m.code_generation(), g);
+    assert_eq!(m.code_changes_since(g), Some(&[][..]));
+    // Each code page is reported once, until the CPU caches code there again.
+    m.write_u32(A + 2 * PAGE_SIZE + 0x40, 0xd503_201f).unwrap();
+    m.write_u32(A + 2 * PAGE_SIZE + 0x44, 0xd503_201f).unwrap();
+    m.write(A + 4, &[0; 8]).unwrap();
+    assert_eq!(m.code_changes_since(g), Some(&[(A + 2 * PAGE_SIZE) / PAGE_SIZE, A / PAGE_SIZE][..]));
+    m.mark_code(A);
+    let g2 = m.code_generation();
+    // A store across two pages reports the code page it touches.
+    m.write_u64(A + PAGE_SIZE - 4, 0).unwrap();
+    assert_eq!(m.code_changes_since(g2), Some(&[A / PAGE_SIZE][..]));
+    // A snapshot copy keeps the history.
+    assert_eq!(m.clone().code_changes_since(g), m.code_changes_since(g));
+}
+
+#[test]
 fn top_byte_is_ignored() {
     let mut m = Memory::default();
     m.map(A, PAGE_SIZE, Prot::RW, "a").unwrap();

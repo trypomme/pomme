@@ -71,6 +71,12 @@ infinitely fast, the run would be at most about 12 times faster.
 away all translations each time. Tracking code by page (task 1.2) is
 needed, as planned. It will also help the interpreter.
 
+**After task 1.2** (code tracked by page): the same run drops the whole
+cache 0 times, code is reported written 44 times instead of 109 (a page is
+reported once until code from it is cached again), and blocks are fetched
+496,180 times instead of 616,561. The rest of the fetches are blocks that
+share a slot in the cache. Same instructions, report and screen.
+
 ## Instructions that take the slow path
 
 Only 2.8% of the instructions in blocks are `Op::Generic` (decoded each
