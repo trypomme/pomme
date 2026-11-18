@@ -46,8 +46,9 @@ const ETIMEDOUT: u64 = 60;
 pub enum Wait {
     Semaphore { sem: u64, deadline: Option<u64> },
     /// A condition variable until it's signalled (or the deadline), and then
-    /// its mutex, retaken at the depth it was held (0: none).
-    Cond { cond: u64, generation: u64, deadline: Option<u64>, mutex: u64, depth: u32 },
+    /// its mutex, retaken at the depth it was held (0: none). It returns 0 or
+    /// ETIMEDOUT, or for `-[NSCondition waitUntilDate:]` (`objc`) YES or NO.
+    Cond { cond: u64, generation: u64, deadline: Option<u64>, mutex: u64, depth: u32, objc: bool },
     /// A lock until this thread can take it (see locks.rs).
     Lock { addr: u64, want: crate::locks::Want },
     /// A once-initializer another thread is running, until it's done.
@@ -344,12 +345,12 @@ fn try_complete(emu: &mut Emu, wait: &Wait) -> Result<Option<u64>> {
                 None
             }
         }
-        Wait::Cond { cond, generation, deadline, mutex, depth } => {
+        Wait::Cond { cond, generation, deadline, mutex, depth, objc } => {
             // Signalled or timed out, it still returns only holding the mutex.
             let r = if emu.th.conds.get(&cond).copied().unwrap_or(0) != generation {
-                Some(0)
+                Some(if objc { 1 } else { 0 })
             } else if timed_out(deadline) {
-                Some(ETIMEDOUT)
+                Some(if objc { 0 } else { ETIMEDOUT })
             } else {
                 None
             };
@@ -1140,8 +1141,93 @@ fn pthread_cond_wait(emu: &mut Emu) -> Result<()> {
 fn cond_wait(emu: &mut Emu, cond: u64, mutex: u64, deadline: Option<u64>) -> Result<()> {
     let generation = emu.th.conds.get(&cond).copied().unwrap_or(0);
     let depth = if mutex == 0 { 0 } else { crate::locks::release_for_wait(emu, mutex)? };
-    let r = block(emu, Wait::Cond { cond, generation, deadline, mutex, depth })?;
+    let r = block(emu, Wait::Cond { cond, generation, deadline, mutex, depth, objc: false })?;
     ret(emu, r)
+}
+
+// ---- NSLock, NSRecursiveLock and NSCondition (the lock state is in locks.rs) ----
+
+fn nslock_lock(emu: &mut Emu) -> Result<()> {
+    crate::locks::lock_object(emu, emu.arg(0), false)
+}
+
+fn nslock_try(emu: &mut Emu) -> Result<()> {
+    let took = crate::locks::try_lock_object(emu, emu.arg(0), false)?;
+    ret(emu, took as u64)
+}
+
+fn nslock_unlock(emu: &mut Emu) -> Result<()> {
+    crate::locks::unlock_object(emu, emu.arg(0), false)?;
+    Ok(())
+}
+
+fn nsrecursivelock_lock(emu: &mut Emu) -> Result<()> {
+    crate::locks::lock_object(emu, emu.arg(0), true)
+}
+
+fn nsrecursivelock_try(emu: &mut Emu) -> Result<()> {
+    let took = crate::locks::try_lock_object(emu, emu.arg(0), true)?;
+    ret(emu, took as u64)
+}
+
+fn nsrecursivelock_unlock(emu: &mut Emu) -> Result<()> {
+    crate::locks::unlock_object(emu, emu.arg(0), true)?;
+    Ok(())
+}
+
+/// `-lockBeforeDate:`: takes the lock if it's free by then (YES), or answers NO.
+fn nslock_lock_before(emu: &mut Emu, recursive: bool) -> Result<()> {
+    let (obj, date) = (emu.arg(0), emu.arg(2));
+    if crate::locks::try_lock_object(emu, obj, recursive)? {
+        return ret(emu, 1);
+    }
+    // Wait for it as a condition wait with no condition: until the deadline,
+    // then the lock (another thread unlocking doesn't signal, so poll in steps).
+    let deadline = date_deadline(emu, date)?;
+    loop {
+        if crate::locks::try_lock_object(emu, obj, recursive)? {
+            return ret(emu, 1);
+        }
+        let now = now_ns(emu);
+        if deadline.is_some_and(|d| now >= d) {
+            return ret(emu, 0);
+        }
+        let step = deadline.map_or(1_000_000, |d| (d - now).min(1_000_000));
+        block(emu, Wait::Sleep { deadline: now + step })?;
+    }
+}
+
+/// An NSDate as a deadline on the guest clock (None: nil or distantFuture-like).
+fn date_deadline(emu: &mut Emu, date: u64) -> Result<Option<u64>> {
+    let secs = crate::foundation::date_value(emu, date)? - crate::foundation::absolute_now(emu);
+    Ok(if !secs.is_finite() || secs > 1e9 {
+        None
+    } else {
+        Some(now_ns(emu) + (secs.max(0.0) * 1e9) as u64)
+    })
+}
+
+/// `-[NSCondition wait]` and `-waitUntilDate:` (YES if signalled, NO at the date):
+/// release the condition's lock, wait for a signal, then hold the lock again.
+/// Google Maps waits like this on the main thread for its settings to load on a queue.
+fn nscondition_wait(emu: &mut Emu, deadline: Option<u64>) -> Result<()> {
+    let c = emu.arg(0);
+    let generation = emu.th.conds.get(&c).copied().unwrap_or(0);
+    let depth = crate::locks::release_for_wait(emu, c)?;
+    let r = block(emu, Wait::Cond { cond: c, generation, deadline, mutex: c, depth, objc: true })?;
+    ret(emu, r)
+}
+
+fn nscondition_wait_until(emu: &mut Emu) -> Result<()> {
+    let deadline = date_deadline(emu, emu.arg(2))?;
+    nscondition_wait(emu, deadline)
+}
+
+/// `-signal` and `-broadcast`: as with pthread_cond_signal, every waiter wakes
+/// (spurious wakeups are allowed, and callers loop on their own condition).
+fn nscondition_signal(emu: &mut Emu) -> Result<()> {
+    *emu.th.conds.entry(emu.arg(0)).or_default() += 1;
+    Ok(())
 }
 
 /// `pthread_cond_timedwait(cond, mutex, const struct timespec *abstime)` (wall clock)
@@ -1639,6 +1725,20 @@ fn perform_on_main_sel(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
+    ("NSLock", false, "lock", nslock_lock),
+    ("NSLock", false, "unlock", nslock_unlock),
+    ("NSLock", false, "tryLock", nslock_try),
+    ("NSLock", false, "lockBeforeDate:", |e| nslock_lock_before(e, false)),
+    ("NSRecursiveLock", false, "lock", nsrecursivelock_lock),
+    ("NSRecursiveLock", false, "unlock", nsrecursivelock_unlock),
+    ("NSRecursiveLock", false, "tryLock", nsrecursivelock_try),
+    ("NSRecursiveLock", false, "lockBeforeDate:", |e| nslock_lock_before(e, true)),
+    ("NSCondition", false, "lock", nslock_lock),
+    ("NSCondition", false, "unlock", nslock_unlock),
+    ("NSCondition", false, "wait", |e| nscondition_wait(e, None)),
+    ("NSCondition", false, "waitUntilDate:", nscondition_wait_until),
+    ("NSCondition", false, "signal", nscondition_signal),
+    ("NSCondition", false, "broadcast", nscondition_signal),
     ("NSObject", false, "performSelector:onThread:withObject:waitUntilDone:", perform_on_thread_sel),
     ("NSObject", false, "performSelector:onThread:withObject:waitUntilDone:modes:", perform_on_thread_sel),
     ("NSObject", false, "performSelectorOnMainThread:withObject:waitUntilDone:", perform_on_main_sel),

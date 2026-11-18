@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -40,6 +41,29 @@ static void *spinner(void *arg) {
     return arg;
 }
 
+// Foundation's locks across threads: a thread that signals an NSCondition the
+// main thread waits on (as Google Maps waits for its settings to load), and
+// one that holds an NSLock for a while.
+static NSCondition *condition;
+static BOOL conditionReady;
+static void *signaller(void *arg) {
+    [condition lock];
+    conditionReady = YES;
+    [condition broadcast];
+    [condition unlock];
+    return NULL;
+}
+
+static NSLock *heldLock;
+static volatile int lockHeld, lockReleased;
+static void *holder(void *arg) {
+    [heldLock lock];
+    lockHeld = 1;
+    usleep(1000);
+    lockReleased = 1;
+    [heldLock unlock];
+    return NULL;
+}
 
 // Collections that aren't CoreFoundation's own (as Swift's bridged arrays,
 // dictionaries and strings aren't), for C code that reads them through CF.
@@ -182,6 +206,72 @@ static void sumApplied(const void *key, const void *value, void *context) { *(lo
     spinStop = 1;
     pthread_join(spin, NULL);
     check(@"threads", suspended && stayed && gotState && onStack && pthread_from_mach_thread_np(port) == spin && mach_thread_self() == pthread_mach_thread_np(pthread_self()));
+
+    // NSCondition: the main thread holds the lock until it waits, so the
+    // signaller can only signal once it does. Then a timed wait nobody signals.
+    condition = [NSCondition new];
+    [condition lock];
+    pthread_t sig;
+    pthread_create(&sig, NULL, signaller, NULL);
+    int waits = 0;
+    while (!conditionReady) {
+        [condition wait];
+        waits++;
+    }
+    BOOL timedOut = ![condition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    [condition unlock];
+    pthread_join(sig, NULL);
+    check(@"condition", conditionReady && waits >= 1 && timedOut);
+
+    // NSLock held by another thread: tryLock fails, lock waits until it's released.
+    heldLock = [NSLock new];
+    pthread_t hold;
+    pthread_create(&hold, NULL, holder, NULL);
+    while (!lockHeld) sched_yield();
+    BOOL busy = ![heldLock tryLock];
+    BOOL notYet = ![heldLock lockBeforeDate:[NSDate dateWithTimeIntervalSinceNow:0.0001]];
+    [heldLock lock];
+    BOOL afterRelease = lockReleased;
+    [heldLock unlock];
+    pthread_join(hold, NULL);
+    NSRecursiveLock *recursive = [NSRecursiveLock new];
+    [recursive lock];
+    BOOL again = [recursive tryLock];
+    [recursive unlock];
+    [recursive unlock];
+    check(@"locks", busy && notYet && afterRelease && again && [heldLock tryLock]);
+    [heldLock unlock];
+
+    // x·2ⁿ in float and double (Impeller finds a rectangle's centre with scalbnf).
+    volatile float xf = 3.0f;
+    volatile double xd = 3.0;
+    volatile int two = 2;
+    check(@"scalbn", scalbnf(xf, -1) == 1.5f && ldexpf(xf, two) == 12.0f && scalbn(xd, -two) == 0.75 && ldexp(xd, 1) == 6.0 && scalbnf(xf, 200) == INFINITY);
+
+    // Block predicates.
+    NSPredicate *odd = [NSPredicate predicateWithBlock:^BOOL(NSNumber *n, NSDictionary *bindings) { return n.intValue % 2; }];
+    check(@"predicate", [odd evaluateWithObject:@3] && ![odd evaluateWithObject:@4] && [[@[@1, @2, @3] filteredArrayUsingPredicate:odd] isEqual:(@[@1, @3])] &&
+                             [[[NSSet setWithArray:@[@1, @2, @3]] filteredSetUsingPredicate:odd] isEqual:([NSSet setWithArray:@[@1, @3]])]);
+
+    // The older image context: an image, then a color only where it has
+    // pixels (source-atop, as Google Maps tints its compass icon).
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(4, 2), NO, 1);
+    [UIColor.redColor setFill];
+    UIRectFill(CGRectMake(0, 0, 2, 2));
+    UIImage *half = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(4, 2), NO, 1);
+    [half drawInRect:CGRectMake(0, 0, 4, 2)];
+    [UIColor.blueColor setFill];
+    UIRectFillUsingBlendMode(CGRectMake(0, 0, 4, 2), kCGBlendModeSourceAtop);
+    UIImage *tinted = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    unsigned char px[2 * 4 * 4] = {0};
+    CGContextRef bc = CGBitmapContextCreate(px, 4, 2, 8, 16, CGColorSpaceCreateDeviceRGB(), kCGImageAlphaPremultipliedLast);
+    CGContextDrawImage(bc, CGRectMake(0, 0, 4, 2), tinted.CGImage);
+    CGContextRelease(bc);
+    check(@"imageContext", half.size.width == 4 && tinted.scale == 1 && UIGraphicsGetImageFromCurrentImageContext() == nil &&
+                               px[0] == 0 && px[2] == 255 && px[3] == 255 && px[12] == 0 && px[15] == 0);
 
     mach_port_t excPort;
     mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &excPort);

@@ -430,10 +430,34 @@ fn div(emu: &mut Emu) -> Result<()> {
     ret(emu, (q as u32 as u64) | ((r as u32 as u64) << 32))
 }
 
+/// x·2ⁿ, in steps so a large n doesn't overflow 2ⁿ on the way (`scalbn(tiny, 1100)`).
+fn scale(x: f64, n: i32) -> f64 {
+    let (mut x, mut n) = (x, n.clamp(-2200, 2200));
+    while n > 1000 {
+        x *= 2f64.powi(1000);
+        n -= 1000;
+    }
+    while n < -1000 {
+        x *= 2f64.powi(-1000);
+        n += 1000;
+    }
+    x * 2f64.powi(n)
+}
+
+/// `scalbn(double x, int n)` and `ldexp`: x·2ⁿ.
 fn scalbn(emu: &mut Emu) -> Result<()> {
     let x = f64::from_bits(emu.cpu.q[0] as u64);
     let n = emu.arg(0) as i32;
-    emu.cpu.q[0] = (x * 2f64.powi(n)).to_bits() as u128;
+    emu.cpu.q[0] = scale(x, n).to_bits() as u128;
+    Ok(())
+}
+
+/// `scalbnf(float x, int n)` and `ldexpf`: x·2ⁿ. Impeller halves with it
+/// (`Rect::GetCenter`): without it every circle Flutter draws was centred on (0, 0).
+fn scalbnf(emu: &mut Emu) -> Result<()> {
+    let x = f32::from_bits(emu.cpu.q[0] as u32);
+    let n = emu.arg(0) as i32;
+    emu.cpu.q[0] = (scale(x as f64, n) as f32).to_bits() as u128;
     Ok(())
 }
 
@@ -726,6 +750,9 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_flsl", flsl),
     ("_div", div),
     ("_scalbn", scalbn),
+    ("_ldexp", scalbn),
+    ("_scalbnf", scalbnf),
+    ("_ldexpf", scalbnf),
     ("_tanhf", tanhf),
     ("_bsearch", bsearch),
     ("_mach_port_destruct", ret_zero),

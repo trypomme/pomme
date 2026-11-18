@@ -1,4 +1,4 @@
-//! UIImage and UIGraphicsImageRenderer.
+//! UIImage, UIGraphicsImageRenderer and the older UIGraphicsBeginImageContext.
 //!
 //! A renderer records its drawing block into a CGContext (render.rs) and
 //! rasterizes it into a bitmap; the resulting UIImage is also its own
@@ -32,6 +32,45 @@ pub struct State {
     renderers: HashMap<u64, Renderer>,
     /// UIGraphicsImageRendererContext → CGContext.
     contexts: HashMap<u64, u64>,
+    /// UIGraphicsBeginImageContext's contexts, innermost last.
+    begun: Vec<Begun>,
+}
+
+/// A context from UIGraphicsBeginImageContext(WithOptions).
+#[derive(Clone, Copy)]
+struct Begun {
+    cg: u64,
+    size: [f64; 2],
+    scale: f64,
+}
+
+/// `UIGraphicsBeginImageContextWithOptions(size, opaque, scale)` (scale 0:
+/// the screen's) and `UIGraphicsBeginImageContext(size)` (scale 1): a new
+/// current context to draw an image in.
+fn begin_image_context(emu: &mut Emu, scale: f64) -> Result<()> {
+    let size = [d(emu, 0), d(emu, 1)];
+    let scale = if scale > 0.0 { scale } else { emu.device.scale };
+    let cg = render::begin_context(emu)?;
+    emu.images.begun.push(Begun { cg, size, scale });
+    Ok(())
+}
+
+/// `UIGraphicsGetImageFromCurrentImageContext()`: what's drawn so far, as a
+/// UIImage (nil outside such a context). The context stays current.
+fn image_from_current_context(emu: &mut Emu) -> Result<()> {
+    let Some(b) = emu.images.begun.last().copied() else { return ret(emu, 0) };
+    let ops = render::context_ops(emu, b.cg);
+    let pix = render::rasterize(emu, &ops, b.size, b.scale)?;
+    let img = Image { pix: std::rc::Rc::new(pix), size: b.size, scale: b.scale, caps: [0.0; 4], orientation: 0, look: Default::default() };
+    let o = new_image(emu, img)?;
+    ret(emu, o)
+}
+
+fn end_image_context(emu: &mut Emu) -> Result<()> {
+    if let Some(b) = emu.images.begun.pop() {
+        render::end_context(emu, b.cg);
+    }
+    Ok(())
 }
 
 fn d(emu: &Emu, i: usize) -> f64 {
@@ -498,6 +537,13 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
 
 /// `CGImageGetWidth` / `CGImageGetHeight` (pixels).
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    ("_UIGraphicsBeginImageContext", |e| begin_image_context(e, 1.0)),
+    ("_UIGraphicsBeginImageContextWithOptions", |e| {
+        let scale = d(e, 2);
+        begin_image_context(e, scale)
+    }),
+    ("_UIGraphicsGetImageFromCurrentImageContext", image_from_current_context),
+    ("_UIGraphicsEndImageContext", end_image_context),
     // An image's PNG (`image.pngData()`), at its pixels (nil without any).
     ("_UIImagePNGRepresentation", |e| {
         let Some(img) = image(e, e.arg(0)) else { return ret(e, 0) };

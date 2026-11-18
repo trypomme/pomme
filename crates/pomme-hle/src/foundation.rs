@@ -478,6 +478,29 @@ pub(crate) fn wants_mutable(emu: &mut Emu, obj: u64, mutable_class: &str) -> Res
 
 // ---- C functions ----
 
+// ---- NSPredicate ----
+//
+// Only block predicates (`+predicateWithBlock:`): an NSBlockPredicate holds a
+// copy of its block after the isa. Format strings aren't parsed.
+
+/// Where an NSBlockPredicate keeps its block.
+const PREDICATE_BLOCK: u64 = 8;
+
+fn predicate_with_block(emu: &mut Emu) -> Result<()> {
+    let block = crate::libc::copy_block(emu, emu.arg(2))?;
+    let cls = host_class(emu, "NSBlockPredicate")?;
+    let p = objc::create_instance(emu, cls, 8)?;
+    emu.write_u64(p + PREDICATE_BLOCK, block)?;
+    emu.ret(p);
+    Ok(())
+}
+
+/// Whether `predicate` holds for `obj` (with these substitution variables).
+fn predicate_evaluate(emu: &mut Emu, predicate: u64, obj: u64, bindings: u64) -> Result<bool> {
+    let block = emu.read_u64(predicate + PREDICATE_BLOCK)?;
+    Ok(block != 0 && call_block(emu, block, &[obj, bindings])? & 0xff != 0)
+}
+
 fn ns_string_from_class(emu: &mut Emu) -> Result<()> {
     let cls = emu.arg(0);
     if cls == 0 {
@@ -555,6 +578,13 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         Ok(())
     }),
     ("_NSStringFromClass", ns_string_from_class),
+    // NSAllocateObject(class, extraBytes, zone): protobuf's GPBMessage allocates with it.
+    ("_NSAllocateObject", |e| {
+        let (cls, extra) = (e.arg(0), e.arg(1));
+        let o = if cls == 0 { 0 } else { objc::create_instance(e, cls, extra)? };
+        e.ret(o);
+        Ok(())
+    }),
     ("_NSClassFromString", ns_class_from_string),
     ("_NSStringFromSelector", ns_string_from_selector),
     ("_NSSelectorFromString", ns_selector_from_string),
@@ -3050,7 +3080,7 @@ fn ret_double(emu: &mut Emu, v: f64) {
 }
 
 /// Now, as CFAbsoluteTime.
-fn absolute_now(emu: &Emu) -> f64 {
+pub(crate) fn absolute_now(emu: &Emu) -> f64 {
     crate::threads::now_ns(emu) as f64 / 1e9 + crate::libsystem::boot_time(emu) as f64 - SECONDS_1970_TO_2001
 }
 
@@ -4618,20 +4648,9 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
     ("NSMapTable", false, "initWithKeyOptions:valueOptions:capacity:", map_table_with_options),
     ("NSMapTable", false, "init", map_table_new),
     ("NSDictionary", false, "dictionaryRepresentation", map_table_dictionary),
-    // Locks: one thread, so they always succeed immediately.
-    ("NSLock", false, "lock", noop),
-    ("NSLock", false, "unlock", noop),
-    ("NSLock", false, "tryLock", ret_yes),
-    ("NSLock", false, "lockBeforeDate:", ret_yes),
+    // Locks: lock, unlock and wait are in threads.rs.
     ("NSLock", false, "setName:", noop),
-    ("NSRecursiveLock", false, "lock", noop),
-    ("NSRecursiveLock", false, "unlock", noop),
-    ("NSRecursiveLock", false, "tryLock", ret_yes),
     ("NSRecursiveLock", false, "setName:", noop),
-    ("NSCondition", false, "lock", noop),
-    ("NSCondition", false, "unlock", noop),
-    ("NSCondition", false, "signal", noop),
-    ("NSCondition", false, "broadcast", noop),
     ("NSCondition", false, "setName:", noop),
     ("NSURL", true, "URLWithString:", url_with_string),
     ("NSURL", false, "initWithString:", url_with_string),
@@ -5018,6 +5037,41 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         let (a, b) = (e.arg(0), e.arg(2));
         let found = array_passing(e, a, b, false, true)?;
         e.ret(found.first().copied().unwrap_or(i64::MAX as u64)); // NSNotFound
+        Ok(())
+    }),
+    ("NSPredicate", true, "predicateWithBlock:", predicate_with_block),
+    ("NSBlockPredicate", false, "evaluateWithObject:", |e| {
+        let ok = predicate_evaluate(e, e.arg(0), e.arg(2), 0)?;
+        e.ret(ok as u64);
+        Ok(())
+    }),
+    ("NSBlockPredicate", false, "evaluateWithObject:substitutionVariables:", |e| {
+        let ok = predicate_evaluate(e, e.arg(0), e.arg(2), e.arg(3))?;
+        e.ret(ok as u64);
+        Ok(())
+    }),
+    ("NSArray", false, "filteredArrayUsingPredicate:", |e| {
+        let (a, p) = (e.arg(0), e.arg(2));
+        let mut kept = Vec::new();
+        for o in array_values(e, a)? {
+            if send(e, p, "evaluateWithObject:", &[o])? & 0xff != 0 {
+                kept.push(o);
+            }
+        }
+        let r = array_from(e, &kept)?;
+        e.ret(r);
+        Ok(())
+    }),
+    // Flutter keeps only the window scenes of connectedScenes with it.
+    ("NSSet", false, "filteredSetUsingPredicate:", |e| {
+        let (set, p) = (e.arg(0), e.arg(2));
+        let r = new_set(e)?;
+        for o in set_values(e, set)? {
+            if send(e, p, "evaluateWithObject:", &[o])? & 0xff != 0 {
+                cf(e, "_CFSetAddValue", &[r, o])?;
+            }
+        }
+        e.ret(r);
         Ok(())
     }),
     ("NSArray", false, "indexesOfObjectsPassingTest:", |e| {
