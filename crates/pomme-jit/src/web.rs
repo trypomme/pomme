@@ -26,6 +26,7 @@ pub struct WasmEngine {
     pub compile_ms: f64,
     pub modules: u32,
     pub blocks: u32,
+    pub bytes: usize,
 }
 
 impl WasmEngine {
@@ -45,7 +46,7 @@ impl WasmEngine {
         }
         let imports = Object::new();
         Reflect::set(&imports, &"env".into(), &env).ok()?;
-        Some(WasmEngine { table, imports, layout: Layout::of_cpu(), compile_ms: 0.0, modules: 0, blocks: 0 })
+        Some(WasmEngine { table, imports, layout: Layout::of_cpu(), compile_ms: 0.0, modules: 0, blocks: 0, bytes: 0 })
     }
 
     fn try_compile(&mut self, blocks: &[Rc<Block>]) -> Result<Vec<usize>, JsValue> {
@@ -53,6 +54,7 @@ impl WasmEngine {
         // The table indices first, so blocks can call each other directly.
         let first = self.table.grow(blocks.len() as u32)?;
         let bytes = wasm::module(&refs, &self.layout, Some(first));
+        self.bytes += bytes.len();
         let module = WebAssembly::Module::new(&Uint8Array::from(&bytes[..]).into())?;
         let instance = WebAssembly::Instance::new(&module, &self.imports)?;
         let exports = instance.exports();
@@ -116,7 +118,7 @@ impl Engine for WasmEngine {
     }
 
     fn report(&self) -> String {
-        format!("{} modules, {} blocks, {:.0} ms compiling", self.modules, self.blocks, self.compile_ms)
+        format!("{} modules, {} blocks, {} KB of code, {:.0} ms compiling", self.modules, self.blocks, self.bytes / 1024, self.compile_ms)
     }
 
     fn zero_means_failed(&self) -> bool {

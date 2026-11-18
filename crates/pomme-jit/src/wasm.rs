@@ -134,6 +134,11 @@ const BLOCK_TYPE: u32 = 3;
 /// The type of the module's one real function, `run(cpu, ctx, block) -> status`.
 const RUN_TYPE: u32 = 4;
 
+/// The types of `ld<N>(cpu, ctx, addr) -> value` and `st<N>(cpu, ctx, addr, value) -> faulted`
+/// (`cpu` only so that `ctx` is local 1, as in `run`).
+const LD_TYPE: u32 = 5;
+const ST_TYPE: u32 = 6;
+
 /// Parameters and locals of `run`.
 const CPU: u32 = 0;
 const CTX: u32 = 1;
@@ -159,6 +164,8 @@ pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> 
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // helper
     types.ty().function([ValType::I32, ValType::I32], [ValType::I32]); // a block
     types.ty().function([ValType::I32, ValType::I32, ValType::I32], [ValType::I32]); // run
+    types.ty().function([ValType::I32, ValType::I32, ValType::I64], [ValType::I64]); // ld
+    types.ty().function([ValType::I32, ValType::I32, ValType::I64, ValType::I64], [ValType::I32]); // st
 
     let mut imports = ImportSection::new();
     imports.import("env", "load", EntityType::Function(0));
@@ -202,6 +209,13 @@ pub fn module(blocks: &[&Block], layout: &Layout, first_handle: Option<u32>) -> 
     }
     funcs.function(RUN_TYPE);
     code.function(&run_function(blocks, layout, &here));
+    // ld1 … ld8, st1 … st8.
+    for store in [false, true] {
+        for bytes in [1, 2, 4, 8] {
+            funcs.function(if store { ST_TYPE } else { LD_TYPE });
+            code.function(&mem_function(layout, bytes, store));
+        }
+    }
 
     let mut m = Module::new();
     m.section(&types).section(&imports).section(&funcs).section(&exports).section(&code);
@@ -218,6 +232,9 @@ struct Gen<'a> {
     block: &'a Block,
     /// How many labels out the dispatch loop is, from the block's own code.
     to_loop: u32,
+    /// The function index of the module's `ld1`; `ld2`, `ld4`, `ld8`, `st1`,
+    /// `st2`, `st4` and `st8` follow it.
+    mem_fns: u32,
 }
 
 impl Gen<'_> {
@@ -360,66 +377,6 @@ impl Gen<'_> {
         self.i(I::End);
     }
 
-    /// Inside `block $done (block $slow …)`: branch to `$slow` unless the TLB
-    /// has the page of `addr` for an access of `bytes` (see
-    /// [`pomme_mem::TlbLayout`]); on a hit, push the host address.
-    fn tlb_hit(&mut self, t: &InlineTlb, addr: V, bytes: u8, store: bool) {
-        let shift = pomme_mem::PAGE_SIZE.trailing_zeros() as i64;
-        let in_page = pomme_mem::PAGE_SIZE as i64 - 1;
-        // ADDR = untag(addr)
-        self.val(addr);
-        self.i(I::I64Const(0x00ff_ffff_ffff_ffff));
-        self.i(I::I64And);
-        self.i(I::LocalSet(ADDR));
-        // SLOT = ctx.tlb + (page % slots) * stride
-        self.i(I::LocalGet(CTX));
-        self.i(I::I32Load(mem(t.ctx, 2)));
-        self.i(I::LocalGet(ADDR));
-        self.i(I::I64Const(shift));
-        self.i(I::I64ShrU);
-        self.i(I::I32WrapI64);
-        self.i(I::I32Const(t.slots as i32 - 1));
-        self.i(I::I32And);
-        self.i(I::I32Const(t.stride as i32));
-        self.i(I::I32Mul);
-        self.i(I::I32Add);
-        self.i(I::LocalSet(SLOT));
-        // entry.page != page: slow
-        self.i(I::LocalGet(SLOT));
-        self.i(I::I64Load(mem(t.page, 3)));
-        self.i(I::LocalGet(ADDR));
-        self.i(I::I64Const(shift));
-        self.i(I::I64ShrU);
-        self.i(I::I64Ne);
-        self.i(I::BrIf(0));
-        // entry.host == 0: slow
-        self.i(I::LocalGet(SLOT));
-        self.i(I::I32Load(mem(t.host, 2)));
-        self.i(I::LocalTee(HOST));
-        self.i(I::I32Eqz);
-        self.i(I::BrIf(0));
-        // runs past the page: slow
-        self.i(I::LocalGet(ADDR));
-        self.i(I::I64Const(in_page));
-        self.i(I::I64And);
-        self.i(I::I64Const(in_page + 1 - bytes as i64));
-        self.i(I::I64GtU);
-        self.i(I::BrIf(0));
-        if store {
-            self.i(I::LocalGet(SLOT));
-            self.i(I::I32Load8U(mem(t.writable, 0)));
-            self.i(I::I32Eqz);
-            self.i(I::BrIf(0));
-        }
-        // host + addr % PAGE_SIZE
-        self.i(I::LocalGet(HOST));
-        self.i(I::LocalGet(ADDR));
-        self.i(I::I32WrapI64);
-        self.i(I::I32Const(in_page as i32));
-        self.i(I::I32And);
-        self.i(I::I32Add);
-    }
-
     /// The code after a call that pushed an i32 "stopped" flag: if set, write
     /// back what `at` lists, move to its instruction and return 1.
     fn stop_if(&mut self, at: Option<&ExitPoint>) {
@@ -434,6 +391,119 @@ impl Gen<'_> {
         self.i(I::Return);
         self.i(I::End);
     }
+}
+
+/// Inside `block $slow`: branch to it unless the TLB has the page of the
+/// address in local `addr` for an access of `bytes` (see
+/// [`pomme_mem::TlbLayout`]); on a hit, push the host address.
+fn tlb_hit(f: &mut Function, t: &InlineTlb, addr: u32, bytes: u8, store: bool) {
+    let shift = pomme_mem::PAGE_SIZE.trailing_zeros() as i64;
+    let in_page = pomme_mem::PAGE_SIZE as i64 - 1;
+    // ADDR = untag(addr)
+    f.instruction(&I::LocalGet(addr));
+    f.instruction(&I::I64Const(0x00ff_ffff_ffff_ffff));
+    f.instruction(&I::I64And);
+    f.instruction(&I::LocalSet(ADDR));
+    // SLOT = ctx.tlb + (page % slots) * stride
+    f.instruction(&I::LocalGet(CTX));
+    f.instruction(&I::I32Load(mem(t.ctx, 2)));
+    f.instruction(&I::LocalGet(ADDR));
+    f.instruction(&I::I64Const(shift));
+    f.instruction(&I::I64ShrU);
+    f.instruction(&I::I32WrapI64);
+    f.instruction(&I::I32Const(t.slots as i32 - 1));
+    f.instruction(&I::I32And);
+    f.instruction(&I::I32Const(t.stride as i32));
+    f.instruction(&I::I32Mul);
+    f.instruction(&I::I32Add);
+    f.instruction(&I::LocalSet(SLOT));
+    // entry.page != page: slow
+    f.instruction(&I::LocalGet(SLOT));
+    f.instruction(&I::I64Load(mem(t.page, 3)));
+    f.instruction(&I::LocalGet(ADDR));
+    f.instruction(&I::I64Const(shift));
+    f.instruction(&I::I64ShrU);
+    f.instruction(&I::I64Ne);
+    f.instruction(&I::BrIf(0));
+    // entry.host == 0: slow
+    f.instruction(&I::LocalGet(SLOT));
+    f.instruction(&I::I32Load(mem(t.host, 2)));
+    f.instruction(&I::LocalTee(HOST));
+    f.instruction(&I::I32Eqz);
+    f.instruction(&I::BrIf(0));
+    // runs past the page: slow
+    f.instruction(&I::LocalGet(ADDR));
+    f.instruction(&I::I64Const(in_page));
+    f.instruction(&I::I64And);
+    f.instruction(&I::I64Const(in_page + 1 - bytes as i64));
+    f.instruction(&I::I64GtU);
+    f.instruction(&I::BrIf(0));
+    if store {
+        f.instruction(&I::LocalGet(SLOT));
+        f.instruction(&I::I32Load8U(mem(t.writable, 0)));
+        f.instruction(&I::I32Eqz);
+        f.instruction(&I::BrIf(0));
+    }
+    // host + addr % PAGE_SIZE
+    f.instruction(&I::LocalGet(HOST));
+    f.instruction(&I::LocalGet(ADDR));
+    f.instruction(&I::I32WrapI64);
+    f.instruction(&I::I32Const(in_page as i32));
+    f.instruction(&I::I32And);
+    f.instruction(&I::I32Add);
+}
+
+fn size_index(bytes: u8) -> u32 {
+    match bytes {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        _ => 3,
+    }
+}
+
+/// `ld<bytes>(cpu, ctx, addr) -> value` or `st<bytes>(cpu, ctx, addr, value) ->
+/// faulted`: straight to memory when the TLB has the page, otherwise
+/// through pomme's helper (which sets the context's fault word for a load).
+/// Small, so the browser can inline it into `run`.
+fn mem_function(layout: &Layout, bytes: u8, store: bool) -> Function {
+    // Locals at the same indices as in `run`: ADDR, SLOT and HOST.
+    let i64s = if store { 1 } else { 2 };
+    let mut f = Function::new([(i64s, ValType::I64), (2, ValType::I32)]);
+    const ADDR_PARAM: u32 = 2;
+    const VALUE_PARAM: u32 = 3;
+    if let Some(t) = layout.tlb {
+        f.instruction(&I::Block(wasm_encoder::BlockType::Empty));
+        tlb_hit(&mut f, &t, ADDR_PARAM, bytes, store);
+        if store {
+            f.instruction(&I::LocalGet(VALUE_PARAM));
+            f.instruction(&match bytes {
+                1 => I::I64Store8(mem(0, 0)),
+                2 => I::I64Store16(mem(0, 0)),
+                4 => I::I64Store32(mem(0, 0)),
+                _ => I::I64Store(mem(0, 0)),
+            });
+            f.instruction(&I::I32Const(0));
+        } else {
+            f.instruction(&match bytes {
+                1 => I::I64Load8U(mem(0, 0)),
+                2 => I::I64Load16U(mem(0, 0)),
+                4 => I::I64Load32U(mem(0, 0)),
+                _ => I::I64Load(mem(0, 0)),
+            });
+        }
+        f.instruction(&I::Return);
+        f.instruction(&I::End);
+    }
+    f.instruction(&I::LocalGet(CTX));
+    f.instruction(&I::LocalGet(ADDR_PARAM));
+    if store {
+        f.instruction(&I::LocalGet(VALUE_PARAM));
+    }
+    f.instruction(&I::I32Const(bytes as i32));
+    f.instruction(&I::Call(if store { STORE } else { LOAD }));
+    f.instruction(&I::End);
+    f
 }
 
 /// Where a block may go next, among the blocks of its module: its
@@ -481,7 +551,7 @@ fn run_function(blocks: &[&Block], layout: &Layout, here: &std::collections::Has
     f.instruction(&I::BrTable(targets.into(), n.saturating_sub(1)));
     for (k, block) in blocks.iter().enumerate() {
         f.instruction(&I::End);
-        let mut g = Gen { f, layout, block, to_loop: n - 1 - k as u32 };
+        let mut g = Gen { f, layout, block, to_loop: n - 1 - k as u32, mem_fns: FIRST_BLOCK + n + 1 };
         block_code(&mut g, here);
         f = g.f;
     }
@@ -554,59 +624,23 @@ fn block_code(g: &mut Gen, here: &std::collections::HashMap<u64, (u32, u32)>) {
                 g.def(*dst);
             }
             Inst::Load { dst, addr, bytes, at } => {
-                let tlb = g.layout.tlb;
-                if let Some(t) = tlb {
-                    g.i(I::Block(wasm_encoder::BlockType::Empty)); // done
-                    g.i(I::Block(wasm_encoder::BlockType::Empty)); // slow
-                    g.tlb_hit(&t, *addr, *bytes, false);
-                    g.i(match bytes {
-                        1 => I::I64Load8U(mem(0, 0)),
-                        2 => I::I64Load16U(mem(0, 0)),
-                        4 => I::I64Load32U(mem(0, 0)),
-                        _ => I::I64Load(mem(0, 0)),
-                    });
-                    g.def(*dst);
-                    g.i(I::Br(1));
-                    g.i(I::End);
-                }
+                g.i(I::LocalGet(CPU));
                 g.i(I::LocalGet(CTX));
                 g.val(*addr);
-                g.i(I::I32Const(*bytes as i32));
-                g.i(I::Call(LOAD));
+                g.i(I::Call(g.mem_fns + size_index(*bytes)));
                 g.def(*dst);
                 // The context's first word says whether it faulted.
                 g.i(I::LocalGet(CTX));
                 g.i(I::I32Load(mem(0, 2)));
                 g.stop_if(Some(at));
-                if tlb.is_some() {
-                    g.i(I::End);
-                }
             }
             Inst::Store { addr, value, bytes, at } => {
-                let tlb = g.layout.tlb;
-                if let Some(t) = tlb {
-                    g.i(I::Block(wasm_encoder::BlockType::Empty)); // done
-                    g.i(I::Block(wasm_encoder::BlockType::Empty)); // slow
-                    g.tlb_hit(&t, *addr, *bytes, true);
-                    g.val(*value);
-                    g.i(match bytes {
-                        1 => I::I64Store8(mem(0, 0)),
-                        2 => I::I64Store16(mem(0, 0)),
-                        4 => I::I64Store32(mem(0, 0)),
-                        _ => I::I64Store(mem(0, 0)),
-                    });
-                    g.i(I::Br(1));
-                    g.i(I::End);
-                }
+                g.i(I::LocalGet(CPU));
                 g.i(I::LocalGet(CTX));
                 g.val(*addr);
                 g.val(*value);
-                g.i(I::I32Const(*bytes as i32));
-                g.i(I::Call(STORE));
+                g.i(I::Call(g.mem_fns + 4 + size_index(*bytes)));
                 g.stop_if(Some(at));
-                if tlb.is_some() {
-                    g.i(I::End);
-                }
             }
             Inst::Helper { insn } => {
                 // The helper runs the instruction from its own pc and step count.

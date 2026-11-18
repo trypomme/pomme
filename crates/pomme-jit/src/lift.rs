@@ -31,7 +31,49 @@ pub fn lift(pc: u64, ops: Box<[Op]>) -> Block {
         }
     };
     l.flush();
-    Block { pc, ops, insts: l.insts, next, values: l.values }
+    let insts = without_dead_values(l.insts, next, l.values);
+    Block { pc, ops, insts, next, values: l.values }
+}
+
+/// Drop the instructions whose value nothing uses (most flag results:
+/// the next instruction that sets the flags replaces them). Loads stay,
+/// since they can fault.
+fn without_dead_values(insts: Vec<Inst>, next: V, values: u32) -> Vec<Inst> {
+    let mut used = vec![false; values as usize];
+    used[next.0 as usize] = true;
+    let mut keep = vec![true; insts.len()];
+    for (i, inst) in insts.iter().enumerate().rev() {
+        let pure_dst = match inst {
+            Inst::Const { dst, .. } | Inst::Get { dst, .. } | Inst::Bin { dst, .. } | Inst::Not { dst, .. } | Inst::Select { dst, .. } => Some(*dst),
+            _ => None,
+        };
+        if let Some(dst) = pure_dst
+            && !used[dst.0 as usize]
+        {
+            keep[i] = false;
+            continue;
+        }
+        let mut operands: Vec<V> = Vec::new();
+        match inst {
+            Inst::Const { .. } | Inst::Get { .. } | Inst::Helper { .. } => {}
+            Inst::Bin { a, b, .. } => operands.extend([*a, *b]),
+            Inst::Not { a, .. } => operands.push(*a),
+            Inst::Select { cond, a, b, .. } => operands.extend([*cond, *a, *b]),
+            Inst::Set { src, .. } => operands.push(*src),
+            Inst::Load { addr, at, .. } => {
+                operands.push(*addr);
+                operands.extend(at.dirty.iter().map(|(_, v)| *v));
+            }
+            Inst::Store { addr, value, at, .. } => {
+                operands.extend([*addr, *value]);
+                operands.extend(at.dirty.iter().map(|(_, v)| *v));
+            }
+        }
+        for v in operands {
+            used[v.0 as usize] = true;
+        }
+    }
+    insts.into_iter().zip(keep).filter_map(|(inst, k)| k.then_some(inst)).collect()
 }
 
 struct Lifter {
@@ -101,10 +143,13 @@ impl Lifter {
 
     /// The values the `Cpu` struct is behind on, in a fixed order.
     fn dirty(&self) -> Vec<(Loc, V)> {
-        self.order.iter().filter_map(|loc| match self.cache.get(loc) {
-            Some(&(v, true)) => Some((*loc, v)),
-            _ => None,
-        }).collect()
+        self.order
+            .iter()
+            .filter_map(|loc| match self.cache.get(loc) {
+                Some(&(v, true)) => Some((*loc, v)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Write every changed value back to the `Cpu` struct.

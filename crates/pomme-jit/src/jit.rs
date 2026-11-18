@@ -202,6 +202,8 @@ pub struct Stats {
     pub dropped: u64,
     /// Blocks handed to the engine.
     pub translated: u64,
+    /// Times code was written (the memory's code generation changed).
+    pub code_changes: u64,
 }
 
 /// How often [`Jit::log`] gets a report, in block runs.
@@ -231,7 +233,8 @@ impl Jit {
         let s = &self.stats;
         let insns = (s.insns_translated + s.insns_interpreted + s.single_steps).max(1);
         format!(
-            "jit: {:.0} ms interpreting, {:.0} ms in translated code, {:.0} ms translating; {:.1}% of instructions translated ({} block runs, {:.2} insns each, {} entered from pomme), {} interpreted runs, {} single steps; {} blocks lifted, {} dropped, {} translated, {} in the table; {}",
+            "jit: {} code changes; {:.0} ms interpreting, {:.0} ms in translated code, {:.0} ms translating; {:.1}% of instructions translated ({} block runs, {:.2} insns each, {} entered from pomme), {} interpreted runs, {} single steps; {} blocks lifted, {} dropped, {} translated, {} in the table; {}",
+            s.code_changes,
             self.times[0],
             self.times[1],
             self.times[2],
@@ -251,6 +254,7 @@ impl Jit {
 
     /// Drop the entries whose code was written.
     fn code_changed(&mut self, mem: &Memory) {
+        self.stats.code_changes += 1;
         match mem.code_changes_since(self.generation) {
             Some(pages) => {
                 let pages: Vec<u64> = pages.to_vec();

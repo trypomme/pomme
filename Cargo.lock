@@ -3161,9 +3161,11 @@ name = "pomme-web"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "pomme-cpu",
  "pomme-hle",
  "pomme-jit",
  "pomme-loader",
+ "pomme-mem",
  "serde_json",
  "wasm-bindgen",
  "web-sys",
