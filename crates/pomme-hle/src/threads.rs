@@ -580,6 +580,10 @@ fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
         if crate::driver::turn_due(emu)? {
             continue;
         }
+        // Answers to requests out in the background that came back.
+        if crate::net::pump(emu)? {
+            continue;
+        }
         // Waiting on the network: wait for it in real time.
         let own = if let Wait::Socket(p) = wait { Some(p.clone()) } else { None };
         let next = next_deadline(emu, wait.deadline());
@@ -592,7 +596,8 @@ fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
         // recomputed now could be far later: time would jump ahead of the wall clock).
         if emu.live.host.is_some() {
             // Web pages running in a live engine wake it soon, to take what they did.
-            let next = crate::webkit::host_deadline(emu, next_deadline(emu, wait.deadline()));
+            // So do requests out in the background, to look for their answers.
+            let next = crate::net::poll_deadline(emu, crate::webkit::host_deadline(emu, next_deadline(emu, wait.deadline())));
             if crate::host::idle(emu, next)? || crate::webkit::take_live(emu)? {
                 continue;
             }
