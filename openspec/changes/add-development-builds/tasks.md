@@ -23,7 +23,7 @@
 
 - [x] 3.1 `UIResponder` motion methods, passing to the next responder (React Native's dev menu swaps `UIWindow`'s at startup). Check: the Debug build gets past `+[RCTDevMenu initialize]`.
 - [x] 3.2 `Event::Shake` in `crates/pomme-hle/src/host.rs` delivering the motion events measured in 1.4; the driver's `shake()`. Check: the shake probe's output matches `ios26.txt`.
-- [ ] 3.3 Device ▸ Shake (⌃⌘Z / Ctrl+Alt+Z) in `crates/pomme-desktop`. Check: by hand, the dev menu appears.
+- [x] 3.3 Device ▸ Shake (⌃⌘Z / Ctrl+Alt+Z) in `crates/pomme-desktop`. Check: `cargo test -p pomme-desktop shake_is_ctrl_cmd_z_on_macos_and_ctrl_alt_z_elsewhere` (the shortcut is Device ▸ Shake, which sends the shake event); the dev menu appearing on that event is 3.4's case in `development_builds.rs`.
 - [x] 3.4 React Native's developer menu appears on a shake in a plain Debug build, and its Reload works. Check: a case in `development_builds.rs`.
 
 ## 4. Expo development builds
@@ -37,4 +37,4 @@
 
 ## 5. Docs
 
-- [ ] 5.1 README: running a development build against Metro, step by step; `docs/differences-from-ios.md` updated (development builds no longer under "Not yet"). Check: updated.
+- [x] 5.1 README: running a development build against Metro, step by step; `docs/differences-from-ios.md` updated (development builds no longer under "Not yet"). Check: updated. ("Not yet" keeps only the dev menu's three-finger long press, which a desktop's one pointer can't make.)

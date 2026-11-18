@@ -148,9 +148,8 @@ These are gaps, not decisions. They'll close over time:
   Linux.
 - The desktop window is probably not see-through on Windows (a wgpu
   setting; not tried on Windows yet).
-- Development builds: the desktop app's Device ▸ Shake hasn't been tried
-  by hand yet; the dev menu's three-finger long press isn't recognized (a
-  desktop has one pointer).
+- Development builds: the dev menu's three-finger long press isn't
+  recognized (a desktop has one pointer); Device ▸ Shake opens the menu.
 - SwiftUI covers the common views, not all of them. Changes show at once
   (no animations or transitions yet); materials (`.ultraThinMaterial` …)
   are their measured color over a plain background, with nothing blurred

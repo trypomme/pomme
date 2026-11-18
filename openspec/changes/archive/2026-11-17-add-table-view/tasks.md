@@ -16,4 +16,4 @@
 ## 3. Tests and docs
 
 - [x] 3.1 `crates/pomme-cli/tests/table_view.rs` for every case. Check: `cargo test --test table_view`.
-- [ ] 3.2 Add table views to `README.md` and the coverage report. Check: updated.
+- [x] 3.2 Add table views to `README.md` and the coverage report. Check: updated. (README: "Tables and bar buttons". The coverage report needs no list of its own: it reports `UITableView`'s methods as implemented from the classes pomme registers.)
