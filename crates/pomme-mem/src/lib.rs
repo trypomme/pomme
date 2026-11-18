@@ -3,7 +3,9 @@
 //! Shared by the loader (which fills it) and the CPU (which executes from it).
 //!
 //! One `Vec<u8>` per region, found by binary search, with a small cache in
-//! front (a software TLB): most accesses hit a page used a moment ago.
+//! front (a software TLB): most accesses hit a page used a moment ago, and
+//! a hit on a page that lies wholly in one region reads or writes its bytes
+//! directly, without looking at the region again.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prot {
@@ -67,22 +69,33 @@ pub enum MemError {
 /// TLB slots (direct-mapped by page number).
 const TLB_SLOTS: usize = 1024;
 
-/// A page recently found in a region: which one, as of which mapping generation.
-#[derive(Debug, Clone, Copy, Default)]
+/// A page recently found in a region.
+#[derive(Debug, Clone, Copy)]
 struct TlbEntry {
+    /// The page number (untagged address / [`PAGE_SIZE`]); `u64::MAX` when empty.
     page: u64,
     region: u32,
-    generation: u32,
+    /// Where the page's first byte is in the region's data, when the whole
+    /// page lies in the region (0 when it doesn't): loads go straight there.
+    host: usize,
+    /// `host` came from a mutable borrow and the region holds no cached
+    /// code: stores may go straight there too.
+    writable: bool,
+}
+
+impl TlbEntry {
+    const EMPTY: TlbEntry = TlbEntry { page: u64::MAX, region: 0, host: 0, writable: false };
 }
 
 #[derive(Debug)]
 pub struct Memory {
     regions: Vec<Region>,
-    /// Page → region index for recent accesses. A hit is checked against the
-    /// region's bounds, so pages shared by two regions stay correct.
+    /// Page → region index (and the page's bytes) for recent accesses. A hit
+    /// is checked against the region's bounds, so pages shared by two regions
+    /// stay correct. Emptied whenever regions move (a map) or a region starts
+    /// holding cached code. Regions' data never grows, shrinks or goes away,
+    /// so the bytes an entry points at stay where they are.
     tlb: Box<[std::cell::Cell<TlbEntry>]>,
-    /// Bumped whenever regions move (a map), which empties the TLB.
-    generation: u32,
     /// Bumped whenever code the CPU may have cached is written (see [`Memory::mark_code`]).
     code_generation: u64,
 }
@@ -92,35 +105,61 @@ pub struct Memory {
 /// valid for the other; the TLB starts empty.
 impl Clone for Memory {
     fn clone(&self) -> Self {
-        Memory { regions: self.regions.clone(), ..Memory { generation: self.generation, code_generation: self.code_generation, ..Default::default() } }
+        Memory { regions: self.regions.clone(), ..Memory { code_generation: self.code_generation, ..Default::default() } }
     }
 }
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::default()); TLB_SLOTS].into_boxed_slice(), generation: 1, code_generation: 0 }
+        Memory { regions: Vec::new(), tlb: vec![std::cell::Cell::new(TlbEntry::EMPTY); TLB_SLOTS].into_boxed_slice(), code_generation: 0 }
     }
 }
 
 impl Memory {
+    #[inline(always)]
+    fn slot(&self, addr: u64) -> &std::cell::Cell<TlbEntry> {
+        &self.tlb[(addr / PAGE_SIZE) as usize & (TLB_SLOTS - 1)]
+    }
+
     /// The index of the region holding `addr` (untagged).
     #[inline(always)]
     fn find(&self, addr: u64) -> Option<usize> {
         let page = addr / PAGE_SIZE;
-        let slot = &self.tlb[page as usize & (TLB_SLOTS - 1)];
+        let slot = self.slot(addr);
         let e = slot.get();
-        if e.page == page && e.generation == self.generation {
+        if e.page == page {
             let r = &self.regions[e.region as usize];
             if addr >= r.base && addr < r.end() {
                 return Some(e.region as usize);
             }
         }
         let i = self.regions.partition_point(|r| r.base <= addr).checked_sub(1)?;
-        if addr >= self.regions[i].end() {
+        let r = &self.regions[i];
+        if addr >= r.end() {
             return None;
         }
-        slot.set(TlbEntry { page, region: i as u32, generation: self.generation });
+        let host = if page * PAGE_SIZE >= r.base && (page + 1) * PAGE_SIZE <= r.end() {
+            r.data.as_ptr() as usize + (page * PAGE_SIZE - r.base) as usize
+        } else {
+            0
+        };
+        slot.set(TlbEntry { page, region: i as u32, host, writable: false });
         Some(i)
+    }
+
+    /// The host address of `addr` (untagged) when the TLB has its page and
+    /// `N` bytes from it stay in the page (and, for a store, it may be written directly).
+    #[inline(always)]
+    fn direct<const N: usize>(&self, addr: u64, store: bool) -> Option<usize> {
+        let e = self.slot(addr).get();
+        let off = (addr % PAGE_SIZE) as usize;
+        (e.page == addr / PAGE_SIZE && e.host != 0 && off + N <= PAGE_SIZE as usize && (!store || e.writable)).then_some(e.host + off)
+    }
+
+    fn flush_tlb(&self) {
+        for slot in self.tlb.iter() {
+            slot.set(TlbEntry::EMPTY);
+        }
     }
 
     pub fn regions(&self) -> &[Region] {
@@ -145,15 +184,19 @@ impl Memory {
         }
         self.regions.insert(idx, Region { base, data: vec![0; size as usize], prot, name, has_code: false });
         // Indices after it moved.
-        self.generation = self.generation.wrapping_add(1).max(1);
+        self.flush_tlb();
         Ok(&mut self.regions[idx])
     }
 
     /// The CPU caches decoded code from `addr`'s region: writes there must
     /// tell it (they bump [`Memory::code_generation`]).
     pub fn mark_code(&mut self, addr: u64) {
-        if let Some(r) = self.region_of_mut(untag(addr)) {
+        if let Some(r) = self.region_of_mut(untag(addr))
+            && !r.has_code
+        {
             r.has_code = true;
+            // Its pages' stores must go the slow way now, to see the code.
+            self.flush_tlb();
         }
     }
 
@@ -202,6 +245,17 @@ impl Memory {
     #[inline(always)]
     fn read_n<const N: usize>(&self, addr: u64) -> Result<[u8; N], MemError> {
         let addr = untag(addr);
+        if let Some(p) = self.direct::<N>(addr, false) {
+            // SAFETY: `direct` found the page in the TLB, which points at a
+            // whole page of a region's data (regions' data never moves or
+            // goes away), and the N bytes stay inside that page.
+            return Ok(unsafe { std::ptr::read_unaligned(p as *const [u8; N]) });
+        }
+        self.read_n_slow(addr)
+    }
+
+    #[inline(never)]
+    fn read_n_slow<const N: usize>(&self, addr: u64) -> Result<[u8; N], MemError> {
         let r = self.region_of(addr).ok_or(MemError::Unmapped(addr))?;
         let off = (addr - r.base) as usize;
         match r.data.get(off..off + N) {
@@ -214,6 +268,17 @@ impl Memory {
     #[inline(always)]
     fn write_n<const N: usize>(&mut self, addr: u64, bytes: [u8; N]) -> Result<(), MemError> {
         let addr = untag(addr);
+        if let Some(p) = self.direct::<N>(addr, true) {
+            // SAFETY: as in `read_n`; the entry is writable, so the pointer
+            // came from the region's data mutably and the region has no code.
+            unsafe { std::ptr::write_unaligned(p as *mut [u8; N], bytes) };
+            return Ok(());
+        }
+        self.write_n_slow(addr, bytes)
+    }
+
+    #[inline(never)]
+    fn write_n_slow<const N: usize>(&mut self, addr: u64, bytes: [u8; N]) -> Result<(), MemError> {
         let i = self.find(addr).ok_or(MemError::Unmapped(addr))?;
         let r = &mut self.regions[i];
         let off = (addr - r.base) as usize;
@@ -221,6 +286,13 @@ impl Memory {
         *dst = bytes;
         if r.has_code {
             self.code_generation += 1;
+        } else {
+            // Later stores to this page can go straight to it.
+            let page = addr / PAGE_SIZE;
+            if page * PAGE_SIZE >= r.base && (page + 1) * PAGE_SIZE <= r.end() {
+                let host = r.data.as_mut_ptr() as usize + (page * PAGE_SIZE - r.base) as usize;
+                self.slot(addr).set(TlbEntry { page, region: i as u32, host, writable: true });
+            }
         }
         Ok(())
     }

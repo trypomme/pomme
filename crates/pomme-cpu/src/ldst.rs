@@ -4,7 +4,8 @@
 use crate::{Cpu, Exit, Step, bit, bits, sext};
 use pomme_mem::Memory;
 
-fn load(mem: &Memory, addr: u64, bytes: u32) -> Result<u128, Exit> {
+#[inline(always)]
+pub(crate) fn load(mem: &Memory, addr: u64, bytes: u32) -> Result<u128, Exit> {
     Ok(match bytes {
         1 => mem.read_u8(addr)? as u128,
         2 => mem.read_u16(addr)? as u128,
@@ -14,7 +15,8 @@ fn load(mem: &Memory, addr: u64, bytes: u32) -> Result<u128, Exit> {
     })
 }
 
-fn store(mem: &mut Memory, addr: u64, bytes: u32, v: u128) -> Result<(), Exit> {
+#[inline(always)]
+pub(crate) fn store(mem: &mut Memory, addr: u64, bytes: u32, v: u128) -> Result<(), Exit> {
     match bytes {
         1 => mem.write_u8(addr, v as u8)?,
         2 => mem.write_u16(addr, v as u16)?,
@@ -25,7 +27,7 @@ fn store(mem: &mut Memory, addr: u64, bytes: u32, v: u128) -> Result<(), Exit> {
     Ok(())
 }
 
-fn mask(bytes: u32) -> u64 {
+pub(crate) fn mask(bytes: u32) -> u64 {
     if bytes >= 8 { u64::MAX } else { (1u64 << (bytes * 8)) - 1 }
 }
 
