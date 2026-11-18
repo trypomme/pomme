@@ -6,7 +6,7 @@ scroll, type, and try different screen sizes and languages.
 
 Website: **[trypomme.dev](https://trypomme.dev)**
 
-<img src="docs/images/wonderous-intro.webp" width="200" alt="The Wonderous app's welcome screen, titled Journey to the past, running in Pomme"> <img src="docs/images/wonderous-great-wall.webp" width="200" alt="Wonderous showing an illustration of the Great Wall of China in autumn colours, running in Pomme"> <img src="docs/images/wonderous-petra.webp" width="200" alt="Wonderous showing an illustration of the temple at Petra at night, running in Pomme"> <img src="docs/images/gallery-home.webp" width="200" alt="The Flutter Gallery home screen with the Reply app and a list of categories, running in Pomme">
+<img src="https://raw.githubusercontent.com/trypomme/pomme/main/docs/images/wonderous-intro.webp" width="200" alt="The Wonderous app's welcome screen, titled Journey to the past, running in Pomme"> <img src="https://raw.githubusercontent.com/trypomme/pomme/main/docs/images/wonderous-great-wall.webp" width="200" alt="Wonderous showing an illustration of the Great Wall of China in autumn colours, running in Pomme"> <img src="https://raw.githubusercontent.com/trypomme/pomme/main/docs/images/wonderous-petra.webp" width="200" alt="Wonderous showing an illustration of the temple at Petra at night, running in Pomme"> <img src="https://raw.githubusercontent.com/trypomme/pomme/main/docs/images/gallery-home.webp" width="200" alt="The Flutter Gallery home screen with the Reply app and a list of categories, running in Pomme">
 
 Shown: [Wonderous](https://github.com/gskinnerTeam/flutter-wonderous-app) by
 gskinner (MIT) and [Flutter Gallery](https://github.com/flutter/gallery) by the
@@ -65,7 +65,7 @@ Some other useful commands:
 
 The [FAQ](https://trypomme.dev/faq/) answers common questions. Where Pomme
 behaves differently from a real iPhone is in
-[docs/differences-from-ios.md](docs/differences-from-ios.md).
+[docs/differences-from-ios.md](https://github.com/trypomme/pomme/blob/main/docs/differences-from-ios.md).
 
 ## Build from source
 
@@ -92,11 +92,11 @@ Pomme is written in Rust.
    ```
 
 To build the browser version, run the tests, or change Pomme itself, read
-[docs/development.md](docs/development.md).
+[docs/development.md](https://github.com/trypomme/pomme/blob/main/docs/development.md).
 
 ## Licence
 
-Pomme is open source under the [MIT licence](LICENSE).
+Pomme is open source under the [MIT licence](https://github.com/trypomme/pomme/blob/main/LICENSE).
 
 A few files in this repository come from other projects and keep their own
 licences. They are all permissive, so you can use them alongside Pomme's MIT
