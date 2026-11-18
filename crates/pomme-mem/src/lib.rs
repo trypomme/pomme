@@ -99,10 +99,27 @@ struct TlbEntry {
     /// `host` came from a mutable borrow and the page holds no cached
     /// code: stores may go straight there too.
     writable: bool,
+    /// `page` when loads may go straight to `host`, else `u64::MAX`; and the
+    /// same for stores. The fast paths check one of these and nothing else
+    /// about the entry.
+    load_page: u64,
+    store_page: u64,
 }
 
 impl TlbEntry {
-    const EMPTY: TlbEntry = TlbEntry { page: u64::MAX, region: 0, host: 0, writable: false };
+    const EMPTY: TlbEntry = TlbEntry { page: u64::MAX, region: 0, host: 0, writable: false, load_page: u64::MAX, store_page: u64::MAX };
+
+    fn new(page: u64, region: usize, host: usize, writable: bool) -> TlbEntry {
+        let direct = host != 0;
+        TlbEntry {
+            page,
+            region: region as u32,
+            host,
+            writable,
+            load_page: if direct { page } else { u64::MAX },
+            store_page: if direct && writable { page } else { u64::MAX },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -113,7 +130,7 @@ pub struct Memory {
     /// stay correct. Emptied whenever regions move (a map) or a region starts
     /// holding cached code. Regions' data never grows, shrinks or goes away,
     /// so the bytes an entry points at stay where they are.
-    tlb: Box<[std::cell::Cell<TlbEntry>]>,
+    tlb: Box<[std::cell::Cell<TlbEntry>; TLB_SLOTS]>,
     /// Bumped whenever code the CPU may have cached is written (see [`Memory::mark_code`]).
     code_generation: u64,
     /// The pages written for the last generations: `code_log[i]` is the page
@@ -139,7 +156,7 @@ impl Default for Memory {
     fn default() -> Self {
         Memory {
             regions: Vec::new(),
-            tlb: vec![std::cell::Cell::new(TlbEntry::EMPTY); TLB_SLOTS].into_boxed_slice(),
+            tlb: vec![std::cell::Cell::new(TlbEntry::EMPTY); TLB_SLOTS].into_boxed_slice().try_into().unwrap(),
             code_generation: 0,
             code_log: Vec::new(),
             code_log_base: 0,
@@ -209,7 +226,7 @@ impl Memory {
         } else {
             0
         };
-        slot.set(TlbEntry { page, region: i as u32, host, writable: false });
+        slot.set(TlbEntry::new(page, i, host, false));
         Some(i)
     }
 
@@ -219,7 +236,8 @@ impl Memory {
     fn direct<const N: usize>(&self, addr: u64, store: bool) -> Option<usize> {
         let e = self.slot(addr).get();
         let off = (addr % PAGE_SIZE) as usize;
-        (e.page == addr / PAGE_SIZE && e.host != 0 && off + N <= PAGE_SIZE as usize && (!store || e.writable)).then_some(e.host + off)
+        let page = if store { e.store_page } else { e.load_page };
+        (page == addr / PAGE_SIZE && off <= PAGE_SIZE as usize - N).then_some(e.host + off)
     }
 
     fn flush_tlb(&self) {
@@ -400,7 +418,7 @@ impl Memory {
             // Later stores to this page can go straight to it.
             if page * PAGE_SIZE >= r.base && (page + 1) * PAGE_SIZE <= r.end() {
                 let host = r.data.as_mut_ptr() as usize + (page * PAGE_SIZE - r.base) as usize;
-                self.slot(addr).set(TlbEntry { page, region: i as u32, host, writable: true });
+                self.slot(addr).set(TlbEntry::new(page, i, host, true));
             }
         }
         Ok(())
