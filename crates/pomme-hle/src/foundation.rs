@@ -5062,6 +5062,18 @@ pub(crate) const METHODS: &[(&str, bool, &str, HostFn)] = &[
         e.ret(r);
         Ok(())
     }),
+    // Flutter keeps only the window scenes of connectedScenes with it.
+    ("NSSet", false, "filteredSetUsingPredicate:", |e| {
+        let (set, p) = (e.arg(0), e.arg(2));
+        let r = new_set(e)?;
+        for o in set_values(e, set)? {
+            if send(e, p, "evaluateWithObject:", &[o])? & 0xff != 0 {
+                cf(e, "_CFSetAddValue", &[r, o])?;
+            }
+        }
+        e.ret(r);
+        Ok(())
+    }),
     ("NSArray", false, "indexesOfObjectsPassingTest:", |e| {
         let (a, b) = (e.arg(0), e.arg(2));
         let found = array_passing(e, a, b, false, false)?;

@@ -309,7 +309,7 @@ fn is_string_constant(name: &str) -> bool {
 /// (`SCNetworkReachabilityCreateWithName`, `CFBundleGetIdentifier`), which a
 /// constant's name never has.
 fn names_a_function(name: &str) -> bool {
-    const VERBS: &[&str] = &["Create", "Copy", "Get", "Set", "Add", "Remove", "Schedule", "Unschedule"];
+    const VERBS: &[&str] = &["Create", "Copy", "Get", "Set", "Add", "Remove", "Schedule", "Unschedule", "Fill"];
     VERBS.iter().any(|v| {
         name.match_indices(v).any(|(i, _)| {
             let next = name[i + v.len()..].chars().next();
@@ -422,6 +422,7 @@ mod tests {
         assert!(is_string_constant("kCFStreamPropertySSLSettingsKey"));
         assert!(!is_string_constant("SCNetworkReachabilityCreateWithName"));
         assert!(!is_string_constant("CFBundleGetIdentifierKey"));
+        assert!(!is_string_constant("UIRectFillUsingBlendMode"));
         // Prefixed families are constants whatever their words.
         assert!(is_string_constant("kCGImageSourceCreateThumbnailFromImageAlways"));
     }

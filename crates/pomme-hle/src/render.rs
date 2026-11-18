@@ -63,7 +63,8 @@ type Clip = Vec<(Vec<El>, bool)>;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Op {
-    Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Clip },
+    /// `blend`: its CGBlendMode (0: normal), honoured in offscreen contexts (images, bitmaps).
+    Fill { path: Vec<El>, color: [f32; 4], even_odd: bool, clip: Clip, blend: u8 },
     Stroke { path: Vec<El>, color: [f32; 4], width: f32, line: Line, clip: Clip },
     Glyphs { glyphs: Vec<Glyph>, ctm: [f32; 6], clip: Clip },
     /// CTFontDrawGlyphs: glyph ids, each with its font-units → context-base transform.
@@ -185,11 +186,13 @@ struct GState {
     line_width: f32,
     line: Line,
     clip: Clip,
+    /// CGContextSetBlendMode (fills use it).
+    blend: u8,
 }
 
 impl Default for GState {
     fn default() -> Self {
-        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, line: Line::default(), clip: Vec::new() }
+        GState { ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], fill: [0.0, 0.0, 0.0, 1.0], stroke: [0.0, 0.0, 0.0, 1.0], line_width: 1.0, line: Line::default(), clip: Vec::new(), blend: 0 }
     }
 }
 
@@ -528,6 +531,11 @@ pub(crate) fn begin_context(emu: &mut Emu) -> Result<u64> {
     Ok(c)
 }
 
+/// What a recording context has drawn so far.
+pub(crate) fn context_ops(emu: &Emu, c: u64) -> Vec<Op> {
+    emu.render.contexts.get(&c).map(|x| x.ops.clone()).unwrap_or_default()
+}
+
 pub(crate) fn end_context(emu: &mut Emu, c: u64) -> Vec<Op> {
     emu.render.stack.retain(|&x| x != c);
     emu.render.contexts.remove(&c).map(|x| x.ops).unwrap_or_default()
@@ -613,7 +621,7 @@ fn flush_bitmap(emu: &mut Emu, c: u64) -> Result<()> {
     let (order, skip) = pixel_layout(b.info);
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
     let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()), faces: crate::coretext::draw_faces(emu) };
-    p.ops(&ops, 1.0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None);
+    p.ops(&ops, 1.0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None, true);
     for y in 0..b.h {
         let mut row = vec![0u8; (b.w * b.bpp) as usize];
         for x in 0..b.w as usize {
@@ -794,7 +802,7 @@ fn add_path_els(ctx: &mut Ctx, els: &[El]) {
 fn fill(emu: &mut Emu, even_odd: bool) -> Result<()> {
     with_ctx(emu, |ctx| {
         let path = std::mem::take(&mut ctx.path);
-        ctx.ops.push(Op::Fill { path, color: ctx.gs.fill, even_odd, clip: ctx.gs.clip.clone() });
+        ctx.ops.push(Op::Fill { path, color: ctx.gs.fill, even_odd, clip: ctx.gs.clip.clone(), blend: ctx.gs.blend });
     })
 }
 
@@ -836,7 +844,7 @@ pub(crate) fn stroke_in_current(emu: &mut Emu, els: &[El], width: f32, line: Lin
 pub(crate) fn fill_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Result<()> {
     with_current(emu, |c| {
         let path = transform_els(els, &c.gs.ctm);
-        c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd, clip: c.gs.clip.clone() });
+        c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd, clip: c.gs.clip.clone(), blend: c.gs.blend });
     })
 }
 
@@ -851,7 +859,7 @@ pub(crate) fn fill_rects_in_current(emu: &mut Emu, rects: &[[f64; 4]], color: [f
         for r in rects {
             path.extend(transform_els(&rect_els(r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32), &c.gs.ctm));
         }
-        c.ops.push(Op::Fill { path, color: color.map(|v| v as f32), even_odd: false, clip: c.gs.clip.clone() });
+        c.ops.push(Op::Fill { path, color: color.map(|v| v as f32), even_odd: false, clip: c.gs.clip.clone(), blend: 0 });
     })
 }
 
@@ -865,11 +873,57 @@ pub(crate) fn clip_in_current(emu: &mut Emu, els: &[El], even_odd: bool) -> Resu
 
 /// `UIRectFill(rect)`: fill with the current context's fill color.
 fn ui_rect_fill(emu: &mut Emu) -> Result<()> {
+    rect_fill(emu, None)
+}
+
+/// `UIRectFillUsingBlendMode(rect, CGBlendMode)`: the same in a blend mode.
+/// Google Maps tints its compass icon with source-atop (20): the color only
+/// where the image already has pixels.
+fn ui_rect_fill_blend(emu: &mut Emu) -> Result<()> {
+    rect_fill(emu, Some(emu.arg(0) as u8))
+}
+
+fn rect_fill(emu: &mut Emu, blend: Option<u8>) -> Result<()> {
     let r = [d(emu, 0), d(emu, 1), d(emu, 2), d(emu, 3)];
     with_current(emu, |c| {
         let els = transform_els(&rect_els(r[0], r[1], r[2], r[3]), &c.gs.ctm);
-        c.ops.push(Op::Fill { path: els, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone() });
+        c.ops.push(Op::Fill { path: els, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone(), blend: blend.unwrap_or(c.gs.blend) });
     })
+}
+
+/// A CGBlendMode as tiny-skia's (0, normal: source-over; the Porter-Duff
+/// modes from 16; plus-darker has no equivalent and draws normally).
+fn blend_mode(m: u8) -> tiny_skia::BlendMode {
+    use tiny_skia::BlendMode::*;
+    match m {
+        1 => Multiply,
+        2 => Screen,
+        3 => Overlay,
+        4 => Darken,
+        5 => Lighten,
+        6 => ColorDodge,
+        7 => ColorBurn,
+        8 => SoftLight,
+        9 => HardLight,
+        10 => Difference,
+        11 => Exclusion,
+        12 => Hue,
+        13 => Saturation,
+        14 => Color,
+        15 => Luminosity,
+        16 => Clear,
+        17 => Source,
+        18 => SourceIn,
+        19 => SourceOut,
+        20 => SourceAtop,
+        21 => DestinationOver,
+        22 => DestinationIn,
+        23 => DestinationOut,
+        24 => DestinationAtop,
+        25 => Xor,
+        27 => Plus,
+        _ => SourceOver,
+    }
 }
 
 /// UIColor's `set`, `setFill` and `setStroke`: the current context's colors.
@@ -1023,7 +1077,14 @@ impl Painter<'_> {
     }
 
     fn fill(&mut self, els: &[El], color: [f32; 4], alpha: f32, even_odd: bool, t: &[f32; 6], mask: Option<&Mask>) {
-        if let (Some(path), Some(p)) = (build(els), paint(color, alpha)) {
+        self.fill_blend(els, color, alpha, even_odd, t, mask, 0);
+    }
+
+    /// A fill in a CGBlendMode (0: normal).
+    #[allow(clippy::too_many_arguments)]
+    fn fill_blend(&mut self, els: &[El], color: [f32; 4], alpha: f32, even_odd: bool, t: &[f32; 6], mask: Option<&Mask>, blend: u8) {
+        if let (Some(path), Some(mut p)) = (build(els), paint(color, alpha)) {
+            p.blend_mode = blend_mode(blend);
             let rule = if even_odd { FillRule::EvenOdd } else { FillRule::Winding };
             self.pix.fill_path(&path, &p, rule, ts(t), mask);
         }
@@ -1312,7 +1373,10 @@ impl Painter<'_> {
         }
     }
 
-    fn ops(&mut self, ops: &[Op], alpha: f32, t: &[f32; 6], mask: Option<&Mask>) {
+    /// Draw recorded drawing. Blend modes count only `offscreen` (an image or
+    /// bitmap of its own): on iOS a view draws into its own backing store, so
+    /// a blend there doesn't reach what's behind the view, as it would here.
+    fn ops(&mut self, ops: &[Op], alpha: f32, t: &[f32; 6], mask: Option<&Mask>, offscreen: bool) {
         for op in ops {
             let clip = match op {
                 Op::Fill { clip, .. } | Op::Stroke { clip, .. } | Op::Glyphs { clip, .. } | Op::FontGlyphs { clip, .. } | Op::Image { clip, .. } => clip,
@@ -1323,7 +1387,7 @@ impl Painter<'_> {
             }
             let m = if clip.is_empty() { mask } else { clipped.as_ref() };
             match op {
-                Op::Fill { path, color, even_odd, .. } => self.fill(path, *color, alpha, *even_odd, t, m),
+                Op::Fill { path, color, even_odd, blend, .. } => self.fill_blend(path, *color, alpha, *even_odd, t, m, if offscreen { *blend } else { 0 }),
                 Op::Stroke { path, color, width, line, .. } => self.stroke_line(path, *color, alpha, *width, *line, t, m),
                 Op::Glyphs { glyphs, ctm, .. } => self.glyphs(glyphs, alpha, &concat(ctm, t), m),
                 Op::FontGlyphs { font, glyphs, color, .. } => self.font_glyphs(font, glyphs, *color, alpha, t, m),
@@ -2256,7 +2320,7 @@ fn draw_view_body(emu: &mut Emu, p: &mut Painter, v: u64, alpha: f32, t: &[f32; 
         draw_contents(p, &img, ly.contents_center, r[2], r[3], a, &at, m);
     }
     if let Some((ops, _)) = emu.render.content.get(&v).cloned() {
-        p.ops(&ops, a, &inner, m);
+        p.ops(&ops, a, &inner, m, false);
     }
     if vw.layer != 0 {
         draw_sublayers(emu, p, vw.layer, a, &inner, m);
@@ -2635,7 +2699,7 @@ pub(crate) fn rasterize(emu: &mut Emu, ops: &[Op], size: [f64; 2], scale: f64) -
     let (font, emoji) = (crate::textkit::font_bytes(emu), crate::textkit::emoji_bytes(emu));
     let mut p = Painter { pix, font: font.as_deref().map(|v| v.as_slice()), emoji: emoji.as_deref().map(|v| v.as_slice()), faces: crate::coretext::draw_faces(emu) };
     let s = scale as f32;
-    p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None);
+    p.ops(ops, 1.0, &[s, 0.0, 0.0, s, 0.0, 0.0], None, true);
     Ok(p.pix)
 }
 
@@ -3097,6 +3161,7 @@ fn nothing(_: &mut Emu) -> Result<()> {
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     ("_UIGraphicsGetCurrentContext", current_context),
     ("_UIRectFill", ui_rect_fill),
+    ("_UIRectFillUsingBlendMode", ui_rect_fill_blend),
     ("_UIGraphicsPushContext", |e| {
         let c = e.arg(0);
         e.render.stack.push(c);
@@ -3232,7 +3297,7 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
         with_ctx(e, |c| {
             add_path_els(c, &rect_els(r[0], r[1], r[2], r[3]));
             let path = std::mem::take(&mut c.path);
-            c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone() });
+            c.ops.push(Op::Fill { path, color: c.gs.fill, even_odd: false, clip: c.gs.clip.clone(), blend: c.gs.blend });
         })
     }),
     ("_CGPathCreateMutable", |e| {
@@ -3389,7 +3454,10 @@ pub(crate) const FUNCS: &[(&str, HostFn)] = &[
     }),
     ("_CGContextSetFillColorSpace", nothing),
     ("_CGContextSetStrokeColorSpace", nothing),
-    ("_CGContextSetBlendMode", nothing),
+    ("_CGContextSetBlendMode", |e| {
+        let m = e.arg(1) as u8;
+        with_ctx(e, |c| c.gs.blend = m)
+    }),
     ("_CGContextSetTextDrawingMode", nothing),
     ("_CGContextSetTextMatrix", nothing),
     ("_CGContextSetTextPosition", nothing),

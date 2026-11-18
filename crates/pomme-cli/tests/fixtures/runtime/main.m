@@ -250,7 +250,28 @@ static void sumApplied(const void *key, const void *value, void *context) { *(lo
 
     // Block predicates.
     NSPredicate *odd = [NSPredicate predicateWithBlock:^BOOL(NSNumber *n, NSDictionary *bindings) { return n.intValue % 2; }];
-    check(@"predicate", [odd evaluateWithObject:@3] && ![odd evaluateWithObject:@4] && [[@[@1, @2, @3] filteredArrayUsingPredicate:odd] isEqual:(@[@1, @3])]);
+    check(@"predicate", [odd evaluateWithObject:@3] && ![odd evaluateWithObject:@4] && [[@[@1, @2, @3] filteredArrayUsingPredicate:odd] isEqual:(@[@1, @3])] &&
+                             [[[NSSet setWithArray:@[@1, @2, @3]] filteredSetUsingPredicate:odd] isEqual:([NSSet setWithArray:@[@1, @3]])]);
+
+    // The older image context: an image, then a color only where it has
+    // pixels (source-atop, as Google Maps tints its compass icon).
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(4, 2), NO, 1);
+    [UIColor.redColor setFill];
+    UIRectFill(CGRectMake(0, 0, 2, 2));
+    UIImage *half = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(4, 2), NO, 1);
+    [half drawInRect:CGRectMake(0, 0, 4, 2)];
+    [UIColor.blueColor setFill];
+    UIRectFillUsingBlendMode(CGRectMake(0, 0, 4, 2), kCGBlendModeSourceAtop);
+    UIImage *tinted = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    unsigned char px[2 * 4 * 4] = {0};
+    CGContextRef bc = CGBitmapContextCreate(px, 4, 2, 8, 16, CGColorSpaceCreateDeviceRGB(), kCGImageAlphaPremultipliedLast);
+    CGContextDrawImage(bc, CGRectMake(0, 0, 4, 2), tinted.CGImage);
+    CGContextRelease(bc);
+    check(@"imageContext", half.size.width == 4 && tinted.scale == 1 && UIGraphicsGetImageFromCurrentImageContext() == nil &&
+                               px[0] == 0 && px[2] == 255 && px[3] == 255 && px[12] == 0 && px[15] == 0);
 
     mach_port_t excPort;
     mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &excPort);
