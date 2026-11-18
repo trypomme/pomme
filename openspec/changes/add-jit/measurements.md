@@ -59,7 +59,7 @@ infinitely fast, the run would be at most about 12 times faster.
   instructions) and covers 99% of the work. Most of the app's code (about
   130,000 blocks) runs too rarely to be worth translating.
 - 33,000 blocks is a lot of WebAssembly. Batching blocks into modules
-  (decision 9) matters, and milestone 5 must measure the time to make them.
+  (decision 9) matters, and milestone 3 must measure the time to make them.
 
 ## Code changes
 
@@ -121,13 +121,13 @@ expect:
 
 This is lower than the design's first estimate (4 to 8 on desktop, 3 to 6
 in the browser). The reason is that the first estimate counted the speedup
-of the CPU part only. The gates in milestones 3 and 5 (at least 2 times
+of the CPU part only. The gates in milestones 3 and 4 (at least 2 times
 faster) still look safe.
 
 ## Ways to go past 5 times, later
 
 The estimate above is for a plain block JIT. These steps could push the
-whole run further. Each one is measured on its own, after milestone 5:
+whole run further. Each one is measured on its own, after milestones 3 and 4:
 
 - **Make the 8% in pomme's Rust code smaller.** The hottest stubs are
   `memcpy`, `memcmp`, `memset_pattern16`, `memmove`, `strlen`, `malloc`,

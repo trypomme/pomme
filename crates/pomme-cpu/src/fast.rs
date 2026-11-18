@@ -14,7 +14,7 @@ use crate::{Cpu, Step, bit, bits, decode_bit_masks, ones, ror, sext};
 use pomme_mem::Memory;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Op {
+pub enum Op {
     /// Any instruction, decoded when it runs.
     Generic(u32),
     /// `mov xd, xm` / `mov wd, wm` (ORR with the zero register, no shift).
@@ -68,7 +68,7 @@ pub(crate) enum Op {
 
 /// How [`Op::LdSt`] forms its address.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Addr {
+pub enum Addr {
     /// Base plus an immediate (scaled or unscaled), no writeback.
     Offset(u64),
     /// Base plus Rm, extended by `option` and shifted.
@@ -81,7 +81,7 @@ pub(crate) enum Addr {
 
 /// What [`Op::LdSt`] does with the register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     Store,
     Load,
     /// Load, sign-extending to 64 bits (`true`) or 32.
@@ -92,7 +92,7 @@ pub(crate) enum Kind {
 }
 
 /// Decode `insn` at `pc` into a fast form if it has one.
-pub(crate) fn decode(insn: u32, pc: u64) -> Op {
+pub fn decode(insn: u32, pc: u64) -> Op {
     let (rd, rn) = (bits(insn, 4, 0) as u8, bits(insn, 9, 5) as u8);
     let sf = bit(insn, 31);
     // ORR (shifted register) with rn = zr, no shift: MOV.
@@ -300,9 +300,10 @@ fn decode_ldst(insn: u32) -> Option<Op> {
 }
 
 impl Cpu {
-    /// Run one decoded instruction (at pc): like [`Cpu::exec`] on its encoding.
+    /// Run one decoded instruction (at pc): like executing its encoding.
+    /// A JIT calls this for the instructions it does not translate.
     #[inline(always)]
-    pub(crate) fn exec_op(&mut self, op: &Op, mem: &mut Memory) -> Step {
+    pub fn exec_op(&mut self, op: &Op, mem: &mut Memory) -> Step {
         let next = match *op {
             Op::Generic(insn) => return self.exec(insn, mem),
             Op::Mov { rd, rm, sf } => {

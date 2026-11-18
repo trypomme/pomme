@@ -10,7 +10,7 @@
 mod block;
 mod crypto;
 mod branch;
-mod fast;
+pub mod fast;
 mod dp;
 mod fp;
 mod ldst;
@@ -52,7 +52,8 @@ impl From<MemError> for Exit {
     }
 }
 
-type Step = Result<(), Exit>;
+/// The result of one instruction: Ok, or the exit it stops with.
+pub type Step = Result<(), Exit>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Cpu {
@@ -346,6 +347,12 @@ impl Cpu {
             self.z = res as u32 == 0;
         }
     }
+}
+
+/// The block that starts at `pc`, decoded, as the interpreter caches it (see
+/// block.rs): None if `pc` can't be fetched. A JIT translates these.
+pub fn fetch_block(pc: u64, mem: &Memory) -> Option<Box<[fast::Op]>> {
+    block::fetch(pc, mem)
 }
 
 // ---- bit helpers shared by the decoders ----
