@@ -347,6 +347,7 @@ const HIERARCHY: &[(&str, &str)] = &[
     ("NSMutableIndexSet", "NSIndexSet"),
     ("NSMutableIndexSet", "NSIndexSet"),
     ("NSMutableOrderedSet", "NSOrderedSet"),
+    ("NSBlockPredicate", "NSPredicate"),
     ("NSMutableParagraphStyle", "NSParagraphStyle"),
     ("NSDateFormatter", "NSFormatter"),
     ("NSNumberFormatter", "NSFormatter"),

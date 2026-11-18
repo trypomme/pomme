@@ -276,6 +276,35 @@ pub(crate) fn retake_after_wait(emu: &mut Emu, m: u64, depth: u32) -> Result<boo
     Ok(true)
 }
 
+// ---- Foundation's NSLock, NSRecursiveLock and NSCondition ----
+//
+// Keyed by the object (pomme never frees Objective-C objects, so an address
+// isn't reused). They block and wake like the pthread mutexes they wrap on iOS.
+
+/// The lock state of an NSLock-like object, made on first use.
+fn object(emu: &mut Emu, obj: u64, recursive: bool) -> &mut Lock {
+    let kind = if recursive { Kind::Recursive } else { Kind::Normal };
+    emu.locks.locks.entry(obj).or_insert_with(|| Lock { kind, ..Default::default() })
+}
+
+/// `-lock`: take it, waiting while another thread holds it.
+pub(crate) fn lock_object(emu: &mut Emu, obj: u64, recursive: bool) -> Result<()> {
+    object(emu, obj, recursive);
+    take(emu, obj, Want::Exclusive { word: false })
+}
+
+/// `-tryLock`: take it only if it's free (or already this thread's, if recursive).
+pub(crate) fn try_lock_object(emu: &mut Emu, obj: u64, recursive: bool) -> Result<bool> {
+    object(emu, obj, recursive);
+    try_take(emu, obj, Want::Exclusive { word: false })
+}
+
+/// `-unlock`: whether this thread held it.
+pub(crate) fn unlock_object(emu: &mut Emu, obj: u64, recursive: bool) -> Result<bool> {
+    object(emu, obj, recursive);
+    release(emu, obj, false)
+}
+
 // ---- read-write locks ----
 
 fn rwlock_init(emu: &mut Emu) -> Result<()> {
