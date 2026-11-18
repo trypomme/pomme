@@ -48,6 +48,18 @@ case "$APP" in
     APP_PATH="$SRC/build/ios/iphoneos/Runner.app"
     ;;
   bluesky)
+    # Metro keeps its transform cache in the temp folder, which outlives the job on a
+    # self-hosted runner. react-native-worklets writes .worklets/*.js into node_modules
+    # while it transforms; a cached transform skips that, so with a fresh node_modules the
+    # bundle points at files that were never written (ENOENT). Start and end with no cache.
+    clear_metro_cache() {
+      local t
+      for t in "$(node -p 'require("os").tmpdir()')" "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"; do
+        if [ -n "$t" ]; then rm -rf "$t"/metro-* "$t"/haste-map-*; fi
+      done
+    }
+    clear_metro_cache
+    trap clear_metro_cache EXIT
     corepack enable
     pnpm install --frozen-lockfile >&2
     # postinstall skips compiling the translations on CI (is-ci); the bundle imports them.
