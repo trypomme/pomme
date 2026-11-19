@@ -124,7 +124,7 @@ jobs:
   # used to need (require-jspi-in-browser, task 4.3). Needs no app, so it runs without the secret.
   webview-frames:
     name: Web view frames
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright 1.56 has no browsers for Ubuntu 26.04 (ubuntu-latest)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +143,7 @@ jobs:
     name: Browser tests
     needs: bundle
     if: needs.bundle.outputs.ran == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # as above
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
