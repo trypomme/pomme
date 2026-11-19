@@ -131,6 +131,12 @@ headers that header demands, so their pages may be refused in a frame.
 Without it, those pages should load as in any other frame. Task 4.3 checks
 this with the web view test page; it is not a promise of this change.
 
+Checked (task 4.3, `web/tests/webview-frames.mjs`, in CI): in Chromium, a
+plain page from another origin that sends no Cross-Origin-Resource-Policy
+header is refused in a web view under the old COOP `same-origin` and COEP
+`require-corp` headers, and loads without them, so pages that were refused
+before now load.
+
 ## Not chosen
 
 - **Keep both paths** (shared memory when isolated, messages otherwise).
