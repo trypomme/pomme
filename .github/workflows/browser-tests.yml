@@ -120,11 +120,30 @@ jobs:
       - id: done
         run: echo "ran=${{ env.RUN }}" >> "$GITHUB_OUTPUT"
 
+  # Another site's page in a web view, with and without the isolation headers the page
+  # used to need (require-jspi-in-browser, task 4.3). Needs no app, so it runs without the secret.
+  webview-frames:
+    name: Web view frames
+    runs-on: ubuntu-24.04  # Playwright 1.56 has no browsers for Ubuntu 26.04 (ubuntu-latest)
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Playwright
+        working-directory: web/tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Web view frames
+        run: scripts/web-test.sh webview-frames chromium
+
   browser:
     name: Browser tests
     needs: bundle
     if: needs.bundle.outputs.ran == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04  # as above
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

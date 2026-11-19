@@ -5,7 +5,8 @@
 # Usage: scripts/web-test.sh <app> [run.mjs steps and options…]
 #   <app>: hello-expo, hello-skia, hello-flutter, or a path to a .app or .ipa;
 #   `all` runs every browser test (the apps must be built); `embed` runs hello-expo
-#   in a frame on a page from another origin (web/tests/embed.mjs)
+#   in a frame on a page from another origin (web/tests/embed.mjs); `webview-frames`
+#   loads another site's page in a web view, with no app (web/tests/webview-frames.mjs)
 #   With no steps, it waits for the first frame and saves it to web/tests/out/<app>.png.
 #   --compare (alone): compare with the same app's frame on the command line
 #   (hello-skia, hello-flutter).
@@ -29,11 +30,15 @@ if [ "$APP" = all ]; then
   run env NO_BUILD=1 QUERY=nojspi "$T" hello-expo --wait "needs a browser with JSPI"
   run env NO_BUILD=1 "$T" embed --timeout 240 --see "Tapped 0" --tap 195,265 --see "Tapped 1"
   run env NO_BUILD=1 "$T" embed --browser webkit --wait "needs a browser with JSPI"
+  run "$T" webview-frames
   run "$T" hello-skia --compare
   run env NO_BUILD=1 "$T" hello-skia --no-webgpu --timeout 120 --wait "has no WebGPU" --see "Hello from Skia"
   run "$T" hello-flutter --compare
   run env NO_BUILD=1 "$T" hello-flutter --timeout 120 --wait "[metal] running on" --see "Tapped 0" --tap 195,422 --see "Tapped 1" --tap 60,300 --see "Tapped 2"
   exit $FAILED
+fi
+if [ "$APP" = webview-frames ]; then
+  cd "$ROOT/web/tests" && exec node webview-frames.mjs "$@"
 fi
 EMBED=
 [ "$APP" = embed ] && { EMBED=1; APP=hello-expo; }
