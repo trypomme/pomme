@@ -10,13 +10,12 @@ Words used here:
 
 - **Web Worker**: a background thread in the browser. The emulator runs
   there, so it can block without freezing the page.
-- **SharedArrayBuffer**: memory that the page and the worker share. It
-  needs **cross-origin isolation** (two HTTP headers).
 - **Bundle**: one `.pfs` file with the app and the sysroot files it loads,
   made by `pomme bundle`.
 - **JSPI** (WebAssembly JavaScript Promise Integration): a browser feature
   that lets WebAssembly code pause, give the browser a break, and continue
-  from the same place. Chrome has it, and Safari since Safari 27.
+  from the same place. Chrome has it, and Safari since Safari 27. pomme needs it, and
+  needs no special HTTP headers.
 
 ## Requirements
 
@@ -25,22 +24,18 @@ Words used here:
 `scripts/build-web.sh [App.app]` SHALL build the emulator as WebAssembly
 (with SIMD) into `web/pkg` and the app's bundle into `web/<name>.pfs`
 (default: hello-expo). `scripts/serve-web.py [port]` SHALL serve `web/` on
-127.0.0.1 (default port 8787) with the cross-origin isolation headers.
+127.0.0.1 (default port 8787). The page SHALL NOT need any special HTTP
+headers, so any static file server can serve `web/`.
 
 #### Scenario: Open hello-expo
 
 - **WHEN** a user runs `scripts/build-web.sh && scripts/serve-web.py` and opens http://127.0.0.1:8787
 - **THEN** hello-expo boots and draws its first frame in the page
 
-### Requirement: The page needs cross-origin isolation
+#### Scenario: A plain file server
 
-When the page is not cross-origin isolated, it SHALL show a message that
-says to serve it with `scripts/serve-web.py`, and SHALL NOT start.
-
-#### Scenario: Plain file server
-
-- **WHEN** `web/` is served without the isolation headers
-- **THEN** the page says it needs cross-origin isolation
+- **WHEN** `web/` is served by a static file server that sends no cross-origin isolation headers
+- **THEN** hello-expo boots and responds to taps
 
 ### Requirement: Page options
 
@@ -55,15 +50,21 @@ statistics in the console; see `tools/frame-timing`).
 
 ### Requirement: Input and frames
 
-Touches and screen-reader actions SHALL go from the page to the worker
-through a ring of events in a SharedArrayBuffer, and the worker SHALL
-deliver them when the app is idle. Frames SHALL come back to the page and
-be drawn on a canvas at 2 pixels per point.
+Touches, screen-reader actions and web view events SHALL go from the page
+to the worker as messages, with no shared memory. The worker SHALL queue
+them, and the emulator SHALL take them while it is paused (after each frame
+and while the app is idle). Frames SHALL come back to the page and be drawn
+on a canvas at 2 pixels per point.
 
 #### Scenario: Tap
 
 - **WHEN** the user taps hello-expo's button on the canvas
 - **THEN** the app counts the tap, as in a native run
+
+#### Scenario: Taps while the app is busy
+
+- **WHEN** the user taps hello-expo's counter and then its Details link, the second tap while the app is still busy with the first
+- **THEN** both taps arrive, in order: the counter counts once and the app pushes the Details screen
 
 ### Requirement: Time follows the wall clock
 
@@ -98,16 +99,17 @@ elements over the screen (see `uikit/accessibility`).
 
 ### Requirement: The emulator pauses for the browser
 
-When the browser has JSPI, the emulator SHALL pause after each frame and
-while the app is idle. A pause SHALL give the browser a real break (a new
-task), not only a microtask, so the browser's GPU work is sent and its
-answers arrive. The emulator SHALL continue from the same place after a
-pause. While the app is idle, input SHALL still wake it early, as before.
+The emulator SHALL pause after each frame and while the app is idle. A
+pause SHALL give the browser a real break (a new task, not a microtask), so
+GPU work and the page's messages get through, and the emulator SHALL
+continue from the same place after it. While the app is idle, new input from the page
+(touches and screen-reader actions) SHALL end the pause early. Web view
+events SHALL reach the app within one live-page poll (16 ms) while pages run.
 
 #### Scenario: Input while idle
 
-- **WHEN** hello-expo is idle in a browser with JSPI and the user taps its button
-- **THEN** the app counts the tap, as in a native run
+- **WHEN** hello-expo is idle and the user taps its button
+- **THEN** the app counts the tap, as in a native run, without waiting for the idle timeout
 
 #### Scenario: Deep calls
 
@@ -128,14 +130,22 @@ backend.
 
 ### Requirement: Browsers without JSPI or WebGPU
 
-In a browser without JSPI, or without WebGPU, the page SHALL run apps as
-before: UIKit apps work, and Metal draws nothing (see `graphics/metal`, "No
-GPU is not a crash"). The page SHALL say which feature is missing and that
-Metal apps (such as Flutter apps) cannot draw.
+In a browser without JSPI, the page SHALL NOT start the app, and SHALL
+show a message that pomme needs a browser with JSPI and names browsers
+that have it. `?nojspi` SHALL make the page act as if the browser had no
+JSPI. In a browser with JSPI and without WebGPU, the page SHALL run apps:
+UIKit apps work, and Metal draws nothing (see `graphics/metal`, "No GPU is
+not a crash"); the page SHALL say that Metal apps (such as Flutter apps)
+cannot draw.
 
 #### Scenario: No JSPI
 
-- **WHEN** hello-expo opens in a browser without JSPI
+- **WHEN** the page opens with `?nojspi`
+- **THEN** the app does not start, and the page says which browsers pomme needs
+
+#### Scenario: No WebGPU
+
+- **WHEN** hello-expo opens in a browser with JSPI and without WebGPU
 - **THEN** it boots and responds to taps, and the page says that Metal apps cannot draw in this browser
 
 ### Requirement: Flutter apps in the browser
@@ -148,3 +158,13 @@ version needs. The page SHALL open it with `?app=`.
 
 - **WHEN** a user runs `scripts/build-web.sh` with hello-flutter's `Runner.app`, serves `web/`, and opens the page with `?app=Runner.pfs` in a browser with JSPI and WebGPU
 - **THEN** hello-flutter boots and draws its first frame in the page
+
+### Requirement: The page runs embedded in other sites
+
+The page SHALL run when it is shown in an `<iframe>` on a page from
+another origin that is not cross-origin isolated, in a browser with JSPI.
+
+#### Scenario: Embedded in a docs page
+
+- **WHEN** a plain page on another origin embeds the pomme page in an iframe and the user taps hello-expo's button inside it
+- **THEN** hello-expo boots in the frame and counts the tap

@@ -30,6 +30,7 @@ NO_BUILD=1 scripts/web-test.sh …      # reuse the last build
 QUERY=stats scripts/web-test.sh …     # add page options (?stats; ?nojspi shows the no-JSPI message)
 scripts/web-test.sh embed --see "Tapped 0" --tap 195,265 --see "Tapped 1"   # hello-expo in a frame on another site
 scripts/web-test.sh hello-skia --compare   # the browser's frame against the command line's
+scripts/web-test.sh webview-frames    # another site's page in a web view, no app needed
 scripts/web-test.sh all               # every browser test (the apps must be built)
 ```
 
@@ -47,6 +48,13 @@ JSPI, `--no-webgpu` without WebGPU, `--browser webkit` uses WebKit instead.
 `--embed PORT` (what `scripts/web-test.sh embed` adds) serves a plain page on
 `localhost:PORT` that shows the pomme page (on `127.0.0.1`, so another origin)
 in an iframe, and runs the steps inside the frame (`embed.mjs`).
+
+`webview-frames` (`webview-frames.mjs`, Chromium by default, `webkit` as an
+argument) needs no app: it drives `web/webview.js` on a page from `127.0.0.1`
+to load a plain page from `localhost` in a web view, once without headers and
+once with the old cross-origin isolation headers (COOP `same-origin`, COEP
+`require-corp`). It fails unless the page loads without them, and prints
+whether the headers refuse it.
 
 The page needs no special headers (`scripts/serve-web.py` sends none), and it
 needs JSPI: without it, it shows "pomme needs a browser with JSPI" and doesn't
