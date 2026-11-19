@@ -40,6 +40,14 @@ if [ ! -d "$VENDOR/swift" ]; then
   git -C "$VENDOR/swift" sparse-checkout set Runtimes stdlib include cmake utils lib/Demangling lib/Threading
   (cd "$VENDOR/swift/Runtimes" && cmake -P Resync.cmake)
 fi
+# pomme's change to the runtime: protocol conformance lookups visit only the
+# records for the protocol asked about (see the patch). Applied once, also to a
+# checkout from before the patch existed. The runtime build compiles the copies
+# Resync makes in Runtimes/, so Resync runs again to copy the patched file.
+if ! git -C "$VENDOR/swift" apply --reverse --check "$ROOT/scripts/sysroot/swift-runtime.patch" 2>/dev/null; then
+  git -C "$VENDOR/swift" apply "$ROOT/scripts/sysroot/swift-runtime.patch"
+  (cd "$VENDOR/swift/Runtimes" && cmake -P Resync.cmake)
+fi
 
 CACHES="$VENDOR/swift/Runtimes/Core/cmake/caches/Vendors/Apple"
 # CMP0195 (CMake 4.1+): CMake itself writes the module as Swift.swiftmodule/<triple>.swiftmodule,

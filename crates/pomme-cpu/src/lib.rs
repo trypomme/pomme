@@ -10,11 +10,13 @@
 mod block;
 mod crypto;
 mod branch;
-mod fast;
+pub mod fast;
 mod dp;
 mod fp;
 mod ldst;
 mod neon;
+#[cfg(feature = "stats")]
+pub mod stats;
 
 use pomme_mem::{MemError, Memory};
 
@@ -50,7 +52,8 @@ impl From<MemError> for Exit {
     }
 }
 
-type Step = Result<(), Exit>;
+/// The result of one instruction: Ok, or the exit it stops with.
+pub type Step = Result<(), Exit>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Cpu {
@@ -82,6 +85,51 @@ pub struct Cpu {
     exclusive: Option<u64>,
     /// Next pc, set by branches during a step.
     next_pc: u64,
+}
+
+/// When a backend must stop and give control back to pomme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    /// Instructions to retire at most (the run may stop earlier, at an exit).
+    pub steps: u64,
+}
+
+/// One way to run guest code: the interpreter, a JIT, or the host's own CPU.
+/// Every backend gives pomme the same exits with the same register state, so
+/// nothing above the CPU needs to know which one runs.
+pub trait Backend: std::fmt::Debug {
+    /// Run `cpu`'s thread until it needs the host or the budget is used up.
+    /// On return, every register in `cpu` is up to date and `cpu.steps` has moved.
+    fn run(&mut self, cpu: &mut Cpu, mem: &mut Memory, budget: Budget) -> Exit;
+    /// A short name for messages (`interpreter`, `jit`, `native`).
+    fn name(&self) -> &'static str;
+    /// A copy for a snapshot. Caches (decoded or translated code) need not be copied.
+    fn box_clone(&self) -> Box<dyn Backend>;
+}
+
+impl Clone for Box<dyn Backend> {
+    fn clone(&self) -> Self {
+        self.box_clone()
+    }
+}
+
+/// The interpreter as a [`Backend`]: [`Cpu::run`]. It is the reference that
+/// every other backend must match.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Interpreter;
+
+impl Backend for Interpreter {
+    fn run(&mut self, cpu: &mut Cpu, mem: &mut Memory, budget: Budget) -> Exit {
+        cpu.run(mem, budget.steps)
+    }
+
+    fn name(&self) -> &'static str {
+        "interpreter"
+    }
+
+    fn box_clone(&self) -> Box<dyn Backend> {
+        Box::new(*self)
+    }
 }
 
 /// The virtual clock: mach ticks run at 24 MHz (as on iOS devices) and each
@@ -130,6 +178,20 @@ impl Cpu {
             let room = stop - self.steps;
             match blocks.get(self.pc, mem) {
                 Some(b) if b.len() as u64 <= room => {
+                    #[cfg(feature = "stats")]
+                    stats::with(|s| {
+                        s.blocks_run += 1;
+                        s.block_insns += b.len() as u64;
+                        if s.len_hist.is_empty() { s.len_hist.resize(33, 0); }
+                        s.len_hist[b.len()] += 1;
+                        *s.block_runs.entry(self.pc).or_default() += 1;
+                        for op in b {
+                            if let fast::Op::Generic(insn) = op {
+                                *s.generic.entry(insn & !0x001f_03ff).or_default() += 1;
+                                s.generic_total += 1;
+                            }
+                        }
+                    });
                     for op in b {
                         if let Err(exit) = self.exec_op(op, mem) {
                             return exit;
@@ -137,6 +199,8 @@ impl Cpu {
                     }
                 }
                 _ => {
+                    #[cfg(feature = "stats")]
+                    stats::with(|s| s.single_steps += 1);
                     if let Err(exit) = self.step(mem) {
                         return exit;
                     }
@@ -283,6 +347,12 @@ impl Cpu {
             self.z = res as u32 == 0;
         }
     }
+}
+
+/// The block that starts at `pc`, decoded, as the interpreter caches it (see
+/// block.rs): None if `pc` can't be fetched. A JIT translates these.
+pub fn fetch_block(pc: u64, mem: &Memory) -> Option<Box<[fast::Op]>> {
+    block::fetch(pc, mem)
 }
 
 // ---- bit helpers shared by the decoders ----

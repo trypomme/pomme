@@ -293,7 +293,12 @@ fn run_slice(emu: &mut Emu, tid: usize) -> Result<()> {
     let limit = emu.cpu.steps + QUANTUM;
     let result = loop {
         let budget = limit.saturating_sub(emu.cpu.steps).min(emu.max_steps.saturating_sub(emu.cpu.steps));
-        match emu.cpu.run(&mut emu.p.memory, budget) {
+        #[cfg(feature = "cpu-time")]
+        let t0 = std::time::Instant::now();
+        let exit = emu.backend.run(&mut emu.cpu, &mut emu.p.memory, pomme_cpu::Budget { steps: budget });
+        #[cfg(feature = "cpu-time")]
+        crate::cpu_stats::add(t0.elapsed());
+        match exit {
             Exit::Returned => {
                 emu.th.threads[tid].run = Run::Done(emu.cpu.x[0]);
                 if emu.trace {
@@ -580,6 +585,10 @@ fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
         if crate::driver::turn_due(emu)? {
             continue;
         }
+        // Answers to requests out in the background that came back.
+        if crate::net::pump(emu)? {
+            continue;
+        }
         // Waiting on the network: wait for it in real time.
         let own = if let Wait::Socket(p) = wait { Some(p.clone()) } else { None };
         let next = next_deadline(emu, wait.deadline());
@@ -592,7 +601,8 @@ fn wait_in_place(emu: &mut Emu, me: usize, wait: &Wait) -> Result<u64> {
         // recomputed now could be far later: time would jump ahead of the wall clock).
         if emu.live.host.is_some() {
             // Web pages running in a live engine wake it soon, to take what they did.
-            let next = crate::webkit::host_deadline(emu, next_deadline(emu, wait.deadline()));
+            // So do requests out in the background, to look for their answers.
+            let next = crate::net::poll_deadline(emu, crate::webkit::host_deadline(emu, next_deadline(emu, wait.deadline())));
             if crate::host::idle(emu, next)? || crate::webkit::take_live(emu)? {
                 continue;
             }

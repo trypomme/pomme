@@ -12,6 +12,7 @@ plist = "1.10.3"
 pomme-cpu = { version = "0.1.0", path = "../pomme-cpu" }
 pomme-desktop = { version = "0.1.0", path = "../pomme-desktop" }
 pomme-hle = { version = "0.1.0", path = "../pomme-hle" }
+pomme-jit = { version = "0.1.0", path = "../pomme-jit" }
 pomme-loader = { version = "0.1.0", path = "../pomme-loader" }
 pomme-macho = { version = "0.1.0", path = "../pomme-macho" }
 serde_json = "1.0.154"
@@ -23,3 +24,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tiny-skia = "0.12"
 pomme-video = { path = "../pomme-video" }
 mp4 = "0.14.0"
+
+[features]
+# Print where the CPU time goes after a run (see openspec/changes/add-jit, task 0).
+# `cpu-time` only times the CPU; `cpu-stats` also counts blocks, which slows the CPU down.
+cpu-time = ["pomme-hle/cpu-time"]
+cpu-stats = ["cpu-time", "pomme-cpu/stats"]

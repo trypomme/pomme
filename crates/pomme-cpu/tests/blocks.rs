@@ -57,3 +57,25 @@ fn a_fault_mid_block_stops_at_the_faulting_instruction() {
     assert!(matches!(call(&mut cpu, &mut mem, 100), Exit::Fault { .. }));
     assert_eq!((cpu.steps - before, cpu.pc, cpu.x[0]), (1, CODE + 4, 1));
 }
+
+#[test]
+fn rewriting_one_page_keeps_the_other_pages_code_right() {
+    // Two functions on different pages; one is rewritten, both still run right.
+    let (mut cpu, mut mem) = setup(&[MOVZ_X0_1, ADD_X0_2, RET]);
+    const OTHER: u64 = CODE + 0x4000;
+    mem.map(OTHER, 0x4000, Prot::RX, "other").unwrap();
+    for (i, insn) in [MOVZ_X0_5, ADD_X0_2, RET].iter().enumerate() {
+        mem.write_u32(OTHER + i as u64 * 4, *insn).unwrap();
+    }
+    let run = |cpu: &mut Cpu, mem: &mut Memory, at: u64| {
+        cpu.pc = at;
+        cpu.x[30] = HOST_RETURN;
+        assert!(matches!(cpu.run(mem, 100), Exit::Returned));
+        cpu.x[0]
+    };
+    assert_eq!((run(&mut cpu, &mut mem, CODE), run(&mut cpu, &mut mem, OTHER)), (3, 7));
+    mem.write_u32(OTHER, MOVZ_X0_1).unwrap();
+    assert_eq!((run(&mut cpu, &mut mem, CODE), run(&mut cpu, &mut mem, OTHER)), (3, 3));
+    mem.write_u32(CODE + 4, MOVZ_X0_5).unwrap(); // mov x0, #5 replaces the add
+    assert_eq!((run(&mut cpu, &mut mem, CODE), run(&mut cpu, &mut mem, OTHER)), (5, 3));
+}

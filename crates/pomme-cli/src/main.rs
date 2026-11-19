@@ -933,6 +933,11 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         println!("system libraries from {}: {}", sysroot.display(), system.join(", "));
     }
     let mut emu = Emu::new(p).map_err(|e| anyhow::anyhow!("setting up the runtime: {e}"))?;
+    // For checking the JIT's front end on whole apps (slow): every block
+    // runs through the IR evaluator instead of the interpreter.
+    if std::env::var("POMME_CPU").as_deref() == Ok("ir-eval") {
+        emu.backend = Box::new(pomme_jit::backend::IrEval::default());
+    }
     emu.present(device);
     clipboard.apply(&mut emu)?;
     state.apply(&mut emu);
@@ -1041,6 +1046,8 @@ fn run(path: &Path, max_steps: u64, seconds: f64, views: bool, elements: bool, t
         println!("\nprofile: {} samples, every {} instructions, written to {} (open it at https://www.speedscope.app)", p.samples(), p.every, out.display());
         print!("{}", p.summary(15));
     }
+    #[cfg(feature = "cpu-time")]
+    print_cpu_stats(steps, elapsed, emu.p.memory.code_generation());
     let ended = match &result {
         Ok(code) => format!("exit({code})"),
         Err(stop) => stop.to_string(),
@@ -1110,4 +1117,48 @@ fn write_coverage(emu: &pomme_hle::Emu, ended: Option<String>, args: &CoverageAr
         println!("\ncoverage: {}", out.display());
     }
     Ok(())
+}
+
+/// Where the time went (the `cpu-time` and `cpu-stats` features; see openspec/changes/add-jit, task 0).
+/// `POMME_CPU_STATS=file` also writes every slow-path encoding with its count.
+#[cfg(feature = "cpu-time")]
+fn print_cpu_stats(steps: u64, elapsed: std::time::Duration, code_writes: u64) {
+    let h = pomme_hle::cpu_stats::snapshot();
+    let pct = |a: f64, b: f64| if b == 0.0 { 0.0 } else { 100.0 * a / b };
+    let cpu = h.in_cpu.as_secs_f64();
+    let all = elapsed.as_secs_f64();
+    println!("\ncpu stats:");
+    println!("  host time: {all:.2}s total, {cpu:.2}s in the CPU ({:.1}%), {:.2}s in pomme's Rust code ({:.1}%)", pct(cpu, all), all - cpu, pct(all - cpu, all));
+    println!("  CPU speed while in the CPU: {:.1} MIPS", steps as f64 / cpu / 1e6);
+    let exits = h.stub_exits + h.brk_exits + h.svc_exits + h.other_exits;
+    println!(
+        "  exits: {exits} ({:.0} per million instructions): {} stub calls, {} other BRK, {} SVC, {} other",
+        exits as f64 * 1e6 / steps.max(1) as f64, h.stub_exits, h.brk_exits, h.svc_exits, h.other_exits
+    );
+    #[cfg(not(feature = "cpu-stats"))]
+    let _ = code_writes;
+    #[cfg(feature = "cpu-stats")]
+    {
+        let c = pomme_cpu::stats::snapshot();
+        let in_blocks = c.block_insns as f64;
+        println!(
+            "  blocks: {} run, {:.2} instructions on average; {} distinct blocks; {} fetched; {:.1}% of instructions ran in whole blocks",
+            c.blocks_run, in_blocks / c.blocks_run.max(1) as f64, c.block_runs.len(), c.blocks_fetched, pct(in_blocks, steps as f64)
+        );
+        let hot = |n: u64| c.block_runs.values().filter(|&&r| r >= n).count();
+        let hot_insns = |n: u64| -> f64 { c.block_runs.values().filter(|&&r| r >= n).map(|&r| r as f64).sum() };
+        for n in [2u64, 10, 50, 1000] {
+            println!("  blocks run at least {n} times: {} ({:.1}% of block runs)", hot(n), pct(hot_insns(n), c.blocks_run as f64));
+        }
+        let lens: Vec<String> = (1..=32).map(|i| format!("{i}:{:.1}", pct(c.len_hist.get(i).copied().unwrap_or(0) as f64, c.blocks_run as f64))).collect();
+        println!("  block length, % of block runs: {}", lens.join(" "));
+        println!("  slow-path (generic) instructions: {} ({:.1}% of instructions in blocks)", c.generic_total, pct(c.generic_total as f64, in_blocks));
+        println!("  code writes (code generation): {code_writes}; block cache dropped {} times; {} single steps", c.cache_flushes, c.single_steps);
+        let mut g: Vec<_> = c.generic.iter().collect();
+        g.sort_by(|a, b| b.1.cmp(a.1));
+        if let Some(path) = std::env::var_os("POMME_CPU_STATS") {
+            let text: String = g.iter().map(|(k, v)| format!("{k:08x} {v}\n")).collect();
+            let _ = std::fs::write(path, text);
+        }
+    }
 }
