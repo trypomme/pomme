@@ -146,6 +146,21 @@ fn kvo_observe(emu: &mut Emu) -> Result<()> {
 }
 
 pub(crate) const FUNCS: &[(&str, HostFn)] = &[
+    // WidgetKit: pomme has no home screen widgets, so WidgetCenter.shared is nil and asking it
+    // to reload a widget's timeline does nothing (Wonderous's home_widget plugin does at launch).
+    ("_$s9WidgetKit0A6CenterCMa", |e| {
+        e.ret(0);
+        e.cpu.x[1] = 0;
+        Ok(())
+    }),
+    ("_$s9WidgetKit0A6CenterC6sharedACvgZ", |e| {
+        e.ret(0);
+        Ok(())
+    }),
+    ("_$s9WidgetKit0A6CenterC15reloadTimelines6ofKindySS_tFTj", noop),
+    ("_$s9WidgetKit0A6CenterC15reloadTimelines6ofKindySS_tF", noop),
+    ("_$s9WidgetKit0A6CenterC20reloadAllTimelinesyyFTj", noop),
+    ("_$s9WidgetKit0A6CenterC20reloadAllTimelinesyyF", noop),
     // NSKeyValueObservation.invalidate() (dispatch thunk and method): ours never fire.
     ("_$s10Foundation21NSKeyValueObservationC10invalidateyyFTj", noop),
     ("_$s10Foundation21NSKeyValueObservationC10invalidateyyF", noop),
