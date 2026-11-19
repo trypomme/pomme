@@ -124,7 +124,7 @@ jobs:
     name: Browser tests
     needs: bundle
     if: needs.bundle.outputs.ran == 'true'
-    runs-on: [self-hosted, vultr]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
